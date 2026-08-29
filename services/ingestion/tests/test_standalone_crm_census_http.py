@@ -294,6 +294,23 @@ def test_page_and_binding_reservations_keep_the_exact_parent_issued_task_identit
     assert hook._reserved["binding-intent"].sequence == 17
 
 
+def test_completed_intent_receipt_returns_only_the_durable_successful_exact_call() -> None:
+    repository = _ReservationRepository()
+    hook = StandaloneCrmCensusHttpReservationHook(
+        repository, _request(), "census", 4, 11, "published-child-task"
+    )
+    page = BitrixHttpCallIntent(
+        "page-intent", "crm.contact.list", 0, BitrixHttpCallMetadata("page", "contact", 5)
+    )
+
+    assert hook.reserve(page)
+    with pytest.raises(RuntimeError, match="no durable successful"):
+        hook.completed_intent_id("page", 5, None)
+    hook.record_outcome(page, "succeeded")
+
+    assert hook.completed_intent_id("page", 5, None) == "page-intent"
+
+
 def test_binding_client_metadata_has_a_durable_subject_cursor() -> None:
     hook = _Hook()
     client = _client(httpx.MockTransport(lambda _: httpx.Response(200, json={"result": []})), hook)

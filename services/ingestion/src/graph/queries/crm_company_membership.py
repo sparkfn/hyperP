@@ -7,6 +7,39 @@ MATCH (census:StandaloneCrmCensus {census_id: $census_id, generation: $generatio
 RETURN census.request_json AS request_json
 """
 
+READ_CURRENT_DESCRIPTION_HEAD = """
+MATCH (reference:CrmCompanyReference {
+  source_key: $source_key, source_instance_id: $source_instance_id,
+  control_instance_id: $control_instance_id, company_id: $company_id
+})-[:HAS_DESCRIPTION_OBSERVATION]->(observation:CrmCompanyDescriptionObservation)
+MATCH (head:CrmCompanyDescriptionHead {
+  source_instance_id: $source_instance_id, control_instance_id: $control_instance_id,
+  company_id: $company_id, selected_observation_id: observation.observation_id
+})-[:SELECTS_DESCRIPTION_OBSERVATION]->(observation)
+RETURN reference.source_record_id AS source_record_id, observation.source_record_pk AS source_record_pk,
+  observation.source_record_version AS source_record_version,
+  observation.source_record_hash AS source_record_hash, observation.description AS description,
+  CASE WHEN observation.observed_at IS NULL THEN null ELSE toString(observation.observed_at) END AS observed_at,
+  toString(observation.available_at) AS available_at, observation.contract_version AS contract_version
+"""
+
+READ_CURRENT_MEMBERSHIP_HEAD = """
+MATCH (head:CrmCompanyMembershipHead {
+  source_instance_id: $source_instance_id, control_instance_id: $control_instance_id,
+  subject_kind: $subject_kind, subject_id: $subject_id
+})-[:SELECTS_MEMBERSHIP_SNAPSHOT]->(snapshot:CrmCompanyMembershipSnapshot)
+OPTIONAL MATCH (snapshot)-[:HAS_MEMBERSHIP_OBSERVATION]->(observation:CrmCompanyMembershipObservation)
+RETURN snapshot.source_record_id AS source_record_id, snapshot.source_record_pk AS source_record_pk,
+  snapshot.source_record_version AS source_record_version, snapshot.source_record_hash AS source_record_hash,
+  snapshot.binding_count AS binding_count,
+  CASE WHEN snapshot.observed_at IS NULL THEN null ELSE toString(snapshot.observed_at) END AS observed_at,
+  toString(snapshot.available_at) AS available_at, snapshot.contract_version AS contract_version,
+  collect(CASE WHEN observation IS NULL THEN null ELSE {
+    company_id: observation.company_id, sort: observation.sort, role_id: observation.role_id,
+    is_primary: observation.is_primary
+  } END) AS bindings
+"""
+
 CLAIM_DESCRIPTION_TRANSITION = """
 MATCH (census:StandaloneCrmCensus {
   census_id: $census_id,
@@ -67,6 +100,7 @@ OPTIONAL MATCH (checkpoint:StandaloneCrmCensusCheckpoint {
 })
 OPTIONAL MATCH (head:CrmCompanyDescriptionHead {
   source_instance_id: $source_instance_id,
+  control_instance_id: $control_instance_id,
   company_id: $company_id
 })
 WITH census, attempt, fence, checkpoint, head
@@ -164,14 +198,19 @@ FOREACH (_ IN CASE WHEN decision = 'committed' THEN [1] ELSE [] END |
       attempt.row_count = coalesce(attempt.row_count, 0) + $processed_delta
   MERGE (selected:CrmCompanyDescriptionHead {
     source_instance_id: $source_instance_id,
+    control_instance_id: $control_instance_id,
     company_id: $company_id
   })
-  SET selected.control_instance_id = $control_instance_id,
-      selected.selected_observation_id = $proposed_head_id,
+  SET selected.selected_observation_id = $proposed_head_id,
       selected.available_at = datetime($proposed_available_at),
       selected.source_record_version = $proposed_head_version,
       selected.source_record_pk = $proposed_head_pk,
       selected.updated_at = datetime()
+)
+FOREACH (_ IN CASE WHEN decision = 'occurrence_exhausted' THEN [1] ELSE [] END |
+  SET attempt.status = 'failed', attempt.failure_reason = 'occurrence_budget_exhausted',
+      attempt.updated_at = datetime(), census.status = 'failed',
+      census.terminal_reason = 'occurrence_budget_exhausted', census.updated_at = datetime()
 )
 RETURN decision AS decision
 """
@@ -236,6 +275,7 @@ OPTIONAL MATCH (checkpoint:StandaloneCrmCensusCheckpoint {
 })
 OPTIONAL MATCH (head:CrmCompanyMembershipHead {
   source_instance_id: $source_instance_id,
+  control_instance_id: $control_instance_id,
   subject_kind: $subject_kind,
   subject_id: $subject_id
 })
@@ -347,15 +387,20 @@ FOREACH (_ IN CASE WHEN decision = 'committed' THEN [1] ELSE [] END |
       attempt.row_count = coalesce(attempt.row_count, 0) + $processed_delta
   MERGE (selected:CrmCompanyMembershipHead {
     source_instance_id: $source_instance_id,
+    control_instance_id: $control_instance_id,
     subject_kind: $subject_kind,
     subject_id: $subject_id
   })
-  SET selected.control_instance_id = $control_instance_id,
-      selected.selected_snapshot_id = $proposed_head_id,
+  SET selected.selected_snapshot_id = $proposed_head_id,
       selected.available_at = datetime($proposed_available_at),
       selected.source_record_version = $proposed_head_version,
       selected.source_record_pk = $proposed_head_pk,
       selected.updated_at = datetime()
+)
+FOREACH (_ IN CASE WHEN decision = 'occurrence_exhausted' THEN [1] ELSE [] END |
+  SET attempt.status = 'failed', attempt.failure_reason = 'occurrence_budget_exhausted',
+      attempt.updated_at = datetime(), census.status = 'failed',
+      census.terminal_reason = 'occurrence_budget_exhausted', census.updated_at = datetime()
 )
 RETURN decision AS decision
 """

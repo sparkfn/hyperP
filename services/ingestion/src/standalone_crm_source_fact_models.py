@@ -38,6 +38,7 @@ class StandaloneCrmSourceFactPage:
     cursor: int
     expected_checkpoint: StandaloneCrmCheckpoint
     rows: tuple[CrmContact, ...]
+    defer_contact_cursor: bool = False
 
     def __post_init__(self) -> None:
         if not self.call_intent_id.strip():
@@ -71,6 +72,10 @@ class StandaloneCrmSourceFactPage:
             if row_id > self.envelope.frozen_upper_id:
                 raise ValueError("page row ID exceeds frozen upper bound")
             previous = row_id
+        if self.defer_contact_cursor and (
+            self.envelope.unit.stream_kind != "contact" or len(self.rows) != 1
+        ):
+            raise ValueError("deferred source-fact pages require exactly one contact")
 
     @property
     def proposed_cursor(self) -> int:
@@ -119,11 +124,33 @@ class StandaloneCrmSourceFactMutation:
 
 
 @dataclass(frozen=True)
+class StandaloneCrmSourceFactReceipt:
+    """Exact persisted source-fact identity reused by the #303 handoff."""
+
+    row_id: int
+    source_record_pk: str
+    source_record_version: int
+    record_hash: str
+    observed_at: str
+    lead_company_id: str | None = None
+
+    def __post_init__(self) -> None:
+        _strict_row_id(str(self.row_id))
+        if not self.source_record_pk or self.source_record_version < 1:
+            raise ValueError("source-fact receipt must identify one persisted source version")
+        if not self.record_hash or not self.observed_at:
+            raise ValueError("source-fact receipt must retain hash and observed_at")
+        if self.lead_company_id is not None:
+            _strict_row_id(self.lead_company_id)
+
+
+@dataclass(frozen=True)
 class StandaloneCrmSourceFactCommitResult:
     decision: SourceFactCommitDecision
     processed_rows: int = 0
     skipped_rows: int = 0
     failed_rows: int = 0
+    receipts: tuple[StandaloneCrmSourceFactReceipt, ...] = ()
 
     @property
     def committed(self) -> bool:
@@ -150,14 +177,15 @@ def build_source_fact_commit(
         skipped_rows,
         mutation.failed_rows,
     )
+    deferred_contact = page.defer_contact_cursor
     proposed = StandaloneCrmCheckpoint(
         expected.census_id,
         expected.stream_kind,
         expected.frozen_upper_id,
         None,
-        page.proposed_cursor,
-        None,
-        None,
+        expected.last_committed_id if deferred_contact else page.proposed_cursor,
+        page.proposed_cursor if deferred_contact else None,
+        0 if deferred_contact else None,
         expected.processed_rows + delta.processed_rows,
         expected.skipped_rows + delta.skipped_rows,
         expected.generation,

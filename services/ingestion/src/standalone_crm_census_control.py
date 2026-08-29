@@ -18,7 +18,11 @@ from src.standalone_crm_census_authority import (
 )
 from src.standalone_crm_census_http import StandaloneCrmCensusBitrixProbeFactory
 from src.standalone_crm_census_models import StandaloneCrmCensusRequest, parse_census_request
-from src.standalone_crm_census_runtime import StandaloneCrmCensusRuntime, StandaloneCrmRuntimeResult
+from src.standalone_crm_census_runtime import (
+    StandaloneCrmCensusRuntime,
+    StandaloneCrmChildPublisher,
+    StandaloneCrmRuntimeResult,
+)
 
 
 class StandaloneCrmCensusControl(Protocol):
@@ -37,10 +41,12 @@ class StandaloneCrmCensusService:
         repository: StandaloneCrmCensusRepository,
         authority: StandaloneCrmCensusAuthority | None = None,
         config: BitrixOpenLinesConfig | None = None,
+        publisher: StandaloneCrmChildPublisher | None = None,
     ) -> None:
         self._repository = repository
         self._authority = authority or UnavailableStandaloneCrmCensusAuthority()
         self._config = config or get_ingestion_config().bitrix_openlines
+        self._publisher = publisher
 
     def start(self, request: StandaloneCrmCensusRequest) -> StandaloneCrmCensusAdmission:
         if not self._config.standalone_crm_identity_enabled:
@@ -85,6 +91,7 @@ class StandaloneCrmCensusService:
             self._authority,
             self._config,
             probe_factory=StandaloneCrmCensusBitrixProbeFactory(get_settings()),
+            publisher=self._publisher,
         )
 
 

@@ -38,7 +38,7 @@ def map_source_fact_row(page: StandaloneCrmSourceFactPage, row: CrmContact) -> S
     """Create one canonical, source-instance-scoped identity envelope."""
     if row.observed_at is None:
         raise ValueError("observed_at is required for source-fact rows")
-    if row.company_id is not None:
+    if row.kind == "contact" and row.company_id is not None:
         raise ValueError("company association is not authorized in source-fact rows")
     if row.kind == "contact":
         evidence = crm_standalone_contact_identity_evidence(

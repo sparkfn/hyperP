@@ -25,10 +25,12 @@ from src.ingestion_config import (
 from src.standalone_crm_census_authority import UnavailableStandaloneCrmCensusAuthority
 from src.standalone_crm_census_models import StandaloneCrmCensusRequest
 from src.standalone_crm_census_tasks import (
+    _source_child_runtime,
     cancel_standalone_crm_census,
     reconcile_standalone_crm_census,
     recover_standalone_crm_publication,
     resume_standalone_crm_census,
+    run_standalone_crm_census_unit,
     start_standalone_crm_census,
 )
 from src.tasks import LegacyBitrixExecutionStream
@@ -43,7 +45,7 @@ _LEGACY_CATEGORY_DIGEST = "sha256:24ad8341df1613f75207dd5b9fab8c739e6ac162e12f64
 _LEGACY_RUNTIME_DIGEST = "sha256:a449c56111af4eff4d8d3182355d037bee51760c45fc77c1451b4cac5bb4e75a"
 
 
-def test_census_tasks_are_registered_and_routed_without_a_source_child_route() -> None:
+def test_census_tasks_are_registered_and_routed_with_the_closed_source_child_task() -> None:
     assert _CENSUS_TASK_MODULE in celery_app.conf.include
     assert _CENSUS_TASK_NAMES <= set(celery_app.tasks)
     assert {
@@ -59,6 +61,7 @@ def test_census_tasks_are_registered_and_routed_without_a_source_child_route() -
     assert reconcile_standalone_crm_census.name in _CENSUS_TASK_NAMES
     assert recover_standalone_crm_publication.name in _CENSUS_TASK_NAMES
     assert celery_app.conf.task_routes[_CENSUS_TASK_MODULE + ".*"] == {"queue": INGESTION_QUEUE}
+    assert run_standalone_crm_census_unit.name in celery_app.tasks
     assert "bitrix_crm_identity" not in celery_app.conf.task_routes
     assert "src.tasks.run_ingestion_task" in celery_app.conf.task_routes
 
@@ -73,6 +76,18 @@ def test_census_tasks_are_manual_only_and_fail_closed_until_child_handlers_exist
     )
     assert "BitrixOpenLinesClient" not in task_source
     assert "run_ingestion" not in task_source
+
+
+def test_source_child_task_has_real_closed_runtime_wiring_not_a_production_stub() -> None:
+    runtime_source = inspect.getsource(_source_child_runtime)
+    task_source = inspect.getsource(run_standalone_crm_census_unit)
+
+    assert "StandaloneCrmContactSourceHandler" in runtime_source
+    assert "StandaloneCrmLeadSourceHandler" in runtime_source
+    assert "StandaloneCrmCompanySourceHandler" in runtime_source
+    assert "StandaloneCrmSourceChildBitrixSessionFactory" in runtime_source
+    assert "RuntimeError" not in runtime_source
+    assert "_source_child_runtime()" in task_source
 
 
 def test_default_off_configuration_and_authority_admission_fail_closed() -> None:
@@ -147,8 +162,8 @@ def test_lane_a_contracts_add_no_task_route_schedule_source_call_or_concrete_wri
     task_names = set(celery_app.tasks)
     task_routes = set(celery_app.conf.task_routes)
 
-    assert not any("standalone_crm_source" in name for name in task_names)
-    assert not any("standalone_crm_source" in route for route in task_routes)
+    assert run_standalone_crm_census_unit.name in task_names
+    assert "src.standalone_crm_census_tasks.*" in task_routes
     assert "BitrixOpenLinesClient" not in contract_source
     assert ".delay(" not in contract_source
     assert ".apply_async(" not in contract_source
