@@ -580,7 +580,7 @@ FREEZE_WINDOW = (
 
 RESERVE_PUBLICATION = (
     "MATCH (census:StandaloneCrmCensus {census_id: $census_id, generation: $generation}) "
-    "WHERE census.status IN ['frozen', 'publishing'] "
+    "WHERE census.status IN ['frozen', 'publishing', 'recovering'] "
     "AND coalesce(census.cancel_requested, false) = false "
     "AND census.authority_revision = $authority_revision AND census.authority_json = $authority_json "
     "AND datetime() < datetime($occurrence_deadline) "
