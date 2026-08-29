@@ -41,6 +41,11 @@ class RepairUnit:
     boundary_digest: str
     inventory_fingerprint: str
     state: RepairUnitState
+    inventory_key: str | None = None
+    source_record_pk: str | None = None
+    inventory_graph_fingerprint: str | None = None
+    inventory_stored_payload_fingerprint: str | None = None
+    inventory_binding_digest: str | None = None
 
     def __post_init__(self) -> None:
         _scope(self.run_id, self.unit_id)
@@ -54,6 +59,18 @@ class RepairUnit:
             {"allocated", "quiesced", "applied", "review_required", "failed", "rolled_back"},
             "unit state",
         )
+        binding = (
+            self.inventory_key,
+            self.source_record_pk,
+            self.inventory_graph_fingerprint,
+            self.inventory_stored_payload_fingerprint,
+            self.inventory_binding_digest,
+        )
+        if any(value is not None for value in binding):
+            if not all(isinstance(value, str) and value for value in binding):
+                raise ValueError("unit inventory binding must be complete")
+            assert self.inventory_binding_digest is not None
+            _digest(self.inventory_binding_digest, "unit inventory binding digest")
 
 
 @dataclass(frozen=True)

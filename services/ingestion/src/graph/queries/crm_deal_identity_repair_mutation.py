@@ -12,19 +12,28 @@ RETURN unit.state AS state
 
 FIND_COMMITTED_REPAIR_MUTATION = """
 MATCH (result:CrmDealRepairMutationResult {run_id: $run_id, unit_id: $unit_id})
-MATCH (image:CrmDealRepairRollbackImage {
+OPTIONAL MATCH (image:CrmDealRepairRollbackImage {
   run_id: result.run_id, rollback_image_id: result.rollback_image_id
 })
-MATCH (checkpoint:CrmDealRepairCheckpoint {
+WITH result, collect(image) AS images
+OPTIONAL MATCH (checkpoint:CrmDealRepairCheckpoint {
   run_id: result.run_id, checkpoint_id: result.checkpoint_id
 })
-MATCH (outbox:CrmDealRepairOutbox {
+WITH result, images, collect(checkpoint) AS checkpoints
+OPTIONAL MATCH (outbox:CrmDealRepairOutbox {
   run_id: result.run_id, event_id: result.outbox_event_id
 })
-MATCH (source:SourceRecord {repair_mutation_id: result.mutation_id})
-RETURN properties(result) AS result, properties(image) AS image,
-       properties(checkpoint) AS checkpoint, properties(outbox) AS outbox,
-       source.source_record_pk AS committed_source_record_pk
+WITH result, images, checkpoints, collect(outbox) AS outboxes
+OPTIONAL MATCH (source:SourceRecord {repair_mutation_id: result.mutation_id})
+WITH result, images, checkpoints, outboxes, collect(source) AS sources
+RETURN properties(result) AS result,
+       CASE WHEN size(images) = 1 THEN properties(images[0]) ELSE null END AS image,
+       CASE WHEN size(checkpoints) = 1 THEN properties(checkpoints[0]) ELSE null END AS checkpoint,
+       CASE WHEN size(outboxes) = 1 THEN properties(outboxes[0]) ELSE null END AS outbox,
+       CASE WHEN size(sources) = 1 THEN sources[0].source_record_pk ELSE null END
+         AS committed_source_record_pk,
+       size(images) AS image_count, size(checkpoints) AS checkpoint_count,
+       size(outboxes) AS outbox_count, size(sources) AS source_count
 """
 
 LOCK_AND_ASSERT_REPAIR_MUTATION_GUARD = """
@@ -33,6 +42,7 @@ MATCH (run:CrmDealRepairRun {
   source_instance_id: $source_instance_id, control_instance_id: $control_instance_id,
   status: 'qualified', execution_allowed: false
 })
+WHERE run.source_record_pks_json CONTAINS $quoted_source_record_pk
 MATCH (unit:CrmDealRepairUnit {
   run_id: $run_id, unit_id: $unit_id, generation: $generation, sequence: $sequence,
   attempt: $attempt, boundary_digest: $boundary_digest,
@@ -75,6 +85,18 @@ MERGE (lock:SourceRecordIdentityLock {
 })
 SET lock.locked_at = datetime(), lock.repair_mutation_id = $mutation_id
 RETURN properties(record) AS source, record.entity_key AS entity_key
+"""
+
+
+READ_REPAIR_IDENTIFIER_PREEXISTENCE = """
+UNWIND $identifiers AS item
+OPTIONAL MATCH (identifier:Identifier {
+  identifier_type: item.identifier_type, identifier_scope: item.identifier_scope,
+  normalized_value: item.normalized_value
+})
+RETURN item.identifier_type AS identifier_type, item.identifier_scope AS identifier_scope,
+       item.normalized_value AS normalized_value, identifier IS NOT NULL AS preexisting
+ORDER BY identifier_type, identifier_scope, normalized_value
 """
 
 READ_MUTATION_GRAPH_SNAPSHOT = """
@@ -125,6 +147,13 @@ CALL {
 RETURN properties(source) AS source, descendants, relationships, decisions_and_reviews
 """
 
+
+READ_REPAIRED_OWNER_IDS = """
+MATCH (:SourceRecord {source_record_pk: $source_record_pk})-[link:LINKED_TO]->(person:Person)
+WHERE coalesce(link.is_active, true) = true AND coalesce(link.authoritative, true) = true
+RETURN collect(person.person_id) AS owner_ids
+"""
+
 READ_LOCKED_REPAIR_AUTHORITY = """
 MATCH (deal:SourceRecord {source_record_pk: $source_record_pk})
 MATCH (deal)-[current:LINKED_TO]->(person:Person)
@@ -142,7 +171,9 @@ CALL {
     AND (support.lifecycle_status = 'active'
       OR (support.lifecycle_status IS NULL AND support.is_latest = true))
     AND support.identity_policy_version IN ['crm_contact_identity_v1', 'crm_lead_identity_v1']
+    AND support.standalone_crm_available_at IS NOT NULL
     AND support.standalone_crm_census_id IS NOT NULL
+    AND support.standalone_crm_stream_kind IS NOT NULL
     AND support.standalone_crm_generation IS NOT NULL
     AND support.standalone_crm_fence_token IS NOT NULL
     AND support.standalone_crm_fence_owner_id IS NOT NULL
@@ -154,6 +185,50 @@ CALL {
     AND support.standalone_crm_authorization_digest IS NOT NULL
     AND support.standalone_crm_availability_contract_version IS NOT NULL
     AND support.standalone_crm_frozen_upper_id IS NOT NULL
+  MATCH (:StandaloneCrmCensus {
+    census_id: support.standalone_crm_census_id,
+    generation: support.standalone_crm_generation,
+    source_key: 'bitrix_chat', source_instance_id: support.source_instance_id
+  })
+  MATCH (:StandaloneCrmCensusFence {
+    census_id: support.standalone_crm_census_id,
+    generation: support.standalone_crm_generation,
+    stream_kind: support.standalone_crm_stream_kind,
+    token: support.standalone_crm_fence_token,
+    owner_id: support.standalone_crm_fence_owner_id
+  })
+  MATCH (:StandaloneCrmChildPublication {
+    census_id: support.standalone_crm_census_id,
+    generation: support.standalone_crm_generation,
+    stream_kind: support.standalone_crm_stream_kind,
+    task_name: support.standalone_crm_task_name,
+    task_id: support.standalone_crm_task_id,
+    payload_digest: support.standalone_crm_payload_digest, status: 'published'
+  })
+  MATCH (:StandaloneCrmHttpCallReservation {
+    intent_id: support.standalone_crm_call_intent_id,
+    census_id: support.standalone_crm_census_id,
+    generation: support.standalone_crm_generation,
+    stream_kind: support.standalone_crm_stream_kind,
+    fence_token: support.standalone_crm_fence_token,
+    task_id: support.standalone_crm_task_id, status: 'succeeded'
+  })
+  MATCH (:StandaloneCrmSourceFactPageReceipt {
+    status: 'committed', census_id: support.standalone_crm_census_id,
+    generation: support.standalone_crm_generation,
+    stream_kind: support.standalone_crm_stream_kind,
+    fence_token: support.standalone_crm_fence_token,
+    fence_owner_id: support.standalone_crm_fence_owner_id,
+    source_key: 'bitrix_chat', source_instance_id: support.source_instance_id,
+    task_name: support.standalone_crm_task_name, task_id: support.standalone_crm_task_id,
+    payload_digest: support.standalone_crm_payload_digest,
+    call_intent_id: support.standalone_crm_call_intent_id,
+    authorization_id: support.standalone_crm_authorization_id,
+    authorization_digest: support.standalone_crm_authorization_digest,
+    available_at: support.standalone_crm_available_at,
+    availability_contract_version: support.standalone_crm_availability_contract_version,
+    frozen_upper_id: support.standalone_crm_frozen_upper_id
+  })
   OPTIONAL MATCH (person)-[identifier_link:IDENTIFIED_BY]->(identifier:Identifier)
   WHERE identifier_link.source_record_pk = support.source_record_pk
     AND coalesce(identifier_link.is_active, true) = true
@@ -176,7 +251,22 @@ CALL {
     identifier_type: identifier.identifier_type,
     identifier_scope: identifier.identifier_scope,
     identifier_source_instance_id: identifier.source_instance_id,
-    identifier_link_source_record_pk: identifier_link.source_record_pk
+    identifier_link_source_record_pk: identifier_link.source_record_pk,
+    standalone_crm_available_at: toString(support.standalone_crm_available_at),
+    standalone_crm_census_id: support.standalone_crm_census_id,
+    standalone_crm_stream_kind: support.standalone_crm_stream_kind,
+    standalone_crm_generation: support.standalone_crm_generation,
+    standalone_crm_fence_token: support.standalone_crm_fence_token,
+    standalone_crm_fence_owner_id: support.standalone_crm_fence_owner_id,
+    standalone_crm_task_name: support.standalone_crm_task_name,
+    standalone_crm_task_id: support.standalone_crm_task_id,
+    standalone_crm_payload_digest: support.standalone_crm_payload_digest,
+    standalone_crm_call_intent_id: support.standalone_crm_call_intent_id,
+    standalone_crm_authorization_id: support.standalone_crm_authorization_id,
+    standalone_crm_authorization_digest: support.standalone_crm_authorization_digest,
+    standalone_crm_availability_contract_version:
+      support.standalone_crm_availability_contract_version,
+    standalone_crm_frozen_upper_id: support.standalone_crm_frozen_upper_id
   } END) AS independent_rows
 }
 CALL {
@@ -264,7 +354,7 @@ ON CREATE SET new = properties(old),
   new.expected_active_source_record_pk = $old_source_record_pk,
   new.lifecycle_status = 'pending_review', new.is_latest = false,
   new.link_status = $link_status,
-  new.record_type = 'crm_deal', new.observed_at = $observed_at,
+  new.record_type = 'crm_deal', new.observed_at = datetime($observed_at),
   new.ingested_at = datetime(), new.record_hash = $record_hash,
   new.raw_payload = $raw_payload, new.normalized_payload = $normalized_payload,
   new.source_entity_type = 'deal', new.source_entity_id = $deal_id,
@@ -279,10 +369,13 @@ ON CREATE SET new = properties(old),
   new.parent_source_instance_id = old.parent_source_instance_id,
   new.parent_source_record_id = old.parent_source_record_id,
   new.parent_record_type = old.parent_record_type
-MERGE (new)-[:FROM_SOURCE]->(source)
-MERGE (old)-[:PREVIOUS_VERSION_OF]->(new)
+MERGE (new)-[from_source:FROM_SOURCE]->(source)
+ON CREATE SET from_source.repair_mutation_id = $mutation_id
+MERGE (old)-[previous:PREVIOUS_VERSION_OF]->(new)
+ON CREATE SET previous.repair_mutation_id = $mutation_id
 FOREACH (_ IN CASE WHEN entity IS NULL THEN [] ELSE [1] END |
-  MERGE (new)-[:OWNED_BY]->(entity)
+  MERGE (new)-[owned:OWNED_BY]->(entity)
+  ON CREATE SET owned.repair_mutation_id = $mutation_id
 )
 RETURN new.source_record_pk AS source_record_pk
 """
@@ -291,6 +384,7 @@ CREATE_UNRECONSTRUCTABLE_REVIEW_SOURCE_RECORD = """
 MATCH (source:SourceSystem {source_key: 'bitrix_chat'})
 MATCH (old:SourceRecord {source_record_pk: $old_source_record_pk})-[:FROM_SOURCE]->(source)
 WHERE old.lifecycle_status = 'active' OR (old.lifecycle_status IS NULL AND old.is_latest = true)
+OPTIONAL MATCH (old)-[:OWNED_BY]->(entity:Entity)
 MERGE (new:SourceRecord {source_record_pk: $new_source_record_pk})
 ON CREATE SET new = properties(old),
   new.source_record_pk = $new_source_record_pk,
@@ -301,8 +395,14 @@ ON CREATE SET new = properties(old),
   new.record_type = old.record_type, new.observed_at = old.observed_at, new.ingested_at = datetime(),
   new.record_hash = old.record_hash, new.raw_payload = old.raw_payload, new.normalized_payload = old.normalized_payload,
   new.repair_mutation_id = $mutation_id, new.repair_reconstruction_status = 'unreconstructable_review_only'
-MERGE (old)-[:PREVIOUS_VERSION_OF]->(new)
-MERGE (new)-[:FROM_SOURCE]->(source)
+MERGE (old)-[previous:PREVIOUS_VERSION_OF]->(new)
+ON CREATE SET previous.repair_mutation_id = $mutation_id
+MERGE (new)-[from_source:FROM_SOURCE]->(source)
+ON CREATE SET from_source.repair_mutation_id = $mutation_id
+FOREACH (_ IN CASE WHEN entity IS NULL THEN [] ELSE [1] END |
+  MERGE (new)-[owned:OWNED_BY]->(entity)
+  ON CREATE SET owned.repair_mutation_id = $mutation_id
+)
 RETURN new.source_record_pk AS source_record_pk
 """
 
@@ -349,7 +449,7 @@ CREATE (decision:MatchDecision {
   feature_snapshot: $feature_snapshot, policy_version: 'crm_deal_identity_v2',
   repair_mutation_id: $mutation_id, created_at: datetime(), retention_expires_at: null
 })
-CREATE (decision)-[:ABOUT_LEFT {entity_type: 'source_record'}]->(source)
+CREATE (decision)-[:ABOUT_LEFT {entity_type: 'source_record', repair_mutation_id: $mutation_id}]->(source)
 RETURN decision.match_decision_id AS match_decision_id
 """
 
@@ -357,7 +457,7 @@ STAGE_ACTIVE_REPAIR_LINK = """
 MATCH (source:SourceRecord {source_record_pk: $new_source_record_pk})
 MATCH (decision:MatchDecision {match_decision_id: $match_decision_id})
 MATCH (person:Person {person_id: $person_id})
-CREATE (decision)-[:ABOUT_RIGHT {entity_type: 'person'}]->(person)
+CREATE (decision)-[:ABOUT_RIGHT {entity_type: 'person', repair_mutation_id: $mutation_id}]->(person)
 CREATE (source)-[:LINKED_TO {
   is_active: true, provisional: false, authoritative: true,
   source_record_pk: $new_source_record_pk, repair_mutation_id: $mutation_id,
@@ -370,7 +470,7 @@ STAGE_PROVISIONAL_REPAIR_LINK = """
 MATCH (source:SourceRecord {source_record_pk: $new_source_record_pk})
 MATCH (decision:MatchDecision {match_decision_id: $match_decision_id})
 MATCH (person:Person {person_id: $person_id})
-CREATE (decision)-[:ABOUT_RIGHT {entity_type: 'person'}]->(person)
+CREATE (decision)-[:ABOUT_RIGHT {entity_type: 'person', repair_mutation_id: $mutation_id}]->(person)
 CREATE (source)-[:LINKED_TO {
   is_active: false, provisional: true, authoritative: false,
   source_record_pk: $new_source_record_pk, repair_mutation_id: $mutation_id,
@@ -387,7 +487,7 @@ CREATE (review:ReviewCase {
   sla_due_at: CASE WHEN $sla_due_at IS NULL THEN null ELSE datetime($sla_due_at) END,
   resolution: null, resolved_at: null, actions: [], created_at: datetime(),
   updated_at: datetime(), repair_mutation_id: $mutation_id
-})-[:FOR_DECISION]->(decision)
+})-[:FOR_DECISION {repair_mutation_id: $mutation_id}]->(decision)
 RETURN review.review_case_id AS review_case_id
 """
 
