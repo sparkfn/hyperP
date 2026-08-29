@@ -246,6 +246,7 @@ def _envelope(
     *,
     census_id: str = "census-a",
     source_instance_id: str = "portal-a",
+    contact_binding_offset: int = 0,
 ) -> ContactSourceChildEnvelope | LeadSourceChildEnvelope | CompanySourceChildEnvelope:
     unit = StandaloneCrmSourceChildUnitAuthority(
         census_id, stream, 1, 2, "worker-a", "source.child", f"{stream}-task", _DIGEST
@@ -277,7 +278,10 @@ def _envelope(
         budget,
     )
     if stream == "contact":
-        return ContactSourceChildEnvelope(*common, ContactBindingSubposition(5, 0))
+        return ContactSourceChildEnvelope(
+            *common,
+            ContactBindingSubposition(5, contact_binding_offset),
+        )
     if stream == "lead":
         return LeadSourceChildEnvelope(*common)
     return CompanySourceChildEnvelope(*common)
@@ -343,7 +347,12 @@ def _membership_commit(
     commit = build_company_membership_commit(
         cast(
             ContactSourceChildEnvelope,
-            _envelope("contact", census_id=census_id, source_instance_id=source_instance_id),
+            _envelope(
+                "contact",
+                census_id=census_id,
+                source_instance_id=source_instance_id,
+                contact_binding_offset=expected_offset,
+            ),
         ),
         mutation,
         expected,
@@ -501,6 +510,58 @@ def test_multi_company_membership_precedes_and_reuses_description_reference(
             """
         ).single(strict=True)
     assert dict(row) == {"references": 2, "descriptions": 1, "memberships": 2}
+
+
+@pytest.mark.parametrize(
+    "payloads",
+    (
+        (),
+        (CrmCompanyBindingPayload("3", 0, "7", "Y"),),
+    ),
+)
+def test_later_source_observation_preserves_unchanged_membership_history(
+    neo4j_driver: Driver,
+    payloads: tuple[CrmCompanyBindingPayload, ...],
+) -> None:
+    _seed_authority(neo4j_driver)
+    repository = _repository(neo4j_driver)
+    first, first_head = _membership_commit(payloads=payloads)
+    second, second_head = _membership_commit(
+        payloads=payloads,
+        expected_head=first_head,
+        version=2,
+        expected_processed=1,
+        expected_offset=1,
+    )
+
+    assert repository.commit_unit(first).decision == "committed"
+    assert repository.commit_unit(second).decision == "committed"
+
+    with neo4j_driver.session() as session:
+        row = session.run(
+            """
+            MATCH (checkpoint:StandaloneCrmCensusCheckpoint {
+              census_id: 'census-a', stream_kind: 'contact'
+            })
+            MATCH (head:CrmCompanyMembershipHead {
+              source_instance_id: 'portal-a', subject_kind: 'contact', subject_id: '5'
+            })
+            MATCH (snapshot:CrmCompanyMembershipSnapshot {
+              source_instance_id: 'portal-a', subject_kind: 'contact', subject_id: '5'
+            })
+            OPTIONAL MATCH (snapshot)-[:HAS_MEMBERSHIP_OBSERVATION]->(observation)
+            RETURN checkpoint.processed_rows AS processed_rows,
+              checkpoint.binding_offset AS binding_offset,
+              head.selected_snapshot_id AS selected_snapshot_id,
+              count(DISTINCT snapshot) AS snapshots,
+              count(observation) AS observations
+            """
+        ).single(strict=True)
+    assert row["processed_rows"] == 2
+    assert row["binding_offset"] == 2
+    assert row["selected_snapshot_id"] == second_head.snapshot_record.snapshot_id
+    assert row["snapshots"] == 2
+    assert row["observations"] == len(payloads) * 2
 
 
 def test_stale_cas_and_immutable_conflict_leave_claim_state_unchanged(

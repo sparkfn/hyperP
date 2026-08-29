@@ -25,8 +25,8 @@ def test_lane_a_ddl_is_an_exact_subset_of_runtime_and_fresh_schema() -> None:
 
     assert expected <= runtime
     assert expected <= fresh
-    assert len(expected) == 30
-    assert sum("CREATE CONSTRAINT" in statement for statement in expected) == 24
+    assert len(expected) == 29
+    assert sum("CREATE CONSTRAINT" in statement for statement in expected) == 23
     assert sum("CREATE INDEX" in statement for statement in expected) == 6
     assert {statement for statement in runtime if "crm_tenant_" in statement} == {
         statement for statement in expected if "crm_tenant_" in statement

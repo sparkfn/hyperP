@@ -116,6 +116,11 @@ def _wait_for_driver(driver: Driver) -> None:
 
 def _delete_lane_a_artifacts(driver: Driver) -> None:
     with driver.session() as session:
+        session.run(
+            "DROP CONSTRAINT "
+            + lane_a_migration.LEGACY_MEMBERSHIP_SNAPSHOT_SCOPE_DIGEST_CONSTRAINT
+            + " IF EXISTS"
+        ).consume()
         for statement in CREATE_STANDALONE_CRM_LANE_A_CONSTRAINTS:
             schema_kind = "CONSTRAINT" if "CONSTRAINT" in statement else "INDEX"
             session.run(f"DROP {schema_kind} {statement.split()[2]} IF EXISTS").consume()
@@ -214,7 +219,7 @@ def test_readiness_installs_exact_schema_reruns_and_creates_no_domain_rows(
         for name, definition in expected.items()
     }
     assert actual == expected
-    assert len(expected) == 30
+    assert len(expected) == 29
     assert _marker_is_complete(neo4j_driver) is True
     assert domain_rows["count"] == 0
 
@@ -234,6 +239,50 @@ def test_marker_is_not_written_until_exact_schema_postvalidation_passes(
         lane_a_migration.ensure_standalone_crm_lane_a_ready(cast(Neo4jClient, client))
 
     assert set(_LANE_A_SCHEMA_NAMES) <= _lane_a_schema_names(neo4j_driver)
+    assert _marker_is_complete(neo4j_driver) is False
+
+
+def test_readiness_removes_exact_legacy_membership_snapshot_constraint(
+    neo4j_driver: Driver,
+) -> None:
+    client = _install_census_prerequisite(neo4j_driver)
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE CONSTRAINT "
+            + lane_a_migration.LEGACY_MEMBERSHIP_SNAPSHOT_SCOPE_DIGEST_CONSTRAINT
+            + " IF NOT EXISTS FOR (n:CrmCompanyMembershipSnapshot) "
+            + "REQUIRE (n.source_instance_id, n.subject_kind, n.subject_id, "
+            + "n.snapshot_digest) IS UNIQUE"
+        ).consume()
+
+    lane_a_migration.ensure_standalone_crm_lane_a_ready(cast(Neo4jClient, client))
+
+    assert (
+        lane_a_migration.LEGACY_MEMBERSHIP_SNAPSHOT_SCOPE_DIGEST_CONSTRAINT
+        not in _lane_a_schema_names(neo4j_driver)
+    )
+    lane_a_migration.assert_standalone_crm_lane_a_ready(cast(Neo4jClient, client))
+
+
+def test_readiness_does_not_drop_malformed_legacy_constraint(
+    neo4j_driver: Driver,
+) -> None:
+    client = _install_census_prerequisite(neo4j_driver)
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE CONSTRAINT "
+            + lane_a_migration.LEGACY_MEMBERSHIP_SNAPSHOT_SCOPE_DIGEST_CONSTRAINT
+            + " IF NOT EXISTS FOR (n:MalformedMembershipSnapshot) "
+            + "REQUIRE n.invalid_digest IS UNIQUE"
+        ).consume()
+
+    with pytest.raises(RuntimeError, match="legacy membership snapshot constraint is malformed"):
+        lane_a_migration.ensure_standalone_crm_lane_a_ready(cast(Neo4jClient, client))
+
+    assert (
+        lane_a_migration.LEGACY_MEMBERSHIP_SNAPSHOT_SCOPE_DIGEST_CONSTRAINT
+        in _lane_a_schema_names(neo4j_driver)
+    )
     assert _marker_is_complete(neo4j_driver) is False
 
 
