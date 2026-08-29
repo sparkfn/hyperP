@@ -120,7 +120,7 @@ class CrmDealIdentityRepairMutationRepository:
         self._fail("after_classification")
         expected_state = _expected_state(parsed.envelope, plan)
         snapshot = _snapshot(tx, request, plan.retired_source_record_pks, parsed.envelope)
-        rollback = _rollback_payload(request, plan, snapshot, expected_state)
+        rollback = _rollback_payload(request, plan, snapshot, expected_state, parsed.envelope)
         self._fail("after_rollback_image")
         self._create_source(tx, request, plan)
         self._fail("after_source_record")
@@ -239,13 +239,21 @@ class CrmDealIdentityRepairMutationRepository:
             raise RepairMutationDriftError("repair authority owner context is malformed")
         owner_ids = tuple(sorted(value for value in owner_values if isinstance(value, str)))
         current_evidence = _authority_evidence(tx, request, owner_ids)
-        current_evidence_digest = authority_evidence_digest(
+        external_evidence = tuple(
+            item
+            for item in current_evidence
+            if item.provenance_class not in {"historical_deal_only", "self_supporting"}
+        )
+        external_evidence_digest = authority_evidence_digest(
             {
                 "current_owner_ids": list(owner_ids),
-                "evidence": [item.to_dict() for item in current_evidence],
+                "evidence": [item.to_dict() for item in external_evidence],
             }
         )
-        if current_evidence_digest != replay.mutation.evidence_digest:
+        committed_external_digest = authority_context.get("external_authority_digest")
+        if not isinstance(committed_external_digest, str):
+            raise RepairMutationDriftError("repair external authority digest is malformed")
+        if external_evidence_digest != committed_external_digest:
             raise RepairMutationDriftError("repair authority changed after commit")
         if not isinstance(desired_state, dict):
             raise RepairMutationDriftError("repair desired-state context is malformed")

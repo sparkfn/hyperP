@@ -239,6 +239,21 @@ class RepairMutationPlan:
             }
         )
 
+    @property
+    def external_authority_digest(self) -> str:
+        """Digest authority that remains meaningful after self-contamination retirement."""
+        external = tuple(
+            item
+            for item in self.authority_evidence
+            if item.provenance_class not in {"historical_deal_only", "self_supporting"}
+        )
+        return authority_evidence_digest(
+            {
+                "current_owner_ids": list(self.current_owner_ids),
+                "evidence": [item.to_dict() for item in external],
+            }
+        )
+
     def desired_state(self) -> dict[str, JsonValue]:
         return {
             "disposition": self.disposition,
