@@ -176,7 +176,7 @@ def _authority_evidence(
                 RepairAuthorityEvidence(
                     person_id,
                     "blocked_or_conflicting",
-                    (),
+                    (request.inventory.source_record_pk,),
                     (
                         {
                             "active_no_match_lock_count": active_no_match_locks,

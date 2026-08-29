@@ -316,7 +316,6 @@ def _created_object_specifications(
                         "source_system_key": "bitrix_chat",
                         "source_record_pk": plan.source_record_pk,
                         "is_verified": is_verified,
-                        "verification_method": None,
                         "is_active": True,
                         "quality_flag": quality_flag,
                         "first_seen_at": transaction_datetime,

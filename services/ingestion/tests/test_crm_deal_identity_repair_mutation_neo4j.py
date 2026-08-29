@@ -607,7 +607,7 @@ def test_deactivated_descendant_link_is_not_self_supporting_authority(
     item, _ = _inventory(neo4j_driver)
     command = _seed_authority(neo4j_driver, item)
     with neo4j_driver.session() as session:
-        evidence = session.execute_read(lambda tx: _authority_evidence(tx, command, ("person-a",)))
+        evidence = session.execute_write(lambda tx: _authority_evidence(tx, command, ("person-a",)))
     assert {item.provenance_class for item in evidence} == {"independent_trusted"}
 
 
@@ -635,17 +635,30 @@ def test_external_reviewed_v2_authority_applies_replays_and_detects_drift(
 ) -> None:
     _seed_domain(neo4j_driver, independent_support=False)
     _deactivate_child_contamination(neo4j_driver)
+    reviewed_payload = _deal_payload("reviewed-v2", "contact-reviewed")
+    reviewed_raw = reviewed_payload["raw_payload"]
+    reviewed_attributes = reviewed_payload["attributes"]
+    reviewed_identifiers = reviewed_payload["identifiers"]
+    reviewed_hash = reviewed_payload["record_hash"]
+    assert isinstance(reviewed_raw, dict)
+    assert isinstance(reviewed_attributes, dict)
+    assert isinstance(reviewed_identifiers, list)
+    assert isinstance(reviewed_hash, str)
     with neo4j_driver.session() as session:
         session.run(
             """
             MATCH (source:SourceSystem {source_key: 'bitrix_chat'}),
                   (person:Person {person_id: 'person-a'})
             CREATE (reviewed:SourceRecord {
-              source_record_pk: 'reviewed-v2-pk', source_record_id: 'reviewed-v2',
+              source_record_pk: 'reviewed-v2-pk', source_record_id: 'bitrix-crm-deal-reviewed-v2',
               source_record_version: '1', source_version_key: 'reviewed-v2-key',
-              source_instance_id: $source_instance_id, record_type: 'crm_deal',
+              source_instance_id: $source_instance_id, entity_key: 'tenant-a', record_type: 'crm_deal',
+              source_entity_type: 'deal', source_entity_id: 'reviewed-v2',
+              identity_policy_version: 'crm_deal_identity_v2',
+              identity_link_key: 'bitrix:repair-test-source:deal:reviewed-v2',
               lifecycle_status: 'active', is_latest: true, record_hash: $record_hash,
-              raw_payload: '{}', normalized_payload: '{}'
+              observed_at: datetime($observed_at), raw_payload: $raw_payload,
+              normalized_payload: $normalized_payload
             })-[:FROM_SOURCE]->(source)
             CREATE (decision:MatchDecision {
               match_decision_id: 'reviewed-v2-decision', engine_type: 'deterministic',
@@ -657,7 +670,14 @@ def test_external_reviewed_v2_authority_applies_replays_and_detects_drift(
             })-[:FOR_DECISION]->(decision)
             """,
             source_instance_id=_SOURCE,
-            record_hash="e" * 64,
+            observed_at=_OBSERVED.isoformat(),
+            record_hash=reviewed_hash,
+            raw_payload=json.dumps(reviewed_raw, sort_keys=True, separators=(",", ":")),
+            normalized_payload=json.dumps(
+                {"attributes": reviewed_attributes, "identifiers": reviewed_identifiers},
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
         ).consume()
     item, _ = _inventory(neo4j_driver)
     command = _seed_authority(neo4j_driver, item)

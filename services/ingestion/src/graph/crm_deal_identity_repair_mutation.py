@@ -208,7 +208,7 @@ class CrmDealIdentityRepairMutationRepository:
             raise RepairMutationDriftError("repair committed bundle identity differs")
         try:
             replay = atomic_result_from_record(row, replayed=True)
-        except RuntimeError as exc:
+        except (RuntimeError, ValueError) as exc:
             raise RepairMutationDriftError("repair committed bundle payload differs") from exc
         assert replay.mutation is not None
         assert replay.rollback_image is not None
