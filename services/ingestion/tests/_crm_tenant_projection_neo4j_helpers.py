@@ -17,6 +17,7 @@ from _crm_tenant_projection_neo4j_seed import (
     _scope,
 )
 from neo4j import Driver, GraphDatabase, ManagedTransaction, Session
+from src.crm_tenant_mapping_contracts import CrmTenantMappingManifest
 from src.crm_tenant_mapping_identity import mapping_head_id
 from src.crm_tenant_mapping_models import CrmTenantMappingExpectedHeadBoundary
 from src.crm_tenant_projection_models import (
@@ -133,16 +134,19 @@ def _reset(driver: Driver) -> None:
         ).consume()
 
 
-def _command(request_id: str = "issue-305-request") -> CrmTenantProjectionMaterializationCommand:
+def _command(
+    request_id: str = "issue-305-request",
+    manifest: CrmTenantMappingManifest | None = None,
+) -> CrmTenantProjectionMaterializationCommand:
     scope = _scope()
-    manifest = _mapping_manifest()
+    effective_manifest = _mapping_manifest() if manifest is None else manifest
     return CrmTenantProjectionMaterializationCommand(
         scope,
         request_id,
         "issue-305-census",
         _DIGEST,
         _mapping_revision_id(),
-        manifest.digest,
+        effective_manifest.digest,
         CrmTenantMappingExpectedHeadBoundary(
             scope.mapping_scope, mapping_head_id(scope.mapping_scope), None
         ),

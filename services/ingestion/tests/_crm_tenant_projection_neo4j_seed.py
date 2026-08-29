@@ -80,10 +80,9 @@ def _snapshot_record(
     subject_kind: Literal["contact", "lead"],
     subject_id: str,
     source_record_id: str,
-    with_company: bool,
+    bindings: tuple[CrmCompanyBindingPayload, ...],
 ) -> CrmCompanyMembershipSnapshotRecord:
     scope = _scope()
-    bindings = (CrmCompanyBindingPayload("303", None, None, True),) if with_company else ()
     snapshot = normalize_company_membership_snapshot(
         subject_type=subject_kind, subject_id=subject_id, payloads=bindings
     )
@@ -102,8 +101,15 @@ def _snapshot_record(
     )
 
 
-def _contact_snapshot_id() -> str:
-    return _snapshot_record("contact", "101", "issue-305-contact-source", True).snapshot_id
+def _contact_snapshot_id(
+    bindings: tuple[CrmCompanyBindingPayload, ...] | None = None,
+) -> str:
+    return _snapshot_record(
+        "contact",
+        "101",
+        "issue-305-contact-source",
+        (CrmCompanyBindingPayload("303", None, None, True),) if bindings is None else bindings,
+    ).snapshot_id
 
 
 def _observation_id(
@@ -141,7 +147,11 @@ def _mapping_properties(
     return _revision_properties(command, effective_manifest, revision_id, 1, None), entries, targets
 
 
-def _seed(driver: Driver, manifest: CrmTenantMappingManifest | None = None) -> None:
+def _seed(
+    driver: Driver,
+    manifest: CrmTenantMappingManifest | None = None,
+    contact_bindings: tuple[CrmCompanyBindingPayload, ...] | None = None,
+) -> None:
     scope = _scope()
     mapping_properties, entries, targets = _mapping_properties(manifest)
     with driver.session() as session:
@@ -189,8 +199,16 @@ def _seed(driver: Driver, manifest: CrmTenantMappingManifest | None = None) -> N
             entries=entries,
             targets=targets,
         ).consume()
-        _seed_snapshot(session, "contact", "101", "issue-305-contact", True)
-        _seed_snapshot(session, "lead", "102", "issue-305-lead", False)
+        _seed_snapshot(
+            session,
+            "contact",
+            "101",
+            "issue-305-contact",
+            (CrmCompanyBindingPayload("303", None, None, True),)
+            if contact_bindings is None
+            else contact_bindings,
+        )
+        _seed_snapshot(session, "lead", "102", "issue-305-lead", ())
 
 
 def _seed_snapshot(
@@ -198,10 +216,26 @@ def _seed_snapshot(
     subject_kind: Literal["contact", "lead"],
     subject_id: str,
     prefix: str,
-    with_company: bool,
+    bindings: tuple[CrmCompanyBindingPayload, ...],
 ) -> None:
     scope = _scope()
-    record = _snapshot_record(subject_kind, subject_id, f"{prefix}-source", with_company)
+    record = _snapshot_record(subject_kind, subject_id, f"{prefix}-source", bindings)
+    observations = [
+        {
+            "company_id": binding.company_id,
+            "sort": binding.sort,
+            "role_id": binding.role_id,
+            "is_primary": binding.is_primary,
+            "observation_id": _observation_id(
+                record.snapshot_id,
+                binding.company_id,
+                binding.sort,
+                binding.role_id,
+                binding.is_primary,
+            ),
+        }
+        for binding in record.membership_snapshot.bindings
+    ]
     session.run(
         """
         CREATE (head:CrmCompanyMembershipHead {source_instance_id: $source_instance_id,
@@ -217,6 +251,17 @@ def _seed_snapshot(
           available_at: datetime($available_at), binding_count: $binding_count,
           contract_version: $contract_version})
         CREATE (head)-[:SELECTS_MEMBERSHIP_SNAPSHOT]->(snapshot)
+        WITH snapshot UNWIND $observations AS item
+        CREATE (reference:CrmCompanyReference {source_key: $source_key,
+          source_instance_id: $source_instance_id, control_instance_id: $control_instance_id,
+          company_id: item.company_id})
+        CREATE (observation:CrmCompanyMembershipObservation {snapshot_id: $snapshot_id,
+          fixture_snapshot_id: $fixture_snapshot_id, company_id: item.company_id,
+          observation_id: item.observation_id, subject_kind: $subject_kind,
+          subject_id: $subject_id, sort: item.sort, role_id: item.role_id,
+          is_primary: item.is_primary})
+        CREATE (snapshot)-[:HAS_MEMBERSHIP_OBSERVATION]->(observation)
+        CREATE (observation)-[:REFERENCES_COMPANY]->(reference)
         """,
         source_instance_id=scope.source_instance_id,
         control_instance_id=scope.control_instance_id,
@@ -232,43 +277,5 @@ def _seed_snapshot(
         source_record_hash=record.source_record_hash,
         binding_count=record.binding_count,
         contract_version=record.contract_version,
-    ).consume()
-    if with_company:
-        _add_membership_observation(
-            session, record.snapshot_id, subject_kind, subject_id, "303", True
-        )
-
-
-def _add_membership_observation(
-    session: Session,
-    snapshot_id: str,
-    subject_kind: str,
-    subject_id: str,
-    company_id: str,
-    is_primary: bool,
-) -> None:
-    scope = _scope()
-    session.run(
-        """
-        MATCH (snapshot:CrmCompanyMembershipSnapshot {snapshot_id: $snapshot_id})
-        CREATE (reference:CrmCompanyReference {source_key: $source_key,
-          source_instance_id: $source_instance_id, control_instance_id: $control_instance_id,
-          company_id: $company_id})
-        CREATE (observation:CrmCompanyMembershipObservation {snapshot_id: $snapshot_id,
-          fixture_snapshot_id: $fixture_snapshot_id, company_id: $company_id,
-          observation_id: $observation_id, subject_kind: $subject_kind,
-          subject_id: $subject_id, is_primary: $is_primary})
-        CREATE (snapshot)-[:HAS_MEMBERSHIP_OBSERVATION]->(observation)
-        CREATE (observation)-[:REFERENCES_COMPANY]->(reference)
-        """,
-        snapshot_id=snapshot_id,
-        fixture_snapshot_id="issue-305-contact-snapshot",
-        source_key=scope.source_key,
-        source_instance_id=scope.source_instance_id,
-        control_instance_id=scope.control_instance_id,
-        company_id=company_id,
-        observation_id=_observation_id(snapshot_id, company_id, None, None, is_primary),
-        subject_kind=subject_kind,
-        subject_id=subject_id,
-        is_primary=is_primary,
+        observations=observations,
     ).consume()

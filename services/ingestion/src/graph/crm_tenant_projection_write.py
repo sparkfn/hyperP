@@ -21,7 +21,6 @@ from src.crm_tenant_projection_models import (
 )
 from src.crm_tenant_projection_records import CRM_TENANT_PROJECTION_CONTRACT_VERSION, _digest
 from src.graph.crm_tenant_projection_boundaries import _validate_release_boundary
-from src.graph.crm_tenant_projection_integrity import _validate_release_topology
 from src.graph.crm_tenant_projection_observations import (
     _validate_snapshot_contents,
     _validated_observation_id,
@@ -315,12 +314,9 @@ def _complete_release(
     if current.release_fingerprint != release_fingerprint:
         raise CrmTenantProjectionConflictError("projection release fingerprint conflicts")
     if current.state == "completed":
-        result = _validate_release_boundary(tx, release_id, release_fingerprint)
-        _validate_release_topology(tx, result)
-        return result
+        return _validate_release_boundary(tx, release_id, release_fingerprint)
     _require_building(current, release_fingerprint, "complete")
     _validate_release_boundary(tx, release_id, release_fingerprint)
-    _validate_release_topology(tx, current)
     record = tx.run(
         COMPLETE_RELEASE,
         release_id=release_id,

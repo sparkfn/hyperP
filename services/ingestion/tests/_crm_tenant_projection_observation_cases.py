@@ -20,7 +20,10 @@ from src.crm_tenant_projection_records import _digest as projection_digest
 from src.graph import crm_tenant_projection_snapshot_validation as snapshot_validation
 from src.graph import crm_tenant_projection_write as projection_write
 from src.graph.queries import crm_tenant_projection_projection as projection_queries
-from src.graph.queries.crm_tenant_projection_release_pages import READ_SNAPSHOT_OBSERVATION_PAGE
+from src.graph.queries.crm_tenant_projection_release_pages import (
+    READ_SNAPSHOT_OBSERVATION_GUARD,
+    READ_SNAPSHOT_OBSERVATION_PAGE,
+)
 from src.standalone_crm_child_contracts import (
     StandaloneCrmSourceAvailability,
     StandaloneCrmSourceChildScope,
@@ -212,15 +215,42 @@ class _SnapshotValidationRows:
     def __iter__(self) -> Iterator[dict[str, object]]:
         return iter(self._rows)
 
+    def single(self) -> dict[str, object] | None:
+        return self._rows[0] if self._rows else None
+
 
 class _SnapshotValidationTx:
-    def __init__(self, pages: list[list[dict[str, object]]]) -> None:
+    def __init__(
+        self,
+        pages: list[list[dict[str, object]]],
+        guard_overrides: dict[str, object] | None = None,
+    ) -> None:
         self._pages = pages
+        self._guard_overrides = {} if guard_overrides is None else guard_overrides
         self.calls: list[dict[str, object]] = []
 
     def run(self, query: str, **parameters: object) -> _SnapshotValidationRows:
-        assert query == READ_SNAPSHOT_OBSERVATION_PAGE
         self.calls.append(parameters)
+        if query == READ_SNAPSHOT_OBSERVATION_GUARD:
+            rows = [row for page in self._pages for row in page]
+            source = rows[0]
+            snapshot = dict(source["snapshot"])
+            observation_rows = [row for row in rows if row["observation_id"] is not None]
+            snapshot["binding_count"] = len(observation_rows)
+            guard: dict[str, object] = {
+                "input": source["input"],
+                "snapshot": snapshot,
+                "input_owner_links": 1,
+                "input_owner_count": 1,
+                "snapshot_links": 1,
+                "observation_links": len(observation_rows),
+                "observation_nodes": len(observation_rows),
+                "observation_id_count": len(observation_rows),
+                "distinct_observation_ids": len(observation_rows),
+            }
+            guard.update(self._guard_overrides)
+            return _SnapshotValidationRows([guard])
+        assert query == READ_SNAPSHOT_OBSERVATION_PAGE
         return _SnapshotValidationRows(self._pages.pop(0))
 
 

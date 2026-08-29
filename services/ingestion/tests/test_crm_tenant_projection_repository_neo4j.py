@@ -37,8 +37,10 @@ from _crm_tenant_projection_neo4j_integrity_cases import (
 )
 from _crm_tenant_projection_neo4j_terminal_snapshot_cases import (
     test_real_neo4j_completed_reader_rejects_snapshot_content_corruption,
+    test_real_neo4j_exact_snapshot_page_guard_rejects_hidden_corruption,
     test_real_neo4j_foreign_mapping_entry_link_rejects_completion,
     test_real_neo4j_mapping_target_entity_topology_rejects_completion,
+    test_real_neo4j_release_fingerprint_binds_mapping_proof,
     test_real_neo4j_terminal_snapshot_content_corruption_rejects_completion,
 )
 
@@ -59,6 +61,7 @@ __all__ = (
     "test_real_neo4j_deduplicates_company_paths_and_retains_each_support",
     "test_real_neo4j_deterministic_release_collision_is_rejected",
     "test_real_neo4j_direct_completed_replay_rejects_corrupted_topology",
+    "test_real_neo4j_exact_snapshot_page_guard_rejects_hidden_corruption",
     "test_real_neo4j_foreign_mapping_entry_link_rejects_completion",
     "test_real_neo4j_duplicate_checkpoint_after_allocation_fails_closed",
     "test_real_neo4j_mapping_state_digest_and_head_drift_fail_before_capture",
@@ -68,6 +71,7 @@ __all__ = (
     "test_real_neo4j_out_of_bound_heads_fail_closed",
     "test_real_neo4j_page_replay_and_stale_projection_head_are_safe",
     "test_real_neo4j_release_boundary_revalidates_source_census_controls",
+    "test_real_neo4j_release_fingerprint_binds_mapping_proof",
     "test_real_neo4j_selected_company_failure_is_rejected",
     "test_real_neo4j_support_digest_and_authority_edge_corruption_are_rejected",
     "test_real_neo4j_unresolved_source_census_control_is_rejected",

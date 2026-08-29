@@ -2,14 +2,20 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import TypeVar
+
 import pytest
 from _crm_tenant_projection_observation_cases import (
     _DIGEST,
+    _projection_release,
+    _snapshot_record,
     _SnapshotValidationTx,
     _terminal_snapshot_row,
     _validate_terminal_snapshot,
 )
 from _standalone_crm_lane_a_fakes import projection_scope
+from neo4j import ManagedTransaction
 from src.crm_company_contracts import CrmCompanyMembershipSnapshotRecord
 from src.crm_identity_associations import normalize_company_membership_snapshot
 from src.crm_tenant_projection_models import CrmTenantProjectionIntegrityError
@@ -18,6 +24,8 @@ from src.standalone_crm_child_contracts import (
     StandaloneCrmSourceAvailability,
     StandaloneCrmSourceChildScope,
 )
+
+_T = TypeVar("_T")
 
 
 def test_terminal_snapshot_validation_uses_exclusive_200_row_pages(
@@ -71,9 +79,12 @@ def test_terminal_snapshot_validation_uses_exclusive_200_row_pages(
 
     _validate_terminal_snapshot(tx)
 
-    assert [call["page_limit"] for call in tx.calls] == [200, 200]
-    assert tx.calls[0]["cursor"] is None
-    assert tx.calls[1]["cursor"] == rows[-1]["observation_id"]
+    page_calls = [call for call in tx.calls if "page_limit" in call]
+    assert [call["page_limit"] for call in page_calls] == [200, 200]
+    assert page_calls[0]["cursor_observation_id"] is None
+    assert page_calls[0]["cursor_node_id"] is None
+    assert page_calls[1]["cursor_observation_id"] == rows[-1]["observation_id"]
+    assert page_calls[1]["cursor_node_id"] == rows[-1]["observation_node_id"]
     assert recorded == [(201, {str(row["observation_id"]) for row in rows})]
 
 
@@ -148,3 +159,77 @@ def test_terminal_snapshot_validation_rejects_malformed_observation_topology(
 ) -> None:
     with pytest.raises(CrmTenantProjectionIntegrityError, match="membership"):
         _validate_terminal_snapshot(_SnapshotValidationTx([[_terminal_snapshot_row(**overrides)]]))
+
+
+@pytest.mark.parametrize(
+    "guard_overrides",
+    (
+        {"observation_links": 2},
+        {"observation_nodes": 2},
+        {"observation_id_count": 0},
+        {"distinct_observation_ids": 0},
+    ),
+)
+def test_terminal_snapshot_guard_rejects_hidden_observation_rows(
+    guard_overrides: dict[str, object],
+) -> None:
+    with pytest.raises(CrmTenantProjectionIntegrityError, match="observation guard"):
+        _validate_terminal_snapshot(
+            _SnapshotValidationTx([[_terminal_snapshot_row()]], guard_overrides)
+        )
+
+
+def test_terminal_snapshot_bounded_reader_uses_one_transaction_per_page(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    rows = sorted(
+        (
+            _terminal_snapshot_row(
+                str(company_id),
+                observation_node_id=f"node-{company_id}",
+                is_primary=company_id == 1,
+            )
+            for company_id in range(1, 201)
+        ),
+        key=lambda row: (str(row["observation_id"]), str(row["observation_node_id"])),
+    )
+    terminal = _terminal_snapshot_row(
+        observation_id=None,
+        observation_node_id=None,
+        observation_snapshot_id=None,
+        observation_subject_kind=None,
+        observation_subject_id=None,
+        company_id=None,
+        observation_sort=None,
+        observation_role_id=None,
+        observation_is_primary=None,
+        snapshot_reference_count=0,
+        observation_owner_count=0,
+        company_reference_count=0,
+        reference_company_id=None,
+        reference_source_key=None,
+        reference_source_instance_id=None,
+        reference_control_instance_id=None,
+    )
+    monkeypatch.setattr(snapshot_validation, "_validate_snapshot_contents", lambda *_args: None)
+    tx = _SnapshotValidationTx([rows, [terminal]])
+
+    class _Client:
+        def __init__(self) -> None:
+            self.reads = 0
+
+        def execute_read(self, work: Callable[[ManagedTransaction], _T]) -> _T:
+            self.reads += 1
+            return work(tx)
+
+    client = _Client()
+    snapshot_validation._validate_input_snapshot_contents_bounded(
+        client,
+        _projection_release(),
+        "input-a",
+        _snapshot_record().snapshot_id,
+        "contact",
+        "101",
+    )
+
+    assert client.reads == 3

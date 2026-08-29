@@ -16,12 +16,16 @@ from _crm_tenant_projection_mapping_guard_cases import (
     test_mapping_target_proof_scan_accepts_canonical_target_identity,
 )
 from _crm_tenant_projection_neo4j_helpers import (
+    _command as _neo4j_command,
+)
+from _crm_tenant_projection_neo4j_helpers import (
     _mapping_active_head_drift_parameters,
 )
 from _crm_tenant_projection_neo4j_seed import (
     _mapping_manifest,
     _mapping_properties,
     _mapping_revision_id,
+    _snapshot_record,
 )
 from _crm_tenant_projection_neo4j_seed import (
     _scope as neo4j_projection_scope,
@@ -31,12 +35,19 @@ from _crm_tenant_projection_observation_cases import (
     test_unmapped_observation_is_validated_before_zero_target_decision,
     test_unmapped_observation_topology_fails_closed_before_decision,
 )
+from _crm_tenant_projection_query_contract_cases import (
+    test_failure_code_is_rejected_before_any_graph_write,
+    test_projection_queries_do_not_write_active_heads_or_source_membership_state,
+)
 from _crm_tenant_projection_terminal_snapshot_cases import (
+    test_terminal_snapshot_bounded_reader_uses_one_transaction_per_page,
+    test_terminal_snapshot_guard_rejects_hidden_observation_rows,
     test_terminal_snapshot_validation_accepts_empty_snapshot_null_row,
     test_terminal_snapshot_validation_rejects_malformed_observation_topology,
     test_terminal_snapshot_validation_uses_exclusive_200_row_pages,
 )
 from _standalone_crm_lane_a_fakes import prepared_mapping_revision, projection_scope
+from src.connectors.bitrix_openlines.models import CrmCompanyBindingPayload
 from src.crm_tenant_mapping_contracts import CrmTenantMappingCompanyEntry, CrmTenantMappingTarget
 from src.crm_tenant_mapping_identity import mapping_head_id, mapping_revision_id
 from src.crm_tenant_mapping_models import CrmTenantMappingExpectedHeadBoundary
@@ -52,12 +63,9 @@ from src.crm_tenant_projection_models import (
 )
 from src.graph import crm_tenant_projection as projection_graph
 from src.graph import crm_tenant_projection_mapping_guard as mapping_guard
-from src.graph import crm_tenant_projection_write as projection_write
 from src.graph.crm_tenant_projection_values import _materialized_fingerprint_from_values
 from src.graph.queries import crm_tenant_projection as queries
-from src.graph.queries import crm_tenant_projection_integrity as integrity_queries
 from src.graph.queries import crm_tenant_projection_mapping_guard as mapping_guard_queries
-from src.graph.queries import crm_tenant_projection_projection as projection_queries
 
 _DIGEST = "sha256:" + "a" * 64
 
@@ -67,8 +75,12 @@ __all__ = (
     "test_mapping_proof_guard_rejects_bad_target_entity_topology",
     "test_mapping_proof_scan_classifies_malformed_canonical_values_as_integrity",
     "test_mapping_target_proof_scan_accepts_canonical_target_identity",
+    "test_failure_code_is_rejected_before_any_graph_write",
+    "test_projection_queries_do_not_write_active_heads_or_source_membership_state",
     "test_snapshot_contents_uses_canonical_multibinding_order_for_digest_and_identity",
+    "test_terminal_snapshot_bounded_reader_uses_one_transaction_per_page",
     "test_terminal_snapshot_validation_accepts_empty_snapshot_null_row",
+    "test_terminal_snapshot_guard_rejects_hidden_observation_rows",
     "test_terminal_snapshot_validation_rejects_malformed_observation_topology",
     "test_terminal_snapshot_validation_uses_exclusive_200_row_pages",
     "test_unmapped_observation_is_validated_before_zero_target_decision",
@@ -171,6 +183,29 @@ def test_neo4j_mapping_fixture_uses_canonical_revision_and_distinct_targets() ->
     assert len({target["target_id"] for target in targets}) == 2
 
 
+def test_neo4j_fixture_command_and_multicompany_snapshot_are_canonical() -> None:
+    manifest = _mapping_manifest(
+        (CrmTenantMappingCompanyEntry("303", (CrmTenantMappingTarget("issue-305-entity"),)),)
+    )
+    bindings = (
+        CrmCompanyBindingPayload("404", 5, None, False),
+        CrmCompanyBindingPayload("303", None, None, True),
+    )
+    record = _snapshot_record("contact", "101", "issue-305-contact-source", bindings)
+
+    assert _neo4j_command(manifest=manifest).mapping_manifest_digest == manifest.digest
+    assert record.binding_count == 2
+    assert tuple(binding.company_id for binding in record.membership_snapshot.bindings) == (
+        "303",
+        "404",
+    )
+    assert record.snapshot_digest == record.membership_snapshot.digest
+    assert (
+        record.snapshot_id
+        == _snapshot_record("contact", "101", "issue-305-contact-source", bindings).snapshot_id
+    )
+
+
 def test_allocation_rechecks_request_after_scope_lock_before_any_boundary_read(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -224,6 +259,9 @@ def test_release_summary_rejects_deterministic_identity_corruption() -> None:
             "lead_frozen_upper_id": 0,
             "mapping_revision_id": prepared_mapping_revision().revision_id,
             "mapping_revision_number": 1,
+            "mapping_entry_count": 0,
+            "mapping_target_count": 0,
+            "mapping_topology_fingerprint": empty_capture_boundary_digest(),
             "mapping_manifest_digest": prepared_mapping_revision().manifest_digest,
             "projection_head_id": _DIGEST,
             "expected_mapping_head_id": _DIGEST,
@@ -262,6 +300,16 @@ def test_release_summary_rejects_deterministic_identity_corruption() -> None:
     release["expected_mapping_head_id"] = mapping_head_id(scope.mapping_scope)
     release["release_fingerprint"] = _materialized_fingerprint_from_values(release)
     assert projection_graph._summary_from_record(record).release_number == 1
+    original_fingerprint = release["release_fingerprint"]
+    assert isinstance(original_fingerprint, str)
+    for key, value in (
+        ("mapping_entry_count", 1),
+        ("mapping_target_count", 1),
+        ("mapping_topology_fingerprint", mapping_guard._empty_mapping_topology_fingerprint()),
+    ):
+        changed = dict(release)
+        changed[key] = value
+        assert _materialized_fingerprint_from_values(changed) != original_fingerprint
     release["contact_processed_rows"] = 1
     with pytest.raises(CrmTenantProjectionIntegrityError, match="release fingerprint"):
         projection_graph._summary_from_record(record)
@@ -282,50 +330,6 @@ def test_capture_digest_is_stable_for_zero_and_ordered_input_boundaries() -> Non
 
     assert empty.startswith("sha256:")
     assert contact_then_lead != lead_then_contact
-
-
-def test_projection_queries_do_not_write_active_heads_or_source_membership_state() -> None:
-    write_queries = (
-        queries.CREATE_RELEASE,
-        queries.WRITE_INPUTS,
-        queries.ADVANCE_CAPTURE,
-        projection_queries.WRITE_ASSOCIATIONS,
-        projection_queries.WRITE_DECISION,
-        projection_queries.ADVANCE_PROJECTION,
-        integrity_queries.COMPLETE_RELEASE,
-        integrity_queries.CANCEL_RELEASE,
-        integrity_queries.FAIL_RELEASE,
-    )
-    forbidden_writes = (
-        "CREATE (head:CrmTenantProjectionActiveHead",
-        "CREATE (head:CrmTenantMappingActiveHead",
-        "SET head.",
-        "CREATE (head:CrmCompanyMembershipHead",
-        "CREATE (snapshot:CrmCompanyMembershipSnapshot",
-        "CREATE (observation:CrmCompanyMembershipObservation",
-        "CREATE (entity:Entity",
-        "CREATE (person:Person",
-    )
-
-    for query in write_queries:
-        assert all(token not in query for token in forbidden_writes)
-    assert "MATERIALIZES_MAPPING_REVISION" in queries.CREATE_RELEASE
-    assert "MATERIALIZES_SOURCE_CENSUS" in queries.CREATE_RELEASE
-
-
-def test_failure_code_is_rejected_before_any_graph_write() -> None:
-    class _Tx:
-        def __init__(self) -> None:
-            self.calls: list[tuple[str, dict[str, object]]] = []
-
-        def run(self, query: str, **parameters: object) -> _Result:
-            self.calls.append((query, parameters))
-            return _Result({})
-
-    tx = _Tx()
-    with pytest.raises(ValueError, match="unsupported projection failure code"):
-        projection_write._fail_release(tx, "release", _DIGEST, "x" * 129)
-    assert tx.calls == []
 
 
 def test_mapping_proof_guard_uses_complete_parameters_and_bounded_empty_pages() -> None:

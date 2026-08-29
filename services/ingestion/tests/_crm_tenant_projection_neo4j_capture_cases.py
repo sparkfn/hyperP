@@ -14,13 +14,12 @@ from _crm_tenant_projection_neo4j_helpers import (
     _repository,
 )
 from _crm_tenant_projection_neo4j_seed import (
-    _add_membership_observation,
-    _contact_snapshot_id,
     _mapping_manifest,
     _scope,
     _seed,
 )
 from neo4j import Driver, ManagedTransaction
+from src.connectors.bitrix_openlines.models import CrmCompanyBindingPayload
 from src.crm_tenant_mapping_contracts import (
     CrmTenantMappingCompanyEntry,
     CrmTenantMappingTarget,
@@ -245,16 +244,14 @@ def test_real_neo4j_deduplicates_company_paths_and_retains_each_support(
             CrmTenantMappingCompanyEntry("404", (CrmTenantMappingTarget("issue-305-entity"),)),
         )
     )
-    _seed(neo4j_driver, manifest)
-    with neo4j_driver.session() as session:
-        _add_membership_observation(
-            session,
-            _contact_snapshot_id(),
-            "contact",
-            "101",
-            "404",
-            False,
-        )
+    _seed(
+        neo4j_driver,
+        manifest,
+        (
+            CrmCompanyBindingPayload("303", None, None, True),
+            CrmCompanyBindingPayload("404", None, None, False),
+        ),
+    )
     repository = _repository(neo4j_driver, monkeypatch)
     release = _drive_to_projection_complete(repository, _command(manifest=manifest))
     completed = repository.complete(release.release_id, release.release_fingerprint)
@@ -272,16 +269,14 @@ def test_real_neo4j_acknowledgement_loss_replay_converges_without_duplicate_supp
             CrmTenantMappingCompanyEntry("404", (CrmTenantMappingTarget("issue-305-entity"),)),
         )
     )
-    _seed(neo4j_driver, manifest)
-    with neo4j_driver.session() as session:
-        _add_membership_observation(
-            session,
-            _contact_snapshot_id(),
-            "contact",
-            "101",
-            "404",
-            False,
-        )
+    _seed(
+        neo4j_driver,
+        manifest,
+        (
+            CrmCompanyBindingPayload("303", None, None, True),
+            CrmCompanyBindingPayload("404", None, None, False),
+        ),
+    )
     repository = _repository(neo4j_driver, monkeypatch)
     release = repository.allocate_or_replay(_command(manifest=manifest))
 

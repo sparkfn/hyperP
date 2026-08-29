@@ -22,8 +22,12 @@ from src.graph.crm_tenant_projection_boundaries import (
     _validate_release_boundary,
 )
 from src.graph.crm_tenant_projection_census import _validate_source_census
-from src.graph.crm_tenant_projection_integrity import _validate_release_topology
+from src.graph.crm_tenant_projection_release_validation_bounded import (
+    _validate_release_topology_bounded,
+)
 from src.graph.crm_tenant_projection_values import (
+    _read_release,
+    _require_building,
     _require_page_limit,
     _required_int,
     _summary_from_record,
@@ -145,7 +149,10 @@ class Neo4jCrmTenantProjectionRepository(CrmTenantProjectionRepository):
                 )
             return _summary_from_record(created)
 
-        return self._client.execute_write(work)
+        result = self._client.execute_write(work)
+        if result.state == "completed":
+            _validate_release_topology_bounded(self._client, result)
+        return result
 
     def capture_page(
         self,
@@ -175,6 +182,14 @@ class Neo4jCrmTenantProjectionRepository(CrmTenantProjectionRepository):
         self, release_id: str, release_fingerprint: str
     ) -> CrmTenantProjectionReleaseSummary:
         assert_standalone_crm_lane_a_ready(self._client)
+        current = self._client.execute_read(lambda tx: _read_release(tx, release_id))
+        if current.release_fingerprint != release_fingerprint:
+            raise CrmTenantProjectionConflictError("projection release fingerprint conflicts")
+        if current.state == "completed":
+            _validate_release_topology_bounded(self._client, current)
+            return current
+        _require_building(current, release_fingerprint, "complete")
+        _validate_release_topology_bounded(self._client, current)
         return self._client.execute_write(
             lambda tx: _complete_release(tx, release_id, release_fingerprint)
         )
@@ -218,12 +233,14 @@ class Neo4jCrmTenantProjectionRepository(CrmTenantProjectionRepository):
             if record is None:
                 return None
             result = _validate_release_boundary(tx, release_id, release_fingerprint)
-            _validate_release_topology(tx, result)
             if result.scope != scope or result.state != "completed":
                 raise CrmTenantProjectionIntegrityError("completed projection release is malformed")
             return result
 
-        return self._client.execute_read(work)
+        result = self._client.execute_read(work)
+        if result is not None:
+            _validate_release_topology_bounded(self._client, result)
+        return result
 
 
 def _replay_existing(
@@ -232,7 +249,4 @@ def _replay_existing(
 ) -> CrmTenantProjectionReleaseSummary:
     if existing.state in {"failed", "cancelled"}:
         return existing
-    result = _validate_release_boundary(tx, existing.release_id, existing.release_fingerprint)
-    if result.state == "completed":
-        _validate_release_topology(tx, result)
-    return result
+    return _validate_release_boundary(tx, existing.release_id, existing.release_fingerprint)
