@@ -49,8 +49,8 @@ steps:
       - uv run --package profile-unifier-api ruff format --check services/api/src
       - uv run --package profile-unifier-ingestion ruff check services/ingestion/src
       - uv run --package profile-unifier-ingestion ruff format --check services/ingestion/src
-      - uv run --package profile-unifier-api mypy --strict services/api/src
-      - uv run --package profile-unifier-ingestion mypy --strict services/ingestion/src
+      - uv run --package profile-unifier-api mypy --strict --cache-dir .mypy_cache-api services/api/src
+      - uv run --package profile-unifier-ingestion mypy --strict --cache-dir .mypy_cache-ingestion services/ingestion/src
       # pytest per-package: each service's venv carries its own runtime deps
       # (fastapi/neo4j/celery/redis/...) + dev deps (pytest/pytest-asyncio/fakeredis).
       # The root workspace venv (uv sync) only has lint/type tools, so `uv run pytest`
@@ -141,7 +141,7 @@ steps:
       - uv sync --frozen
       - uv run --package profile-unifier-deal-intelligence ruff check services/deal_intelligence/src services/deal_intelligence/tests
       - uv run --package profile-unifier-deal-intelligence ruff format --check services/deal_intelligence/src services/deal_intelligence/tests
-      - uv run --package profile-unifier-deal-intelligence mypy --strict services/deal_intelligence/src
+      - uv run --package profile-unifier-deal-intelligence mypy --strict --cache-dir .mypy_cache-deal-intelligence services/deal_intelligence/src
       - uv run --package profile-unifier-deal-intelligence pytest services/deal_intelligence/tests -q
 
   # Frontend (services/frontend2 — active app): tsc --noEmit + eslint errors-only.
