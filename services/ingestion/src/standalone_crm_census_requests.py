@@ -232,12 +232,19 @@ def canonical_request_payload(request: StandaloneCrmCensusRequest) -> str:
         "occurrence_key": request.occurrence_key,
         "selected_kinds": request.selected_kinds,
         "budget": asdict(request.budget),
-        "authority": _canonical_authority(request, contract),
+        "authority": canonical_authority_payload(request),
         "policy_version": request.policy_version,
         "association_contract_version": request.association_contract_version,
         "configuration_digest": request.configuration_digest,
     }
     return json.dumps(payload, default=list, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def canonical_authority_payload(
+    request: StandaloneCrmCensusRequest,
+) -> dict[str, object]:
+    """Return the authority identity using the request's persisted contract version."""
+    return _canonical_authority(request, _contract_version(request))
 
 
 def _canonical_authority(request: StandaloneCrmCensusRequest, contract: str) -> dict[str, object]:
