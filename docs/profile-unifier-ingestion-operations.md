@@ -3,7 +3,7 @@
 ## Tracked staging Compose contract
 
 `.docker/staging/docker-compose.yml` is the tracked, authoritative Compose
-contract for the `stg-hyperp` deployment. Operators must not substitute an
+contract for the `hyperp-ada-asia` deployment. Operators must not substitute an
 untracked host Compose file.
 
 `services/api/tests/test_compose_contract.py` parses the root and staging files,
@@ -79,6 +79,61 @@ ACTUAL_SHA256="$(sha256sum "$COMPOSE_PATH" | awk '{print toupper($1)}')"
 test "$ACTUAL_SHA256" = "$CANONICAL_SHA256"
 ```
 
+## Woodpecker staging deployment
+
+Pushes to `staging` are deployed by `.woodpecker/staging.yaml`. Pull requests and
+pushes to `main` remain validation-only; they do not receive deployment secrets
+or access the staging host. The staging pipeline follows the fail-closed pattern
+used by `sparkfn/autocollect-backend`:
+
+1. validate the deployment and lifecycle-guard shell syntax;
+2. cross the container-to-host boundary with strict pipeline-managed SSH;
+3. pass the exact full `CI_COMMIT_SHA` to
+   `scripts/deploy/hyperp-staging.sh`;
+4. lock, fast-forward, selectively rebuild, verify, and record the deployed SHA.
+
+The CI checkout and staging checkout are both on `dev211` under `/home/docker`:
+
+```text
+/home/docker/ci.sparkfn.io
+/home/docker/hyperp.ada.asia/.docker/staging
+```
+
+From the CI workspace, staging is `../hyperp.ada.asia/.docker/staging`; from
+staging, CI is `../../../ci.sparkfn.io`. They are four filesystem edges apart.
+The SSH connection is only the Woodpecker-container-to-host execution boundary;
+no developer workstation, Support-repository proxy, or external deployment host
+is part of the path.
+
+Configure these push-only Woodpecker repository secrets without storing their
+values in Git:
+
+- `hyperp_staging_ssh_host`
+- `hyperp_staging_ssh_port`
+- `hyperp_staging_ssh_user`
+- `hyperp_staging_ssh_key_b64`
+- `hyperp_staging_ssh_known_hosts`
+- `hyperp_staging_health_url`
+
+The deployment script requires the persistent checkout to be clean and on
+`staging`. It fetches the configured `origin`, requires `origin/staging` to equal
+the pipeline SHA, requires that SHA to be contained in `origin/main`, and permits
+only a fast-forward. This enforces the repository rule that `main` must never be
+behind `staging`.
+
+The script uses the canonical `hyperp-ada-asia` Compose project, preserves the
+lifecycle pause marker, rebuilds only services whose code or build inputs changed,
+recreates services for relevant Compose configuration changes without rebuilding
+their images, retains invariant checks, waits for worker stability, verifies
+internal and external health, and atomically records the successful SHA in the
+ignored staging data directory at
+`.docker/staging/data/deployed-revision`.
+
+Rollback is forward-only: revert the faulty change on `main`, allow MAIN CI to
+pass, then promote that new revert commit to `staging`. Do not force-push or move
+`staging` behind `main`. The normal staging pipeline then performs the same
+deployment and verification gates for the revert commit.
+
 ## Lifecycle worker pause and resume
 
 The lifecycle worker consumes reconciliation and deferred KNOWS materialization.
@@ -95,7 +150,7 @@ STAGING_REPO_DIR=/path/to/hyperP scripts/lifecycle-worker-control.sh resume
 `.docker/staging/docker-compose.yml`. Relative Compose paths are resolved from
 `STAGING_REPO_DIR`.
 
-All staging Compose operations use the canonical `stg-hyperp` project.
+All staging Compose operations use the canonical `hyperp-ada-asia` project.
 `STAGING_COMPOSE_PROJECT` may override it for an isolated test checkout, but
 operators and deployment automation must not rely on Compose's directory-derived
 default because that can create duplicate workers.
@@ -169,3 +224,47 @@ warning appears:
 4. pause lifecycle consumption with the supported script if acquisition does not
    follow the current initialization section;
 5. retain the safe lock events and task IDs for incident follow-up.
+
+## Standalone CRM mapping/projection activation (#307)
+
+The standalone CRM identity plane is **off by default**. Both
+`standalone_crm_identity_enabled` and `standalone_crm_identity_schedule_enabled` must be
+true before the manual `dispatch_standalone_crm_source_sync` task can enqueue a bounded
+source-sync census. It is deliberately absent from Celery Beat; operators must invoke the
+task explicitly. The dispatch captures complete active mapping and projection heads before
+building the immutable request, and never calls a live source directly.
+
+Mapping changes are operated as `prepare → project → activate` (or `rollback → project →
+activate`). Prepare and rollback are accepted only with an unexpired exact configured grant:
+there are no wildcards or implicit authorization. `project` preserves the existing projection
+materializer semantics. `activate` is a Celery census admission, not a direct graph mutation;
+the zero-Bitrix mapping child performs the atomic mapping/projection head CAS from the persisted
+payload only. `status`, `reconcile`, and the bounded manual source-sync command are read/dispatch
+controls. Reconcile is the acknowledgement-loss recovery path: if CAS committed but census
+settlement did not, it reads the durable release receipt and settles the checkpoint/accounting
+without rematerializing, moving heads, or counting the unit again.
+
+Published mapping payloads and source payloads are mutually exclusive. A mapping worker rejects
+source payloads before source client construction; a source worker rejects mapping payloads.
+
+Concrete operator entry points are registered Celery task names:
+
+```text
+celery call src.crm_tenant_operator_tasks.prepare --args '[{"scope":...,"manifest":...,"authorization":...}]'
+celery call src.crm_tenant_operator_tasks.project --args '[{"scope":...,"request_id":...,"expected_prior_head":...}]'
+celery call src.crm_tenant_operator_tasks.activate --args '[{"census_kind":"mapping_prepare",...}]'
+celery call src.crm_tenant_operator_tasks.rollback --args '[{"scope":...,"rollback_of_revision_id":...,"authorization":...}]'
+celery call src.crm_tenant_operator_tasks.status --args '["<census-id>"]'
+celery call src.crm_tenant_operator_tasks.reconcile --args '["<census-id>"]'
+celery call src.crm_tenant_operator_tasks.source_sync --args '[{"census_kind":"source_sync",...}]'
+```
+
+The manual scheduler invokes `src.standalone_crm_schedule_tasks.dispatch_standalone_crm_source_sync`.
+That task captures exact heads, enqueues `admit_and_run_standalone_crm_census`, and the latter admits
+then runs the parent state machine; neither task performs a live source call itself.
+
+Operator tasks receive JSON objects, never Python dataclasses. For example, `prepare` receives:
+
+```json
+{"scope":{"source_key":"bitrix_chat","source_instance_id":"portal-a","control_instance_id":"default"},"preparation_request_id":"prepare-20260901","manifest":{"entries":[{"company_id":"42","targets":[{"entity_key":"tenant-a"}]}]},"expected_head_boundary":{"head_id":"<deterministic-mapping-head-id>","expected_head":null},"authorization":{"actor":"operator","authorization_reference":"change-ticket","authorization_digest":"sha256:<64-hex>","authorized_at":"2026-09-01T00:00:00Z","expires_at":"2026-09-02T00:00:00Z"},"operation_time":"2026-09-01T00:00:00Z"}
+```

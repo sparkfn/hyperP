@@ -23,9 +23,11 @@ celery_app = Celery(
     backend=settings.celery_result_backend,
     include=[
         "src.standalone_crm_census_tasks",
+        "src.crm_tenant_operator_tasks",
         "src.tasks",
         "src.ingestion_orchestration_tasks",
         "src.scheduled_ingestion_tasks",
+        "src.standalone_crm_schedule_tasks",
         "src.stage_history_tasks",
     ],
 )
@@ -40,8 +42,10 @@ celery_app.conf.update(
         "src.tasks.run_ingestion_task": {"queue": INGESTION_QUEUE},
         "src.ingestion_orchestration_tasks.*": {"queue": INGESTION_QUEUE},
         "src.scheduled_ingestion_tasks.*": {"queue": INGESTION_QUEUE},
+        "src.standalone_crm_schedule_tasks.*": {"queue": INGESTION_QUEUE},
         "src.stage_history_tasks.*": {"queue": INGESTION_QUEUE},
         "src.standalone_crm_census_tasks.*": {"queue": INGESTION_QUEUE},
+        "src.crm_tenant_operator_tasks.*": {"queue": INGESTION_QUEUE},
         "src.tasks.reconcile_lifecycle_task": {"queue": LIFECYCLE_QUEUE},
         "src.tasks.materialize_knows_task": {"queue": LIFECYCLE_QUEUE},
         "src.tasks.send_birthday_messages_task": {"queue": MISCELLANEOUS_QUEUE},

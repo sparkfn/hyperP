@@ -121,6 +121,7 @@ steps:
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_company_membership_neo4j.py -q
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_preparation.py services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_lifecycle.py services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_freshness_integrity.py services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_strictness.py -q
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_projection_repository_neo4j.py -q
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_activation_neo4j.py -q
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_deal_identity_repair_ledger_neo4j.py -k 'not test_310_' -q
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_deal_identity_repair_ledger_neo4j.py -k 'test_310_' -q
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_deal_identity_repair_mutation_neo4j.py -q

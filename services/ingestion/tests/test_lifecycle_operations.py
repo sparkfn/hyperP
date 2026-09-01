@@ -12,6 +12,8 @@ from pytest import CaptureFixture, MonkeyPatch
 _ROOT = Path(__file__).parents[3]
 _CONTROL_SCRIPT = _ROOT / "scripts/lifecycle-worker-control.sh"
 _DEPLOY_GUARD = _ROOT / "scripts/lifecycle-worker-deploy-guard.sh"
+_DEPLOY_SCRIPT = _ROOT / "scripts/deploy/hyperp-staging.sh"
+_STAGING_PIPELINE = _ROOT / ".woodpecker/staging.yaml"
 
 
 def _fake_docker(tmp_path: Path) -> tuple[Path, Path]:
@@ -83,8 +85,8 @@ def test_pause_stops_worker_before_persisting_marker_and_uses_repo_directory(
     assert result.returncode == 0
     assert (repo_dir / ".lifecycle-worker-paused").is_file()
     assert (tmp_path / "docker.log").read_text(encoding="utf-8").splitlines() == [
-        f"{repo_dir}|compose -p stg-hyperp -f host/docker-compose.yml stop lifecycle-worker",
-        f"{repo_dir}|compose -p stg-hyperp -f host/docker-compose.yml ps -q lifecycle-worker",
+        f"{repo_dir}|compose -p hyperp-ada-asia -f host/docker-compose.yml stop lifecycle-worker",
+        f"{repo_dir}|compose -p hyperp-ada-asia -f host/docker-compose.yml ps -q lifecycle-worker",
     ]
 
 
@@ -135,33 +137,57 @@ def test_status_does_not_misreport_compose_failure_as_stopped(tmp_path: Path) ->
     assert "consumer_running=false" not in result.stdout
 
 
-def test_staging_workflow_uses_testable_lifecycle_deploy_guard() -> None:
-    workflow = (_ROOT / ".github/workflows/deploy-staging.yml").read_text(encoding="utf-8")
+def test_woodpecker_staging_deploy_uses_testable_lifecycle_guard() -> None:
+    pipeline = _STAGING_PIPELINE.read_text(encoding="utf-8")
+    deploy = _DEPLOY_SCRIPT.read_text(encoding="utf-8")
 
+    assert not (_ROOT / ".github/workflows/deploy-staging.yml").exists()
+    assert "branch:\n    - staging" in pipeline
+    assert "< scripts/deploy/hyperp-staging.sh" in pipeline
+    assert 'bash -s -- "$${CI_COMMIT_SHA}" "$${health_url_b64}" skip' in pipeline
+    assert 'REVISION_CHECK_MODE="${3:-strict}"' in deploy
+    assert "skipping persisted revision history checks for staging" in deploy
+    assert "skipping origin/main ancestry check for staging" in deploy
+    assert "plugin-kaniko" not in pipeline
+    assert "StrictHostKeyChecking=yes" in pipeline
+    assert "hyperp_staging_ssh_known_hosts" in pipeline
+    assert 'COMPOSE=(docker compose -p hyperp-ada-asia -f "${COMPOSE_FILE}")' in deploy
+    assert "origin/main does not contain the staging revision" in deploy
+    assert "flock -w 300 9" in deploy
+    assert "BUILD_NEEDED[api]=1" in deploy
+    assert "RECREATE_NEEDED[api]=1" in deploy
+    assert 'RECREATE_NEEDED["${service}"]=1' in deploy
+    assert "no service code changed; skipping image builds" in deploy
+    assert "services/api/src/*|services/api/Dockerfile" in deploy
+    assert "services/frontend2/src/*|services/frontend2/public/*" in deploy
+    assert "services/ingestion/src/*|services/ingestion/Dockerfile" in deploy
+    assert "infra/neo4j/init.cypher" in deploy
     assert (
-        'COMPOSE="docker compose -p stg-hyperp -f .docker/staging/docker-compose.yml"' in workflow
-    )
-    assert 'SERVICES="$BUILD_SERVICES"' in workflow
-    build = workflow.index("$COMPOSE build $SERVICES")
-    preflight = workflow.index("$COMPOSE run --rm --no-deps ingestion-worker", build)
-    recreate = workflow.index(
-        "$COMPOSE up -d --no-deps --force-recreate $RECREATE_SERVICES",
+        "pyproject.toml|uv.lock|services/api/pyproject.toml|services/ingestion/pyproject.toml"
+    ) in deploy
+    assert "services/api/*)" not in deploy
+    assert "services/frontend2/*)" not in deploy
+    assert "services/ingestion/*)" not in deploy
+    build = deploy.index('"${COMPOSE[@]}" build "${BUILD_SERVICE_ARRAY[@]}"')
+    preflight = deploy.index('"${COMPOSE[@]}" run --rm --no-deps ingestion-worker', build)
+    recreate = deploy.index(
+        '"${COMPOSE[@]}" up -d --no-deps --force-recreate "${RECREATE_SERVICE_ARRAY[@]}"',
         preflight,
     )
-    postflight = workflow.index("$COMPOSE run --rm --no-deps ingestion-worker", recreate)
+    postflight = deploy.index('"${COMPOSE[@]}" run --rm --no-deps ingestion-worker', recreate)
     assert build < preflight < recreate < postflight
-    assert workflow.count("python -m src.person_completeness_control check") == 2
-    assert workflow.count("python -m src.crm_deal_count_control check") == 2
-    assert "python -m src.person_completeness_control backfill" not in workflow
-    assert "python -m src.crm_deal_count_control backfill" not in workflow
-    assert "$COMPOSE stop lifecycle-worker" in workflow
-    assert "lifecycle-worker-deploy-guard.sh" in workflow
-    assert 'plan "$LIFECYCLE_PAUSED" $SERVICES' in workflow
-    assert "verify-paused .docker/staging/docker-compose.yml" in workflow
+    assert deploy.count("python -m src.person_completeness_control check") == 2
+    assert deploy.count("python -m src.crm_deal_count_control check") == 2
+    assert "python -m src.person_completeness_control backfill" not in deploy
+    assert "python -m src.crm_deal_count_control backfill" not in deploy
+    assert '"${COMPOSE[@]}" stop lifecycle-worker' in deploy
+    assert "lifecycle-worker-deploy-guard.sh" in deploy
+    assert 'plan "${LIFECYCLE_PAUSED}" "${RECREATE_SERVICE_INPUT[@]}"' in deploy
+    assert 'verify-paused "${COMPOSE_FILE}"' in deploy
     control = (_ROOT / "scripts/lifecycle-worker-control.sh").read_text(encoding="utf-8")
     deploy_guard = (_ROOT / "scripts/lifecycle-worker-deploy-guard.sh").read_text(encoding="utf-8")
     for script in (control, deploy_guard):
-        assert "STAGING_COMPOSE_PROJECT:-stg-hyperp" in script
+        assert "STAGING_COMPOSE_PROJECT:-hyperp-ada-asia" in script
         assert 'docker compose -p "$compose_project" -f "$compose_file"' in script
 
 
@@ -286,6 +312,9 @@ def test_operations_doc_defines_pause_recovery_and_wait_slo() -> None:
     assert "Exit code `2`" in operations
     assert "after **5 seconds**" in operations
     assert "operational warning, not a hard timeout" in operations
+    assert "four filesystem edges apart" in operations
+    assert "main` must never be\nbehind `staging" in operations
+    assert "only services whose code or build inputs changed" in operations
 
 
 class _FakeRedis:
