@@ -62,6 +62,16 @@ class _PersistParameters(_OutboxParameters):
     request_digest: str
 
 
+class RetirementRequirement(TypedDict):
+    """Frozen relationship cardinality and active-stamp requirement for one source."""
+
+    relationship_type: str
+    source_record_pk: str
+    left_source_record_pk: str
+    frozen_count: int
+    frozen_active_count: int
+
+
 def bundle_parameters(command: RepairVerificationCommand) -> _BundleParameters:
     return {
         "run_id": command.unit.run_id,
@@ -132,14 +142,139 @@ def persist_parameters(
 
 
 def retired_source_record_pks(command: RepairVerificationCommand) -> tuple[str, ...]:
-    payload = command.inventory.payload
-    descendants = payload.get("descendants")
-    pks = [command.inventory.source_record_pk]
-    if isinstance(descendants, list):
-        for row in descendants:
-            if isinstance(row, dict) and isinstance(row.get("source_record_pk"), str):
-                pks.append(cast(str, row["source_record_pk"]))
-    return tuple(sorted(set(pks)))
+    """Return only frozen root/descendant source identities in canonical order."""
+    pks = {command.inventory.source_record_pk}
+    for descendant in _payload_rows(command, "descendants"):
+        pks.add(_required_payload_string(descendant, "source_record_pk", "descendant"))
+    return tuple(sorted(pks))
+
+
+def retirement_requirements(
+    command: RepairVerificationCommand,
+) -> tuple[RetirementRequirement, ...]:
+    """Bind postcondition stamping only to relationships frozen active by #300."""
+    counts: dict[tuple[str, str, str], tuple[int, int]] = {}
+    root_pk = command.inventory.source_record_pk
+    for link in _payload_rows(command, "linked_people"):
+        _required_payload_mapping(link, "relationship_properties", "linked person")
+        _add_retirement_requirement(
+            counts,
+            _required_payload_string(link, "relationship_type", "linked person"),
+            root_pk,
+            root_pk,
+            _required_payload_bool(link, "is_active", "linked person"),
+        )
+    for projection in _payload_rows(command, "projections"):
+        relationship_type = _required_payload_string(projection, "relationship_type", "projection")
+        properties = _required_payload_mapping(projection, "relationship_properties", "projection")
+        source_pk = (
+            root_pk
+            if relationship_type == "DESCRIBES_ADDRESS"
+            else _required_payload_string(properties, "source_record_pk", "projection properties")
+        )
+        _add_retirement_requirement(
+            counts,
+            relationship_type,
+            source_pk,
+            root_pk,
+            _required_payload_bool(projection, "is_active", "projection"),
+        )
+    for descendant in _payload_rows(command, "descendants"):
+        descendant_relationship_type = descendant.get("relationship_type")
+        if descendant_relationship_type is None:
+            continue
+        if not isinstance(descendant_relationship_type, str):
+            raise RepairVerificationDriftError("verification descendant relationship is malformed")
+        _add_retirement_requirement(
+            counts,
+            descendant_relationship_type,
+            _required_payload_string(descendant, "source_record_pk", "descendant"),
+            _required_payload_string(descendant, "source_record_pk", "descendant"),
+            _required_payload_bool(descendant, "relationship_is_active", "descendant"),
+        )
+    return tuple(
+        {
+            "relationship_type": relationship_type,
+            "source_record_pk": source_record_pk,
+            "left_source_record_pk": left_source_record_pk,
+            "frozen_count": frozen_count,
+            "frozen_active_count": frozen_active_count,
+        }
+        for (relationship_type, source_record_pk, left_source_record_pk), (
+            frozen_count,
+            frozen_active_count,
+        ) in sorted(counts.items())
+    )
+
+
+def _payload_rows(
+    command: RepairVerificationCommand,
+    key: str,
+) -> tuple[Mapping[str, JsonValue], ...]:
+    value = command.inventory.payload.get(key)
+    if not isinstance(value, list):
+        raise RepairVerificationDriftError("verification frozen inventory list is malformed")
+    rows: list[Mapping[str, JsonValue]] = []
+    for value_row in value:
+        if not isinstance(value_row, dict) or not all(
+            isinstance(row_key, str) for row_key in value_row
+        ):
+            raise RepairVerificationDriftError("verification frozen inventory row is malformed")
+        rows.append(value_row)
+    return tuple(rows)
+
+
+def _required_payload_mapping(
+    row: Mapping[str, JsonValue],
+    key: str,
+    label: str,
+) -> Mapping[str, JsonValue]:
+    value = row.get(key)
+    if not isinstance(value, dict) or not all(isinstance(value_key, str) for value_key in value):
+        raise RepairVerificationDriftError(f"verification frozen {label} is malformed")
+    return value
+
+
+def _required_payload_string(
+    row: Mapping[str, JsonValue],
+    key: str,
+    label: str,
+) -> str:
+    value = row.get(key)
+    if not isinstance(value, str) or not value:
+        raise RepairVerificationDriftError(f"verification frozen {label} is malformed")
+    return value
+
+
+def _required_payload_bool(
+    row: Mapping[str, JsonValue],
+    key: str,
+    label: str,
+) -> bool:
+    value = row.get(key)
+    if not isinstance(value, bool):
+        raise RepairVerificationDriftError(f"verification frozen {label} is malformed")
+    return value
+
+
+def _add_retirement_requirement(
+    counts: dict[tuple[str, str, str], tuple[int, int]],
+    relationship_type: str,
+    source_record_pk: str,
+    left_source_record_pk: str,
+    is_active: bool,
+) -> None:
+    if relationship_type not in {
+        "LINKED_TO",
+        "IDENTIFIED_BY",
+        "LIVES_AT",
+        "HAS_FACT",
+        "DESCRIBES_ADDRESS",
+    }:
+        raise RepairVerificationDriftError("verification frozen relationship type is invalid")
+    key = (relationship_type, source_record_pk, left_source_record_pk)
+    frozen_count, frozen_active_count = counts.get(key, (0, 0))
+    counts[key] = (frozen_count + 1, frozen_active_count + int(is_active))
 
 
 def postcondition_closure_source_record_pks(

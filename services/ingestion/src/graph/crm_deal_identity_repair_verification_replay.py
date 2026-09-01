@@ -36,6 +36,7 @@ from src.graph.crm_deal_identity_repair_verification_support import (
     required_int,
     required_str,
     retired_source_record_pks,
+    retirement_requirements,
     verification_from_properties,
 )
 from src.graph.queries import crm_deal_identity_repair_verification as queries
@@ -105,6 +106,7 @@ def _read_primary(
         new_source_record_pk=bundle.replacement_pk,
         mutation_id=command.mutation_id,
         retired_source_record_pks=list(retired_source_record_pks(command)),
+        retirement_requirements=list(retirement_requirements(command)),
         closure_source_record_pks=list(
             postcondition_closure_source_record_pks(command, bundle.replacement_pk)
         ),
