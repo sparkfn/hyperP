@@ -505,7 +505,7 @@ def primary_matches(row: Record, outcome: str) -> bool:
         return False
     if outcome == "applied":
         return (
-            required_row_string(row, "link_status") == "applied"
+            required_row_string(row, "link_status") == "linked"
             and active_links == 1
             and required_record_int(row, "active_any_links") == 1
             and required_record_int(row, "provisional_links") == 0

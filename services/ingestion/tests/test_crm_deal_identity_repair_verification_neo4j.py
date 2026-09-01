@@ -303,26 +303,41 @@ def test_negative_control_detects_missing_source(neo4j_driver: Driver) -> None:
 
 
 @pytest.mark.parametrize(
-    "mutation",
+    ("mutation", "expected_classification"),
     (
-        "MATCH (source:SourceRecord {source_record_pk: 'negative-pk'}) "
-        "SET source.repair_mutation_id = 'forbidden-mutation'",
-        "MATCH (:SourceRecord {source_record_pk: 'negative-pk'})-[link:LINKED_TO]->() "
-        "SET link.retired_by_repair_mutation_id = 'forbidden-mutation'",
-        "MATCH (source:SourceRecord {source_record_pk: 'negative-pk'}) "
-        "SET source.repair_mutation_id = 'forbidden-mutation' "
-        "CREATE (:CrmDealRepairMutationResult {mutation_id: 'forbidden-mutation'})",
-        "CREATE (:CrmDealRepairVerification {source_record_pk: 'negative-pk'})",
-        "CREATE (:CrmDealRepairSecondaryDisposition {source_record_pk: 'negative-pk'})",
+        (
+            "MATCH (source:SourceRecord {source_record_pk: 'negative-pk'}) "
+            "SET source.repair_mutation_id = 'forbidden-mutation'",
+            "stamped",
+        ),
+        (
+            "MATCH (:SourceRecord {source_record_pk: 'negative-pk'})-[link:LINKED_TO]->() "
+            "SET link.retired_by_repair_mutation_id = 'forbidden-mutation'",
+            "stamped",
+        ),
+        (
+            "MATCH (source:SourceRecord {source_record_pk: 'negative-pk'}) "
+            "SET source.repair_mutation_id = 'forbidden-mutation' "
+            "CREATE (:CrmDealRepairMutationResult {mutation_id: 'forbidden-mutation'})",
+            "stamped",
+        ),
+        (
+            "CREATE (:CrmDealRepairVerification {source_record_pk: 'negative-pk'})",
+            "unchanged",
+        ),
+        (
+            "CREATE (:CrmDealRepairSecondaryDisposition {source_record_pk: 'negative-pk'})",
+            "unchanged",
+        ),
     ),
 )
 def test_negative_control_detects_graph_or_ledger_stamp(
-    neo4j_driver: Driver, mutation: str
+    neo4j_driver: Driver, mutation: str, expected_classification: str
 ) -> None:
     item = _seed_negative_control(neo4j_driver)
     with neo4j_driver.session() as session:
         session.run(mutation).consume()
-    assert _classify(neo4j_driver, item) == ("stamped",)
+    assert _classify(neo4j_driver, item) == (expected_classification,)
 
 
 def test_primary_query_counts_applied_review_retirement_and_forbidden_evidence(
@@ -337,7 +352,7 @@ def test_primary_query_counts_applied_review_retirement_and_forbidden_evidence(
             CREATE (old:SourceRecord {source_record_pk: 'old-pk', record_type: 'crm_deal'})
               -[:FROM_SOURCE]->(source)
             CREATE (new:SourceRecord {source_record_pk: 'new-pk', record_type: 'crm_deal',
-              repair_mutation_id: 'mutation-a', link_status: 'applied'})-[:FROM_SOURCE]->(source)
+              repair_mutation_id: 'mutation-a', link_status: 'linked'})-[:FROM_SOURCE]->(source)
             CREATE (new)-[:LINKED_TO {is_active: true, authoritative: true,
               source_record_pk: 'new-pk', repair_mutation_id: 'mutation-a'}]->(person)
             CREATE (old)-[:LINKED_TO {is_active: false, source_record_pk: 'old-pk',
@@ -414,7 +429,7 @@ def test_primary_query_reports_forbidden_replacement_projection(neo4j_driver: Dr
             MATCH (source:SourceSystem {source_key: 'bitrix_chat'}),
                   (person:Person {person_id: 'person-negative'})
             CREATE (new:SourceRecord {source_record_pk: 'new-pk', record_type: 'crm_deal',
-              repair_mutation_id: 'mutation-a', link_status: 'applied'})-[:FROM_SOURCE]->(source)
+              repair_mutation_id: 'mutation-a', link_status: 'linked'})-[:FROM_SOURCE]->(source)
             CREATE (new)-[:LINKED_TO {is_active: true, authoritative: true,
               source_record_pk: 'new-pk'}]->(person)
             CREATE (identifier:Identifier {identifier_type: 'crm_contact_id',
@@ -597,7 +612,7 @@ def test_primary_query_counts_missing_stamp_on_inactive_relationship(neo4j_drive
             MATCH (source:SourceSystem {source_key: 'bitrix_chat'}),
                   (person:Person {person_id: 'person-negative'})
             CREATE (new:SourceRecord {source_record_pk: 'new-pk', record_type: 'crm_deal',
-              repair_mutation_id: 'mutation-a', link_status: 'applied'})-[:FROM_SOURCE]->(source)
+              repair_mutation_id: 'mutation-a', link_status: 'linked'})-[:FROM_SOURCE]->(source)
             CREATE (new)-[:LINKED_TO {is_active: true, authoritative: true,
               source_record_pk: 'new-pk'}]->(person)
             CREATE (old:SourceRecord {source_record_pk: 'old-pk', record_type: 'crm_deal'})
@@ -633,7 +648,7 @@ def test_primary_query_accepts_frozen_inactive_relationship_with_prior_stamp(
             MATCH (source:SourceSystem {source_key: 'bitrix_chat'}),
                   (person:Person {person_id: 'person-negative'})
             CREATE (new:SourceRecord {source_record_pk: 'new-pk', record_type: 'crm_deal',
-              repair_mutation_id: 'mutation-a', link_status: 'applied'})-[:FROM_SOURCE]->(source)
+              repair_mutation_id: 'mutation-a', link_status: 'linked'})-[:FROM_SOURCE]->(source)
             CREATE (new)-[:LINKED_TO {is_active: true, authoritative: true,
               source_record_pk: 'new-pk'}]->(person)
             CREATE (old:SourceRecord {source_record_pk: 'old-pk', record_type: 'crm_deal'})

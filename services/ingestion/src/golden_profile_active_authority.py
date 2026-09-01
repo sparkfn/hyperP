@@ -76,7 +76,7 @@ def derive_golden_profile_from_active_authority(
     identifiers = _authority_identifiers(row["identifiers"])
     addresses = _authority_addresses(row["addresses"])
     desired = _derived_fields(facts, identifiers, addresses)
-    overrides = _overrides(person["survivorship_overrides"])
+    overrides = _overrides(person.get("survivorship_overrides"))
     custom_addresses = _custom_address_ids(tx, overrides)
     conflicts = _apply_canonical_overrides(
         desired, overrides, facts, identifiers, addresses, custom_addresses
