@@ -119,15 +119,38 @@ CALL (new) {
     count(DISTINCT decision) AS repair_decision_count
 }
 CALL {
-  WITH $retired_source_record_pks AS retired_source_record_pks, $mutation_id AS mutation_id
+  WITH $retired_source_record_pks AS retired_source_record_pks
   MATCH (left)-[relationship:LINKED_TO|IDENTIFIED_BY|LIVES_AT|HAS_FACT|DESCRIBES_ADDRESS]->()
-  WHERE relationship.source_record_pk IN retired_source_record_pks
-     OR (type(relationship) = 'DESCRIBES_ADDRESS'
+  WHERE (type(relationship) IN ['LINKED_TO', 'DESCRIBES_ADDRESS']
          AND left:SourceRecord AND left.source_record_pk IN retired_source_record_pks)
+     OR (type(relationship) IN ['IDENTIFIED_BY', 'LIVES_AT', 'HAS_FACT']
+         AND relationship.source_record_pk IN retired_source_record_pks)
   RETURN count(relationship) AS retired_relationship_count,
-    count(CASE WHEN coalesce(relationship.is_active, true) = true
-        OR coalesce(relationship.retired_by_repair_mutation_id, '') <> mutation_id THEN relationship END)
-      AS retirement_stamp_failure_count
+    count(CASE WHEN coalesce(relationship.is_active, true) = true THEN relationship END)
+      AS active_retired_relationship_count
+}
+CALL {
+  WITH $retirement_requirements AS retirement_requirements, $mutation_id AS mutation_id
+  UNWIND retirement_requirements AS requirement
+  OPTIONAL MATCH (left)-[relationship:LINKED_TO|IDENTIFIED_BY|LIVES_AT|HAS_FACT|DESCRIBES_ADDRESS]->()
+  WHERE type(relationship) = requirement.relationship_type
+    AND (
+      (requirement.relationship_type IN ['LINKED_TO', 'DESCRIBES_ADDRESS']
+       AND left:SourceRecord
+       AND left.source_record_pk = requirement.left_source_record_pk)
+      OR (requirement.relationship_type IN ['IDENTIFIED_BY', 'LIVES_AT', 'HAS_FACT']
+          AND relationship.source_record_pk = requirement.source_record_pk)
+    )
+  WITH requirement, count(relationship) AS current_count,
+    count(CASE WHEN relationship IS NOT NULL
+        AND coalesce(relationship.is_active, true) = false
+        AND coalesce(relationship.retired_by_repair_mutation_id, '') = mutation_id
+      THEN relationship END) AS current_mutation_stamp_count
+  WITH collect(CASE WHEN current_count <> requirement.frozen_count
+        OR current_mutation_stamp_count < requirement.frozen_active_count THEN 1 ELSE 0 END)
+      AS requirement_failures
+  RETURN reduce(failure_count = 0, requirement_failure IN requirement_failures |
+      failure_count + requirement_failure) AS frozen_retirement_requirement_failure_count
 }
 CALL {
   WITH $closure_source_record_pks AS closure_source_record_pks
@@ -140,7 +163,10 @@ CALL {
 }
 RETURN new.link_status AS link_status, active_links, active_any_links, provisional_links, all_links,
   active_new_evidence, repair_review_count, repair_decision_count,
-  retired_relationship_count, retirement_stamp_failure_count, forbidden_projection_count
+  retired_relationship_count,
+  active_retired_relationship_count + frozen_retirement_requirement_failure_count
+    AS retirement_stamp_failure_count,
+  forbidden_projection_count
 """
 
 READ_SECONDARY_CONTEXT = """

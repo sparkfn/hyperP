@@ -60,6 +60,13 @@ def test_primary_query_separates_retirement_and_forbidden_projection_pk_domains(
     assert "WITH $retired_source_record_pks AS retired_source_record_pks" in (
         queries.READ_PRIMARY_POSTCONDITIONS
     )
+    assert "WITH $retirement_requirements AS retirement_requirements" in (
+        queries.READ_PRIMARY_POSTCONDITIONS
+    )
+    assert "frozen_active_count" in queries.READ_PRIMARY_POSTCONDITIONS
+    assert "type(relationship) IN ['LINKED_TO', 'DESCRIBES_ADDRESS']" in (
+        queries.READ_PRIMARY_POSTCONDITIONS
+    )
     assert "WITH $closure_source_record_pks AS closure_source_record_pks" in (
         queries.READ_PRIMARY_POSTCONDITIONS
     )

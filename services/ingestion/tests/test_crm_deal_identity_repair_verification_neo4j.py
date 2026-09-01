@@ -115,8 +115,22 @@ def _reset(driver: Driver) -> None:
 
 
 def _seed_negative_control(driver: Driver) -> RepairInventoryItem:
-    raw_payload = json.dumps({"ID": "2", "TITLE": "Clean"}, separators=(",", ":"))
-    normalized_payload = json.dumps({"attributes": {}, "identifiers": []}, separators=(",", ":"))
+    raw_payload = json.dumps(
+        {
+            "ID": "2",
+            "TITLE": "Clean",
+            "crm_deal_identity_policy_version": "legacy",
+        },
+        separators=(",", ":"),
+    )
+    normalized_payload = json.dumps(
+        {
+            "attributes": {},
+            "identifiers": [],
+            "crm_deal_identity_policy_version": "legacy",
+        },
+        separators=(",", ":"),
+    )
     with driver.session() as session:
         session.run(
             """
@@ -148,7 +162,40 @@ def _seed_negative_control(driver: Driver) -> RepairInventoryItem:
         ).consume()
     inventory = collect_repair_inventory(cast(Neo4jClient, _Client(driver)))
     assert len(inventory.negative_controls) == 1
+    assert inventory.negative_controls[0].repair_conditions == ("negative_control",)
     return inventory.negative_controls[0]
+
+
+def _initialize_person_derived_state(driver: Driver, person_id: str) -> None:
+    """Seed strict #311 derived-state baselines before the #309 mutation transaction."""
+    with driver.session() as session:
+        session.run(
+            """
+            MATCH (person:Person {person_id: $person_id})
+            SET person.crm_deal_count = 1,
+                person.analysis_input_revision = 0,
+                person.profile_completeness_score = 0.0,
+                person.golden_profile_version = 'v0.1.0'
+            """,
+            person_id=person_id,
+        ).consume()
+
+
+def _retirement_requirement(
+    relationship_type: str,
+    source_record_pk: str,
+    left_source_record_pk: str,
+    *,
+    frozen_count: int = 1,
+    frozen_active_count: int = 1,
+) -> dict[str, str | int]:
+    return {
+        "relationship_type": relationship_type,
+        "source_record_pk": source_record_pk,
+        "left_source_record_pk": left_source_record_pk,
+        "frozen_count": frozen_count,
+        "frozen_active_count": frozen_active_count,
+    }
 
 
 def _classify(driver: Driver, item: RepairInventoryItem) -> tuple[str, ...]:
@@ -305,6 +352,10 @@ def test_primary_query_counts_applied_review_retirement_and_forbidden_evidence(
             new_source_record_pk="new-pk",
             mutation_id="mutation-a",
             retired_source_record_pks=["old-pk"],
+            retirement_requirements=[
+                _retirement_requirement("LINKED_TO", "old-pk", "old-pk"),
+                _retirement_requirement("IDENTIFIED_BY", "old-pk", "old-pk"),
+            ],
             closure_source_record_pks=["old-pk", "new-pk"],
         ).single(strict=True)
     assert row["active_links"] == 1
@@ -349,6 +400,7 @@ def test_primary_query_reports_forbidden_retired_projection(
             new_source_record_pk="new-pk",
             mutation_id="mutation-a",
             retired_source_record_pks=["old-pk"],
+            retirement_requirements=[],
             closure_source_record_pks=["old-pk", "new-pk"],
         ).single(strict=True)
     assert row["forbidden_projection_count"] == 1
@@ -376,6 +428,7 @@ def test_primary_query_reports_forbidden_replacement_projection(neo4j_driver: Dr
             new_source_record_pk="new-pk",
             mutation_id="mutation-a",
             retired_source_record_pks=[],
+            retirement_requirements=[],
             closure_source_record_pks=["new-pk"],
         ).single(strict=True)
     assert row["forbidden_projection_count"] == 1
@@ -430,6 +483,7 @@ def test_primary_query_reports_review_required_invariant_failures(neo4j_driver: 
             new_source_record_pk="new-pk",
             mutation_id="mutation-review",
             retired_source_record_pks=[],
+            retirement_requirements=[],
             closure_source_record_pks=["new-pk"],
         ).single(strict=True)
     assert row["active_links"] == 0
@@ -477,6 +531,7 @@ def test_primary_query_exposes_extra_inactive_review_required_links(
             new_source_record_pk="new-pk",
             mutation_id="mutation-review",
             retired_source_record_pks=[],
+            retirement_requirements=[],
             closure_source_record_pks=["new-pk"],
         ).single(strict=True)
     assert row["all_links"] > row["provisional_links"] or row["provisional_links"] > 1
@@ -512,6 +567,10 @@ def test_primary_query_reports_missing_retirement_stamp_and_preserves_independen
             new_source_record_pk="new-pk",
             mutation_id="mutation-a",
             retired_source_record_pks=["old-pk"],
+            retirement_requirements=[
+                _retirement_requirement("LINKED_TO", "old-pk", "old-pk"),
+                _retirement_requirement("IDENTIFIED_BY", "old-pk", "old-pk"),
+            ],
             closure_source_record_pks=["old-pk", "new-pk"],
         ).single(strict=True)
         independent = session.run(
@@ -552,9 +611,53 @@ def test_primary_query_counts_missing_stamp_on_inactive_relationship(neo4j_drive
             new_source_record_pk="new-pk",
             mutation_id="mutation-a",
             retired_source_record_pks=["old-pk"],
+            retirement_requirements=[
+                _retirement_requirement(
+                    "DESCRIBES_ADDRESS",
+                    "old-pk",
+                    "old-pk",
+                )
+            ],
             closure_source_record_pks=["old-pk", "new-pk"],
         ).single(strict=True)
     assert row["retirement_stamp_failure_count"] == 1
+
+
+def test_primary_query_accepts_frozen_inactive_relationship_with_prior_stamp(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_negative_control(neo4j_driver)
+    with neo4j_driver.session() as session:
+        session.run(
+            """
+            MATCH (source:SourceSystem {source_key: 'bitrix_chat'}),
+                  (person:Person {person_id: 'person-negative'})
+            CREATE (new:SourceRecord {source_record_pk: 'new-pk', record_type: 'crm_deal',
+              repair_mutation_id: 'mutation-a', link_status: 'applied'})-[:FROM_SOURCE]->(source)
+            CREATE (new)-[:LINKED_TO {is_active: true, authoritative: true,
+              source_record_pk: 'new-pk'}]->(person)
+            CREATE (old:SourceRecord {source_record_pk: 'old-pk', record_type: 'crm_deal'})
+              -[:FROM_SOURCE]->(source)
+            CREATE (old)-[:LINKED_TO {is_active: false, source_record_pk: 'old-pk',
+              retired_by_repair_mutation_id: 'prior-mutation'}]->(person)
+            """
+        ).consume()
+        row = session.run(
+            verification_queries.READ_PRIMARY_POSTCONDITIONS,
+            new_source_record_pk="new-pk",
+            mutation_id="mutation-a",
+            retired_source_record_pks=["old-pk"],
+            retirement_requirements=[
+                _retirement_requirement(
+                    "LINKED_TO",
+                    "old-pk",
+                    "old-pk",
+                    frozen_active_count=0,
+                )
+            ],
+            closure_source_record_pks=["old-pk", "new-pk"],
+        ).single(strict=True)
+    assert row["retirement_stamp_failure_count"] == 0
 
 
 def test_primary_query_accepts_exact_review_required_shape(neo4j_driver: Driver) -> None:
@@ -583,6 +686,7 @@ def test_primary_query_accepts_exact_review_required_shape(neo4j_driver: Driver)
             new_source_record_pk="new-pk",
             mutation_id="mutation-review",
             retired_source_record_pks=[],
+            retirement_requirements=[],
             closure_source_record_pks=["new-pk"],
         ).single(strict=True)
     assert row["active_any_links"] == 0
@@ -720,6 +824,7 @@ def test_concurrent_exact_verification_commits_once_then_replays_read_only(
     neo4j_driver: Driver,
 ) -> None:
     _seed_domain(neo4j_driver, independent_support=True)
+    _initialize_person_derived_state(neo4j_driver, "person-a")
     _deactivate_child_contamination(neo4j_driver)
     item, _ = _inventory(neo4j_driver)
     mutation_command = _seed_authority(neo4j_driver, item)
@@ -770,6 +875,7 @@ def test_mutation_and_verification_retire_active_depth_one_and_two_descendants(
     neo4j_driver: Driver,
 ) -> None:
     _seed_domain(neo4j_driver, independent_support=True)
+    _initialize_person_derived_state(neo4j_driver, "person-a")
     with neo4j_driver.session() as session:
         session.run(
             """
@@ -785,9 +891,7 @@ def test_mutation_and_verification_retire_active_depth_one_and_two_descendants(
               raw_payload: '{}', normalized_payload: '{}'
             })-[:FROM_SOURCE]->(graph_source)
             CREATE (depth_two)-[:CHILD_OF]->(child)
-            CREATE (depth_two)-[:LINKED_TO {
-              is_active: true, source_record_pk: 'depth-two-pk'
-            }]->(person)
+            CREATE (depth_two)-[:LINKED_TO {is_active: true}]->(person)
             """,
             source_instance_id=MUTATION_SOURCE,
         ).consume()
