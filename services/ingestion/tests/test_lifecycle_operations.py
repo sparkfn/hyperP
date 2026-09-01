@@ -147,6 +147,7 @@ def test_woodpecker_staging_deploy_uses_testable_lifecycle_guard() -> None:
     assert 'bash -s -- "$${CI_COMMIT_SHA}" "$${health_url_b64}" skip' in pipeline
     assert 'REVISION_CHECK_MODE="${3:-strict}"' in deploy
     assert "skipping persisted revision history checks for staging" in deploy
+    assert "skipping origin/main ancestry check for staging" in deploy
     assert "plugin-kaniko" not in pipeline
     assert "StrictHostKeyChecking=yes" in pipeline
     assert "hyperp_staging_ssh_known_hosts" in pipeline

@@ -108,7 +108,9 @@ assert_git_sync() {
     || fail "origin/staging does not match the expected revision"
   [[ -z "$(git -C "${REPO_DIR}" status --porcelain --untracked-files=normal)" ]] \
     || fail "checkout is dirty"
-  assert_main_contains_staging
+  if [[ "${REVISION_CHECK_MODE}" == strict ]]; then
+    assert_main_contains_staging
+  fi
 }
 
 assert_runtime_contract() {
@@ -351,7 +353,11 @@ git -C "${REPO_DIR}" fetch --quiet --prune origin \
   || fail "could not fetch origin"
 [[ "$(git -C "${REPO_DIR}" rev-parse origin/staging)" == "${EXPECTED_SHA}" ]] \
   || fail "origin/staging does not match the pipeline revision"
-assert_main_contains_staging
+if [[ "${REVISION_CHECK_MODE}" == strict ]]; then
+  assert_main_contains_staging
+else
+  printf '%s\n' '[hyperp-staging] skipping origin/main ancestry check for staging' >&2
+fi
 git -C "${REPO_DIR}" merge-base --is-ancestor HEAD "${EXPECTED_SHA}" \
   || fail "staging checkout cannot fast-forward to the pipeline revision"
 BEFORE_SHA="$(git -C "${REPO_DIR}" rev-parse HEAD)"
