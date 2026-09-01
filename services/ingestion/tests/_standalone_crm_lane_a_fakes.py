@@ -220,6 +220,28 @@ def mapping_manifest() -> CrmTenantMappingManifest:
     )
 
 
+def prepared_mapping_revision() -> CrmTenantMappingRevision:
+    manifest = mapping_manifest()
+    authorization = CrmTenantMappingAuthorization(
+        "reviewer-a",
+        "approval-301",
+        _DIGEST,
+        _AVAILABLE_AT,
+        "2026-08-29T00:00:00Z",
+    )
+    return CrmTenantMappingRevision(
+        mapping_scope(),
+        "mapping-revision-prepared-1",
+        2,
+        manifest.digest,
+        1,
+        1,
+        "mapping-prepare-prepared-1",
+        authorization,
+        "prepared",
+    )
+
+
 def active_mapping_revision() -> CrmTenantMappingRevision:
     manifest = mapping_manifest()
     authorization = CrmTenantMappingAuthorization(

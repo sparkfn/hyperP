@@ -68,11 +68,13 @@ class CrmTenantProjectionRelease:
         _validate_release_collections(self)
         if self.membership_head_boundary.scope != self.scope:
             raise ValueError("release membership boundary must use its exact scope")
-        if (
-            self.mapping_revision.scope != self.scope.mapping_scope
-            or self.mapping_revision.state != "active"
-        ):
-            raise ValueError("release requires its exact active mapping revision")
+        if self.mapping_revision.scope != self.scope.mapping_scope:
+            raise ValueError("release requires its exact mapping revision scope")
+        required_mapping_state = "active" if self.state == "published" else "prepared"
+        if self.mapping_revision.state != required_mapping_state:
+            raise ValueError(
+                f"{self.state} release requires its exact {required_mapping_state} mapping revision"
+            )
         if (
             self.expected_prior_head is not None
             and self.release_number <= self.expected_prior_head.active_release_number

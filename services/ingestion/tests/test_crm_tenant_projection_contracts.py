@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import fields, replace
 
 import pytest
+from _crm_tenant_projection_projection_fakes import prepared_projection_release
 from _standalone_crm_lane_a_fakes import (
     active_mapping_revision,
     active_projection_head,
@@ -135,7 +136,7 @@ def test_release_carries_frozen_inputs_decisions_correlated_support_and_publishe
 
 
 def test_completed_or_published_release_requires_complete_boundary_input_coverage() -> None:
-    release = projection_release()
+    release = prepared_projection_release()
     partial_building = replace(
         release,
         state="building",
@@ -149,4 +150,16 @@ def test_completed_or_published_release_requires_complete_boundary_input_coverag
     with pytest.raises(ValueError, match="exactly cover the frozen boundary"):
         replace(partial_building, state="completed")
     with pytest.raises(ValueError, match="exactly cover the frozen boundary"):
-        replace(partial_building, state="published")
+        replace(
+            partial_building,
+            state="published",
+            mapping_revision=active_mapping_revision(),
+        )
+
+
+def test_materialization_release_accepts_prepared_mapping_but_published_requires_active() -> None:
+    prepared = prepared_projection_release()
+
+    assert prepared.mapping_revision.state == "prepared"
+    with pytest.raises(ValueError, match="active mapping revision"):
+        replace(prepared, state="published")
