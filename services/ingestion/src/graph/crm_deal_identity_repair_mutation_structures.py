@@ -66,11 +66,13 @@ def _created_object_specifications(
                     "on_create_properties": (
                         {}
                         if preexisting
-                        else {
-                            "source_instance_id": source_instance_id,
-                            "created_at": transaction_datetime,
-                            "repair_mutation_id": request.mutation_id,
-                        }
+                        else _persisted_properties(
+                            {
+                                "source_instance_id": source_instance_id,
+                                "created_at": transaction_datetime,
+                                "repair_mutation_id": request.mutation_id,
+                            }
+                        )
                     ),
                     "multiplicity_ordinal": ordinal,
                 },
@@ -331,7 +333,19 @@ def _replacement_source_properties(
             "activated_at" if plan.disposition == "applied" else "review_staged_at": dynamic,
         }
     )
+    _apply_replacement_source_derived_properties(properties)
     return properties
+
+
+def _apply_replacement_source_derived_properties(properties: dict[str, JsonValue]) -> None:
+    """Mirror the source-record MERGE map's only derived, potentially new property."""
+    crm_deal_stage_id = properties.get("crm_deal_stage_id")
+    if crm_deal_stage_id is None:
+        crm_deal_stage_id = properties.get("stage_id")
+    if crm_deal_stage_id is None:
+        properties.pop("crm_deal_stage_id", None)
+    else:
+        properties["crm_deal_stage_id"] = crm_deal_stage_id
 
 
 def _owned_by_specifications(

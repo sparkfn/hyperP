@@ -38,7 +38,9 @@ def test_review_and_ledger_queries_encode_required_cardinality_and_bundle() -> N
         "ABOUT_RIGHT {entity_type: 'person', repair_mutation_id: $mutation_id}"
         in queries.STAGE_ACTIVE_REPAIR_LINK
     )
-    assert "identified_by" in queries.VERIFY_REPAIRED_MUTATION_POSTCONDITIONS
+    assert "relationship.repair_mutation_id = mutation_id" in (
+        queries.VERIFY_REPAIRED_MUTATION_POSTCONDITIONS
+    )
     assert "rollback_image_id: $rollback_image_id" in queries.PERSIST_REPAIR_MUTATION_LEDGER
     assert "checkpoint_id: $checkpoint_id" in queries.PERSIST_REPAIR_MUTATION_LEDGER
     assert "outbox_event_id: $outbox_event_id" in queries.PERSIST_REPAIR_MUTATION_LEDGER
@@ -53,13 +55,15 @@ def test_final_guard_and_authority_queries_bind_control_and_post_staging_lifecyc
     assert "source_entity_id: support.source_entity_id" in queries.READ_LOCKED_REPAIR_AUTHORITY
 
 
-def test_repaired_state_query_projects_exact_source_links_and_evidence() -> None:
+def test_repaired_state_query_projects_all_mutation_owned_objects() -> None:
     query = queries.VERIFY_REPAIRED_MUTATION_POSTCONDITIONS
-    assert "RETURN properties(new) AS source_properties" in query
-    assert "endpoint: {person_id: person.person_id}, properties: properties(link)" in query
-    assert "endpoint: properties(address), properties: properties(projection)" in query
-    assert "identifier_type: identifier.identifier_type" in query
-    assert "source_record_pk: source.source_record_pk" in query
+    assert "node:SourceRecord OR node:MatchDecision OR node:ReviewCase OR node:Identifier" in query
+    assert "relationship.repair_mutation_id = mutation_id" in query
+    assert "object_kind: type(relationship)" in query
+    assert "match_decision_id: left.match_decision_id" in query
+    assert "review_case_id: right.review_case_id" in query
+    assert "identifier_scope: right.identifier_scope" in query
+    assert "properties: properties(relationship)" in query
 
 
 def test_unit_lock_validates_immutable_binding_before_claiming_mutation_lock() -> None:
