@@ -444,8 +444,9 @@ def test_real_neo4j_completion_write_rejects_post_validation_identity_race(
                 "MATCH (:CrmTenantProjectionRelease {release_id: $release_id})"
                 "-[:HAS_PROJECTION_INPUT]->(:CrmTenantProjectionInput)"
                 "-[:HAS_PROJECTION_DECISION]->(decision) "
-                "SET decision.input_id = 'cross-release-input'",
+                "SET decision.input_id = decision.input_id + $identity_suffix",
                 release_id=current.release_id,
+                identity_suffix=f":identity-race:{current.release_id}",
             ).consume()
 
     monkeypatch.setattr(

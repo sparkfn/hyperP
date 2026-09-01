@@ -96,12 +96,12 @@ def test_completion_query_authorizes_ledger_integrity_atomically() -> None:
     assert "size(decision.decision_digest) <> 71" in query
     assert "size(support.support_digest) <> 71" in query
     assert (
-        "decision.decision IS NULL OR decision.decision NOT IN ['associated', 'zero_target']"
+        "decision.decision IS NULL OR NOT (decision.decision IN ['associated', 'zero_target'])"
         in query
     )
     assert "decision.zero_target_reason IS NOT NULL" in query
     assert "decision.zero_target_reason IS NULL" in query
-    assert "decision.zero_target_reason NOT IN ['empty_membership', 'no_mapped_targets']" in query
+    assert "NOT (decision.zero_target_reason IN ['empty_membership', 'no_mapped_targets'])" in query
     assert query.index("actual_input_count = release.input_count") < query.index(
         "SET release.state = 'completed'"
     )

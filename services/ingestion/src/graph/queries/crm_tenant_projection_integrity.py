@@ -144,7 +144,7 @@ WHERE actual_input_count = release.input_count
       OR snapshot_binding_counts[0] IS NULL OR snapshot_binding_counts[0] < 0
       OR size(snapshot_digests) <> 1 OR snapshot_digests[0] IS NULL
       OR size(snapshot_digests[0]) <> 71 OR NOT (snapshot_digests[0] STARTS WITH 'sha256:')
-      OR input.subject_kind IS NULL OR input.subject_kind NOT IN ['contact', 'lead']
+      OR input.subject_kind IS NULL OR NOT (input.subject_kind IN ['contact', 'lead'])
       OR input.subject_id IS NULL OR input.input_digest IS NULL OR input.snapshot_digest IS NULL
       OR size(input.input_digest) <> 71 OR NOT (input.input_digest STARTS WITH 'sha256:')
       OR size(input.snapshot_digest) <> 71 OR NOT (input.snapshot_digest STARTS WITH 'sha256:')
@@ -162,7 +162,7 @@ WHERE actual_input_count = release.input_count
       collect(DISTINCT snapshot.binding_count) AS snapshot_binding_counts
     WHERE owners <> 1 OR inputs <> 1
       OR input_release_ids <> [release.release_id] OR input_ids <> [decision.input_id]
-      OR decision.decision IS NULL OR decision.decision NOT IN ['associated', 'zero_target']
+      OR decision.decision IS NULL OR NOT (decision.decision IN ['associated', 'zero_target'])
       OR decision.decision_digest IS NULL OR size(decision.decision_digest) <> 71
       OR NOT (decision.decision_digest STARTS WITH 'sha256:')
       OR (decision.decision = 'associated'
@@ -170,7 +170,7 @@ WHERE actual_input_count = release.input_count
           OR decision.zero_target_reason IS NOT NULL))
       OR (decision.decision = 'zero_target' AND (associations <> 0
         OR decision.zero_target_reason IS NULL
-        OR decision.zero_target_reason NOT IN ['empty_membership', 'no_mapped_targets']
+        OR NOT (decision.zero_target_reason IN ['empty_membership', 'no_mapped_targets'])
         OR (decision.zero_target_reason = 'empty_membership'
           AND snapshot_binding_counts <> [0])
         OR (decision.zero_target_reason = 'no_mapped_targets'
