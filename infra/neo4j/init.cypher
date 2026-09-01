@@ -402,3 +402,13 @@ FOR (verification:CrmDealRepairVerification)
 ON (verification.run_id, verification.unit_id, verification.generation, verification.outcome);
 CREATE INDEX crm_deal_repair_outbox_state IF NOT EXISTS
 FOR (outbox:CrmDealRepairOutbox) ON (outbox.run_id, outbox.state, outbox.sequence);
+// CRM deal identity repair control schema (#310). Metadata only; no CRM-domain writes.
+CREATE CONSTRAINT crm_deal_repair_control_run_unique IF NOT EXISTS
+FOR (control:CrmDealRepairControl) REQUIRE control.run_id IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_publication_reservation_unique IF NOT EXISTS
+FOR (reservation:CrmDealRepairPublicationReservation)
+REQUIRE (reservation.control_instance_id, reservation.publication_key) IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_allocation_completion_unique IF NOT EXISTS
+FOR (completion:CrmDealRepairAllocationCompletion) REQUIRE (completion.run_id, completion.completion_id) IS UNIQUE;
+CREATE INDEX crm_deal_repair_control_state IF NOT EXISTS
+FOR (control:CrmDealRepairControl) ON (control.state, control.control_instance_id, control.revision);

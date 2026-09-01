@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from typing import Protocol
 
 from celery import chain
 from celery.canvas import Signature
@@ -10,11 +11,24 @@ from celery.canvas import Signature
 from src.bitrix_backfill_models import BackfillInventoryEntry
 from src.bitrix_ingestion_models import BitrixStreamKey
 from src.celery_app import INGESTION_QUEUE, celery_app
+from src.crm_deal_identity_repair.control_models import RepairPublicationReservation
 from src.source_instances import (
     LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
     effective_control_instance_id,
     scope_control_identity,
 )
+
+
+class PublicationReservationGate(Protocol):
+    """Narrow durable reservation seam; keeps legacy canvas construction pure."""
+
+    def mark_publishing(
+        self, reservation: RepairPublicationReservation
+    ) -> RepairPublicationReservation: ...
+
+    def confirm_publication(
+        self, reservation: RepairPublicationReservation, workflow_task_id: str
+    ) -> RepairPublicationReservation: ...
 
 
 def corrective_task_id(
@@ -143,8 +157,17 @@ def dispatch_generation_canvas(
     resume_generation: int | None = None,
     scheduled_dispatch: bool = False,
     control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    publication_reservation: RepairPublicationReservation | None = None,
+    publication_gate: PublicationReservationGate | None = None,
 ) -> str:
     control_instance_id = effective_control_instance_id(control_instance_id)
+    if (publication_reservation is None) != (publication_gate is None):
+        raise ValueError("repair publication reservation and gate must be supplied together")
+    reservation = (
+        publication_gate.mark_publishing(publication_reservation)
+        if publication_reservation is not None and publication_gate is not None
+        else None
+    )
     canvas = build_generation_canvas(
         generation_id=generation_id,
         boundary_digest=boundary_digest,
@@ -161,7 +184,10 @@ def dispatch_generation_canvas(
 
     admit_configured_bitrix_control(get_settings(), control_instance_id)
     result = canvas.apply_async()
-    return str(result.id)
+    workflow_task_id = str(result.id)
+    if reservation is not None and publication_gate is not None:
+        publication_gate.confirm_publication(reservation, workflow_task_id)
+    return workflow_task_id
 
 
 def _task_kwargs(

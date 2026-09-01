@@ -101,7 +101,7 @@ def test_person_assertions_are_keyed_by_immutable_source_provenance() -> None:
     assert "RETURN DISTINCT candidate.person_id" in queries.FIND_CANDIDATES_BY_IDENTIFIER
     assert "RETURN DISTINCT candidate.person_id" in queries.FIND_CANDIDATES_BY_ADDRESS
     batch = queries.FIND_CANDIDATES_BY_IDENTIFIERS_BATCH
-    assert "fanout_rel.is_active = true" in batch
+    assert "coalesce(fanout_rel.is_active, true) = true" in batch
     assert "fanout_rel.quality_flag" not in batch
     assert "rel.quality_flag IN ['valid', 'partial_parse']" in batch
 

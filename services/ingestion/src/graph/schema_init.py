@@ -16,6 +16,9 @@ from src.graph.client import Neo4jClient
 from src.graph.queries.bitrix_backfill import CREATE_BITRIX_BACKFILL_CONSTRAINTS
 from src.graph.queries.bitrix_deal_scope import CREATE_BITRIX_DEAL_SCOPE_CONSTRAINTS
 from src.graph.queries.bitrix_source_instances import CREATE_BITRIX_SOURCE_INSTANCE_CONSTRAINTS
+from src.graph.queries.crm_deal_identity_repair_control import (
+    CREATE_CRM_DEAL_REPAIR_CONTROL_SCHEMA,
+)
 from src.graph.queries.crm_deal_identity_repair_ledger import (
     CREATE_CRM_DEAL_REPAIR_LEDGER_SCHEMA,
 )
@@ -57,6 +60,7 @@ ON (sr.source_version_key)""",
     *CREATE_BITRIX_BACKFILL_CONSTRAINTS,
     *CREATE_CRM_HISTORY_AUTHORITY_CONSTRAINTS,
     *CREATE_CRM_DEAL_REPAIR_LEDGER_SCHEMA,
+    *CREATE_CRM_DEAL_REPAIR_CONTROL_SCHEMA,
     *CREATE_CRM_STAGE_BACKFILL_CONSTRAINTS,
     *CREATE_STAGE_HISTORY_INGESTION_CONSTRAINTS,
     *CREATE_STANDALONE_CRM_CENSUS_CONSTRAINTS,

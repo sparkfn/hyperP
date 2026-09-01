@@ -13,7 +13,10 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
         description="Seal staging-only graph discovery for historical Bitrix CRM-deal repair.",
     )
     parser.add_argument(
-        "command", nargs="?", choices=("inventory", "qualify", "status"), default="inventory"
+        "command",
+        nargs="?",
+        choices=("inventory", "qualify", "status", "quiesce", "allocate", "pause", "resume"),
+        default="inventory",
     )
     parser.add_argument("--repair-id", required=True)
     parser.add_argument("--source-contract-uuid")
@@ -34,6 +37,11 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--stop-condition", action="append", default=[])
     parser.add_argument("--rollback-authority-reference")
     parser.add_argument("--rollback-authority-policy")
+    parser.add_argument("--run-id")
+    parser.add_argument("--owner-id")
+    parser.add_argument("--control-token")
+    parser.add_argument("--expected-revision", type=int)
+    parser.add_argument("--approval-id")
     arguments = parser.parse_args(argv)
     _validate_arguments(parser, arguments)
     return arguments
@@ -65,3 +73,13 @@ def _validate_arguments(parser: argparse.ArgumentParser, arguments: argparse.Nam
             )
         if arguments.unit_ceiling < 1:
             parser.error("--unit-ceiling must be positive")
+    if arguments.command in {"quiesce", "allocate", "pause", "resume"}:
+        required_control = ("run_id", "owner_id", "control_token", "expected_revision")
+        if any(getattr(arguments, name) in (None, "") for name in required_control):
+            parser.error(
+                f"{arguments.command} requires run ownership and expected revision arguments"
+            )
+        if arguments.expected_revision < 0:
+            parser.error("--expected-revision must be non-negative")
+    if arguments.command == "allocate" and not arguments.approval_id:
+        parser.error("allocate requires --approval-id")

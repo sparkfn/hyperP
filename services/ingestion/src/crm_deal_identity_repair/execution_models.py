@@ -2,6 +2,14 @@
 
 from __future__ import annotations
 
+from src.crm_deal_identity_repair.control_models import (
+    RepairAllocationCompletion,
+    RepairControlRequest,
+    RepairControlState,
+    RepairControlStatus,
+    RepairDispatchLease,
+    RepairPublicationReservation,
+)
 from src.crm_deal_identity_repair.execution_boundary_models import (
     RepairBoundaryDriftReason,
     RepairBoundarySnapshot,
@@ -40,6 +48,12 @@ __all__ = (
     "RepairBoundaryDriftReason",
     "RepairCheckpoint",
     "RepairCheckpointState",
+    "RepairControlRequest",
+    "RepairControlState",
+    "RepairControlStatus",
+    "RepairDispatchLease",
+    "RepairPublicationReservation",
+    "RepairAllocationCompletion",
     "RepairExecutionBoundaryManifest",
     "RepairFence",
     "RepairFenceState",

@@ -95,10 +95,14 @@ MATCH (logical:IngestionLogicalRun {
 MATCH (logical)-[:ACTIVE_ATTEMPT]->(attempt:IngestRun {
   ingest_run_id: $ingest_run_id, control_instance_id: $control_instance_id
 })
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {
+  source_key: $source_key, control_instance_id: $control_instance_id
+})
 WHERE logical.active_generation = $attempt_generation
   AND attempt.generation = $attempt_generation
   AND logical.status IN ['queued', 'running', 'stop_requested']
   AND attempt.status IN ['queued', 'started']
+  AND coalesce(dispatch.blocked, false) = false
 MERGE (stream:BitrixIngestionStream {
   source_key: $source_key,
   control_instance_id: $control_instance_id,

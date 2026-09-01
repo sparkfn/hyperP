@@ -176,7 +176,7 @@ def test_snapshot_query_excludes_retired_sales_and_includes_active_vehicle_menti
 
     assert "MATCH (person)-[purchase:PURCHASED]->(order:Order)" in query
     assert "WHERE coalesce(purchase.is_active, true) = true" in query
-    assert "MATCH (source:SourceRecord)-[:LINKED_TO]->(person)" in query
+    assert "MATCH (source:SourceRecord)-[source_link:LINKED_TO]->(person)" in query
     assert "MATCH (source)-[vehicle_link:MENTIONS_VEHICLE]->(vehicle:Vehicle)" in query
     assert "source.lifecycle_status = 'active'" in query
     assert "coalesce(vehicle_link.is_active, true) = true" in query

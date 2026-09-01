@@ -14,6 +14,7 @@ from src.bitrix_backfill_tasks import (
     live_task_id,
 )
 from src.bitrix_ingestion_models import BitrixStreamKey
+from src.crm_deal_identity_repair.control_models import RepairPublicationReservation
 from src.models import JsonValue
 
 
@@ -200,3 +201,100 @@ def test_generation_publication_admission_precedes_canvas_apply(
         )
 
     admission.assert_called_once()
+
+
+class _PublicationGate:
+    def __init__(self, *, fail_confirm: bool = False) -> None:
+        self._fail_confirm = fail_confirm
+        self.calls: list[str] = []
+
+    def mark_publishing(
+        self, reservation: RepairPublicationReservation
+    ) -> RepairPublicationReservation:
+        self.calls.append("mark")
+        return RepairPublicationReservation(
+            reservation.reservation_id,
+            reservation.control_instance_id,
+            reservation.publication_key,
+            "publishing",
+            reservation.revision + 1,
+        )
+
+    def confirm_publication(
+        self, reservation: RepairPublicationReservation, workflow_task_id: str
+    ) -> RepairPublicationReservation:
+        self.calls.append("confirm:" + workflow_task_id)
+        if self._fail_confirm:
+            raise RuntimeError("ambiguous publish")
+        return RepairPublicationReservation(
+            reservation.reservation_id,
+            reservation.control_instance_id,
+            reservation.publication_key,
+            "confirmed",
+            reservation.revision + 1,
+        )
+
+
+def test_generation_publication_uses_one_reservation_identity(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Result:
+        id = "broker-task-1"
+
+    class _Canvas:
+        def apply_async(self) -> _Result:
+            return _Result()
+
+    monkeypatch.setattr("src.config.get_settings", lambda: object())
+    monkeypatch.setattr(
+        "src.graph.bitrix_source_instances.admit_configured_bitrix_control", lambda *_args: None
+    )
+    monkeypatch.setattr(
+        "src.bitrix_backfill_tasks.build_generation_canvas", lambda **_kwargs: _Canvas()
+    )
+    reservation = RepairPublicationReservation(
+        "reservation-1", "legacy-default", "key-1", "preparing", 1
+    )
+    gate = _PublicationGate()
+    assert (
+        dispatch_generation_canvas(
+            generation_id="corrective-1",
+            boundary_digest="sha256:boundary",
+            configuration_digest="sha256:config",
+            entries=(_entry("crm_deals"),),
+            publication_reservation=reservation,
+            publication_gate=gate,
+        )
+        == "broker-task-1"
+    )
+    assert gate.calls == ["mark", "confirm:broker-task-1"]
+
+
+def test_generation_publication_confirmation_failure_is_not_silently_accepted(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _Result:
+        id = "broker-task-ambiguous"
+
+    class _Canvas:
+        def apply_async(self) -> _Result:
+            return _Result()
+
+    monkeypatch.setattr("src.config.get_settings", lambda: object())
+    monkeypatch.setattr(
+        "src.graph.bitrix_source_instances.admit_configured_bitrix_control", lambda *_args: None
+    )
+    monkeypatch.setattr(
+        "src.bitrix_backfill_tasks.build_generation_canvas", lambda **_kwargs: _Canvas()
+    )
+    with pytest.raises(RuntimeError, match="ambiguous publish"):
+        dispatch_generation_canvas(
+            generation_id="corrective-1",
+            boundary_digest="sha256:boundary",
+            configuration_digest="sha256:config",
+            entries=(_entry("crm_deals"),),
+            publication_reservation=RepairPublicationReservation(
+                "reservation-2", "legacy-default", "key-2", "preparing", 1
+            ),
+            publication_gate=_PublicationGate(fail_confirm=True),
+        )

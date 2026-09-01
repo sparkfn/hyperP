@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 GET_PERSON_SALES = """
-MATCH (p:Person {person_id: $person_id})-[:PURCHASED]->(o:Order)
+MATCH (p:Person {person_id: $person_id})-[purchase:PURCHASED]->(o:Order)
+WHERE coalesce(purchase.is_active, true) = true
 OPTIONAL MATCH (o)-[:SOLD_THROUGH]->(ss:SourceSystem)-[:OPERATED_BY]->(entity:Entity)
 OPTIONAL MATCH (o)-[:CONTAINS]->(li:LineItem)-[:OF_PRODUCT]->(prod:Product)
 WITH o, ss, entity, li, prod ORDER BY li.line_no
@@ -32,6 +33,7 @@ SKIP $skip LIMIT $limit
 """
 
 COUNT_PERSON_SALES = """
-MATCH (p:Person {person_id: $person_id})-[:PURCHASED]->(o:Order)
+MATCH (p:Person {person_id: $person_id})-[purchase:PURCHASED]->(o:Order)
+WHERE coalesce(purchase.is_active, true) = true
 RETURN count(o) AS total
 """

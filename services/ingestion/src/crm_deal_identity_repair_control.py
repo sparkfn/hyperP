@@ -6,6 +6,7 @@ import json
 from argparse import Namespace
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from typing import TYPE_CHECKING, Protocol
 
 from src.crm_deal_identity_repair.cli import parse_arguments
@@ -19,6 +20,7 @@ from src.crm_deal_identity_repair.execution_protocols import (
     RepairBoundaryReader,
     RepairQualificationRepository,
 )
+from src.crm_deal_identity_repair.models import RepairInventoryItem
 from src.models import JsonValue
 
 if TYPE_CHECKING:
@@ -53,7 +55,178 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _inventory(arguments)
     if arguments.command == "qualify":
         return _qualify(arguments)
-    return _status(arguments)
+    if arguments.command == "status":
+        return _status(arguments)
+    return _control(arguments)
+
+
+def _control(arguments: Namespace) -> int:
+    """Run a default-off #310 metadata command; no command dispatches work."""
+    from src.config import get_settings
+    from src.crm_deal_identity_repair.control_models import RepairControlRequest
+    from src.graph.client import Neo4jClient
+    from src.graph.crm_deal_identity_repair_control import CrmDealRepairControlRepository
+    from src.graph.crm_deal_identity_repair_ledger import CrmDealRepairLedgerRepository
+    from src.graph.crm_deal_identity_repair_ledger_migration import (
+        assert_crm_deal_repair_ledger_ready,
+    )
+
+    settings = get_settings()
+    _validate_runtime_gate(settings, require_enabled=True)
+    request = RepairControlRequest(
+        arguments.repair_id,
+        arguments.run_id,
+        arguments.owner_id,
+        arguments.control_token,
+        arguments.expected_revision,
+    )
+    client = Neo4jClient(settings)
+    try:
+        assert_crm_deal_repair_ledger_ready(client)
+        ledger = CrmDealRepairLedgerRepository(client)
+        run = ledger.get_qualification(arguments.repair_id)
+        if run is None or run.run_id != request.run_id:
+            raise RuntimeError("repair control requires the exact qualified run")
+        repository = CrmDealRepairControlRepository(client)
+        if arguments.command == "pause":
+            lease = repository.pause(request)
+        elif arguments.command == "resume":
+            lease = repository.resume(request)
+        elif arguments.command == "quiesce":
+            # The CLI intentionally invokes its own bounded inspectors rather
+            # than accepting caller-provided observations as authorization.
+            from src.crm_deal_identity_repair.quiescence import RepairQuiescenceService
+            from src.crm_deal_identity_repair.task_inspection import (
+                CeleryWorkerInspector,
+                RedisCeleryBrokerInspector,
+            )
+
+            proof_secret_text = (
+                settings.crm_deal_identity_repair_absence_proof_key_secret.get_secret_value()
+            )
+            secret = proof_secret_text.encode()
+            if not secret or not settings.crm_deal_identity_repair_absence_proof_key_id:
+                raise RuntimeError("repair task-absence proof signing configuration is missing")
+            from src.crm_deal_identity_repair.artifacts import repair_artifact_store_from_settings
+            from src.crm_deal_identity_repair.qualification import (
+                read_qualified_stale_run_id,
+                verify_qualified_repair_artifact,
+            )
+
+            with repair_artifact_store_from_settings(settings) as store:
+                verified = verify_qualified_repair_artifact(store, run=run)
+            stale_run_id = read_qualified_stale_run_id(verified)
+            result = RepairQuiescenceService(
+                repository,
+                CeleryWorkerInspector(),
+                RedisCeleryBrokerInspector(settings.celery_broker_url),
+            ).quiesce(
+                request=request,
+                boundary_digest=run.boundary_digest,
+                control_instance_id=run.control_instance_id,
+                expected_workers=tuple(
+                    sorted(settings.crm_deal_identity_repair_expected_worker_ids)
+                ),
+                timeout_seconds=settings.crm_deal_identity_repair_worker_timeout_seconds,
+                max_age_seconds=settings.crm_deal_identity_repair_absence_max_age_seconds,
+                proof_key_id=settings.crm_deal_identity_repair_absence_proof_key_id,
+                proof_secret=secret,
+                stale_run_id=stale_run_id,
+            )
+            lease = result.lease
+        else:
+            # Allocation is metadata-only. Authenticate the already-qualified
+            # artifact from the stored manifest rather than rebuilding #300
+            # inputs from allocate CLI arguments.
+            from src.crm_deal_identity_repair.allocation import plan_allocation
+            from src.crm_deal_identity_repair.approval_overlay import (
+                assert_overlay_binds_qualification,
+                verify_approval_overlay,
+            )
+            from src.crm_deal_identity_repair.artifacts import repair_artifact_store_from_settings
+            from src.crm_deal_identity_repair.qualification import verify_qualified_repair_artifact
+
+            secret = (
+                settings.crm_deal_identity_repair_approval_key_secret.get_secret_value().encode()
+            )
+            key_id = settings.crm_deal_identity_repair_approval_key_id
+            if not secret or not key_id:
+                raise RuntimeError("repair approval overlay signing configuration is missing")
+            with repair_artifact_store_from_settings(settings) as store:
+                verified = verify_qualified_repair_artifact(store, run=run)
+            overlay = verify_approval_overlay(
+                Path(settings.crm_deal_identity_repair_approval_root)
+                / f"{arguments.approval_id}.json",
+                secret=secret,
+            )
+            assert_overlay_binds_qualification(overlay, run=run, expected_key_id=key_id)
+            inventory_bytes = (
+                Path(verified.manifest.provenance.artifact_path) / "inventory.jsonl"
+            ).read_text(encoding="utf-8")
+            inventory = tuple(
+                _inventory_item(json.loads(line)) for line in inventory_bytes.splitlines()
+            )
+            plan = plan_allocation(
+                run_id=run.run_id,
+                boundary_digest=run.boundary_digest,
+                inventory=inventory,
+                overlay=overlay,
+            )
+            lease = repository.allocate(
+                request,
+                boundary_digest=run.boundary_digest,
+                proof_digest=repository.proof_digest(request),
+                plan=plan,
+            )
+    finally:
+        client.close()
+    print(
+        json.dumps(
+            {
+                "repair_id": arguments.repair_id,
+                "run_id": lease.run_id,
+                "state": lease.state,
+                "revision": lease.revision,
+                "execution_allowed": False,
+            },
+            sort_keys=True,
+        )
+    )
+    return 0
+
+
+def _inventory_item(raw: object) -> RepairInventoryItem:
+    if not isinstance(raw, dict):
+        raise RuntimeError("qualified inventory row is malformed")
+    values = raw
+    required = (
+        "source_system",
+        "source_record_id",
+        "source_record_pk",
+        "deal_id",
+        "partition",
+        "graph_fingerprint",
+        "stored_payload_fingerprint",
+    )
+    if any(not isinstance(values.get(key), str) for key in required):
+        raise RuntimeError("qualified inventory row is malformed")
+    conditions = values.get("repair_conditions")
+    payload = values.get("payload")
+    if not isinstance(conditions, list) or not all(isinstance(item, str) for item in conditions):
+        raise RuntimeError("qualified inventory row is malformed")
+    if not isinstance(payload, dict):
+        raise RuntimeError("qualified inventory row is malformed")
+    return RepairInventoryItem(
+        source_system=values["source_system"],
+        source_record_id=values["source_record_id"],
+        source_record_pk=values["source_record_pk"],
+        deal_id=values["deal_id"],
+        partition=values["partition"],
+        repair_conditions=tuple(conditions),
+        graph_fingerprint=values["graph_fingerprint"],
+        stored_payload_fingerprint=values["stored_payload_fingerprint"],
+        payload=payload,
+    )
 
 
 def _inventory(arguments: Namespace) -> int:
@@ -247,6 +420,7 @@ def _qualification_manifest(
 def _status(arguments: Namespace) -> int:
     from src.config import get_settings
     from src.graph.client import Neo4jClient
+    from src.graph.crm_deal_identity_repair_control import CrmDealRepairControlRepository
     from src.graph.crm_deal_identity_repair_ledger import CrmDealRepairLedgerRepository
     from src.graph.crm_deal_identity_repair_ledger_migration import (
         assert_crm_deal_repair_ledger_ready,
@@ -261,6 +435,7 @@ def _status(arguments: Namespace) -> int:
         run = repository.get_qualification(arguments.repair_id)
         snapshot, drift_reason = _status_snapshot(repository, run)
         status = repository.get_status(arguments.repair_id, snapshot, drift_reason)
+        control_status = CrmDealRepairControlRepository(client).status(arguments.repair_id)
     finally:
         client.close()
     print(
@@ -278,6 +453,13 @@ def _status(arguments: Namespace) -> int:
                 "inventory_row_count": status.inventory_row_count,
                 "eligible_unit_count": status.eligible_unit_count,
                 "negative_control_count": status.negative_control_count,
+                "control_state": control_status.control_state,
+                "dispatch_blocked": control_status.dispatch_blocked,
+                "dispatch_revision": control_status.dispatch_revision,
+                "quiescence_state": control_status.quiescence_state,
+                "allocation_state": control_status.allocation_state,
+                "paused_from_state": control_status.paused_from_state,
+                "allocated_unit_count": control_status.allocated_unit_count,
                 "execution_allowed": False,
             },
             sort_keys=True,
