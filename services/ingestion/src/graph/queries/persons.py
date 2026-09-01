@@ -279,3 +279,58 @@ SET p.preferred_full_name = $preferred_full_name,
     p.updated_at = datetime()
 RETURN p.person_id AS person_id
 """
+
+FETCH_ACTIVE_PERSON_AUTHORITY_WITH_OVERRIDES = """
+MATCH (p:Person {person_id: $person_id, status: 'active'})
+CALL (p) {
+  WITH p
+  OPTIONAL MATCH (p)-[fact:HAS_FACT]->(fact_source:SourceRecord)
+  WHERE coalesce(fact.is_active, true) = true
+    AND (fact_source.lifecycle_status = 'active'
+      OR (fact_source.lifecycle_status IS NULL AND fact_source.is_latest = true))
+  RETURN collect(CASE WHEN fact IS NULL THEN null ELSE {
+    attribute_name: fact.attribute_name, attribute_value: fact.attribute_value,
+    source_trust_tier: fact.source_trust_tier, observed_at: toString(fact.observed_at),
+    quality_flag: fact.quality_flag, source_record_pk: fact.source_record_pk
+  } END) AS facts
+}
+CALL (p) {
+  WITH p
+  OPTIONAL MATCH (p)-[identifier:IDENTIFIED_BY]->(identifier_node:Identifier)
+  OPTIONAL MATCH (identifier_source:SourceRecord {source_record_pk: identifier.source_record_pk})
+  WHERE coalesce(identifier.is_active, true) = true
+    AND (identifier.source_record_pk IS NULL OR identifier_source.lifecycle_status = 'active'
+      OR (identifier_source.lifecycle_status IS NULL AND identifier_source.is_latest = true))
+  RETURN collect(CASE WHEN identifier IS NULL THEN null ELSE {
+    identifier_type: identifier_node.identifier_type, normalized_value: identifier_node.normalized_value,
+    is_verified: identifier.is_verified, last_confirmed_at: toString(identifier.last_confirmed_at),
+    source_record_pk: identifier.source_record_pk
+  } END) AS identifiers
+}
+CALL (p) {
+  WITH p
+  OPTIONAL MATCH (p)-[address:LIVES_AT]->(address_node:Address)
+  OPTIONAL MATCH (address_source:SourceRecord {source_record_pk: address.source_record_pk})
+  WHERE coalesce(address.is_active, true) = true
+    AND (address.source_record_pk IS NULL OR address_source.lifecycle_status = 'active'
+      OR (address_source.lifecycle_status IS NULL AND address_source.is_latest = true))
+  RETURN collect(CASE WHEN address IS NULL THEN null ELSE {
+    address_id: address_node.address_id, normalized_full: address_node.normalized_full,
+    is_verified: address.is_verified, last_confirmed_at: toString(address.last_confirmed_at),
+    source_record_pk: address.source_record_pk
+  } END) AS addresses
+}
+RETURN properties(p) AS person, facts, identifiers, addresses
+"""
+
+MARK_PERSON_ANALYSIS_DIRTY_BY_ID = """
+MATCH (p:Person {person_id: $person_id, status: 'active'})
+SET p.analysis_input_revision = coalesce(p.analysis_input_revision, 0) + 1,
+    p.analysis_dirty_at = datetime()
+RETURN p.person_id AS person_id
+"""
+
+FETCH_ADDRESS_IDS_BY_NORMALIZED_FULL = """
+MATCH (address:Address {normalized_full: $normalized_full})
+RETURN collect(DISTINCT address.address_id) AS address_ids
+"""

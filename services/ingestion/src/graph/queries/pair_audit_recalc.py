@@ -24,5 +24,24 @@ SET md.confidence = $confidence,
     md.policy_version = $policy_version,
     md.updated_at = datetime(),
     rc.updated_at = datetime()
-RETURN rc.review_case_id AS review_case_id
+RETURN rc.review_case_id AS review_case_id, rc.queue_state AS queue_state,
+       md.confidence AS confidence, md.reasons AS reasons,
+       md.feature_snapshot AS feature_snapshot, md.engine_version AS engine_version,
+       md.policy_version AS policy_version
+"""
+
+READ_PAIR_AUDIT_BRIDGE = """
+MATCH (left:Person {person_id: $left_person_id})-[left_link:IDENTIFIED_BY]->(identifier:Identifier)
+  <-[right_link:IDENTIFIED_BY]-(right:Person {person_id: $right_person_id})
+WHERE coalesce(left_link.is_active, true) = true AND coalesce(right_link.is_active, true) = true
+RETURN count(identifier) AS active_bridge_count
+"""
+
+CANCEL_STALE_OPEN_PAIR_AUDIT_CASE = """
+MATCH (review:ReviewCase {review_case_id: $review_case_id, queue_state: 'open'})-[:FOR_DECISION]->
+  (decision:MatchDecision {engine_type: 'pair_audit'})
+SET review.queue_state = 'resolved', review.resolution = 'cancelled_stale_repair_bridge',
+    review.resolved_at = datetime(), review.updated_at = datetime(), decision.updated_at = datetime()
+RETURN review.review_case_id AS review_case_id, review.queue_state AS queue_state,
+       review.resolution AS resolution
 """
