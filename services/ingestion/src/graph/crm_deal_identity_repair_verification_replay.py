@@ -18,6 +18,7 @@ from src.graph.crm_deal_identity_repair_verification_derived import (
     PersonDerivedState,
     affected_person_ids,
     build_context_details,
+    build_person_details,
     derive_state_digest,
     expected_subject_keys,
     read_person_states,
@@ -76,7 +77,8 @@ def replay_acknowledged_verification(
     primary = _read_primary(tx, command, bundle)
     states = read_person_states(tx, person_ids)
     _validate_crm_deal_counts(tx, states)
-    _validate_profiles(tx, states)
+    conflicts = _validate_profiles(tx, states)
+    _validate_replayed_person_dispositions(command, states, conflicts, disposition_values)
     build_context_details(tx, command)
     verify_replayed_revision(tx, command, bundle.replacement_pk, bundle.result.outcome)
     _validate_subject_set(command, states, bundle.replacement_pk, disposition_values)
@@ -112,11 +114,57 @@ def _read_primary(
     return row
 
 
-def _validate_profiles(tx: ManagedTransaction, states: tuple[PersonDerivedState, ...]) -> None:
+def _validate_profiles(
+    tx: ManagedTransaction,
+    states: tuple[PersonDerivedState, ...],
+) -> dict[str, tuple[str, ...]]:
+    conflicts: dict[str, tuple[str, ...]] = {}
     for state in states:
         profile = derive_golden_profile_from_active_authority(tx, state.person_id)
         if profile is None or profile.changed:
             raise RepairVerificationDriftError("acknowledged golden profile differs")
+        conflicts[state.person_id] = profile.conflict_fields
+    return conflicts
+
+
+def _validate_replayed_person_dispositions(
+    command: RepairVerificationCommand,
+    states: tuple[PersonDerivedState, ...],
+    conflicts: Mapping[str, tuple[str, ...]],
+    values: list[Mapping[str, JsonValue]],
+) -> None:
+    """Bind replay to current override conflict evidence, not just displayed fields."""
+    expected_details = build_person_details(command, states, conflicts)
+    expected: dict[tuple[str, str], tuple[str, str, str, str, str]] = {}
+    for detail in expected_details:
+        record = detail.record(command)
+        key: tuple[str, str] = (detail.subject.kind, detail.subject.stable_id)
+        expected[key] = (
+            record.subject_fingerprint,
+            record.evidence_digest,
+            record.payload_digest,
+            detail.action,
+            detail.outcome,
+        )
+    person_kinds = {"crm_deal_count", "golden_profile", "survivorship_override"}
+    observed: dict[tuple[str, str], tuple[str, str, str, str, str]] = {}
+    for value in values:
+        kind = required_str(value, "subject_kind")
+        if kind not in person_kinds:
+            continue
+        key = (kind, required_str(value, "subject_stable_id"))
+        observed[key] = (
+            required_str(value, "subject_fingerprint"),
+            required_str(value, "evidence_digest"),
+            required_str(value, "payload_digest"),
+            required_str(value, "action"),
+            required_str(value, "outcome"),
+        )
+    if (
+        len(observed) != sum(1 for value in values if value.get("subject_kind") in person_kinds)
+        or observed != expected
+    ):
+        raise RepairVerificationDriftError("acknowledged person disposition differs")
 
 
 def _validate_crm_deal_counts(

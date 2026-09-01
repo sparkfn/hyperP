@@ -90,12 +90,37 @@ def assert_current_context(
     expected: Iterable[FrozenContextSubject],
     current: Iterable[FrozenContextSubject],
 ) -> None:
-    current_values = tuple(current)
     expected_values = tuple(expected)
     expected_by_key = {(item.kind, item.stable_id): item.evidence for item in expected_values}
-    current_by_key = {(item.kind, item.stable_id): item.evidence for item in current_values}
+    current_values = tuple(current)
+    current_by_key: dict[tuple[str, str], Mapping[str, JsonValue]] = {}
+    for item in current_values:
+        key = (item.kind, item.stable_id)
+        evidence = dict(item.evidence)
+        frozen = expected_by_key.get(key)
+        if item.kind == "descendant" and frozen is not None:
+            if "retired_by_repair_mutation_id" not in frozen:
+                evidence.pop("retired_by_repair_mutation_id", None)
+        current_by_key[key] = evidence
     if len(current_by_key) != len(current_values) or current_by_key != expected_by_key:
         raise SecondarySubjectError("secondary context closure differs")
+
+
+def expected_post_repair_context(
+    expected: Iterable[FrozenContextSubject], mutation_id: str
+) -> tuple[FrozenContextSubject, ...]:
+    """Translate frozen #300 descendant evidence to the immutable #309 post-state."""
+    values: list[FrozenContextSubject] = []
+    for item in expected:
+        evidence = dict(item.evidence)
+        if item.kind == "descendant":
+            relationship_type = evidence.get("relationship_type")
+            was_active = evidence.get("relationship_is_active")
+            if relationship_type == "LINKED_TO" and was_active is True:
+                evidence["relationship_is_active"] = False
+                evidence["retired_by_repair_mutation_id"] = mutation_id
+        values.append(FrozenContextSubject(item.kind, item.stable_id, evidence))
+    return tuple(values)
 
 
 def override_entries(

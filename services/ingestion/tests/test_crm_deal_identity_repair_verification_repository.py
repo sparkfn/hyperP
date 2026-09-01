@@ -8,6 +8,7 @@ from src.graph.crm_deal_identity_repair_verification import (
     CrmDealIdentityRepairVerificationRepository,
 )
 from src.graph.crm_deal_identity_repair_verification_replay import (
+    _validate_replayed_person_dispositions,
     replay_acknowledged_verification,
 )
 from src.graph.queries import crm_deal_identity_repair_verification as queries
@@ -27,6 +28,8 @@ def test_outbox_claim_is_pending_cas_and_acknowledges_only_after_persistence() -
     assert queries.PERSIST_VERIFICATION.index(
         "MERGE (verification"
     ) < queries.PERSIST_VERIFICATION.index("state = 'acknowledged'")
+    assert "READ_EXACT_OUTBOX_STATE" in queries.__dict__
+    assert "state: 'acknowledged'" in queries.READ_ACKNOWLEDGED_VERIFICATION
 
 
 def test_negative_controls_are_supplied_as_parameters_not_refreshed_inventory() -> None:
@@ -78,6 +81,14 @@ def test_acknowledged_replay_rederives_state_without_write_helpers() -> None:
     assert "recompute_golden_profile_from_active_authority" not in source
     assert "mark_profile_analysis_dirty" not in source
     assert "append_identity_link_revisions" not in source
+    assert "build_person_details" in inspect.getsource(_validate_replayed_person_dispositions)
+
+
+def test_cas_loser_can_only_route_to_exact_acknowledged_read_only_replay() -> None:
+    source = inspect.getsource(CrmDealIdentityRepairVerificationRepository._verify)
+    assert "READ_EXACT_OUTBOX_STATE" in source
+    assert 'state["state"] == "acknowledged"' in source
+    assert "replay_acknowledged_verification" in source
 
 
 def test_pair_reconciliation_is_limited_to_authenticated_review_case_ids() -> None:

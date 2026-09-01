@@ -6,7 +6,9 @@ import json
 import os
 import time
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from threading import Barrier, BrokenBarrierError, Lock
 from typing import TypeVar, cast
 from urllib.parse import urlparse
 
@@ -14,15 +16,39 @@ import pytest
 from neo4j import Driver, GraphDatabase, ManagedTransaction, Session
 from src.crm_deal_identity_repair.inventory import collect_repair_inventory
 from src.crm_deal_identity_repair.models import RepairInventoryItem
+from src.crm_deal_identity_repair.verification_models import RepairVerificationCommand
 from src.graph.client import Neo4jClient
+from src.graph.crm_deal_identity_repair_verification import (
+    CrmDealIdentityRepairVerificationRepository,
+)
 from src.graph.crm_deal_identity_repair_verification_run import (
     canonical_source_record_pks_json,
     classify_negative_controls,
     negative_control_query_items,
 )
+from src.graph.crm_deal_identity_repair_verification_secondary import (
+    FrozenContextSubject,
+    assert_current_context,
+    expected_post_repair_context,
+)
 from src.graph.queries import crm_deal_identity_repair_verification as verification_queries
 from src.graph.queries.crm_deal_identity_repair_ledger import (
     CREATE_CRM_DEAL_REPAIR_LEDGER_SCHEMA,
+)
+from test_crm_deal_identity_repair_mutation_neo4j import (
+    _CONTROL as MUTATION_CONTROL,
+)
+from test_crm_deal_identity_repair_mutation_neo4j import (
+    _SOURCE as MUTATION_SOURCE,
+)
+from test_crm_deal_identity_repair_mutation_neo4j import (
+    _deactivate_child_contamination,
+    _inventory,
+    _seed_authority,
+    _seed_domain,
+)
+from test_crm_deal_identity_repair_mutation_neo4j import (
+    _repository as mutation_repository,
 )
 
 T = TypeVar("T")
@@ -42,6 +68,10 @@ class _Client:
     def execute_read(self, work: Callable[[ManagedTransaction], T]) -> T:
         with self._driver.session() as session:
             return session.execute_read(work)
+
+    def execute_write(self, work: Callable[[ManagedTransaction], T]) -> T:
+        with self._driver.session() as session:
+            return session.execute_write(work)
 
 
 @pytest.fixture
@@ -625,3 +655,175 @@ def test_negative_control_detects_stamp_in_authenticated_descendant_closure(
             """
         ).consume()
     assert _classify(neo4j_driver, descendant_item) == ("stamped",)
+
+
+def test_secondary_context_accepts_exact_retired_depth_one_and_two_descendants(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_negative_control(neo4j_driver)
+    with neo4j_driver.session() as session:
+        session.run(
+            """
+            MATCH (root:SourceRecord {source_record_pk: 'negative-pk'}),
+                  (owner:Person {person_id: 'person-negative'})
+            CREATE (first:SourceRecord {source_record_pk: 'child-one', source_record_id: 'one',
+              record_type: 'crm_history', lifecycle_status: 'active'})-[:CHILD_OF]->(root)
+            CREATE (second:SourceRecord {source_record_pk: 'child-two', source_record_id: 'two',
+              record_type: 'crm_history', lifecycle_status: 'active'})-[:CHILD_OF]->(first)
+            CREATE (first)-[:LINKED_TO {is_active: false,
+              retired_by_repair_mutation_id: 'mutation-a'}]->(owner)
+            CREATE (second)-[:LINKED_TO {is_active: false,
+              retired_by_repair_mutation_id: 'mutation-a'}]->(owner)
+            """
+        ).consume()
+        rows = tuple(
+            session.run(
+                verification_queries.READ_SECONDARY_CONTEXT,
+                source_record_pks=["negative-pk"],
+            )
+        )
+    current = tuple(
+        FrozenContextSubject(row["kind"], row["stable_id"], dict(row["evidence"])) for row in rows
+    )
+    frozen = (
+        FrozenContextSubject(
+            "descendant",
+            "child-one",
+            {
+                "record_type": "crm_history",
+                "source_record_pk": "child-one",
+                "source_record_id": "one",
+                "lifecycle_status": "active",
+                "relationship_type": "LINKED_TO",
+                "relationship_is_active": True,
+                "owner_person_id": "person-negative",
+            },
+        ),
+        FrozenContextSubject(
+            "descendant",
+            "child-two",
+            {
+                "record_type": "crm_history",
+                "source_record_pk": "child-two",
+                "source_record_id": "two",
+                "lifecycle_status": "active",
+                "relationship_type": "LINKED_TO",
+                "relationship_is_active": True,
+                "owner_person_id": "person-negative",
+            },
+        ),
+    )
+    assert_current_context(expected_post_repair_context(frozen, "mutation-a"), current)
+
+
+def test_concurrent_exact_verification_commits_once_then_replays_read_only(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=True)
+    _deactivate_child_contamination(neo4j_driver)
+    item, _ = _inventory(neo4j_driver)
+    mutation_command = _seed_authority(neo4j_driver, item)
+    mutation = mutation_repository(neo4j_driver).commit_atomic_mutation(mutation_command)
+    assert mutation.decision == "committed"
+    command = RepairVerificationCommand(
+        mutation_command.unit,
+        mutation_command.fence,
+        item,
+        MUTATION_SOURCE,
+        MUTATION_CONTROL,
+        "worker-a",
+        "verification-claim",
+    )
+    barrier = Barrier(2)
+    arrival_lock = Lock()
+    arrivals = 0
+
+    def _force_pending_claim_race(stage: str) -> None:
+        nonlocal arrivals
+        if stage != "after_bundle":
+            return
+        with arrival_lock:
+            arrivals += 1
+            if arrivals > 2:
+                raise AssertionError("Neo4j retried the forced pending-claim transaction")
+        try:
+            barrier.wait(timeout=10)
+        except BrokenBarrierError as exc:
+            raise AssertionError(
+                "forced pending-claim barrier did not receive both deliveries"
+            ) from exc
+
+    repository = CrmDealIdentityRepairVerificationRepository(
+        cast(Neo4jClient, _Client(neo4j_driver)), failpoint=_force_pending_claim_race
+    )
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: repository.verify_and_reconcile_unit(command), range(2)))
+    assert arrivals == 2
+    assert sorted(result.decision for result in results) == ["committed", "replayed"]
+    before = _state(neo4j_driver)
+    replay = repository.verify_and_reconcile_unit(command)
+    assert replay.decision == "replayed"
+    assert _state(neo4j_driver) == before
+
+
+def test_mutation_and_verification_retire_active_depth_one_and_two_descendants(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=True)
+    with neo4j_driver.session() as session:
+        session.run(
+            """
+            MATCH (graph_source:SourceSystem {source_key: 'bitrix_chat'}),
+                  (child:SourceRecord {source_record_pk: 'child-pk'}),
+                  (person:Person {person_id: 'person-a'})
+            CREATE (depth_two:SourceRecord {
+              source_record_pk: 'depth-two-pk', source_record_id: 'history-2',
+              source_record_version: '1', source_version_key: 'depth-two-v1',
+              source_instance_id: $source_instance_id, record_type: 'crm_history',
+              lifecycle_status: 'active', is_latest: true,
+              record_hash: 'eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee',
+              raw_payload: '{}', normalized_payload: '{}'
+            })-[:FROM_SOURCE]->(graph_source)
+            CREATE (depth_two)-[:CHILD_OF]->(child)
+            CREATE (depth_two)-[:LINKED_TO {
+              is_active: true, source_record_pk: 'depth-two-pk'
+            }]->(person)
+            """,
+            source_instance_id=MUTATION_SOURCE,
+        ).consume()
+    item, _ = _inventory(neo4j_driver)
+    mutation_command = _seed_authority(neo4j_driver, item)
+    mutation = mutation_repository(neo4j_driver).commit_atomic_mutation(mutation_command)
+    assert mutation.decision == "committed"
+    command = RepairVerificationCommand(
+        mutation_command.unit,
+        mutation_command.fence,
+        item,
+        MUTATION_SOURCE,
+        MUTATION_CONTROL,
+        "worker-a",
+        "descendant-verification-claim",
+    )
+    verification = CrmDealIdentityRepairVerificationRepository(
+        cast(Neo4jClient, _Client(neo4j_driver))
+    ).verify_and_reconcile_unit(command)
+    assert verification.decision == "committed"
+    with neo4j_driver.session() as session:
+        rows = tuple(
+            session.run(
+                """
+                MATCH (source:SourceRecord)-[link:LINKED_TO]->()
+                WHERE source.source_record_pk IN ['child-pk', 'depth-two-pk']
+                RETURN source.source_record_pk AS source_record_pk, link.is_active AS is_active,
+                  link.retired_by_repair_mutation_id AS retired_by_repair_mutation_id
+                ORDER BY source_record_pk
+                """
+            )
+        )
+    assert [
+        (row["source_record_pk"], row["is_active"], row["retired_by_repair_mutation_id"])
+        for row in rows
+    ] == [
+        ("child-pk", False, mutation_command.mutation_id),
+        ("depth-two-pk", False, mutation_command.mutation_id),
+    ]
