@@ -298,6 +298,7 @@ CALL {
     source_record_pk: support.source_record_pk, source_record_id: support.source_record_id,
     source_instance_id: support.source_instance_id, record_type: support.record_type,
     source_entity_type: support.source_entity_type,
+    source_entity_id: support.source_entity_id,
     identity_policy_version: support.identity_policy_version,
     lifecycle_status: support.lifecycle_status,
     identifier_type: identifier.identifier_type,

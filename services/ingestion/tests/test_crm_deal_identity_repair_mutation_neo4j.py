@@ -1097,7 +1097,17 @@ def test_barrier_concurrent_conflicting_commands_commit_once_and_reject_drift(
     _deactivate_child_contamination(neo4j_driver)
     item, _ = _inventory(neo4j_driver)
     command = _seed_authority(neo4j_driver, item)
-    conflicting_inventory = replace(item, graph_fingerprint="sha256:" + "b" * 64)
+    conflicting_inventory = RepairInventoryItem(
+        source_system=item.source_system,
+        source_record_id=item.source_record_id,
+        source_record_pk=item.source_record_pk,
+        deal_id=item.deal_id,
+        partition=item.partition,
+        repair_conditions=item.repair_conditions,
+        graph_fingerprint="sha256:" + "b" * 64,
+        stored_payload_fingerprint=item.stored_payload_fingerprint,
+        payload=item.payload,
+    )
     conflicting_unit = replace(
         command.unit,
         inventory_fingerprint=conflicting_inventory.graph_fingerprint,
