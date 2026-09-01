@@ -791,27 +791,58 @@ VERIFY_REPAIRED_MUTATION_POSTCONDITIONS = """
 MATCH (new:SourceRecord {source_record_pk: $new_source_record_pk})
 CALL {
   WITH new
-  OPTIONAL MATCH (new)-[link:LINKED_TO]->(:Person)
-  RETURN count(CASE WHEN link IS NOT NULL AND coalesce(link.is_active, true) THEN 1 END)
-      AS active_links,
-    count(CASE WHEN link IS NOT NULL AND link.is_active = false AND link.provisional = true THEN 1 END)
-      AS provisional_links,
-    count(CASE WHEN link IS NOT NULL AND coalesce(link.is_active, true)
-      AND coalesce(link.authoritative, true) THEN 1 END) AS authoritative_links
+  OPTIONAL MATCH (new)-[link:LINKED_TO]->(person:Person)
+  WHERE coalesce(link.is_active, true) = true
+     OR (link.is_active = false AND link.provisional = true)
+  RETURN collect(CASE WHEN link IS NULL THEN NULL ELSE {
+    endpoint: {person_id: person.person_id}, properties: properties(link)
+  } END) AS links
 }
 CALL {
   WITH new
-  OPTIONAL MATCH (:Person)-[projection:IDENTIFIED_BY|LIVES_AT|HAS_FACT]->()
+  OPTIONAL MATCH (person:Person)-[projection:IDENTIFIED_BY]->(identifier:Identifier)
   WHERE projection.source_record_pk = new.source_record_pk
     AND coalesce(projection.is_active, true) = true
-  RETURN count(projection) AS active_person_evidence
+  RETURN collect(CASE WHEN projection IS NULL THEN NULL ELSE {
+    person_id: person.person_id,
+    endpoint: {
+      identifier_type: identifier.identifier_type,
+      identifier_scope: identifier.identifier_scope,
+      normalized_value: identifier.normalized_value
+    },
+    properties: properties(projection)
+  } END) AS identified_by
 }
 CALL {
   WITH new
-  OPTIONAL MATCH (new)-[projection:DESCRIBES_ADDRESS]->()
-  WHERE coalesce(projection.is_active, true) = true
-  RETURN count(projection) AS active_source_evidence
+  OPTIONAL MATCH (person:Person)-[projection:LIVES_AT]->(address:Address)
+  WHERE projection.source_record_pk = new.source_record_pk
+    AND coalesce(projection.is_active, true) = true
+  RETURN collect(CASE WHEN projection IS NULL THEN NULL ELSE {
+    person_id: person.person_id,
+    endpoint: properties(address), properties: properties(projection)
+  } END) AS lives_at
 }
-RETURN new.lifecycle_status AS lifecycle_status, active_links, provisional_links,
-       authoritative_links, active_person_evidence + active_source_evidence AS active_evidence
+CALL {
+  WITH new
+  OPTIONAL MATCH (person:Person)-[projection:HAS_FACT]->(source:SourceRecord {
+    source_record_pk: new.source_record_pk
+  })
+  WHERE projection.source_record_pk = new.source_record_pk
+    AND coalesce(projection.is_active, true) = true
+  RETURN collect(CASE WHEN projection IS NULL THEN NULL ELSE {
+    person_id: person.person_id,
+    endpoint: {source_record_pk: source.source_record_pk}, properties: properties(projection)
+  } END) AS has_fact
+}
+CALL {
+  WITH new
+  OPTIONAL MATCH (new)-[projection:DESCRIBES_ADDRESS]->(address:Address)
+  WHERE coalesce(projection.is_active, true) = true
+  RETURN collect(CASE WHEN projection IS NULL THEN NULL ELSE {
+    endpoint: properties(address), properties: properties(projection)
+  } END) AS describes_address
+}
+RETURN properties(new) AS source_properties, links, identified_by, lives_at, has_fact,
+       describes_address
 """

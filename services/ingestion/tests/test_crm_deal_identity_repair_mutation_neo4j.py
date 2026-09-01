@@ -583,6 +583,63 @@ def test_exact_replay_rejects_repaired_desired_state_drift(
         repository.commit_atomic_mutation(command)
 
 
+def test_exact_replay_rejects_retargeted_authoritative_link_with_same_cardinality(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=True)
+    _deactivate_child_contamination(neo4j_driver)
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    repository = _repository(neo4j_driver)
+    committed = repository.commit_atomic_mutation(command)
+    assert committed.mutation is not None and committed.mutation.outcome == "applied"
+    with neo4j_driver.session() as session:
+        session.run(
+            """
+            MATCH (new:SourceRecord {repair_mutation_id: $mutation_id})-[link:LINKED_TO]->()
+            MATCH (other:Person {person_id: 'person-negative'})
+            WITH new, link, other, properties(link) AS link_properties
+            DELETE link
+            CREATE (new)-[replacement:LINKED_TO]->(other)
+            SET replacement = link_properties
+            """,
+            mutation_id=command.mutation_id,
+        ).consume()
+    with pytest.raises(RepairMutationDriftError, match="desired state changed"):
+        repository.commit_atomic_mutation(command)
+
+
+def test_exact_replay_rejects_replaced_identifier_projection_with_same_count(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=True)
+    _deactivate_child_contamination(neo4j_driver)
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    repository = _repository(neo4j_driver)
+    committed = repository.commit_atomic_mutation(command)
+    assert committed.mutation is not None and committed.mutation.outcome == "applied"
+    with neo4j_driver.session() as session:
+        session.run(
+            """
+            MATCH (person:Person {person_id: 'person-a'})
+                  -[projection:IDENTIFIED_BY {source_record_pk: $source_record_pk}]->()
+            WITH person, projection, properties(projection) AS projection_properties
+            LIMIT 1
+            CREATE (replacement_identifier:Identifier {
+              identifier_type: 'phone', identifier_scope: 'global',
+              normalized_value: '+6599999999'
+            })
+            CREATE (person)-[replacement:IDENTIFIED_BY]->(replacement_identifier)
+            SET replacement = projection_properties
+            DELETE projection
+            """,
+            source_record_pk=committed.mutation.new_source_record_pk,
+        ).consume()
+    with pytest.raises(RepairMutationDriftError, match="desired state changed"):
+        repository.commit_atomic_mutation(command)
+
+
 def test_concurrent_exact_attempts_produce_one_bundle_and_one_replay(
     neo4j_driver: Driver,
 ) -> None:
