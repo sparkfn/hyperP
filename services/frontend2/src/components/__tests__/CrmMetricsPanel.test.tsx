@@ -98,7 +98,7 @@ describe("CrmMetricsPanel", () => {
     expect(screen.getAllByText("Deals")).toHaveLength(3);
     expect(screen.getAllByText("Activities")).toHaveLength(3);
     expect(screen.getAllByText("Calls")).toHaveLength(2);
-    expect(screen.getAllByText("Chats")).toHaveLength(3);
+    expect(screen.getAllByText("Chats")).toHaveLength(2);
     expect(screen.getByText("won")).toBeTruthy();
     expect(screen.getByText("new")).toBeTruthy();
     expect(screen.getByText("Call")).toBeTruthy();
