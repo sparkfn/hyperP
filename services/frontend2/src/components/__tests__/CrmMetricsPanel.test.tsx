@@ -103,12 +103,10 @@ describe("CrmMetricsPanel", () => {
     expect(screen.getByText("new")).toBeTruthy();
     expect(screen.getByText("Call")).toBeTruthy();
     expect(screen.getByText("Fundbox")).toBeTruthy();
-    const entityHeader = screen.getByRole("columnheader", { name: "Entity" });
-    const dealsHeader = screen.getByRole("columnheader", { name: "Deals" });
-    expect(entityHeader.className).toContain("entityNameColumn");
-    expect(screen.getByText("Fundbox").className).toContain("entityNameColumn");
-    expect(dealsHeader.className).toContain("entityNumericColumn");
-    expect(screen.getByText("22").className).toContain("entityNumericColumn");
+    expect(screen.getByText("Fundbox").className).toContain("entityName");
+    expect(
+      screen.getByText("6 deals - 22 Activities - 3 Chats").className,
+    ).toContain("entitySummary");
     expect(screen.getByRole("region", { name: "CRM overview" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Recency" })).toBeTruthy();
     expect(screen.getByRole("heading", { name: "Breakdowns" })).toBeTruthy();

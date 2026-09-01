@@ -197,8 +197,9 @@ services:
       dockerfile: services/frontend2/Dockerfile
       args:
         NEXT_PUBLIC_TZ: ${TZ:-UTC}
-    cpus: 1.0
-    mem_limit: 1G
+    cpus: 2.0
+    mem_limit: 2G
+    restart: unless-stopped
     # Not exposed externally — all ingress goes through the nginx web service.
     environment:
       # Base includes the /api prefix; buildApiUrl prepends /app/v2 so
