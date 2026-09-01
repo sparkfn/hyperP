@@ -281,6 +281,17 @@ def mapping_candidate_identity(
     return authority.rollback_head_id, authority.rollback_head_digest
 
 
+def mapping_work_identity(
+    authority: MappingPrepareAuthority | MappingRollbackAuthority,
+) -> tuple[str, str]:
+    """Return the frozen mapping-work identity, preserving legacy rollback semantics."""
+    if isinstance(authority, MappingPrepareAuthority):
+        return authority.prepared_revision_id, authority.prepared_revision_digest
+    if authority.rollback_head_digest is None:
+        return authority.target_revision_id, authority.target_revision_digest
+    return authority.rollback_head_id, authority.rollback_head_digest
+
+
 def _validate_v2_mapping_activation_authority(
     authority: MappingPrepareAuthority | MappingRollbackAuthority,
 ) -> None:

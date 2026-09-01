@@ -16,7 +16,7 @@ from src.standalone_crm_census_models import (
 )
 from src.standalone_crm_census_requests import (
     canonical_authority_payload,
-    mapping_candidate_identity,
+    mapping_work_identity,
 )
 
 
@@ -83,11 +83,7 @@ def authority_revision(request: StandaloneCrmCensusRequest) -> str:
     if isinstance(request, MappingRollbackCensusRequest):
         # v1 rollback payloads identify the historical target; v2 records use
         # the newly prepared rollback candidate digest.
-        return (
-            request.authority.target_revision_digest
-            if request.authority.rollback_head_digest is None
-            else mapping_candidate_identity(request.authority)[1]
-        )
+        return mapping_work_identity(request.authority)[1]
     raise AssertionError("unreachable standalone census request")
 
 
@@ -135,7 +131,7 @@ def terminal_window_expectations(
     revision_digest = decoded.get("revision_digest")
     if not isinstance(revision_id, str) or not isinstance(revision_digest, str):
         raise StandaloneCrmCensusConflictError("stored mapping window is malformed")
-    expected_revision, expected_digest = mapping_candidate_identity(request.authority)
+    expected_revision, expected_digest = mapping_work_identity(request.authority)
     if revision_id != expected_revision or revision_digest != expected_digest:
         raise StandaloneCrmCensusConflictError("stored mapping window authority conflicts")
     return [

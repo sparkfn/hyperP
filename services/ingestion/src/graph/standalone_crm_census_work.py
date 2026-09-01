@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import asdict
 
 from neo4j import ManagedTransaction
@@ -49,6 +50,7 @@ from src.standalone_crm_census_models import (
     StandaloneCrmPublication,
     canonical_request_payload,
 )
+from src.standalone_crm_census_requests import mapping_work_identity
 
 
 class StandaloneCrmCensusWorkRepository(_StandaloneCrmCensusRepositoryBase):
@@ -396,13 +398,10 @@ class StandaloneCrmCensusWorkRepository(_StandaloneCrmCensusRepositoryBase):
         snapshot = self.runtime_snapshot(census_id)
         if snapshot is None or isinstance(snapshot.request, SourceSyncCensusRequest):
             return None
-        import uuid
-
-        from src.standalone_crm_census_requests import mapping_candidate_identity
         from src.standalone_crm_mapping_child import MAPPING_CHILD_TASK_NAME
 
         request = snapshot.request
-        candidate_id, candidate_digest = mapping_candidate_identity(request.authority)
+        candidate_id, candidate_digest = mapping_work_identity(request.authority)
         envelope = StandaloneCrmChildEnvelope(
             census_id,
             snapshot.generation,
