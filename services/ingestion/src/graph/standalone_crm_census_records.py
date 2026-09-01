@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 from src.graph.client import Neo4jClient
 from src.standalone_crm_census_models import (
@@ -14,7 +14,10 @@ from src.standalone_crm_census_models import (
     StandaloneCrmCensusRequest,
     StandaloneCrmStreamKind,
 )
-from src.standalone_crm_census_requests import mapping_candidate_identity
+from src.standalone_crm_census_requests import (
+    canonical_authority_payload,
+    mapping_candidate_identity,
+)
 
 
 @dataclass(frozen=True)
@@ -78,13 +81,19 @@ def authority_revision(request: StandaloneCrmCensusRequest) -> str:
     if isinstance(request, MappingPrepareCensusRequest):
         return request.authority.prepared_revision_digest
     if isinstance(request, MappingRollbackCensusRequest):
-        return mapping_candidate_identity(request.authority)[1]
+        # v1 rollback payloads identify the historical target; v2 records use
+        # the newly prepared rollback candidate digest.
+        return (
+            request.authority.target_revision_digest
+            if request.authority.rollback_head_digest is None
+            else mapping_candidate_identity(request.authority)[1]
+        )
     raise AssertionError("unreachable standalone census request")
 
 
 def authority_context(request: StandaloneCrmCensusRequest) -> str:
     """Canonical exact authority identity retained independently of its short revision."""
-    return json.dumps(asdict(request.authority), sort_keys=True, separators=(",", ":"))
+    return json.dumps(canonical_authority_payload(request), sort_keys=True, separators=(",", ":"))
 
 
 def terminal_window_expectations(
