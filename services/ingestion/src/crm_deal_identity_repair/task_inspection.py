@@ -12,6 +12,7 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol, cast
 
 from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json_bytes
+from src.crm_deal_identity_repair.control_models import CapturedTaskTopologyIdentity
 from src.crm_deal_identity_repair.digests import object_digest
 from src.models import JsonValue
 
@@ -111,7 +112,7 @@ def collect_absence_evidence(
     worker: WorkerInspector,
     broker: BrokerInspector,
     run_id: str,
-    control_instance_id: str,
+    captured_tasks: tuple[CapturedTaskTopologyIdentity, ...],
     boundary_digest: str,
     owner_id: str,
     token: str,
@@ -130,14 +131,14 @@ def collect_absence_evidence(
     if timeout_seconds < 1 or timeout_seconds > 60 or max_age_seconds < 1 or max_age_seconds > 300:
         raise ValueError("repair task inspection bounds are invalid")
     instant = now or datetime.now(UTC)
-    selectors = _selectors(run_id, control_instance_id)
+    selectors = _selectors(captured_tasks)
     observations = _canonical_observations(worker.inspect(timeout_seconds))
     broker_observations = _canonical_broker_observations(broker.inspect(selectors))
     responders = tuple(sorted(observations))
     if responders != expected_workers:
         raise RuntimeError("repair expected workers did not all respond")
-    if _has_affected_task(observations, selectors) or _has_affected_task(
-        broker_observations, selectors
+    if _has_affected_task(observations, captured_tasks) or _has_affected_task(
+        broker_observations, captured_tasks
     ):
         raise RuntimeError("repair task or broker delivery remains present")
     inspected_at = instant.isoformat()
@@ -204,9 +205,10 @@ def verify_absence_evidence(evidence: TaskAbsenceEvidence, *, secret: bytes, now
         now=now,
     ):
         return False
+    captured_tasks = _captured_tasks_from_selectors(evidence.selectors)
     return not _has_affected_task(
-        evidence.observations, evidence.selectors
-    ) and not _has_affected_task(evidence.broker_observations, evidence.selectors)
+        evidence.observations, captured_tasks
+    ) and not _has_affected_task(evidence.broker_observations, captured_tasks)
 
 
 class CeleryWorkerInspector:
@@ -252,15 +254,47 @@ class RedisCeleryBrokerInspector:
         return {"ready": ready, "unacked": unacked}
 
 
-def _selectors(run_id: str, control_instance_id: str) -> tuple[str, ...]:
-    """Return the exact run/control identities which a delivery must bind.
+def _selectors(captured_tasks: tuple[CapturedTaskTopologyIdentity, ...]) -> tuple[str, ...]:
+    """Return canonical selectors for the topology captured before the stop.
 
-    Celery's transport UUID is not a business selector.  Only task kwargs (or
-    a repair-specific header) identify the operation protected by this fence.
+    A repair ``run_id`` is a control-plane identity, not a Celery identity.
+    The task fence instead names each captured generation/logical/attempt tuple.
     """
-    if not run_id or not control_instance_id:
-        raise ValueError("repair task selectors must be non-empty")
-    return (f"control_instance_id={control_instance_id}", f"run_id={run_id}")
+    if len(set(captured_tasks)) != len(captured_tasks):
+        raise ValueError("captured task topology identities must be unique")
+    return tuple(sorted(identity.selector() for identity in captured_tasks))
+
+
+def _captured_tasks_from_selectors(
+    selectors: tuple[str, ...],
+) -> tuple[CapturedTaskTopologyIdentity, ...]:
+    identities: list[CapturedTaskTopologyIdentity] = []
+    for selector in selectors:
+        parts = tuple(part.split("=", 1) for part in selector.split(";"))
+        if any(len(part) != 2 for part in parts):
+            raise RuntimeError("task absence evidence selectors are malformed")
+        values = dict(parts)
+        if set(values) != {
+            "control_instance_id",
+            "generation_id",
+            "logical_run_id",
+            "attempt_generation",
+        }:
+            raise RuntimeError("task absence evidence selectors are malformed")
+        try:
+            identities.append(
+                CapturedTaskTopologyIdentity(
+                    values["control_instance_id"],
+                    values["generation_id"],
+                    values["logical_run_id"],
+                    int(values["attempt_generation"]),
+                )
+            )
+        except (TypeError, ValueError) as exc:
+            raise RuntimeError("task absence evidence selectors are malformed") from exc
+    if len(set(identities)) != len(identities):
+        raise RuntimeError("task absence evidence selectors are ambiguous")
+    return tuple(identities)
 
 
 def _canonical_observations(
@@ -289,8 +323,11 @@ def _canonical_broker_observations(
 
 
 def _has_affected_task(
-    observations: Mapping[str, tuple[dict[str, JsonValue], ...]], selectors: tuple[str, ...]
+    observations: Mapping[str, tuple[dict[str, JsonValue], ...]],
+    captured_tasks: tuple[CapturedTaskTopologyIdentity, ...],
 ) -> bool:
+    if not captured_tasks:
+        return False
     for tasks in observations.values():
         for task in tasks:
             name = task.get("name")
@@ -298,13 +335,24 @@ def _has_affected_task(
                 raise RuntimeError("task identity is unknown")
             if name not in _AFFECTED_TASKS:
                 continue
-            control_instance_id, run_id = _task_selectors(task)
-            if control_instance_id is None or run_id is None:
-                raise RuntimeError("task selector identity is unknown")
-            if (
-                f"control_instance_id={control_instance_id}" in selectors
-                and f"run_id={run_id}" in selectors
-            ):
+            identity = _task_identity(task)
+            matching = tuple(
+                captured
+                for captured in captured_tasks
+                if (
+                    captured.generation_id,
+                    captured.logical_run_id,
+                    captured.attempt_generation,
+                )
+                == (identity.generation_id, identity.logical_run_id, identity.attempt_generation)
+            )
+            if not matching:
+                continue
+            if identity.control_instance_id is None:
+                if any(item.control_instance_id != "legacy-default" for item in matching):
+                    raise RuntimeError("legacy task control selector is ambiguous")
+                return True
+            if any(item.control_instance_id == identity.control_instance_id for item in matching):
                 return True
     return False
 
@@ -358,33 +406,62 @@ def _redis_hash_inventory(client: object, key: str) -> tuple[dict[str, JsonValue
     return tuple(_decode_broker_delivery(value) for value in values.values())
 
 
-def _task_selectors(task: Mapping[str, JsonValue]) -> tuple[str | None, str | None]:
-    """Extract exact repair selectors from inspected Celery task metadata."""
+@dataclass(frozen=True)
+class _ObservedTaskIdentity:
+    control_instance_id: str | None
+    generation_id: str
+    logical_run_id: str
+    attempt_generation: int
+
+
+def _task_identity(task: Mapping[str, JsonValue]) -> _ObservedTaskIdentity:
+    """Extract task-delivery identities; aliases preserve deployed envelopes."""
     values: list[Mapping[str, JsonValue]] = [task]
-    kwargs = task.get("kwargs")
-    headers = task.get("headers")
-    if kwargs is not None:
-        if not isinstance(kwargs, dict):
-            raise RuntimeError("task kwargs are malformed")
-        values.append(kwargs)
-    if headers is not None:
-        if not isinstance(headers, dict):
-            raise RuntimeError("task headers are malformed")
-        values.append(headers)
-    control: str | None = None
-    run: str | None = None
-    for value in values:
-        candidate_control = value.get("control_instance_id")
-        candidate_run = value.get("repair_run_id", value.get("bitrix_generation_id"))
-        if isinstance(candidate_control, str):
-            if control is not None and control != candidate_control:
-                raise RuntimeError("task control selector is ambiguous")
-            control = candidate_control
-        if isinstance(candidate_run, str):
-            if run is not None and run != candidate_run:
-                raise RuntimeError("task run selector is ambiguous")
-            run = candidate_run
-    return control, run
+    for label in ("kwargs", "headers"):
+        nested = task.get(label)
+        if nested is not None:
+            if not isinstance(nested, dict):
+                raise RuntimeError(f"task {label} are malformed")
+            values.append(nested)
+    control = _single_text(values, ("control_instance_id",), required=False)
+    generation = _single_text(values, ("bitrix_generation_id", "generation_id"), required=True)
+    logical = _single_text(values, ("bitrix_logical_run_id", "logical_run_id"), required=True)
+    attempt = _single_integer(values, ("bitrix_attempt_generation", "attempt_generation"))
+    if generation is None or logical is None:
+        raise RuntimeError("task topology selector identity is unknown")
+    return _ObservedTaskIdentity(control, generation, logical, attempt)
+
+
+def _single_text(
+    values: list[Mapping[str, JsonValue]], keys: tuple[str, ...], *, required: bool
+) -> str | None:
+    candidates = [value[key] for value in values for key in keys if key in value]
+    if not candidates:
+        if required:
+            raise RuntimeError("task topology selector identity is unknown")
+        return None
+    if not all(isinstance(candidate, str) and candidate for candidate in candidates):
+        raise RuntimeError("task topology selector is malformed")
+    first = cast(str, candidates[0])
+    if any(candidate != first for candidate in candidates[1:]):
+        raise RuntimeError("task topology selector is ambiguous")
+    return first
+
+
+def _single_integer(values: list[Mapping[str, JsonValue]], keys: tuple[str, ...]) -> int:
+    candidates = [value[key] for value in values for key in keys if key in value]
+    if not candidates:
+        raise RuntimeError("task topology selector identity is unknown")
+    valid = all(
+        isinstance(candidate, int) and not isinstance(candidate, bool) and candidate >= 0
+        for candidate in candidates
+    )
+    if not valid:
+        raise RuntimeError("task topology selector is malformed")
+    first = cast(int, candidates[0])
+    if any(candidate != first for candidate in candidates[1:]):
+        raise RuntimeError("task topology selector is ambiguous")
+    return first
 
 
 def _decode_broker_delivery(value: object) -> dict[str, JsonValue]:

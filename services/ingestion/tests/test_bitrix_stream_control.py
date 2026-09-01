@@ -166,3 +166,11 @@ def test_stream_control_schema_and_query_atomically_coalesce_or_replace() -> Non
     )
     assert "WHEN replace_existing THEN 'replaced'" in ADMIT_OR_COALESCE_BITRIX_STREAM
     assert "ELSE 'coalesced'" in ADMIT_OR_COALESCE_BITRIX_STREAM
+
+
+def test_repair_fence_allows_only_stage_history_stream_admission() -> None:
+    query = ADMIT_OR_COALESCE_BITRIX_STREAM
+
+    assert "dispatch.block_reason = 'crm_deal_identity_repair_quiesce'" in query
+    assert "$stream_key = 'crm_stage_history'" in query
+    assert "stream_key IN ['crm_deals', 'crm_activities', 'openlines_conversations']" not in query

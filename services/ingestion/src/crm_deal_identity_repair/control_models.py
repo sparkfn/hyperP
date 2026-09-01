@@ -17,6 +17,40 @@ RepairPublicationState = Literal["preparing", "publishing", "confirmed"]
 
 
 @dataclass(frozen=True)
+class CapturedTaskTopologyIdentity:
+    """One task identity from the topology frozen before absence inspection.
+
+    ``run_id`` identifies the repair-control CAS and is deliberately absent
+    here: Celery deliveries identify a Bitrix generation, logical run, and
+    attempt instead.
+    """
+
+    control_instance_id: str
+    generation_id: str
+    logical_run_id: str
+    attempt_generation: int
+
+    def __post_init__(self) -> None:
+        for value, label in (
+            (self.control_instance_id, "task control instance"),
+            (self.generation_id, "task generation"),
+            (self.logical_run_id, "task logical run"),
+        ):
+            _identity(value, label)
+            if ";" in value or "=" in value:
+                raise ValueError(f"repair {label} contains a selector delimiter")
+        _nonnegative(self.attempt_generation, "task attempt generation")
+
+    def selector(self) -> str:
+        return (
+            f"control_instance_id={self.control_instance_id};"
+            f"generation_id={self.generation_id};"
+            f"logical_run_id={self.logical_run_id};"
+            f"attempt_generation={self.attempt_generation}"
+        )
+
+
+@dataclass(frozen=True)
 class RepairControlRequest:
     """One compare-and-set command identity supplied by an operator."""
 

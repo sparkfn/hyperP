@@ -198,9 +198,23 @@ def test_generation_publication_admission_precedes_canvas_apply(
             boundary_digest="sha256:boundary",
             configuration_digest="sha256:config",
             entries=(_entry("crm_deals"),),
+            publication_reservation=RepairPublicationReservation(
+                "reservation-admission", "legacy-default", "admission", "preparing", 1
+            ),
+            publication_gate=_PublicationGate(),
         )
 
     admission.assert_called_once()
+
+
+def test_generation_publication_requires_a_durable_repair_reservation() -> None:
+    with pytest.raises(ValueError, match="reservation and gate are required"):
+        dispatch_generation_canvas(
+            generation_id="corrective-1",
+            boundary_digest="sha256:boundary",
+            configuration_digest="sha256:config",
+            entries=(_entry("crm_deals"),),
+        )
 
 
 class _PublicationGate:

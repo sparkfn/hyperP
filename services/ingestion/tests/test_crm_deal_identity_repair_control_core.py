@@ -20,7 +20,11 @@ from src.crm_deal_identity_repair.approval_overlay import (
     ApprovalRow,
     verify_approval_overlay,
 )
-from src.crm_deal_identity_repair.control_models import RepairControlRequest, RepairDispatchLease
+from src.crm_deal_identity_repair.control_models import (
+    CapturedTaskTopologyIdentity,
+    RepairControlRequest,
+    RepairDispatchLease,
+)
 from src.crm_deal_identity_repair.models import RepairInventoryItem
 from src.crm_deal_identity_repair.task_inspection import (
     BrokerInspector,
@@ -33,6 +37,10 @@ from src.crm_deal_identity_repair.task_inspection import (
 DIGEST = "sha256:" + "a" * 64
 
 
+def _captured_tasks() -> tuple[CapturedTaskTopologyIdentity, ...]:
+    return (CapturedTaskTopologyIdentity("control-1", "generation-1", "logical-1", 7),)
+
+
 class _Workers:
     def inspect(self, timeout_seconds: int) -> dict[str, dict[str, tuple[dict[str, object], ...]]]:
         assert timeout_seconds == 10
@@ -41,7 +49,6 @@ class _Workers:
 
 class _Broker:
     def inspect(self, selectors: tuple[str, ...]) -> dict[str, tuple[dict[str, object], ...]]:
-        assert selectors
         return {"ready": (), "unacked": ()}
 
 
@@ -51,7 +58,7 @@ class _BrokerWithDelivery:
         self._inventory = inventory
 
     def inspect(self, selectors: tuple[str, ...]) -> dict[str, tuple[dict[str, object], ...]]:
-        assert selectors == ("control_instance_id=control-1", "run_id=run-1")
+        assert selectors
         return {
             "ready": (self._delivery,) if self._inventory == "ready" else (),
             "unacked": (self._delivery,) if self._inventory == "unacked" else (),
@@ -125,7 +132,7 @@ def test_absence_evidence_is_signed_fresh_and_bound() -> None:
         worker=_Workers(),
         broker=_Broker(),
         run_id="run-1",
-        control_instance_id="control-1",
+        captured_tasks=_captured_tasks(),
         boundary_digest=DIGEST,
         owner_id="owner-1",
         token="token-1",
@@ -219,14 +226,14 @@ def test_approval_overlay_rejects_tampering_noncanonical_and_wrong_binding(
 def test_broker_affected_delivery_blocks_absence(inventory: str) -> None:
     delivery = {
         "name": "src.tasks.run_ingestion_task",
-        "kwargs": {"control_instance_id": "control-1", "bitrix_generation_id": "run-1"},
+        "kwargs": _task_identity_payload(),
     }
     with pytest.raises(RuntimeError, match="broker delivery remains present"):
         collect_absence_evidence(
             worker=_Workers(),
             broker=_BrokerWithDelivery(delivery, inventory),
             run_id="run-1",
-            control_instance_id="control-1",
+            captured_tasks=_captured_tasks(),
             boundary_digest=DIGEST,
             owner_id="owner-1",
             token="token-1",
@@ -251,7 +258,7 @@ def test_broker_malformed_or_unbound_affected_delivery_fails_closed() -> None:
             worker=_Workers(),
             broker=_BrokerWithDelivery(malformed),
             run_id="run-1",
-            control_instance_id="control-1",
+            captured_tasks=_captured_tasks(),
             boundary_digest=DIGEST,
             owner_id="owner-1",
             token="token-1",
@@ -282,7 +289,11 @@ def test_redis_celery_envelope_decoder_rejects_malformed_payload() -> None:
 def test_complete_quiescence_query_requires_full_sealed_topology_and_empty_capture_is_safe() -> (
     None
 ):
-    from src.graph.queries.crm_deal_identity_repair_control import COMPLETE_QUIESCENCE
+    from src.graph.queries.crm_deal_identity_repair_control import (
+        CLAIM_REPAIR_DISPATCH,
+        COMPLETE_QUIESCENCE,
+        READ_REPAIR_TOPOLOGY_SNAPSHOT,
+    )
 
     assert "topology_json" in COMPLETE_QUIESCENCE
     assert "captured.checkpoint_ids" in COMPLETE_QUIESCENCE
@@ -294,6 +305,13 @@ def test_complete_quiescence_query_requires_full_sealed_topology_and_empty_captu
     assert "CALL {\n  WITH control\n  UNWIND $captures" in COMPLETE_QUIESCENCE
     assert "RETURN count(stream) AS superseded_count" in COMPLETE_QUIESCENCE
     assert "FAIL_EXACT_REPAIR_STALE_RUN" not in COMPLETE_QUIESCENCE
+    assert "existing.revision = $expected_revision + 1" in CLAIM_REPAIR_DISPATCH
+    assert "WHEN existing.revision = $expected_revision THEN control.revision + 1" in (
+        CLAIM_REPAIR_DISPATCH
+    )
+    assert "COUNT {" in COMPLETE_QUIESCENCE
+    assert "[(checkpoint:IngestionCheckpoint" not in READ_REPAIR_TOPOLOGY_SNAPSHOT
+    assert "[(stream:BitrixIngestionStream" not in READ_REPAIR_TOPOLOGY_SNAPSHOT
 
 
 class _EmptyTopologyRepository:
@@ -321,6 +339,12 @@ class _EmptyTopologyRepository:
         assert (control_instance_id, run_id, owner_id) == ("control-1", "run-1", "owner-1")
         self.stale_run_id = stale_run_id
         return DIGEST
+
+    def captured_task_identities(
+        self, *, run_id: str, control_instance_id: str, topology_digest: str
+    ) -> tuple[CapturedTaskTopologyIdentity, ...]:
+        assert (run_id, control_instance_id, topology_digest) == ("run-1", "control-1", DIGEST)
+        return ()
 
     def complete_quiescence(
         self,
@@ -390,19 +414,105 @@ class _WorkersWithTask:
         }
 
 
-@pytest.mark.parametrize("inventory", ("active", "reserved", "scheduled"))
-def test_worker_nested_kwargs_or_headers_preserve_exact_affected_selectors(inventory: str) -> None:
+class _TopologyInventory:
+    def __init__(self, inventory: str, task: dict[str, object]) -> None:
+        self._inventory = inventory
+        self._task = task
+
+    def worker(self) -> WorkerInspector:
+        worker_inventories = {"active", "reserved", "scheduled"}
+        worker_inventory = self._inventory if self._inventory in worker_inventories else "active"
+        task = self._task if self._inventory in worker_inventories else _unrelated_task()
+        return cast(WorkerInspector, _WorkersWithTask(worker_inventory, task))
+
+    def broker(self) -> BrokerInspector:
+        if self._inventory in {"ready", "unacked"}:
+            return cast(BrokerInspector, _BrokerWithDelivery(self._task, self._inventory))
+        return cast(BrokerInspector, _Broker())
+
+
+def _task_identity_payload(*, control_instance_id: str | None = "control-1") -> dict[str, object]:
+    values: dict[str, object] = {
+        "bitrix_generation_id": "generation-1",
+        "logical_run_id": "logical-1",
+        "attempt_generation": 7,
+    }
+    if control_instance_id is not None:
+        values["control_instance_id"] = control_instance_id
+    return values
+
+
+def _unrelated_task() -> dict[str, object]:
+    return {
+        "name": "src.tasks.run_ingestion_task",
+        "kwargs": {
+            "control_instance_id": "other-control",
+            "bitrix_generation_id": "other-generation",
+            "logical_run_id": "other-logical",
+            "attempt_generation": 8,
+        },
+    }
+
+
+@pytest.mark.parametrize("inventory", ("active", "reserved", "scheduled", "ready", "unacked"))
+def test_every_task_inventory_blocks_the_exact_captured_topology(inventory: str) -> None:
     task = {
         "name": "src.tasks.run_ingestion_task",
-        "kwargs": {"control_instance_id": "control-1", "bitrix_generation_id": "run-1"},
+        "kwargs": _task_identity_payload(),
         "headers": {"trace": {"task": "repair"}},
     }
     with pytest.raises(RuntimeError, match="task or broker delivery remains present"):
         collect_absence_evidence(
-            worker=cast(WorkerInspector, _WorkersWithTask(inventory, task)),
-            broker=cast(BrokerInspector, _Broker()),
-            run_id="run-1",
-            control_instance_id="control-1",
+            worker=_TopologyInventory(inventory, task).worker(),
+            broker=_TopologyInventory(inventory, task).broker(),
+            run_id="repair-run-is-not-generation-1",
+            captured_tasks=_captured_tasks(),
+            boundary_digest=DIGEST,
+            owner_id="owner-1",
+            token="token-1",
+            dispatch_revision=1,
+            topology_digest=DIGEST,
+            expected_workers=("worker-a",),
+            timeout_seconds=10,
+            max_age_seconds=60,
+            key_id="key-1",
+            secret=b"secret",
+            now=datetime.now(UTC),
+        )
+
+
+def test_legacy_delivery_without_control_id_is_precise_or_fails_closed() -> None:
+    legacy_topology = (
+        CapturedTaskTopologyIdentity("legacy-default", "generation-1", "logical-1", 7),
+    )
+    legacy_delivery = {
+        "name": "src.tasks.run_ingestion_task",
+        "kwargs": _task_identity_payload(control_instance_id=None),
+    }
+    with pytest.raises(RuntimeError, match="delivery remains present"):
+        collect_absence_evidence(
+            worker=_Workers(),
+            broker=_BrokerWithDelivery(legacy_delivery),
+            run_id="repair-run-is-not-generation-1",
+            captured_tasks=legacy_topology,
+            boundary_digest=DIGEST,
+            owner_id="owner-1",
+            token="token-1",
+            dispatch_revision=1,
+            topology_digest=DIGEST,
+            expected_workers=("worker-a",),
+            timeout_seconds=10,
+            max_age_seconds=60,
+            key_id="key-1",
+            secret=b"secret",
+            now=datetime.now(UTC),
+        )
+    with pytest.raises(RuntimeError, match="legacy task control selector is ambiguous"):
+        collect_absence_evidence(
+            worker=_Workers(),
+            broker=_BrokerWithDelivery(legacy_delivery),
+            run_id="repair-run-is-not-generation-1",
+            captured_tasks=_captured_tasks(),
             boundary_digest=DIGEST,
             owner_id="owner-1",
             token="token-1",
@@ -420,14 +530,19 @@ def test_worker_nested_kwargs_or_headers_preserve_exact_affected_selectors(inven
 def test_worker_unrelated_and_malformed_nested_tasks_are_distinguished() -> None:
     unrelated = {
         "name": "src.tasks.run_ingestion_task",
-        "kwargs": {"control_instance_id": "other-control", "bitrix_generation_id": "other-run"},
+        "kwargs": {
+            "control_instance_id": "other-control",
+            "bitrix_generation_id": "other-generation",
+            "logical_run_id": "other-logical",
+            "attempt_generation": 8,
+        },
         "headers": {"origin": "other"},
     }
     evidence = collect_absence_evidence(
         worker=cast(WorkerInspector, _WorkersWithTask("active", unrelated)),
         broker=cast(BrokerInspector, _Broker()),
         run_id="run-1",
-        control_instance_id="control-1",
+        captured_tasks=_captured_tasks(),
         boundary_digest=DIGEST,
         owner_id="owner-1",
         token="token-1",
@@ -448,7 +563,7 @@ def test_worker_unrelated_and_malformed_nested_tasks_are_distinguished() -> None
             worker=cast(WorkerInspector, _WorkersWithTask("scheduled", malformed)),
             broker=cast(BrokerInspector, _Broker()),
             run_id="run-1",
-            control_instance_id="control-1",
+            captured_tasks=_captured_tasks(),
             boundary_digest=DIGEST,
             owner_id="owner-1",
             token="token-1",

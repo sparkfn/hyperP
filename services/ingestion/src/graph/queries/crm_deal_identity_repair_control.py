@@ -27,9 +27,13 @@ WHERE unsettled = 0
     OR
     (existing IS NOT NULL AND existing.owner_id = $owner_id AND existing.token = $token
       AND existing.state IN ['quiescing', 'quiesced', 'allocated', 'paused']
-      AND existing.revision = $expected_revision
       AND dispatch.repair_run_id = $run_id AND dispatch.repair_owner_id = $owner_id
-      AND dispatch.repair_token = $token AND dispatch.repair_revision = $expected_revision)
+      AND dispatch.repair_token = $token
+      AND (
+        (existing.revision = $expected_revision AND dispatch.repair_revision = $expected_revision)
+        OR (existing.revision = $expected_revision + 1
+          AND dispatch.repair_revision = $expected_revision + 1)
+      ))
   )
 MERGE (control:CrmDealRepairControl {run_id: $run_id})
 ON CREATE SET control.repair_id = $repair_id, control.control_instance_id = $control_instance_id,
@@ -38,7 +42,11 @@ ON CREATE SET control.repair_id = $repair_id, control.control_instance_id = $con
 WITH dispatch, control, existing
 WHERE control.repair_id = $repair_id AND control.control_instance_id = $control_instance_id
   AND control.owner_id = $owner_id AND control.token = $token AND control.boundary_digest = $boundary_digest
-SET control.revision = CASE WHEN existing IS NULL THEN control.revision ELSE control.revision + 1 END,
+SET control.revision = CASE
+  WHEN existing IS NULL THEN control.revision
+  WHEN existing.revision = $expected_revision THEN control.revision + 1
+  ELSE control.revision
+END,
     control.state = CASE WHEN control.state = 'paused' THEN 'paused' ELSE 'quiescing' END,
     control.updated_at = datetime(),
     dispatch.blocked = true, dispatch.block_reason = 'crm_deal_identity_repair_quiesce',
@@ -68,9 +76,12 @@ WHERE capture.captures_json = $topology_json
     MATCH (reservation:CrmDealRepairPublicationReservation {control_instance_id: $control_instance_id})
     WHERE reservation.state IN ['preparing', 'publishing']
   }
-  AND size($captures) = size([(stream:BitrixIngestionStream {
-    source_key: 'bitrix_chat', control_instance_id: $control_instance_id, status: 'active'
-  }) WHERE stream.stream_key IN ['crm_deals', 'crm_activities', 'openlines_conversations'] | stream])
+  AND size($captures) = COUNT {
+    MATCH (stream:BitrixIngestionStream {
+      source_key: 'bitrix_chat', control_instance_id: $control_instance_id, status: 'active'
+    })
+    WHERE stream.stream_key IN ['crm_deals', 'crm_activities', 'openlines_conversations']
+  }
   AND all(captured IN $captures WHERE EXISTS {
     MATCH (stream:BitrixIngestionStream {source_key: 'bitrix_chat',
       control_instance_id: $control_instance_id, stream_key: captured.stream_key,
@@ -82,9 +93,11 @@ WHERE capture.captures_json = $topology_json
     MATCH (attempt:IngestRun {ingest_run_id: captured.ingest_run_id,
       control_instance_id: $control_instance_id, generation: captured.attempt_generation,
       status: captured.attempt_status})
-    WHERE size(captured.checkpoint_ids) = size([(checkpoint:IngestionCheckpoint {
-        control_instance_id: $control_instance_id, logical_run_id: captured.logical_run_id
-      }) | checkpoint])
+    WHERE size(captured.checkpoint_ids) = COUNT {
+        MATCH (:IngestionCheckpoint {
+          control_instance_id: $control_instance_id, logical_run_id: captured.logical_run_id
+        })
+      }
       AND all(checkpoint_id IN captured.checkpoint_ids WHERE EXISTS {
         MATCH (:IngestionCheckpoint {control_instance_id: $control_instance_id,
           logical_run_id: captured.logical_run_id, checkpoint_id: checkpoint_id})
@@ -105,8 +118,9 @@ WHERE capture.captures_json = $topology_json
           AND fence.fencing_token = captured_fence.fencing_token
       })
   })
-  AND size($publications) = size([(reservation:CrmDealRepairPublicationReservation {
-    control_instance_id: $control_instance_id}) | reservation])
+  AND size($publications) = COUNT {
+    MATCH (:CrmDealRepairPublicationReservation {control_instance_id: $control_instance_id})
+  }
   AND all(publication IN $publications WHERE EXISTS {
     MATCH (reservation:CrmDealRepairPublicationReservation {
       control_instance_id: $control_instance_id, publication_key: publication.publication_key,
@@ -139,8 +153,9 @@ WHERE capture.captures_json = $topology_json
         MATCH (:IngestionLogicalRun {control_instance_id: $control_instance_id,
           logical_run_id: logical_run_id})-[:HAS_ATTEMPT|ACTIVE_ATTEMPT]->(stale)
       })
-      AND size($stale_snapshot.checkpoint_ids) = size([(checkpoint:IngestionCheckpoint {
-        control_instance_id: $control_instance_id})-[:PRODUCED_BY]->(stale) | checkpoint])
+      AND size($stale_snapshot.checkpoint_ids) = COUNT {
+        MATCH (:IngestionCheckpoint {control_instance_id: $control_instance_id})-[:PRODUCED_BY]->(stale)
+      }
       AND all(checkpoint_id IN $stale_snapshot.checkpoint_ids WHERE EXISTS {
         MATCH (:IngestionCheckpoint {control_instance_id: $control_instance_id,
           checkpoint_id: checkpoint_id})-[:PRODUCED_BY]->(stale)
@@ -153,8 +168,9 @@ WHERE capture.captures_json = $topology_json
         MATCH (foreign:IngestionCheckpoint)-[:PRODUCED_BY]->(stale)
         WHERE foreign.control_instance_id <> $control_instance_id
       }
-      AND size($stale_snapshot.streams) = size([(stream:BitrixIngestionStream {
-        ingest_run_id: $stale_run_id}) | stream])
+      AND size($stale_snapshot.streams) = COUNT {
+        MATCH (:BitrixIngestionStream {ingest_run_id: $stale_run_id})
+      }
       AND all(captured_stream IN $stale_snapshot.streams WHERE EXISTS {
         MATCH (:BitrixIngestionStream {source_key: 'bitrix_chat',
           control_instance_id: $control_instance_id, stream_key: captured_stream.stream_key,
@@ -241,13 +257,18 @@ CALL {
     control_instance_id: $control_instance_id})
   MATCH (attempt:IngestRun {ingest_run_id: stream.ingest_run_id,
     control_instance_id: $control_instance_id, generation: stream.attempt_generation})
+  CALL {
+    WITH logical
+    OPTIONAL MATCH (checkpoint:IngestionCheckpoint {control_instance_id: $control_instance_id,
+      logical_run_id: logical.logical_run_id})
+    RETURN collect(checkpoint.checkpoint_id) AS checkpoint_ids
+  }
   RETURN collect({
     stream_key: stream.stream_key, logical_run_id: stream.logical_run_id,
     ingest_run_id: stream.ingest_run_id, attempt_generation: stream.attempt_generation,
     stream_generation: stream.stream_generation, fencing_token: stream.fencing_token,
     attempt_status: attempt.status,
-    checkpoint_ids: [(checkpoint:IngestionCheckpoint {control_instance_id: $control_instance_id,
-      logical_run_id: logical.logical_run_id}) | checkpoint.checkpoint_id],
+    checkpoint_ids: checkpoint_ids,
     continuation_ids: [(logical)-[:HAS_CONTINUATION|CONTINUES_AS]->(continuation:IngestionLogicalRun {
       control_instance_id: $control_instance_id}) | continuation.logical_run_id],
     fences: [(generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id})
@@ -270,24 +291,37 @@ CALL {
 CALL {
   WITH dispatch
   OPTIONAL MATCH (stale:IngestRun {ingest_run_id: $stale_run_id})
+  WITH collect(stale) AS stale_runs
+  WITH stale_runs, CASE WHEN size(stale_runs) = 0 THEN NULL ELSE stale_runs[0] END AS stale
   WITH stale, CASE
-    WHEN stale IS NULL THEN 'absent'
+    WHEN size(stale_runs) = 0 THEN 'absent'
+    WHEN size(stale_runs) > 1 THEN 'ambiguous'
     WHEN NOT EXISTS { MATCH (:IngestionLogicalRun)-[:HAS_ATTEMPT|ACTIVE_ATTEMPT]->(stale) }
       AND NOT EXISTS { MATCH (:IngestionCheckpoint)-[:PRODUCED_BY]->(stale) } THEN 'orphan'
     WHEN stale.control_instance_id = $control_instance_id THEN 'owned'
     ELSE 'ambiguous'
   END AS state
+  CALL {
+    WITH stale
+    OPTIONAL MATCH (checkpoint:IngestionCheckpoint {control_instance_id: $control_instance_id})
+      -[:PRODUCED_BY]->(stale)
+    RETURN collect(checkpoint.checkpoint_id) AS checkpoint_ids
+  }
+  CALL {
+    WITH stale
+    OPTIONAL MATCH (stream:BitrixIngestionStream {ingest_run_id: $stale_run_id})
+    RETURN [item IN collect(CASE WHEN stream IS NULL THEN NULL ELSE {
+      stream_key: stream.stream_key, logical_run_id: stream.logical_run_id,
+      attempt_generation: stream.attempt_generation, stream_generation: stream.stream_generation,
+      fencing_token: stream.fencing_token, status: stream.status
+    } END) WHERE item IS NOT NULL] AS streams
+  }
   RETURN {
     state: state, control_instance_id: stale.control_instance_id, status: stale.status,
     logical_run_ids: [(logical:IngestionLogicalRun {control_instance_id: $control_instance_id})
       -[:HAS_ATTEMPT|ACTIVE_ATTEMPT]->(stale) | logical.logical_run_id],
-    checkpoint_ids: [(checkpoint:IngestionCheckpoint {control_instance_id: $control_instance_id})
-      -[:PRODUCED_BY]->(stale) | checkpoint.checkpoint_id],
-    streams: [(stream:BitrixIngestionStream {ingest_run_id: $stale_run_id}) | {
-      stream_key: stream.stream_key, logical_run_id: stream.logical_run_id,
-      attempt_generation: stream.attempt_generation, stream_generation: stream.stream_generation,
-      fencing_token: stream.fencing_token, status: stream.status
-    }],
+    checkpoint_ids: checkpoint_ids,
+    streams: streams,
     continuations: [(logical:IngestionLogicalRun {control_instance_id: $control_instance_id})
       -[:HAS_ATTEMPT|ACTIVE_ATTEMPT]->(stale) | {
         logical_run_id: logical.logical_run_id,
@@ -366,12 +400,18 @@ RETURN control.control_instance_id AS control_instance_id, control.run_id AS run
 ALLOCATE_REPAIR_UNITS = """
 MATCH (run:CrmDealRepairRun {repair_id: $repair_id, run_id: $run_id, status: 'qualified',
   boundary_digest: $boundary_digest, execution_allowed: false})
+MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', control_instance_id: run.control_instance_id})
+SET dispatch.repair_allocation_lock = coalesce(dispatch.repair_allocation_lock, 0) + 1
+WITH run, dispatch
 MATCH (control:CrmDealRepairControl {run_id: $run_id, owner_id: $owner_id, token: $token,
   revision: $expected_revision, boundary_digest: $boundary_digest})
-MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', control_instance_id: control.control_instance_id,
-  blocked: true, repair_run_id: $run_id, repair_owner_id: $owner_id, repair_token: $token,
-  repair_revision: $expected_revision})
-WHERE control.state IN ['quiesced', 'allocated']
+WHERE dispatch.blocked = true
+  AND dispatch.repair_run_id = $run_id
+  AND dispatch.repair_owner_id = $owner_id
+  AND dispatch.repair_token = $token
+  AND dispatch.repair_revision = $expected_revision
+  AND control.control_instance_id = run.control_instance_id
+  AND control.state IN ['quiesced', 'allocated']
   AND control.proof_digest = $proof_digest AND control.proof_expires_at > datetime()
   AND run.inventory_digest = $actual_inventory_digest
   AND run.inventory_row_count = $actual_inventory_row_count
@@ -449,7 +489,9 @@ RETURN run.run_id AS run_id, run.status AS qualification_status, control.state A
 
 READ_REPAIR_CONTROL_PROOF = """
 MATCH (control:CrmDealRepairControl {run_id: $run_id, owner_id: $owner_id, token: $token,
-  revision: $revision, state: 'quiesced'})
+  revision: $revision})
+WHERE control.state IN ['quiesced', 'allocated']
+  AND control.proof_expires_at > datetime()
 RETURN control.proof_digest AS proof_digest
 """
 

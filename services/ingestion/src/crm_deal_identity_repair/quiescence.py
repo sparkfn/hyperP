@@ -6,7 +6,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Protocol
 
-from src.crm_deal_identity_repair.control_models import RepairControlRequest, RepairDispatchLease
+from src.crm_deal_identity_repair.control_models import (
+    CapturedTaskTopologyIdentity,
+    RepairControlRequest,
+    RepairDispatchLease,
+)
 from src.crm_deal_identity_repair.task_inspection import (
     BrokerInspector,
     TaskAbsenceEvidence,
@@ -23,6 +27,9 @@ class QuiescenceRepository(Protocol):
     def request_stop_topology(
         self, *, control_instance_id: str, run_id: str, owner_id: str, stale_run_id: str
     ) -> str: ...
+    def captured_task_identities(
+        self, *, run_id: str, control_instance_id: str, topology_digest: str
+    ) -> tuple[CapturedTaskTopologyIdentity, ...]: ...
     def complete_quiescence(
         self,
         request: RepairControlRequest,
@@ -75,11 +82,16 @@ class RepairQuiescenceService:
             owner_id=request.owner_id,
             stale_run_id=stale_run_id,
         )
+        captured_tasks = self._repository.captured_task_identities(
+            run_id=request.run_id,
+            control_instance_id=control_instance_id,
+            topology_digest=topology_digest,
+        )
         evidence = collect_absence_evidence(
             worker=self._worker,
             broker=self._broker,
             run_id=request.run_id,
-            control_instance_id=control_instance_id,
+            captured_tasks=captured_tasks,
             boundary_digest=boundary_digest,
             owner_id=request.owner_id,
             token=request.token,

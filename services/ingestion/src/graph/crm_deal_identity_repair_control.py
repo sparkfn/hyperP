@@ -12,6 +12,7 @@ from neo4j import ManagedTransaction
 
 from src.crm_deal_identity_repair.allocation import AllocationPlan
 from src.crm_deal_identity_repair.control_models import (
+    CapturedTaskTopologyIdentity,
     RepairControlRequest,
     RepairControlState,
     RepairControlStatus,
@@ -82,6 +83,10 @@ class CrmDealRepairControlRepository:
 
         if not verify_absence_evidence(evidence, secret=proof_secret, now=datetime.now(UTC)):
             raise RuntimeError("repair task absence evidence failed final authentication")
+        if evidence.topology_digest != topology_digest:
+            raise RuntimeError(
+                "repair task absence evidence topology does not match final quiescence"
+            )
         payload = json.dumps(evidence.payload(), sort_keys=True, separators=(",", ":"))
 
         def work(tx: ManagedTransaction) -> RepairDispatchLease:
@@ -302,6 +307,49 @@ class CrmDealRepairControlRepository:
             return digest
 
         return self._client.execute_write(work)
+
+    def captured_task_identities(
+        self, *, run_id: str, control_instance_id: str, topology_digest: str
+    ) -> tuple[CapturedTaskTopologyIdentity, ...]:
+        def work(tx: ManagedTransaction) -> tuple[CapturedTaskTopologyIdentity, ...]:
+            record = tx.run(
+                READ_REPAIR_TOPOLOGY_CAPTURE,
+                run_id=run_id,
+                control_instance_id=control_instance_id,
+                topology_digest=topology_digest,
+            ).single()
+            if record is None or not isinstance(record["captures_json"], str):
+                raise RuntimeError("repair topology capture is missing")
+            decoded = json.loads(record["captures_json"])
+            captures = decoded.get("captures") if isinstance(decoded, dict) else None
+            if not isinstance(captures, list):
+                raise RuntimeError("repair topology capture is malformed")
+            identities: set[CapturedTaskTopologyIdentity] = set()
+            for capture in captures:
+                if not isinstance(capture, dict):
+                    raise RuntimeError("repair topology capture is malformed")
+                logical_run_id = capture.get("logical_run_id")
+                attempt_generation = capture.get("attempt_generation")
+                fences = capture.get("fences")
+                if (
+                    not isinstance(logical_run_id, str)
+                    or not isinstance(attempt_generation, int)
+                    or isinstance(attempt_generation, bool)
+                    or not isinstance(fences, list)
+                ):
+                    raise RuntimeError("repair task topology capture is malformed")
+                for fence in fences:
+                    generation_id = fence.get("generation_id") if isinstance(fence, dict) else None
+                    if not isinstance(generation_id, str):
+                        raise RuntimeError("repair task generation capture is malformed")
+                    identities.add(
+                        CapturedTaskTopologyIdentity(
+                            control_instance_id, generation_id, logical_run_id, attempt_generation
+                        )
+                    )
+            return tuple(sorted(identities, key=lambda identity: identity.selector()))
+
+        return self._client.execute_read(work)
 
     @staticmethod
     def _read_actual_boundary(
