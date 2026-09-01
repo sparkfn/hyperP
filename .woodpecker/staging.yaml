@@ -90,5 +90,5 @@ steps:
           -o StrictHostKeyChecking=yes \
           -o UserKnownHostsFile="$${ssh_dir}/known_hosts" \
           "$${HYPERP_STAGING_SSH_USER}@$${HYPERP_STAGING_SSH_HOST}" \
-          bash -s -- "$${CI_COMMIT_SHA}" "$${health_url_b64}" \
+          bash -s -- "$${CI_COMMIT_SHA}" "$${health_url_b64}" skip \
           < scripts/deploy/hyperp-staging.sh
