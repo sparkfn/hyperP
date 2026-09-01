@@ -5,7 +5,7 @@ set -euo pipefail
 command_name=${1:-}
 repo_dir=${STAGING_REPO_DIR:-$(pwd)}
 compose_file=${STAGING_COMPOSE_FILE:-.docker/staging/docker-compose.yml}
-compose_project=${STAGING_COMPOSE_PROJECT:-stg-hyperp}
+compose_project=${STAGING_COMPOSE_PROJECT:-hyperp-ada-asia}
 marker="$repo_dir/.lifecycle-worker-paused"
 
 cd "$repo_dir"

@@ -3,7 +3,7 @@
 ## Tracked staging Compose contract
 
 `.docker/staging/docker-compose.yml` is the tracked, authoritative Compose
-contract for the `stg-hyperp` deployment. Operators must not substitute an
+contract for the `hyperp-ada-asia` deployment. Operators must not substitute an
 untracked host Compose file.
 
 `services/api/tests/test_compose_contract.py` parses the root and staging files,
@@ -79,6 +79,61 @@ ACTUAL_SHA256="$(sha256sum "$COMPOSE_PATH" | awk '{print toupper($1)}')"
 test "$ACTUAL_SHA256" = "$CANONICAL_SHA256"
 ```
 
+## Woodpecker staging deployment
+
+Pushes to `staging` are deployed by `.woodpecker/staging.yaml`. Pull requests and
+pushes to `main` remain validation-only; they do not receive deployment secrets
+or access the staging host. The staging pipeline follows the fail-closed pattern
+used by `sparkfn/autocollect-backend`:
+
+1. validate the deployment and lifecycle-guard shell syntax;
+2. cross the container-to-host boundary with strict pipeline-managed SSH;
+3. pass the exact full `CI_COMMIT_SHA` to
+   `scripts/deploy/hyperp-staging.sh`;
+4. lock, fast-forward, selectively rebuild, verify, and record the deployed SHA.
+
+The CI checkout and staging checkout are both on `dev211` under `/home/docker`:
+
+```text
+/home/docker/ci.sparkfn.io
+/home/docker/hyperp.ada.asia/.docker/staging
+```
+
+From the CI workspace, staging is `../hyperp.ada.asia/.docker/staging`; from
+staging, CI is `../../../ci.sparkfn.io`. They are four filesystem edges apart.
+The SSH connection is only the Woodpecker-container-to-host execution boundary;
+no developer workstation, Support-repository proxy, or external deployment host
+is part of the path.
+
+Configure these push-only Woodpecker repository secrets without storing their
+values in Git:
+
+- `hyperp_staging_ssh_host`
+- `hyperp_staging_ssh_port`
+- `hyperp_staging_ssh_user`
+- `hyperp_staging_ssh_key_b64`
+- `hyperp_staging_ssh_known_hosts`
+- `hyperp_staging_health_url`
+
+The deployment script requires the persistent checkout to be clean and on
+`staging`. It fetches the configured `origin`, requires `origin/staging` to equal
+the pipeline SHA, requires that SHA to be contained in `origin/main`, and permits
+only a fast-forward. This enforces the repository rule that `main` must never be
+behind `staging`.
+
+The script uses the canonical `hyperp-ada-asia` Compose project, preserves the
+lifecycle pause marker, rebuilds only services whose code or build inputs changed,
+recreates services for relevant Compose configuration changes without rebuilding
+their images, retains invariant checks, waits for worker stability, verifies
+internal and external health, and atomically records the successful SHA in the
+ignored staging data directory at
+`.docker/staging/data/deployed-revision`.
+
+Rollback is forward-only: revert the faulty change on `main`, allow MAIN CI to
+pass, then promote that new revert commit to `staging`. Do not force-push or move
+`staging` behind `main`. The normal staging pipeline then performs the same
+deployment and verification gates for the revert commit.
+
 ## Lifecycle worker pause and resume
 
 The lifecycle worker consumes reconciliation and deferred KNOWS materialization.
@@ -95,7 +150,7 @@ STAGING_REPO_DIR=/path/to/hyperP scripts/lifecycle-worker-control.sh resume
 `.docker/staging/docker-compose.yml`. Relative Compose paths are resolved from
 `STAGING_REPO_DIR`.
 
-All staging Compose operations use the canonical `stg-hyperp` project.
+All staging Compose operations use the canonical `hyperp-ada-asia` project.
 `STAGING_COMPOSE_PROJECT` may override it for an isolated test checkout, but
 operators and deployment automation must not rely on Compose's directory-derived
 default because that can create duplicate workers.
