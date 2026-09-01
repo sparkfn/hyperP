@@ -97,6 +97,10 @@ def test_completion_query_authorizes_ledger_integrity_atomically() -> None:
     assert "entity_keys <> association_entity_keys" in query
     assert "target_relationship_kinds <> association_relationship_kinds" in query
     assert "size(input.input_digest) <> 71" in query
+    assert "size(snapshot_digests[0]) <> 64" in query
+    assert "snapshot_digests[0] =~ '^[0-9a-f]{64}$'" in query
+    assert "size(input.snapshot_digest) <> 64" in query
+    assert "input.snapshot_digest =~ '^[0-9a-f]{64}$'" in query
     assert "size(decision.decision_digest) <> 71" in query
     assert "size(support.support_digest) <> 71" in query
     assert (

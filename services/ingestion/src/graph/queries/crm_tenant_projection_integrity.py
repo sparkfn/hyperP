@@ -142,11 +142,11 @@ WHERE actual_input_count = release.input_count
       OR snapshot_subject_kinds <> [input.subject_kind] OR snapshot_subject_ids <> [input.subject_id]
       OR snapshot_binding_counts[0] IS NULL OR snapshot_binding_counts[0] < 0
       OR size(snapshot_digests) <> 1 OR snapshot_digests[0] IS NULL
-      OR size(snapshot_digests[0]) <> 71 OR NOT (snapshot_digests[0] STARTS WITH 'sha256:')
+      OR size(snapshot_digests[0]) <> 64 OR NOT (snapshot_digests[0] =~ '^[0-9a-f]{64}$')
       OR input.subject_kind IS NULL OR NOT (input.subject_kind IN ['contact', 'lead'])
       OR input.subject_id IS NULL OR input.input_digest IS NULL OR input.snapshot_digest IS NULL
       OR size(input.input_digest) <> 71 OR NOT (input.input_digest STARTS WITH 'sha256:')
-      OR size(input.snapshot_digest) <> 71 OR NOT (input.snapshot_digest STARTS WITH 'sha256:')
+      OR size(input.snapshot_digest) <> 64 OR NOT (input.snapshot_digest =~ '^[0-9a-f]{64}$')
     RETURN input
   }
   AND NOT EXISTS {
