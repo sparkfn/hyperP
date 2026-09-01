@@ -68,7 +68,7 @@ def test_whatsadmin_timeout_resilience_defaults_are_aligned() -> None:
     root = Path(__file__).parents[3]
     settings = Settings(neo4j_password="test", _env_file=None)
     compose = (root / "docker-compose.yml").read_text(encoding="utf-8")
-    workflow = (root / ".github/workflows/deploy-staging.yml").read_text(encoding="utf-8")
+    deploy = (root / "scripts/deploy/hyperp-staging.sh").read_text(encoding="utf-8")
     examples = [
         (root / ".env.example").read_text(encoding="utf-8"),
         (root / "services/ingestion/.env.example").read_text(encoding="utf-8"),
@@ -81,27 +81,27 @@ def test_whatsadmin_timeout_resilience_defaults_are_aligned() -> None:
     for name, value in WHATSADMIN_RESILIENCE_DEFAULTS.items():
         compose_value = f"{value}.0" if name.endswith("SECONDS") else value
         assert f"{name}: ${{{name}:-{compose_value}}}" in compose
-        assert f"export {name}={value}" in workflow
+        assert f"export {name}={value}" in deploy
         for example in examples:
             assert f"{name}={value}" in example
-    assert "for ingestion_service in ingestion-worker lifecycle-worker beat" in workflow
-    assert 'grep -Fxq "$ingestion_service" <<< "$configured_services"' in workflow
-    assert "Staging Compose is missing required service" in workflow
-    assert 'resolved_service=$($COMPOSE config "$ingestion_service")' in workflow
+    assert "for ingestion_service in ingestion-worker lifecycle-worker beat" in deploy
+    assert 'contains_service "${key}"' in deploy
+    assert "Compose configuration is missing required service" in deploy
+    assert 'resolved_service="$("${COMPOSE[@]}" config "${ingestion_service}")"' in deploy
 
 
 def test_staging_preflight_requires_tenant_contract_before_build() -> None:
     root = Path(__file__).parents[3]
-    workflow = (root / ".github/workflows/deploy-staging.yml").read_text(encoding="utf-8")
-    preflight = workflow[: workflow.index("# --- Decide which service images")]
+    deploy = (root / "scripts/deploy/hyperp-staging.sh").read_text(encoding="utf-8")
+    build = deploy.index('"${COMPOSE[@]}" build "${BUILD_SERVICE_ARRAY[@]}"')
+    preflight = deploy[:build]
 
     for name in WHATSADMIN_STAGING_CONTRACT:
         assert name in preflight
-    assert 'retired_key="WHATSADMIN_API_KEY"' in preflight
-    assert "Update .docker/staging/docker-compose.yml before rebuilding" in preflight
-    assert workflow.index("WHATSADMIN_EKO_API_KEY") < workflow.index("merge --ff-only")
-    assert workflow.index('retired_key="WHATSADMIN_API_KEY"') < workflow.index("merge --ff-only")
-    assert workflow.index("WHATSADMIN_EKO_API_KEY") < workflow.index("$COMPOSE build")
+    assert 'local retired_key="WHATSADMIN_API_KEY"' in preflight
+    assert "staging Compose is missing runtime ingestion variable" in preflight
+    assert deploy.index("WHATSADMIN_EKO_API_KEY") < build
+    assert deploy.index('local retired_key="WHATSADMIN_API_KEY"') < build
 
 
 def test_operations_doc_includes_host_managed_staging_migration() -> None:
