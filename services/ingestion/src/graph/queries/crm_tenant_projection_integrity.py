@@ -222,10 +222,13 @@ WHERE actual_input_count = release.input_count
       collect(DISTINCT association.release_id) AS association_release_ids,
       collect(DISTINCT association.association_id) AS association_ids,
       collect(DISTINCT association.input_id) AS association_input_ids,
+      collect(DISTINCT association.entity_key) AS association_entity_keys,
+      collect(DISTINCT association.relationship_kind) AS association_relationship_kinds,
       collect(DISTINCT input.release_id) AS input_release_ids,
       collect(DISTINCT input.input_id) AS input_ids,
       collect(DISTINCT input.subject_kind) AS input_subject_kinds,
       collect(DISTINCT input.subject_id) AS input_subject_ids,
+      collect(DISTINCT input.snapshot_id) AS input_snapshot_ids,
       collect(DISTINCT snapshot.snapshot_id) AS snapshot_ids,
       collect(DISTINCT observation.observation_id) AS observation_ids,
       collect(DISTINCT observation.snapshot_id) AS observation_snapshot_ids,
@@ -244,7 +247,7 @@ WHERE actual_input_count = release.input_count
       OR association_release_ids <> [release.release_id]
       OR association_ids <> [support.association_id] OR association_input_ids <> input_ids
       OR input_release_ids <> [release.release_id]
-      OR snapshot_ids <> [input.snapshot_id]
+      OR snapshot_ids <> input_snapshot_ids
       OR observation_ids <> [support.membership_observation_id]
       OR observation_snapshot_ids <> snapshot_ids
       OR observation_subject_kinds <> input_subject_kinds
@@ -252,8 +255,8 @@ WHERE actual_input_count = release.input_count
       OR entry_revision_ids <> [release.mapping_revision_id]
       OR entry_company_ids <> observation_company_ids
       OR target_ids <> [support.mapping_target_id]
-      OR target_entity_keys <> entity_keys OR entity_keys <> [association.entity_key]
-      OR target_relationship_kinds <> [association.relationship_kind]
+      OR target_entity_keys <> entity_keys OR entity_keys <> association_entity_keys
+      OR target_relationship_kinds <> association_relationship_kinds
       OR support.support_id IS NULL OR support.support_digest IS NULL
       OR size(support.support_id) <> 71 OR NOT (support.support_id STARTS WITH 'sha256:')
       OR size(support.support_digest) <> 71 OR NOT (support.support_digest STARTS WITH 'sha256:')

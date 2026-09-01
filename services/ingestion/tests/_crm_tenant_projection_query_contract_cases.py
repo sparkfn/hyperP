@@ -86,12 +86,13 @@ def test_completion_query_authorizes_ledger_integrity_atomically() -> None:
     assert "input_subject_ids <> [association.subject_id]" in query
     assert "association.relationship_kind <> 'tenant_member'" in query
     assert "observation_snapshot_ids <> snapshot_ids" in query
+    assert "snapshot_ids <> input_snapshot_ids" in query
     assert "observation_subject_kinds <> input_subject_kinds" in query
     assert "observation_subject_ids <> input_subject_ids" in query
     assert "entry_revision_ids <> [release.mapping_revision_id]" in query
     assert "entry_company_ids <> observation_company_ids" in query
-    assert "target_entity_keys <> entity_keys" in query
-    assert "target_relationship_kinds <> [association.relationship_kind]" in query
+    assert "entity_keys <> association_entity_keys" in query
+    assert "target_relationship_kinds <> association_relationship_kinds" in query
     assert "size(input.input_digest) <> 71" in query
     assert "size(decision.decision_digest) <> 71" in query
     assert "size(support.support_digest) <> 71" in query
@@ -102,6 +103,19 @@ def test_completion_query_authorizes_ledger_integrity_atomically() -> None:
     assert "decision.zero_target_reason IS NOT NULL" in query
     assert "decision.zero_target_reason IS NULL" in query
     assert "NOT (decision.zero_target_reason IN ['empty_membership', 'no_mapped_targets'])" in query
+    support_guard = query[query.index("MATCH (support:CrmTenantProjectionSupport") :]
+    support_where = support_guard[support_guard.index("WHERE associations <> 1") :]
+    assert "collect(DISTINCT input.snapshot_id) AS input_snapshot_ids" in support_guard
+    assert "collect(DISTINCT association.entity_key) AS association_entity_keys" in support_guard
+    assert (
+        "collect(DISTINCT association.relationship_kind) AS association_relationship_kinds"
+        in support_guard
+    )
+    assert "snapshot_ids <> input_snapshot_ids" in support_where
+    assert "entity_keys <> association_entity_keys" in support_where
+    assert "target_relationship_kinds <> association_relationship_kinds" in support_where
+    assert "input." not in support_where
+    assert "association." not in support_where
     assert query.index("actual_input_count = release.input_count") < query.index(
         "SET release.state = 'completed'"
     )
