@@ -153,27 +153,27 @@ def test_crm_metrics_query_uses_the_deal_stage_projection_not_raw_payload() -> N
 
 
 def test_crm_metrics_query_enforces_reader_authority_boundaries() -> None:
-    # Each historical block (4) + each trend block (4) repeats the authority
-    # predicates once → 8 total per predicate.
-    assert GET_PERSON_CRM_METRICS.count("coalesce(link.is_active, true) = true") == 8
+    # Seven aggregate readers and four trend readers repeat the authority
+    # predicates once, so every SourceRecord traversal has the same guard.
+    assert GET_PERSON_CRM_METRICS.count("coalesce(link.is_active, true) = true") == 11
     assert (
         GET_PERSON_CRM_METRICS.count(
             "(sr.history_family IS NULL OR sr.history_family = 'activity')"
         )
-        == 8
+        == 11
     )
     assert (
         GET_PERSON_CRM_METRICS.count(
             "(sr.lifecycle_status = 'active' "
             "OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))"
         )
-        == 8
+        == 11
     )
     assert (
         GET_PERSON_CRM_METRICS.count(
             "MATCH (sr)-[:FROM_SOURCE]->(:SourceSystem {source_key: 'bitrix_chat'})"
         )
-        == 8
+        == 11
     )
 
 
@@ -193,9 +193,9 @@ def test_crm_metrics_query_emits_trend_and_delta_columns() -> None:
     # One *_daily_counts, *_recent_total, *_prior_total triple per metric type
     # so the outer RETURN can wire them into the PersonCrmMetrics fields.
     for prefix in ("deal", "activity", "call", "conversation"):
-        assert f"{prefix}_daily_counts AS {prefix}_daily_counts" in GET_PERSON_CRM_METRICS
-        assert f"{prefix}_recent_total AS {prefix}_recent_total" in GET_PERSON_CRM_METRICS
-        assert f"{prefix}_prior_total AS {prefix}_prior_total" in GET_PERSON_CRM_METRICS
+        assert GET_PERSON_CRM_METRICS.count(f"AS {prefix}_daily_counts") == 1
+        assert GET_PERSON_CRM_METRICS.count(f"AS {prefix}_recent_total") == 1
+        assert GET_PERSON_CRM_METRICS.count(f"AS {prefix}_prior_total") == 1
         # Delta % uses the same {prefix}_prior_total guard as the percent change
         # computation; null when prior window is empty (no division by zero).
         assert f"{prefix}_change_pct" in GET_PERSON_CRM_METRICS

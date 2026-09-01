@@ -281,6 +281,8 @@ async def test_summary_route_returns_single_aggregate_payload() -> None:
             "high_risk_count": 7,
             "high_value_count": 5,
             "no_contact_count": 3,
+            "deals_this_month_count": 0,
+            "all_deals_count": 0,
         },
         "meta": {
             "request_id": "req-summary",
