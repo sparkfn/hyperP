@@ -623,7 +623,7 @@ def test_exact_replay_rejects_replaced_identifier_projection_with_same_count(
         session.run(
             """
             MATCH (person:Person {person_id: 'person-a'})
-                  -[projection:IDENTIFIED_BY {source_record_pk: $source_record_pk}]->()
+                  -[projection:IDENTIFIED_BY {repair_mutation_id: $mutation_id}]->()
             WITH person, projection, properties(projection) AS projection_properties
             LIMIT 1
             CREATE (replacement_identifier:Identifier {
@@ -634,7 +634,48 @@ def test_exact_replay_rejects_replaced_identifier_projection_with_same_count(
             SET replacement = projection_properties
             DELETE projection
             """,
-            source_record_pk=committed.mutation.new_source_record_pk,
+            mutation_id=command.mutation_id,
+        ).consume()
+    with pytest.raises(RepairMutationDriftError, match="desired state changed"):
+        repository.commit_atomic_mutation(command)
+
+
+def test_exact_replay_rejects_removed_review_case_decision_chain(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=False)
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    repository = _repository(neo4j_driver)
+    committed = repository.commit_atomic_mutation(command)
+    assert committed.mutation is not None and committed.mutation.outcome == "review_required"
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (:ReviewCase {repair_mutation_id: $mutation_id})"
+            "-[relationship:FOR_DECISION]->(:MatchDecision) DELETE relationship",
+            mutation_id=command.mutation_id,
+        ).consume()
+    with pytest.raises(RepairMutationDriftError, match="desired state changed"):
+        repository.commit_atomic_mutation(command)
+
+
+def test_exact_replay_rejects_removed_previous_version_provenance(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=True)
+    _deactivate_child_contamination(neo4j_driver)
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    repository = _repository(neo4j_driver)
+    committed = repository.commit_atomic_mutation(command)
+    assert committed.mutation is not None and committed.mutation.outcome == "applied"
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (:SourceRecord {source_record_pk: $old_source_record_pk})"
+            "-[relationship:PREVIOUS_VERSION_OF]->"
+            "(:SourceRecord {repair_mutation_id: $mutation_id}) DELETE relationship",
+            old_source_record_pk=command.inventory.source_record_pk,
+            mutation_id=command.mutation_id,
         ).consume()
     with pytest.raises(RepairMutationDriftError, match="desired state changed"):
         repository.commit_atomic_mutation(command)

@@ -789,60 +789,67 @@ RETURN result.mutation_id AS mutation_id
 
 VERIFY_REPAIRED_MUTATION_POSTCONDITIONS = """
 MATCH (new:SourceRecord {source_record_pk: $new_source_record_pk})
+WITH new, new.repair_mutation_id AS mutation_id
 CALL {
-  WITH new
-  OPTIONAL MATCH (new)-[link:LINKED_TO]->(person:Person)
-  WHERE coalesce(link.is_active, true) = true
-     OR (link.is_active = false AND link.provisional = true)
-  RETURN collect(CASE WHEN link IS NULL THEN NULL ELSE {
-    endpoint: {person_id: person.person_id}, properties: properties(link)
-  } END) AS links
+  WITH mutation_id
+  MATCH (node)
+  WHERE node.repair_mutation_id = mutation_id
+    AND (node:SourceRecord OR node:MatchDecision OR node:ReviewCase OR node:Identifier)
+  RETURN collect({
+    object_kind: CASE
+      WHEN node:SourceRecord THEN 'SourceRecord'
+      WHEN node:MatchDecision THEN 'MatchDecision'
+      WHEN node:ReviewCase THEN 'ReviewCase'
+      ELSE 'Identifier'
+    END,
+    identity: CASE
+      WHEN node:SourceRecord THEN {source_record_pk: node.source_record_pk}
+      WHEN node:MatchDecision THEN {match_decision_id: node.match_decision_id}
+      WHEN node:ReviewCase THEN {review_case_id: node.review_case_id}
+      ELSE {
+        identifier_type: node.identifier_type,
+        identifier_scope: node.identifier_scope,
+        normalized_value: node.normalized_value
+      }
+    END,
+    properties: properties(node)
+  }) AS nodes
 }
 CALL {
-  WITH new
-  OPTIONAL MATCH (person:Person)-[projection:IDENTIFIED_BY]->(identifier:Identifier)
-  WHERE projection.source_record_pk = new.source_record_pk
-    AND coalesce(projection.is_active, true) = true
-  RETURN collect(CASE WHEN projection IS NULL THEN NULL ELSE {
-    person_id: person.person_id,
-    endpoint: {
-      identifier_type: identifier.identifier_type,
-      identifier_scope: identifier.identifier_scope,
-      normalized_value: identifier.normalized_value
-    },
-    properties: properties(projection)
-  } END) AS identified_by
+  WITH mutation_id
+  MATCH (left)-[relationship]->(right)
+  WHERE relationship.repair_mutation_id = mutation_id
+  RETURN collect({
+    object_kind: type(relationship),
+    direction: 'outgoing',
+    left_endpoint: CASE
+      WHEN left:SourceRecord THEN {source_record_pk: left.source_record_pk}
+      WHEN left:MatchDecision THEN {match_decision_id: left.match_decision_id}
+      WHEN left:ReviewCase THEN {review_case_id: left.review_case_id}
+      WHEN left:Person THEN {person_id: left.person_id}
+      WHEN left:Identifier THEN {
+        identifier_type: left.identifier_type,
+        identifier_scope: left.identifier_scope,
+        normalized_value: left.normalized_value
+      }
+      WHEN left:SourceSystem THEN {source_key: left.source_key}
+      ELSE {entity_key: left.entity_key}
+    END,
+    right_endpoint: CASE
+      WHEN right:SourceRecord THEN {source_record_pk: right.source_record_pk}
+      WHEN right:MatchDecision THEN {match_decision_id: right.match_decision_id}
+      WHEN right:ReviewCase THEN {review_case_id: right.review_case_id}
+      WHEN right:Person THEN {person_id: right.person_id}
+      WHEN right:Identifier THEN {
+        identifier_type: right.identifier_type,
+        identifier_scope: right.identifier_scope,
+        normalized_value: right.normalized_value
+      }
+      WHEN right:SourceSystem THEN {source_key: right.source_key}
+      ELSE {entity_key: right.entity_key}
+    END,
+    properties: properties(relationship)
+  }) AS relationships
 }
-CALL {
-  WITH new
-  OPTIONAL MATCH (person:Person)-[projection:LIVES_AT]->(address:Address)
-  WHERE projection.source_record_pk = new.source_record_pk
-    AND coalesce(projection.is_active, true) = true
-  RETURN collect(CASE WHEN projection IS NULL THEN NULL ELSE {
-    person_id: person.person_id,
-    endpoint: properties(address), properties: properties(projection)
-  } END) AS lives_at
-}
-CALL {
-  WITH new
-  OPTIONAL MATCH (person:Person)-[projection:HAS_FACT]->(source:SourceRecord {
-    source_record_pk: new.source_record_pk
-  })
-  WHERE projection.source_record_pk = new.source_record_pk
-    AND coalesce(projection.is_active, true) = true
-  RETURN collect(CASE WHEN projection IS NULL THEN NULL ELSE {
-    person_id: person.person_id,
-    endpoint: {source_record_pk: source.source_record_pk}, properties: properties(projection)
-  } END) AS has_fact
-}
-CALL {
-  WITH new
-  OPTIONAL MATCH (new)-[projection:DESCRIBES_ADDRESS]->(address:Address)
-  WHERE coalesce(projection.is_active, true) = true
-  RETURN collect(CASE WHEN projection IS NULL THEN NULL ELSE {
-    endpoint: properties(address), properties: properties(projection)
-  } END) AS describes_address
-}
-RETURN properties(new) AS source_properties, links, identified_by, lives_at, has_fact,
-       describes_address
+RETURN nodes, relationships
 """

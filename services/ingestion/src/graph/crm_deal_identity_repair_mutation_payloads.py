@@ -265,12 +265,8 @@ def _postcondition_state(tx: ManagedTransaction, source_record_pk: str) -> dict[
         raise RuntimeError("repair postcondition readback is missing")
     return normalize_repaired_state(
         {
-            "source_properties": _record_object(row, "source_properties"),
-            "links": canonical_state_rows(_object_rows(row["links"])),
-            "identified_by": canonical_state_rows(_object_rows(row["identified_by"])),
-            "lives_at": canonical_state_rows(_object_rows(row["lives_at"])),
-            "has_fact": canonical_state_rows(_object_rows(row["has_fact"])),
-            "describes_address": canonical_state_rows(_object_rows(row["describes_address"])),
+            "nodes": canonical_state_rows(_object_rows(row["nodes"])),
+            "relationships": canonical_state_rows(_object_rows(row["relationships"])),
         }
     )
 
