@@ -187,7 +187,7 @@ def test_primary_review_required_rejects_extra_inactive_person_links() -> None:
 
 def test_primary_applied_allows_active_replacement_outside_retirement_domain() -> None:
     row: dict[str, object] = {
-        "link_status": "applied",
+        "link_status": "linked",
         "active_links": 1,
         "active_any_links": 1,
         "provisional_links": 0,
@@ -199,6 +199,7 @@ def test_primary_applied_allows_active_replacement_outside_retirement_domain() -
         "forbidden_projection_count": 0,
     }
     assert primary_matches(cast(Record, row), "applied")
+    assert not primary_matches(cast(Record, {**row, "link_status": "applied"}), "applied")
 
 
 @pytest.mark.parametrize(
