@@ -109,7 +109,7 @@ CALL {
   OPTIONAL MATCH (support:CrmTenantProjectionSupport {release_id: release.release_id})
   RETURN count(DISTINCT support) AS actual_support_count
 }
-WITH release, actual_input_count, actual_decision_count, actual_association_count,
+WITH release, revision, actual_input_count, actual_decision_count, actual_association_count,
   actual_support_count
 WHERE actual_input_count = release.input_count
   AND actual_decision_count = release.decision_count
@@ -128,8 +128,7 @@ WHERE actual_input_count = release.input_count
     OPTIONAL MATCH (input)-[decision_link:HAS_PROJECTION_DECISION]->(decision)
     WITH release, input, count(DISTINCT owner_link) AS owner_links,
       count(DISTINCT owner) AS owner_nodes,
-      count(DISTINCT CASE WHEN owner:CrmTenantProjectionRelease
-        AND owner.release_id = release.release_id THEN owner END) AS current_release_owners,
+      count(DISTINCT CASE WHEN owner = release THEN owner END) AS current_release_owners,
       count(DISTINCT snapshot_link) AS snapshot_links, count(DISTINCT snapshot) AS snapshots,
       count(DISTINCT decision_link) AS decisions, collect(DISTINCT snapshot.snapshot_id) AS snapshot_ids,
       collect(DISTINCT snapshot.binding_count) AS snapshot_binding_counts,

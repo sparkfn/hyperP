@@ -68,6 +68,9 @@ def test_completion_query_authorizes_ledger_integrity_atomically() -> None:
     assert "actual_decision_count = release.decision_count" in query
     assert "actual_association_count = release.association_count" in query
     assert "actual_support_count = release.support_count" in query
+    assert "WITH release, revision, actual_input_count" in query
+    assert "CASE WHEN owner = release THEN owner END" in query
+    assert "owner:CrmTenantProjectionRelease" not in query
     assert "input_ids <> [decision.input_id]" in query
     assert "input_ids <> [association.input_id]" in query
     assert "input_release_ids <> [release.release_id]" in query
