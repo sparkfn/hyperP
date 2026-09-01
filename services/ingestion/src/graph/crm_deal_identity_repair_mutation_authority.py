@@ -212,23 +212,69 @@ def _lock_support_records(
     request: RepairMutationCommand,
     evidence: tuple[RepairAuthorityEvidence, ...],
 ) -> None:
-    rows = sorted(
-        {
-            source_record_pk
-            for item in evidence
-            if item.provenance_class in {"independent_trusted", "reviewed_v2"}
-            for source_record_pk in item.source_record_pks
-            if source_record_pk != request.inventory.source_record_pk
-        }
+    support_rows = _support_lock_rows(request, evidence)
+    if not support_rows:
+        return
+    record = tx.run(
+        LOCK_SUPPORT_SOURCE_RECORDS,
+        support_rows=support_rows,
+        mutation_id=request.mutation_id,
+    ).single()
+    if record is None:
+        raise RepairMutationDriftError("supporting authority cannot be serialized exactly")
+    source_pks = {row["source_record_pk"] for row in support_rows}
+    independent_count = sum(
+        1 for row in support_rows if row["provenance_class"] == "independent_trusted"
     )
-    if rows:
-        record = tx.run(
-            LOCK_SUPPORT_SOURCE_RECORDS,
-            support_rows=[{"source_record_pk": source_record_pk} for source_record_pk in rows],
-            mutation_id=request.mutation_id,
-        ).single()
-        if record is None or _record_int(record, "locked_count") != len(rows):
-            raise RepairMutationDriftError("supporting authority cannot be serialized exactly")
+    reviewed_count = sum(1 for row in support_rows if row["provenance_class"] == "reviewed_v2")
+    if (
+        _record_int(record, "locked_count") != len(source_pks)
+        or _record_int(record, "independent_chain_count") != independent_count
+        or _record_int(record, "reviewed_chain_count") != reviewed_count
+    ):
+        raise RepairMutationDriftError("supporting authority cannot be serialized exactly")
+
+
+def _support_lock_rows(
+    request: RepairMutationCommand,
+    evidence: tuple[RepairAuthorityEvidence, ...],
+) -> list[dict[str, str]]:
+    rows: list[dict[str, str]] = []
+    for item in evidence:
+        if item.provenance_class not in {"independent_trusted", "reviewed_v2"}:
+            continue
+        for row in item.evidence_rows:
+            source_record_pk = row.get("source_record_pk")
+            if source_record_pk == request.inventory.source_record_pk:
+                continue
+            if not isinstance(source_record_pk, str) or not source_record_pk:
+                raise RepairMutationDriftError("supporting authority identity is malformed")
+            lock_row = {
+                "provenance_class": item.provenance_class,
+                "source_record_pk": source_record_pk,
+                "person_id": item.person_id,
+            }
+            if item.provenance_class == "independent_trusted":
+                for key in (
+                    "identifier_type",
+                    "identifier_scope",
+                    "identifier_source_instance_id",
+                    "source_entity_id",
+                ):
+                    value = row.get(key)
+                    if not isinstance(value, str) or not value:
+                        raise RepairMutationDriftError(
+                            "independent authority identity is malformed"
+                        )
+                    lock_row[key] = value
+            else:
+                for key in ("match_decision_id", "review_case_id", "resolution"):
+                    value = row.get(key)
+                    if not isinstance(value, str) or not value:
+                        raise RepairMutationDriftError("reviewed authority identity is malformed")
+                    lock_row[key] = value
+            rows.append(lock_row)
+    return sorted(rows, key=lambda row: tuple(sorted(row.items())))
 
 
 def _current_inventory_item(

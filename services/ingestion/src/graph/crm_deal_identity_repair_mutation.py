@@ -206,6 +206,9 @@ class CrmDealIdentityRepairMutationRepository:
         }
         if any(result.get(key) != value for key, value in expected_ids.items()):
             raise RepairMutationDriftError("repair committed bundle identity differs")
+        committed_result_digest = result.get("result_digest")
+        if not _is_sha256_digest(committed_result_digest):
+            raise RepairMutationDriftError("repair result digest is malformed")
         try:
             replay = atomic_result_from_record(row, replayed=True)
         except (RuntimeError, ValueError) as exc:
@@ -431,3 +434,10 @@ class CrmDealIdentityRepairMutationRepository:
     def _fail(self, stage: MutationFailureStage) -> None:
         if self._failpoint is not None:
             self._failpoint(stage)
+
+
+def _is_sha256_digest(value: object) -> bool:
+    if not isinstance(value, str) or not value.startswith("sha256:"):
+        return False
+    raw = value.removeprefix("sha256:")
+    return len(raw) == 64 and all(character in "0123456789abcdef" for character in raw)

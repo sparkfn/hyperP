@@ -17,6 +17,9 @@ from src.graph.crm_deal_identity_repair_mutation_errors import (
     RepairMutationAuthorityError,
     RepairMutationDriftError,
 )
+from src.graph.crm_deal_identity_repair_mutation_structures import (
+    _created_object_specifications,
+)
 from src.graph.queries.crm_deal_identity_repair_mutation import (
     READ_MUTATION_GRAPH_SNAPSHOT,
     READ_REPAIR_IDENTIFIER_PREEXISTENCE,
@@ -247,156 +250,6 @@ def _rollback_payload(
         },
         expected_repaired_state=expected_state,
     )
-
-
-def _created_object_specifications(
-    request: RepairMutationCommand,
-    plan: RepairMutationPlan,
-    snapshot: dict[str, JsonValue],
-    envelope: SourceRecordEnvelope | None,
-) -> list[JsonValue]:
-    """Describe every prospective Identifier and evidence edge before graph mutation."""
-    if plan.disposition != "applied" or envelope is None:
-        return []
-    candidates = snapshot.get("created_identifier_candidates")
-    if not isinstance(candidates, list) or plan.selected_person_id is None:
-        raise RepairMutationDriftError("repair identifier pre-state is malformed")
-    specifications: list[JsonValue] = []
-    for ordinal, candidate in enumerate(candidates):
-        if not isinstance(candidate, dict):
-            raise RepairMutationDriftError("repair identifier candidate is malformed")
-        identifier_type = candidate.get("identifier_type")
-        identifier_scope = candidate.get("identifier_scope")
-        normalized_value = candidate.get("normalized_value")
-        preexisting = candidate.get("preexisting")
-        if not isinstance(identifier_type, str) or not isinstance(identifier_scope, str):
-            raise RepairMutationDriftError("repair identifier candidate identity is malformed")
-        if not isinstance(normalized_value, str) or not isinstance(preexisting, bool):
-            raise RepairMutationDriftError("repair identifier candidate state is malformed")
-        identifier: dict[str, JsonValue] = {
-            "identifier_type": identifier_type,
-            "identifier_scope": identifier_scope,
-            "normalized_value": normalized_value,
-        }
-        identifier_input = _staging_identifier_input(envelope, identifier_type, normalized_value)
-        source_instance_id = identifier_input["source_instance_id"]
-        is_verified = identifier_input["is_verified"]
-        quality_flag = identifier_input["quality_flag"]
-        if source_instance_id is not None and not isinstance(source_instance_id, str):
-            raise RepairMutationDriftError("repair identifier source instance is malformed")
-        if not isinstance(is_verified, bool) or not isinstance(quality_flag, str):
-            raise RepairMutationDriftError("repair identifier staging properties are malformed")
-        transaction_datetime: dict[str, JsonValue] = {"dynamic": "transaction_datetime"}
-        specifications.extend(
-            [
-                {
-                    "object_kind": "Identifier",
-                    "identity": identifier,
-                    "preexisting": preexisting,
-                    "write_mode": "preserved" if preexisting else "created",
-                    "on_create_properties": (
-                        {}
-                        if preexisting
-                        else {
-                            "source_instance_id": source_instance_id,
-                            "created_at": transaction_datetime,
-                            "repair_mutation_id": request.mutation_id,
-                        }
-                    ),
-                    "multiplicity_ordinal": ordinal,
-                },
-                {
-                    "object_kind": "IDENTIFIED_BY",
-                    "preexisting": False,
-                    "write_mode": "created",
-                    "direction": "Person_to_Identifier",
-                    "left_endpoint": {"person_id": plan.selected_person_id},
-                    "right_endpoint": identifier,
-                    "properties": {
-                        "source_system_key": "bitrix_chat",
-                        "source_record_pk": plan.source_record_pk,
-                        "is_verified": is_verified,
-                        "is_active": True,
-                        "quality_flag": quality_flag,
-                        "first_seen_at": transaction_datetime,
-                        "last_seen_at": transaction_datetime,
-                        "last_confirmed_at": transaction_datetime,
-                        "repair_mutation_id": request.mutation_id,
-                    },
-                    "multiplicity_ordinal": ordinal,
-                },
-            ]
-        )
-    _, facts = _staging_projection(envelope)
-    for ordinal, fact in enumerate(facts):
-        name = fact["attribute_name"]
-        value = fact["attribute_value"]
-        specifications.append(
-            {
-                "object_kind": "HAS_FACT",
-                "preexisting": False,
-                "write_mode": "created",
-                "direction": "Person_to_SourceRecord",
-                "left_endpoint": {"person_id": plan.selected_person_id},
-                "right_endpoint": {"source_record_pk": plan.source_record_pk},
-                "properties": {
-                    "attribute_name": name,
-                    "attribute_value": value,
-                    "source_record_pk": plan.source_record_pk,
-                    "source_trust_tier": 2,
-                    "confidence": 1.0,
-                    "quality_flag": fact["quality_flag"],
-                    "is_active": True,
-                    "is_current_hint": False,
-                    "observed_at": envelope.observed_at,
-                    "created_at": {"dynamic": "transaction_datetime"},
-                    "repair_mutation_id": request.mutation_id,
-                },
-                "multiplicity_ordinal": ordinal,
-            }
-        )
-    return specifications
-
-
-def _staging_identifier_input(
-    envelope: SourceRecordEnvelope, identifier_type: str, normalized_value: str
-) -> dict[str, JsonValue]:
-    identifiers, _ = _staging_projection(envelope)
-    candidates = [
-        item
-        for item in identifiers
-        if item["identifier_type"] == identifier_type
-        and item["normalized_value"] == normalized_value
-    ]
-    if len(candidates) != 1:
-        raise RepairMutationDriftError("repair identifier payload does not match staged identity")
-    return candidates[0]
-
-
-def _staging_projection(
-    envelope: SourceRecordEnvelope,
-) -> tuple[list[dict[str, JsonValue]], list[dict[str, JsonValue]]]:
-    identifiers: list[dict[str, JsonValue]] = [
-        {
-            "identifier_type": item.identifier_type,
-            "normalized_value": item.normalized_value,
-            "source_instance_id": item.source_instance_id,
-            "is_verified": item.is_verified,
-            "quality_flag": item.quality_flag.value,
-        }
-        for item in projected_identifiers(envelope, normalize_envelope_identifiers(envelope))
-        if item.quality_flag.value != "invalid_format"
-    ]
-    facts: list[dict[str, JsonValue]] = [
-        {
-            "attribute_name": item.attribute_name,
-            "attribute_value": item.attribute_value,
-            "quality_flag": item.quality_flag.value,
-        }
-        for item in normalize_envelope_attributes(envelope)
-        if item.quality_flag.value != "invalid_format"
-    ]
-    return identifiers, facts
 
 
 def _expected_state(
