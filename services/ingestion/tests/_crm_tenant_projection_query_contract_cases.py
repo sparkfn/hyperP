@@ -39,6 +39,28 @@ def test_projection_queries_do_not_write_active_heads_or_source_membership_state
     assert "MATERIALIZES_SOURCE_CENSUS" in queries.CREATE_RELEASE
 
 
+def test_capture_cursor_filter_is_applied_after_optional_checkpoint_matching() -> None:
+    query = queries.CAPTURE_CANDIDATES
+    optional_checkpoint = query.index("OPTIONAL MATCH (checkpoint:StandaloneCrmCensusCheckpoint")
+    scope_boundary = query.index(
+        "WITH release, census, head, snapshot, unit, checkpoint",
+        optional_checkpoint,
+    )
+    cursor_filter = query.index("WHERE head.subject_kind IN ['contact', 'lead']")
+
+    assert optional_checkpoint < scope_boundary < cursor_filter
+
+
+def test_completion_boundary_retains_census_for_checkpoint_uniqueness_checks() -> None:
+    query = integrity_queries.COMPLETE_RELEASE
+    completion_scope = query.index(
+        "WITH DISTINCT release, census, contact, lead, contact_checkpoint, lead_checkpoint"
+    )
+    checkpoint_guard = query.index("census_id: census.census_id", completion_scope)
+
+    assert completion_scope < checkpoint_guard
+
+
 def test_failure_code_is_rejected_before_any_graph_write() -> None:
     class _Result:
         def single(self) -> dict[str, object]:

@@ -213,6 +213,8 @@ def _validate_final_counts(
     if record is None:
         raise CrmTenantProjectionIntegrityError("projection release topology is missing")
     release_values: Mapping[str, object] = _required_mapping(record, "release")
+    if digest != release.capture_boundary_digest:
+        raise CrmTenantProjectionIntegrityError("projection capture boundary digest is malformed")
     if (
         input_count != release.input_count
         or decision_count != release.decision_count
@@ -228,6 +230,5 @@ def _validate_final_counts(
         or input_count - contact_count != _mapping_int(release_values, "lead_input_count")
         or contact_count != _mapping_int(release_values, "contact_expected_input_count")
         or input_count - contact_count != _mapping_int(release_values, "lead_expected_input_count")
-        or digest != release.capture_boundary_digest
     ):
         raise CrmTenantProjectionIntegrityError("projection release aggregate counts are malformed")

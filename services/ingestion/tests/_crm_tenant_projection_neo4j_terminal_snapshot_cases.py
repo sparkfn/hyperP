@@ -252,6 +252,7 @@ def test_real_neo4j_release_fingerprint_binds_mapping_proof(
             "CREATE (entity:Entity {entity_key: $entity_key}) "
             "SET target.target_id = $target_id, target.entity_key = $entity_key "
             "CREATE (target)-[:TARGETS_ENTITY]->(entity) "
+            "WITH target, entity "
             "MATCH (release:CrmTenantProjectionRelease {release_id: $release_id}) "
             "SET release.mapping_topology_fingerprint = $fingerprint",
             entry_id=entry.entry_id,

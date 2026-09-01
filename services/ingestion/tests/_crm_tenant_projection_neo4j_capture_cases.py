@@ -321,7 +321,7 @@ def test_real_neo4j_completion_and_reader_reject_orphan_release_children(
             release_id=release.release_id,
             digest=_DIGEST,
         ).consume()
-    with pytest.raises(CrmTenantProjectionIntegrityError, match="aggregate counts"):
+    with pytest.raises(CrmTenantProjectionIntegrityError, match="persisted input"):
         repository.complete(release.release_id, release.release_fingerprint)
 
 

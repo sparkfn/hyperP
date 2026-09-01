@@ -233,6 +233,7 @@ MATCH (unit:StandaloneCrmCensusUnit {
 OPTIONAL MATCH (checkpoint:StandaloneCrmCensusCheckpoint {
   census_id: census.census_id, stream_kind: head.subject_kind
 })
+WITH release, census, head, snapshot, unit, checkpoint
 WHERE head.subject_kind IN ['contact', 'lead']
   AND ((head.subject_kind = 'contact'
       AND unit.state = release.contact_unit_state

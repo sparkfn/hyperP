@@ -201,12 +201,17 @@ def _validate_support_row(
     association_id = _mapping_string(support, "association_id")
     observation_id = _mapping_string(support, "membership_observation_id")
     target_id = _mapping_string(support, "mapping_target_id")
+    if support_id != projection_support_id(
+        association_id, observation_id, target_id
+    ) or _mapping_string(support, "support_digest") != projection_support_digest(
+        release.release_id, association_id, observation_id, target_id
+    ):
+        raise CrmTenantProjectionIntegrityError(
+            "projection support deterministic identity is malformed"
+        )
     if (
         _mapping_string(support, "release_id") != release.release_id
         or association_id != _mapping_string(association, "association_id")
-        or support_id != projection_support_id(association_id, observation_id, target_id)
-        or _mapping_string(support, "support_digest")
-        != projection_support_digest(release.release_id, association_id, observation_id, target_id)
         or _mapping_string(observation, "observation_id") != observation_id
         or _mapping_string(observation, "snapshot_id") != _mapping_string(snapshot, "snapshot_id")
         or _mapping_string(observation, "subject_kind")

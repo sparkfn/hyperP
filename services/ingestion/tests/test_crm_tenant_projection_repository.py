@@ -36,6 +36,8 @@ from _crm_tenant_projection_observation_cases import (
     test_unmapped_observation_topology_fails_closed_before_decision,
 )
 from _crm_tenant_projection_query_contract_cases import (
+    test_capture_cursor_filter_is_applied_after_optional_checkpoint_matching,
+    test_completion_boundary_retains_census_for_checkpoint_uniqueness_checks,
     test_failure_code_is_rejected_before_any_graph_write,
     test_projection_queries_do_not_write_active_heads_or_source_membership_state,
 )
@@ -75,6 +77,8 @@ __all__ = (
     "test_mapping_proof_guard_rejects_bad_target_entity_topology",
     "test_mapping_proof_scan_classifies_malformed_canonical_values_as_integrity",
     "test_mapping_target_proof_scan_accepts_canonical_target_identity",
+    "test_capture_cursor_filter_is_applied_after_optional_checkpoint_matching",
+    "test_completion_boundary_retains_census_for_checkpoint_uniqueness_checks",
     "test_failure_code_is_rejected_before_any_graph_write",
     "test_projection_queries_do_not_write_active_heads_or_source_membership_state",
     "test_snapshot_contents_uses_canonical_multibinding_order_for_digest_and_identity",

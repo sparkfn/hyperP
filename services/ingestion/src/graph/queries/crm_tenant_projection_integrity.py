@@ -35,8 +35,8 @@ OPTIONAL MATCH (projection_head:CrmTenantProjectionActiveHead {
   source_key: release.source_key, source_instance_id: release.source_instance_id,
   control_instance_id: release.control_instance_id, head_id: release.projection_head_id
 })
-WITH DISTINCT release, contact, lead, contact_checkpoint, lead_checkpoint, revision, mapping_head,
-  projection_head
+WITH DISTINCT release, census, contact, lead, contact_checkpoint, lead_checkpoint, revision,
+  mapping_head, projection_head
 WHERE contact.generation = release.contact_unit_generation
   AND lead.generation = release.lead_unit_generation
   AND contact.state = release.contact_unit_state AND lead.state = release.lead_unit_state
