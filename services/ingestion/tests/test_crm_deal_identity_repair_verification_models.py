@@ -6,10 +6,12 @@ from typing import cast
 
 import pytest
 from neo4j import Record
+from src.crm_deal_identity_repair.digests import inventory_digest
 from src.crm_deal_identity_repair.execution_records import RepairFence, RepairUnit
 from src.crm_deal_identity_repair.models import RepairInventoryItem, RepairPartition
 from src.crm_deal_identity_repair.mutation_models import build_inventory_binding_digest
 from src.crm_deal_identity_repair.verification_models import (
+    RepairRunEquationCommand,
     RepairRunEquationResult,
     RepairUnitEquation,
     RepairVerificationCommand,
@@ -125,6 +127,42 @@ def test_run_boundary_parameter_uses_the_exact_300_canonical_object_shape() -> N
     assert canonical_source_record_pks_json((item,)) == canonical_json_text(
         {"source_record_pks": [item.source_record_pk]},
         "test source record identities",
+    )
+
+
+def test_run_command_uses_inventory_key_order_but_sorts_pk_boundary_separately() -> None:
+    first = RepairInventoryItem(
+        source_system="bitrix_chat",
+        source_record_id="bitrix-crm-deal-1",
+        source_record_pk="z-pk",
+        deal_id="1",
+        partition="negative_control",
+        graph_fingerprint=_DIGEST,
+        stored_payload_fingerprint=_DIGEST,
+        payload={"descendants": []},
+    )
+    second = RepairInventoryItem(
+        source_system="bitrix_chat",
+        source_record_id="bitrix-crm-deal-2",
+        source_record_pk="a-pk",
+        deal_id="2",
+        partition="negative_control",
+        graph_fingerprint=_DIGEST,
+        stored_payload_fingerprint=_DIGEST,
+        payload={"descendants": []},
+    )
+    command = RepairRunEquationCommand(
+        "repair",
+        "run",
+        _DIGEST,
+        (first, second),
+        inventory_digest((first, second)),
+        "source",
+        "control",
+    )
+    assert command.inventory == (first, second)
+    assert canonical_source_record_pks_json(command.inventory) == canonical_json_text(
+        {"source_record_pks": ["a-pk", "z-pk"]}, "test sorted source record identities"
     )
 
 
@@ -287,3 +325,54 @@ def test_derived_state_digest_binds_all_rebuilt_golden_profile_fields() -> None:
     ):
         changed = PersonDerivedState("person-a", 1, 1, None, {**profile, field: value})
         assert derive_state_digest(primary, (), (changed,), ()) != expected
+
+
+def test_replay_rejects_changed_override_conflict_with_same_displayed_profile() -> None:
+    from src.graph.crm_deal_identity_repair_verification_derived import (
+        PersonDerivedState,
+        build_person_details,
+    )
+    from src.graph.crm_deal_identity_repair_verification_errors import RepairVerificationDriftError
+    from src.graph.crm_deal_identity_repair_verification_replay import (
+        _validate_replayed_person_dispositions,
+    )
+
+    command = _command()
+    state = PersonDerivedState(
+        "person-a",
+        1,
+        4,
+        '{"preferred_full_name":{"source_record_pk":"active-source"}}',
+        {
+            "preferred_full_name": "Fallback",
+            "preferred_dob": None,
+            "preferred_phone": None,
+            "preferred_email": None,
+            "preferred_address_id": None,
+            "preferred_nric": None,
+            "preferred_race_ethnicity": None,
+            "profile_completeness_score": 0.2,
+            "golden_profile_version": "v0.1.0",
+        },
+    )
+    details = build_person_details(command, (state,), {"person-a": ()})
+    persisted = [
+        {
+            "subject_kind": detail.subject.kind,
+            "subject_stable_id": detail.subject.stable_id,
+            "subject_fingerprint": detail.record(command).subject_fingerprint,
+            "evidence_digest": detail.record(command).evidence_digest,
+            "payload_digest": detail.record(command).payload_digest,
+            "action": detail.action,
+            "outcome": detail.outcome,
+        }
+        for detail in details
+    ]
+    _validate_replayed_person_dispositions(command, (state,), {"person-a": ()}, persisted)
+    with pytest.raises(RepairVerificationDriftError, match="person disposition differs"):
+        _validate_replayed_person_dispositions(
+            command,
+            (state,),
+            {"person-a": ("preferred_full_name",)},
+            persisted,
+        )

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import logging
-from typing import TypedDict
+from typing import Protocol, TypedDict, runtime_checkable
 
 from neo4j import ManagedTransaction, Record
 
@@ -208,7 +208,16 @@ def _row_optional_string(row: Record, key: str) -> str | None:
     value: object = row[key]
     if value is None or isinstance(value, str):
         return value
+    if isinstance(value, _IsoFormatValue):
+        return value.iso_format()
     raise ValueError("golden profile optional evidence is malformed")
+
+
+@runtime_checkable
+class _IsoFormatValue(Protocol):
+    """Narrow boundary for Neo4j temporal values returned by legacy reads."""
+
+    def iso_format(self) -> str: ...
 
 
 def _row_bool(row: Record, key: str) -> bool:
