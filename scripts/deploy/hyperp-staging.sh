@@ -3,6 +3,7 @@ set -Eeuo pipefail
 
 EXPECTED_SHA="${1:?expected commit SHA is required}"
 HEALTH_URL_B64="${2:?base64-encoded staging health URL is required}"
+REVISION_CHECK_MODE="${3:-strict}"
 STAGING_DIR="/home/docker/hyperp.ada.asia/.docker/staging"
 LOCK_FILE="/tmp/hyperp-staging-deploy.lock"
 DEPLOYED_REVISION_FILE="${STAGING_DIR}/data/deployed-revision"
@@ -275,7 +276,10 @@ deployment_base_revision() {
   local attempt_tmp=""
 
   mkdir -p "$(dirname "${DEPLOYED_REVISION_FILE}")"
-  if [[ -f "${DEPLOYMENT_ATTEMPT_FILE}" ]]; then
+  if [[ "${REVISION_CHECK_MODE}" == skip ]]; then
+    printf '%s\n' '[hyperp-staging] skipping persisted revision history checks for staging' >&2
+    deployment_base="${before_sha}"
+  elif [[ -f "${DEPLOYMENT_ATTEMPT_FILE}" ]]; then
     read -r attempt_expected attempt_base < "${DEPLOYMENT_ATTEMPT_FILE}" \
       || fail "deployment attempt record is malformed"
     if [[ "${attempt_expected}" == "${EXPECTED_SHA}" ]]; then
@@ -307,6 +311,8 @@ deployment_base_revision() {
 trap 'on_error $? $LINENO' ERR
 
 [[ "${EXPECTED_SHA}" =~ ^[0-9a-f]{40}$ ]] || fail "expected commit SHA is invalid"
+[[ "${REVISION_CHECK_MODE}" == strict || "${REVISION_CHECK_MODE}" == skip ]] \
+  || fail "revision check mode must be strict or skip"
 command -v base64 >/dev/null || fail "base64 is not installed"
 command -v curl >/dev/null || fail "curl is not installed"
 command -v docker >/dev/null || fail "docker is not installed"
