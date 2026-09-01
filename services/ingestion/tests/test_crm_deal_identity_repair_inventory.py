@@ -255,3 +255,12 @@ def test_inventory_preserves_all_clean_stored_versions() -> None:
 
     assert len(inventory.negative_controls) == 101
     assert len(inventory.items) == 101
+
+
+def test_shared_payload_fingerprint_helper_matches_inventory_item() -> None:
+    from src.crm_deal_identity_repair.qualification_inventory import inventory_payload_fingerprints
+
+    item = _inventory(_row()).items[0]
+    graph_fingerprint, stored_payload_fingerprint = inventory_payload_fingerprints(item.payload)
+    assert graph_fingerprint == item.graph_fingerprint
+    assert stored_payload_fingerprint == item.stored_payload_fingerprint
