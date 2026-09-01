@@ -540,3 +540,58 @@ def test_standalone_identity_kinds_reject_non_string_elements(
 
     with pytest.raises(ValueError, match="Invalid ingestion config JSON"):
         load_ingestion_config(str(path))
+
+
+def test_mapping_authorization_grants_are_default_off_and_parse_only_complete_exact_entries(
+    tmp_path: Path,
+) -> None:
+    assert load_ingestion_config("").crm_tenant_mapping_authorization.grants == ()
+    path = tmp_path / "mapping-grant.json"
+    digest = "sha256:" + "a" * 64
+    path.write_text(
+        json.dumps(
+            {
+                "crm_tenant_mapping_authorization": {
+                    "grants": [
+                        {
+                            "action": "prepare",
+                            "source_key": "bitrix_chat",
+                            "source_instance_id": "portal-a",
+                            "control_instance_id": "control-a",
+                            "preparation_request_id": "prepare-a",
+                            "manifest_digest": digest,
+                            "target_entity_keys": ["entity-a"],
+                            "expected_head": None,
+                            "actor": "reviewer",
+                            "authorization_reference": "case-a",
+                            "authorization_digest": digest,
+                            "expires_at": "2099-01-01T00:00:00Z",
+                        }
+                    ]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    grant = load_ingestion_config(str(path)).crm_tenant_mapping_authorization.grants[0]
+
+    assert grant.action == "prepare"
+    assert grant.preparation_request_id == "prepare-a"
+
+
+def test_mapping_authorization_rejects_partial_or_pattern_like_grants(tmp_path: Path) -> None:
+    path = tmp_path / "bad-mapping-grant.json"
+    path.write_text(
+        json.dumps(
+            {
+                "crm_tenant_mapping_authorization": {
+                    "grants": [{"action": "prepare", "source_key": "bitrix_chat"}]
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    with pytest.raises(ValueError, match="Invalid ingestion config JSON"):
+        load_ingestion_config(str(path))

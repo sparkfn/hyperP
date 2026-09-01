@@ -11,6 +11,8 @@ from pathlib import Path
 from typing import Literal, cast
 
 from src.config import get_settings
+from src.crm_tenant_mapping_configured_authorization import CrmTenantMappingConfiguredGrant
+from src.crm_tenant_mapping_contracts import CrmTenantMappingExpectedHead, CrmTenantMappingScope
 from src.exclusion_config import (
     ExclusionFile,
     _str_list,
@@ -98,6 +100,13 @@ class ScheduledIngestionConfig:
 
 
 @dataclass(frozen=True)
+class CrmTenantMappingAuthorizationConfig:
+    """Default-off exact-operation grants for mapping prepare and rollback."""
+
+    grants: tuple[CrmTenantMappingConfiguredGrant, ...] = ()
+
+
+@dataclass(frozen=True)
 class StageHistoryIngestionConfig:
     """Default-off authorization and finite limits for the #147 smoke path."""
 
@@ -140,6 +149,9 @@ class IngestionConfig:
     llm: LlmConfig = field(default_factory=LlmConfig)
     bitrix_openlines: BitrixOpenLinesConfig = field(default_factory=BitrixOpenLinesConfig)
     scheduled_ingestion: ScheduledIngestionConfig = field(default_factory=ScheduledIngestionConfig)
+    crm_tenant_mapping_authorization: CrmTenantMappingAuthorizationConfig = field(
+        default_factory=CrmTenantMappingAuthorizationConfig
+    )
     stage_history_ingestion: StageHistoryIngestionConfig = field(
         default_factory=StageHistoryIngestionConfig
     )
@@ -446,6 +458,184 @@ def _scheduled_ingestion_config(raw: JsonValue, *, path: Path) -> ScheduledInges
     return ScheduledIngestionConfig(enabled=enabled)
 
 
+def _mapping_authorization_config(
+    raw: JsonValue, *, path: Path
+) -> CrmTenantMappingAuthorizationConfig:
+    if raw is None:
+        return CrmTenantMappingAuthorizationConfig()
+    if not isinstance(raw, dict) or set(raw) != {"grants"}:
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    raw_grants = raw.get("grants")
+    if not isinstance(raw_grants, list):
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    grants = tuple(_mapping_authorization_grant(value, path=path) for value in raw_grants)
+    if len(set(grants)) != len(grants):
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    return CrmTenantMappingAuthorizationConfig(grants=grants)
+
+
+def _mapping_authorization_grant(raw: JsonValue, *, path: Path) -> CrmTenantMappingConfiguredGrant:
+    if not isinstance(raw, dict):
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    required = {
+        "action",
+        "source_key",
+        "source_instance_id",
+        "control_instance_id",
+        "preparation_request_id",
+        "manifest_digest",
+        "target_entity_keys",
+        "expected_head",
+        "actor",
+        "authorization_reference",
+        "authorization_digest",
+        "expires_at",
+    }
+    rollback = {
+        "rollback_of_revision_id",
+        "rollback_of_revision_number",
+        "rollback_of_manifest_digest",
+    }
+    action = raw.get("action")
+    if not isinstance(action, str) or action not in {"prepare", "rollback"}:
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    expected_keys = required | (rollback if action == "rollback" else set())
+    if set(raw) != expected_keys:
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    scope = CrmTenantMappingScope(
+        _required_text(raw, "source_key", path=path),
+        _required_text(raw, "source_instance_id", path=path),
+        _required_text(raw, "control_instance_id", path=path),
+    )
+    expected_head = _mapping_expected_head(raw.get("expected_head"), scope, path=path)
+    target_entity_keys = _canonical_text_tuple(raw.get("target_entity_keys"), path=path)
+    expires_at = _optional_datetime(raw.get("expires_at"), path=path)
+    if expires_at is None:
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    if action == "rollback":
+        rollback_number = _int(raw.get("rollback_of_revision_number"), 0, path=path)
+        return _configured_mapping_grant(
+            "rollback",
+            scope,
+            _required_text(raw, "preparation_request_id", path=path),
+            _required_text(raw, "manifest_digest", path=path),
+            target_entity_keys,
+            expected_head,
+            _required_text(raw, "rollback_of_revision_id", path=path),
+            rollback_number,
+            _required_text(raw, "rollback_of_manifest_digest", path=path),
+            _required_text(raw, "actor", path=path),
+            _required_text(raw, "authorization_reference", path=path),
+            _required_text(raw, "authorization_digest", path=path),
+            expires_at,
+            path=path,
+        )
+    return _configured_mapping_grant(
+        "prepare",
+        scope,
+        _required_text(raw, "preparation_request_id", path=path),
+        _required_text(raw, "manifest_digest", path=path),
+        target_entity_keys,
+        expected_head,
+        None,
+        None,
+        None,
+        _required_text(raw, "actor", path=path),
+        _required_text(raw, "authorization_reference", path=path),
+        _required_text(raw, "authorization_digest", path=path),
+        expires_at,
+        path=path,
+    )
+
+
+def _configured_mapping_grant(
+    action: Literal["prepare", "rollback"],
+    scope: CrmTenantMappingScope,
+    preparation_request_id: str,
+    manifest_digest: str,
+    target_entity_keys: tuple[str, ...],
+    expected_head: CrmTenantMappingExpectedHead | None,
+    rollback_of_revision_id: str | None,
+    rollback_of_revision_number: int | None,
+    rollback_of_manifest_digest: str | None,
+    actor: str,
+    authorization_reference: str,
+    authorization_digest: str,
+    expires_at: datetime,
+    *,
+    path: Path,
+) -> CrmTenantMappingConfiguredGrant:
+    try:
+        return CrmTenantMappingConfiguredGrant(
+            action,
+            scope.source_key,
+            scope.source_instance_id,
+            scope.control_instance_id,
+            preparation_request_id,
+            manifest_digest,
+            target_entity_keys,
+            expected_head,
+            rollback_of_revision_id,
+            rollback_of_revision_number,
+            rollback_of_manifest_digest,
+            actor,
+            authorization_reference,
+            authorization_digest,
+            expires_at,
+        )
+    except ValueError as exc:
+        raise ValueError(f"Invalid ingestion config JSON: {path}") from exc
+
+
+def _mapping_expected_head(
+    raw: JsonValue,
+    scope: CrmTenantMappingScope,
+    *,
+    path: Path,
+) -> CrmTenantMappingExpectedHead | None:
+    if raw is None:
+        return None
+    if not isinstance(raw, dict) or set(raw) != {
+        "head_id",
+        "active_revision_id",
+        "active_revision_number",
+        "active_manifest_digest",
+    }:
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    try:
+        expected = CrmTenantMappingExpectedHead(
+            _required_text(raw, "head_id", path=path),
+            _required_text(raw, "active_revision_id", path=path),
+            _int(raw.get("active_revision_number"), 0, path=path),
+            _required_text(raw, "active_manifest_digest", path=path),
+        )
+    except ValueError as exc:
+        raise ValueError(f"Invalid ingestion config JSON: {path}") from exc
+    if expected.head_id != _mapping_head_id(scope):
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    return expected
+
+
+def _mapping_head_id(scope: CrmTenantMappingScope) -> str:
+    from src.crm_tenant_mapping_identity import mapping_head_id
+
+    return mapping_head_id(scope)
+
+
+def _canonical_text_tuple(raw: JsonValue, *, path: Path) -> tuple[str, ...]:
+    if not isinstance(raw, list):
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    values: list[str] = []
+    for value in raw:
+        if not isinstance(value, str) or not value.strip() or value != value.strip():
+            raise ValueError(f"Invalid ingestion config JSON: {path}")
+        values.append(value)
+    result = tuple(values)
+    if tuple(sorted(set(result))) != result:
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
+    return result
+
+
 def _optional_datetime(raw: JsonValue, *, path: Path) -> datetime | None:
     if raw is None or raw == "":
         return None
@@ -570,6 +760,7 @@ def load_ingestion_config(path_value: str) -> IngestionConfig:
         "llm",
         "bitrix_openlines",
         "scheduled_ingestion",
+        "crm_tenant_mapping_authorization",
         "stage_history_ingestion",
     }.intersection(payload):
         # Old format: the whole object is the exclusions block.
@@ -580,6 +771,9 @@ def load_ingestion_config(path_value: str) -> IngestionConfig:
         bitrix_openlines=_bitrix_openlines_config(payload.get("bitrix_openlines"), path=path),
         scheduled_ingestion=_scheduled_ingestion_config(
             payload.get("scheduled_ingestion"), path=path
+        ),
+        crm_tenant_mapping_authorization=_mapping_authorization_config(
+            payload.get("crm_tenant_mapping_authorization"), path=path
         ),
         stage_history_ingestion=_stage_history_ingestion_config(
             payload.get("stage_history_ingestion"), path=path
@@ -621,6 +815,31 @@ def bitrix_configuration_digest(
         sort_keys=True,
         separators=(",", ":"),
     ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def standalone_crm_source_sync_configuration_digest(config: BitrixOpenLinesConfig) -> str:
+    """Hash standalone source-sync controls without changing Bitrix evidence."""
+    payload = {
+        "contract": "standalone-crm-source-sync-config-v1",
+        "source_instance_id": config.source_instance_id,
+        "kinds": config.standalone_crm_identity_kinds,
+        "max_rows_per_attempt": config.standalone_crm_identity_max_rows_per_attempt,
+        "max_calls_per_attempt": config.standalone_crm_identity_max_calls_per_attempt,
+        "max_runtime_seconds_per_attempt": (
+            config.standalone_crm_identity_max_runtime_seconds_per_attempt
+        ),
+        "max_rows_per_occurrence": config.standalone_crm_identity_max_rows_per_occurrence,
+        "max_calls_per_occurrence": config.standalone_crm_identity_max_calls_per_occurrence,
+        "max_attempts_per_occurrence": config.standalone_crm_identity_max_attempts_per_occurrence,
+        "max_wall_clock_seconds_per_occurrence": (
+            config.standalone_crm_identity_max_wall_clock_seconds_per_occurrence
+        ),
+        "association_contract_version": config.crm_identity_association_contract_version,
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), allow_nan=False).encode(
+        "utf-8"
+    )
     return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 

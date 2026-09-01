@@ -53,6 +53,10 @@ class SourceSyncAuthority:
     mapping_head_digest: str
     projection_head_id: str
     projection_head_digest: str
+    mapping_active_revision_id: str | None = None
+    mapping_active_revision_number: int | None = None
+    projection_active_release_id: str | None = None
+    projection_active_release_number: int | None = None
 
     def __post_init__(self) -> None:
         for field in (
@@ -62,6 +66,38 @@ class SourceSyncAuthority:
             "projection_head_digest",
         ):
             object.__setattr__(self, field, _text(getattr(self, field), field))
+        optional = (
+            self.mapping_active_revision_id,
+            self.mapping_active_revision_number,
+            self.projection_active_release_id,
+            self.projection_active_release_number,
+        )
+        if any(value is None for value in optional) and any(
+            value is not None for value in optional
+        ):
+            raise ValueError("source-sync authority head snapshots must be complete or legacy")
+        if self.mapping_active_revision_id is not None:
+            projection_release_id = self.projection_active_release_id
+            mapping_revision_number = self.mapping_active_revision_number
+            projection_release_number = self.projection_active_release_number
+            if (
+                projection_release_id is None
+                or mapping_revision_number is None
+                or projection_release_number is None
+            ):
+                raise AssertionError("complete source authority was narrowed incorrectly")
+            object.__setattr__(
+                self,
+                "mapping_active_revision_id",
+                _text(self.mapping_active_revision_id, "mapping_active_revision_id"),
+            )
+            object.__setattr__(
+                self,
+                "projection_active_release_id",
+                _text(projection_release_id, "projection_active_release_id"),
+            )
+            _integer(mapping_revision_number, "mapping_active_revision_number", 1)
+            _integer(projection_release_number, "projection_active_release_number", 1)
 
 
 @dataclass(frozen=True)
@@ -69,6 +105,15 @@ class MappingPrepareAuthority:
     prepared_revision_id: str
     prepared_revision_digest: str
     expected_current_head_id: str
+    completed_release_id: str | None = None
+    completed_release_fingerprint: str | None = None
+    expected_mapping_active_revision_id: str | None = None
+    expected_mapping_active_revision_number: int | None = None
+    expected_mapping_active_manifest_digest: str | None = None
+    expected_projection_head_id: str | None = None
+    expected_projection_active_release_id: str | None = None
+    expected_projection_active_release_number: int | None = None
+    expected_projection_active_release_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         for field in (
@@ -77,6 +122,7 @@ class MappingPrepareAuthority:
             "expected_current_head_id",
         ):
             object.__setattr__(self, field, _text(getattr(self, field), field))
+        _validate_v2_mapping_activation_authority(self)
 
 
 @dataclass(frozen=True)
@@ -85,6 +131,16 @@ class MappingRollbackAuthority:
     target_revision_digest: str
     expected_current_head_id: str
     rollback_head_id: str
+    rollback_head_digest: str | None = None
+    completed_release_id: str | None = None
+    completed_release_fingerprint: str | None = None
+    expected_mapping_active_revision_id: str | None = None
+    expected_mapping_active_revision_number: int | None = None
+    expected_mapping_active_manifest_digest: str | None = None
+    expected_projection_head_id: str | None = None
+    expected_projection_active_release_id: str | None = None
+    expected_projection_active_release_number: int | None = None
+    expected_projection_active_release_fingerprint: str | None = None
 
     def __post_init__(self) -> None:
         for field in (
@@ -94,6 +150,7 @@ class MappingRollbackAuthority:
             "rollback_head_id",
         ):
             object.__setattr__(self, field, _text(getattr(self, field), field))
+        _validate_v2_mapping_activation_authority(self)
 
 
 @dataclass(frozen=True)
@@ -165,8 +222,9 @@ type StandaloneCrmCensusRequest = (
 
 
 def canonical_request_payload(request: StandaloneCrmCensusRequest) -> str:
+    contract = _contract_version(request)
     payload = {
-        "contract": "standalone-crm-census-v1",
+        "contract": contract,
         "kind": request.census_kind,
         "source_key": request.source_key,
         "source_instance_id": request.source_instance_id,
@@ -174,12 +232,160 @@ def canonical_request_payload(request: StandaloneCrmCensusRequest) -> str:
         "occurrence_key": request.occurrence_key,
         "selected_kinds": request.selected_kinds,
         "budget": asdict(request.budget),
-        "authority": asdict(request.authority),
+        "authority": canonical_authority_payload(request),
         "policy_version": request.policy_version,
         "association_contract_version": request.association_contract_version,
         "configuration_digest": request.configuration_digest,
     }
     return json.dumps(payload, default=list, sort_keys=True, separators=(",", ":"), allow_nan=False)
+
+
+def canonical_authority_payload(
+    request: StandaloneCrmCensusRequest,
+) -> dict[str, object]:
+    """Return the authority identity using the request's persisted contract version."""
+    return _canonical_authority(request, _contract_version(request))
+
+
+def _canonical_authority(request: StandaloneCrmCensusRequest, contract: str) -> dict[str, object]:
+    values = asdict(request.authority)
+    if contract == "standalone-crm-census-v1":
+        return {key: value for key, value in values.items() if value is not None}
+    return values
+
+
+def _contract_version(request: StandaloneCrmCensusRequest) -> str:
+    """Retain v1 payload/fingerprint compatibility until a complete v2 authority is captured."""
+    authority = request.authority
+    if isinstance(authority, SourceSyncAuthority):
+        return (
+            "standalone-crm-census-v2"
+            if authority.mapping_active_revision_id is not None
+            else "standalone-crm-census-v1"
+        )
+    return (
+        "standalone-crm-census-v2"
+        if authority.completed_release_id is not None
+        else "standalone-crm-census-v1"
+    )
+
+
+def mapping_candidate_identity(
+    authority: MappingPrepareAuthority | MappingRollbackAuthority,
+) -> tuple[str, str]:
+    """Return the prepared candidate identity; rollback history is provenance only."""
+    if isinstance(authority, MappingPrepareAuthority):
+        return authority.prepared_revision_id, authority.prepared_revision_digest
+    if authority.rollback_head_digest is None:
+        raise ValueError("legacy rollback authority has no candidate digest")
+    return authority.rollback_head_id, authority.rollback_head_digest
+
+
+def mapping_work_identity(
+    authority: MappingPrepareAuthority | MappingRollbackAuthority,
+) -> tuple[str, str]:
+    """Return the frozen mapping-work identity, preserving legacy rollback semantics."""
+    if isinstance(authority, MappingPrepareAuthority):
+        return authority.prepared_revision_id, authority.prepared_revision_digest
+    if authority.rollback_head_digest is None:
+        return authority.target_revision_id, authority.target_revision_digest
+    return authority.rollback_head_id, authority.rollback_head_digest
+
+
+def _validate_v2_mapping_activation_authority(
+    authority: MappingPrepareAuthority | MappingRollbackAuthority,
+) -> None:
+    release_fields = (authority.completed_release_id, authority.completed_release_fingerprint)
+    mapping_fields = (
+        authority.expected_mapping_active_revision_id,
+        authority.expected_mapping_active_revision_number,
+        authority.expected_mapping_active_manifest_digest,
+    )
+    projection_fields = (
+        authority.expected_projection_active_release_id,
+        authority.expected_projection_active_release_number,
+        authority.expected_projection_active_release_fingerprint,
+    )
+    all_fields = (
+        release_fields
+        + mapping_fields
+        + (authority.expected_projection_head_id,)
+        + projection_fields
+    )
+    if all(value is None for value in all_fields):
+        return
+    if any(value is None for value in release_fields):
+        raise ValueError("mapping activation authority requires an exact completed release")
+    if any(value is None for value in mapping_fields) and any(
+        value is not None for value in mapping_fields
+    ):
+        raise ValueError("mapping predecessor must be complete or absent")
+    if any(value is None for value in projection_fields) and any(
+        value is not None for value in projection_fields
+    ):
+        raise ValueError("projection predecessor must be complete or absent")
+    if authority.expected_projection_head_id is None:
+        raise ValueError("mapping activation requires deterministic projection head identity")
+    for field in (
+        "completed_release_id",
+        "expected_projection_head_id",
+    ):
+        object.__setattr__(authority, field, _text(getattr(authority, field), field))
+    for field in ("completed_release_fingerprint",):
+        value = getattr(authority, field)
+        if not isinstance(value, str) or len(value) != 71 or not value.startswith("sha256:"):
+            raise ValueError(f"{field} must be a canonical sha256 digest")
+    if authority.expected_mapping_active_revision_id is not None:
+        object.__setattr__(
+            authority,
+            "expected_mapping_active_revision_id",
+            _text(
+                authority.expected_mapping_active_revision_id, "expected_mapping_active_revision_id"
+            ),
+        )
+        assert authority.expected_mapping_active_manifest_digest is not None
+        _require_digest(
+            authority.expected_mapping_active_manifest_digest,
+            "expected_mapping_active_manifest_digest",
+        )
+        assert authority.expected_mapping_active_revision_number is not None
+        _integer(
+            authority.expected_mapping_active_revision_number,
+            "expected_mapping_active_revision_number",
+            1,
+        )
+    if authority.expected_projection_active_release_id is not None:
+        object.__setattr__(
+            authority,
+            "expected_projection_active_release_id",
+            _text(
+                authority.expected_projection_active_release_id,
+                "expected_projection_active_release_id",
+            ),
+        )
+        assert authority.expected_projection_active_release_fingerprint is not None
+        _require_digest(
+            authority.expected_projection_active_release_fingerprint,
+            "expected_projection_active_release_fingerprint",
+        )
+        assert authority.expected_projection_active_release_number is not None
+        _integer(
+            authority.expected_projection_active_release_number,
+            "expected_projection_active_release_number",
+            1,
+        )
+    if isinstance(authority, MappingRollbackAuthority):
+        if authority.rollback_head_digest is None:
+            raise ValueError("rollback activation authority requires rollback candidate digest")
+        if len(
+            authority.rollback_head_digest
+        ) != 71 or not authority.rollback_head_digest.startswith("sha256:"):
+            raise ValueError("rollback_head_digest must be a canonical sha256 digest")
+
+
+def _require_digest(value: str, field: str) -> None:
+    if len(value) != 71 or not value.startswith("sha256:"):
+        raise ValueError(f"{field} must be a canonical sha256 digest")
 
 
 def census_fingerprint(request: StandaloneCrmCensusRequest) -> str:

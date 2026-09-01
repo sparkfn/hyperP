@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from dataclasses import asdict
 
 from neo4j import ManagedTransaction
@@ -10,19 +11,23 @@ from neo4j import ManagedTransaction
 from src.graph.queries.standalone_crm_census import (
     ACQUIRE_UNIT_FENCE,
     ALLOCATE_UNITS,
+    CLAIM_MAPPING_PUBLICATION,
     CLAIM_PUBLISHED_CHILD,
     CLOSE_CONTACT_BINDING_POSITION,
     CONFIRM_PUBLICATION,
     CONVERGE_OCCURRENCE_EXHAUSTION,
+    FIND_MAPPING_RECEIPT,
     FREEZE_WINDOW,
     GET_RESUMABLE_UNITS,
     LEASE_HELD_PUBLISHED_CHILD,
     MARK_PUBLICATION_PUBLISHING,
     PRECONFIRM_PUBLISHED_CHILD,
+    RECONCILE_MAPPING_RECEIPT,
     REFRESH_PUBLISHED_CHILD,
     RENEW_UNIT_FENCE,
     REPAIR_PUBLICATIONS,
     RESERVE_PUBLICATION,
+    SETTLE_MAPPING_RECEIPT,
     SETTLE_UNIT,
     STORE_CHECKPOINT,
 )
@@ -45,6 +50,7 @@ from src.standalone_crm_census_models import (
     StandaloneCrmPublication,
     canonical_request_payload,
 )
+from src.standalone_crm_census_requests import mapping_work_identity
 
 
 class StandaloneCrmCensusWorkRepository(_StandaloneCrmCensusRepositoryBase):
@@ -242,6 +248,220 @@ class StandaloneCrmCensusWorkRepository(_StandaloneCrmCensusRepositoryBase):
             return None if record is None else dict(record)
 
         return self._client.execute_write(work)
+
+    def claim_mapping_publication(
+        self,
+        envelope: StandaloneCrmChildEnvelope,
+        *,
+        owner_id: str,
+        payload_json: str,
+        lease_seconds: int = 120,
+    ) -> dict[str, object] | None:
+        snapshot = self.runtime_snapshot(envelope.census_id)
+        if (
+            snapshot is None
+            or snapshot.generation != envelope.generation
+            or isinstance(snapshot.request, SourceSyncCensusRequest)
+        ):
+            return None
+        request = snapshot.request
+
+        def work(tx: ManagedTransaction) -> dict[str, object] | None:
+            record = tx.run(
+                CLAIM_MAPPING_PUBLICATION,
+                census_id=envelope.census_id,
+                generation=envelope.generation,
+                census_kind=request.census_kind,
+                stream_kind=envelope.stream_kind,
+                revision_id=envelope.revision_id,
+                task_name=envelope.task_name,
+                task_id=envelope.task_id,
+                payload_digest=envelope.payload_digest(),
+                payload_json=payload_json,
+                payload_version=envelope.payload_version,
+                queue=envelope.queue,
+                request_json=canonical_request_payload(request),
+                authority_revision=authority_revision(request),
+                authority_json=authority_context(request),
+                owner_id=owner_id,
+                lease_seconds=lease_seconds,
+            ).single()
+            return None if record is None else dict(record)
+
+        return self._client.execute_write(work)
+
+    def settle_mapping_receipt(
+        self,
+        envelope: StandaloneCrmChildEnvelope,
+        *,
+        owner_id: str,
+        fence_token: int,
+        payload_json: str,
+        release_id: str,
+        activated_at: str,
+    ) -> bool:
+        snapshot = self.runtime_snapshot(envelope.census_id)
+        if (
+            snapshot is None
+            or snapshot.generation != envelope.generation
+            or isinstance(snapshot.request, SourceSyncCensusRequest)
+        ):
+            return False
+        request = snapshot.request
+
+        def work(tx: ManagedTransaction) -> bool:
+            return (
+                tx.run(
+                    SETTLE_MAPPING_RECEIPT,
+                    census_id=envelope.census_id,
+                    generation=envelope.generation,
+                    stream_kind=envelope.stream_kind,
+                    revision_id=envelope.revision_id,
+                    task_name=envelope.task_name,
+                    task_id=envelope.task_id,
+                    payload_digest=envelope.payload_digest(),
+                    payload_json=payload_json,
+                    request_json=canonical_request_payload(request),
+                    authority_revision=authority_revision(request),
+                    authority_json=authority_context(request),
+                    owner_id=owner_id,
+                    fence_token=fence_token,
+                    release_id=release_id,
+                    activated_at=activated_at,
+                    census_kind=request.census_kind,
+                    source_key=request.source_key,
+                    source_instance_id=request.source_instance_id,
+                    control_instance_id=request.control_instance_id,
+                    candidate_manifest_digest=request.authority.prepared_revision_digest
+                    if hasattr(request.authority, "prepared_revision_digest")
+                    else request.authority.rollback_head_digest,
+                    release_fingerprint=request.authority.completed_release_fingerprint,
+                    queue=envelope.queue,
+                    payload_version=envelope.payload_version,
+                ).single()
+                is not None
+            )
+
+        return self._client.execute_write(work)
+
+    def reconcile_mapping_receipt(
+        self,
+        envelope: StandaloneCrmChildEnvelope,
+        *,
+        payload_json: str,
+        release_id: str,
+        activated_at: str,
+    ) -> bool:
+        snapshot = self.runtime_snapshot(envelope.census_id)
+        if (
+            snapshot is None
+            or snapshot.generation != envelope.generation
+            or isinstance(snapshot.request, SourceSyncCensusRequest)
+        ):
+            return False
+        request = snapshot.request
+
+        def work(tx: ManagedTransaction) -> bool:
+            return (
+                tx.run(
+                    RECONCILE_MAPPING_RECEIPT,
+                    census_id=envelope.census_id,
+                    generation=envelope.generation,
+                    stream_kind=envelope.stream_kind,
+                    revision_id=envelope.revision_id,
+                    task_name=envelope.task_name,
+                    task_id=envelope.task_id,
+                    payload_digest=envelope.payload_digest(),
+                    payload_json=payload_json,
+                    request_json=canonical_request_payload(request),
+                    authority_revision=authority_revision(request),
+                    authority_json=authority_context(request),
+                    release_id=release_id,
+                    activated_at=activated_at,
+                    census_kind=request.census_kind,
+                    source_key=request.source_key,
+                    source_instance_id=request.source_instance_id,
+                    control_instance_id=request.control_instance_id,
+                    candidate_manifest_digest=request.authority.prepared_revision_digest
+                    if hasattr(request.authority, "prepared_revision_digest")
+                    else request.authority.rollback_head_digest,
+                    release_fingerprint=request.authority.completed_release_fingerprint,
+                    queue=envelope.queue,
+                    payload_version=envelope.payload_version,
+                ).single()
+                is not None
+            )
+
+        return self._client.execute_write(work)
+
+    def find_mapping_receipt(self, census_id: str) -> dict[str, object] | None:
+        snapshot = self.runtime_snapshot(census_id)
+        if snapshot is None or isinstance(snapshot.request, SourceSyncCensusRequest):
+            return None
+        from src.standalone_crm_mapping_child import MAPPING_CHILD_TASK_NAME
+
+        request = snapshot.request
+        candidate_id, candidate_digest = mapping_work_identity(request.authority)
+        envelope = StandaloneCrmChildEnvelope(
+            census_id,
+            snapshot.generation,
+            request.selected_kinds[0],
+            None,
+            candidate_id,
+            MAPPING_CHILD_TASK_NAME,
+            uuid.uuid5(
+                uuid.NAMESPACE_URL, f"{census_id}:{snapshot.generation}:{request.selected_kinds[0]}"
+            ).hex,
+            "ingestion",
+        )
+        payload = {
+            "census_id": envelope.census_id,
+            "generation": envelope.generation,
+            "stream_kind": envelope.stream_kind,
+            "frozen_upper_id": None,
+            "revision_id": candidate_id,
+            "task_name": envelope.task_name,
+            "task_id": envelope.task_id,
+            "queue": envelope.queue,
+            "payload_version": envelope.payload_version,
+        }
+        payload_json = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+        release_id = request.authority.completed_release_id
+        release_fingerprint = request.authority.completed_release_fingerprint
+        if release_id is None or release_fingerprint is None:
+            return None
+
+        def work(tx: ManagedTransaction) -> dict[str, object] | None:
+            rows = list(
+                tx.run(
+                    FIND_MAPPING_RECEIPT,
+                    census_id=census_id,
+                    generation=snapshot.generation,
+                    census_kind=request.census_kind,
+                    request_json=canonical_request_payload(request),
+                    authority_revision=authority_revision(request),
+                    authority_json=authority_context(request),
+                    stream_kind=envelope.stream_kind,
+                    revision_id=candidate_id,
+                    task_name=envelope.task_name,
+                    task_id=envelope.task_id,
+                    queue=envelope.queue,
+                    payload_version=envelope.payload_version,
+                    payload_digest=envelope.payload_digest(),
+                    payload_json=payload_json,
+                    source_key=request.source_key,
+                    source_instance_id=request.source_instance_id,
+                    control_instance_id=request.control_instance_id,
+                    release_id=release_id,
+                    release_fingerprint=release_fingerprint,
+                    candidate_manifest_digest=candidate_digest,
+                )
+            )
+            if len(rows) > 1:
+                raise StandaloneCrmCensusConflictError("mapping receipt topology is not unique")
+            return None if not rows else dict(rows[0])
+
+        return self._client.execute_read(work)
 
     def published_child_lease_held(
         self,

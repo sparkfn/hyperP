@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from dataclasses import asdict, dataclass
+from dataclasses import dataclass
 
 from src.graph.client import Neo4jClient
 from src.standalone_crm_census_models import (
@@ -13,6 +13,10 @@ from src.standalone_crm_census_models import (
     StandaloneCrmCensusConflictError,
     StandaloneCrmCensusRequest,
     StandaloneCrmStreamKind,
+)
+from src.standalone_crm_census_requests import (
+    canonical_authority_payload,
+    mapping_work_identity,
 )
 
 
@@ -77,13 +81,15 @@ def authority_revision(request: StandaloneCrmCensusRequest) -> str:
     if isinstance(request, MappingPrepareCensusRequest):
         return request.authority.prepared_revision_digest
     if isinstance(request, MappingRollbackCensusRequest):
-        return request.authority.target_revision_digest
+        # v1 rollback payloads identify the historical target; v2 records use
+        # the newly prepared rollback candidate digest.
+        return mapping_work_identity(request.authority)[1]
     raise AssertionError("unreachable standalone census request")
 
 
 def authority_context(request: StandaloneCrmCensusRequest) -> str:
     """Canonical exact authority identity retained independently of its short revision."""
-    return json.dumps(asdict(request.authority), sort_keys=True, separators=(",", ":"))
+    return json.dumps(canonical_authority_payload(request), sort_keys=True, separators=(",", ":"))
 
 
 def terminal_window_expectations(
@@ -125,16 +131,7 @@ def terminal_window_expectations(
     revision_digest = decoded.get("revision_digest")
     if not isinstance(revision_id, str) or not isinstance(revision_digest, str):
         raise StandaloneCrmCensusConflictError("stored mapping window is malformed")
-    expected_revision = (
-        request.authority.prepared_revision_id
-        if isinstance(request, MappingPrepareCensusRequest)
-        else request.authority.target_revision_id
-    )
-    expected_digest = (
-        request.authority.prepared_revision_digest
-        if isinstance(request, MappingPrepareCensusRequest)
-        else request.authority.target_revision_digest
-    )
+    expected_revision, expected_digest = mapping_work_identity(request.authority)
     if revision_id != expected_revision or revision_digest != expected_digest:
         raise StandaloneCrmCensusConflictError("stored mapping window authority conflicts")
     return [
