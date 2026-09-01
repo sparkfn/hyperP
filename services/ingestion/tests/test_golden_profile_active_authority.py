@@ -101,6 +101,21 @@ def test_active_authority_no_override_parity_and_no_write_when_unchanged() -> No
     assert tx.writes == []
 
 
+def test_absent_survivorship_overrides_is_treated_as_no_override() -> None:
+    row = _row(facts=[_fact("Alice")], current_name="Alice")
+    person = row.values["person"]
+    assert isinstance(person, dict)
+    person.pop("survivorship_overrides")
+    tx = _Transaction(row)
+    result = recompute_golden_profile_from_active_authority(
+        tx, "person-a", invalidate_analysis=False
+    )
+    assert result is not None
+    assert result.changed is False
+    assert result.conflict_fields == ()
+    assert tx.writes == []
+
+
 def test_invalid_facts_are_excluded_and_changed_profile_writes_once() -> None:
     tx = _Transaction(_row(facts=[_fact("Ignored", quality="invalid_format"), _fact("Alice")]))
     result = recompute_golden_profile_from_active_authority(
