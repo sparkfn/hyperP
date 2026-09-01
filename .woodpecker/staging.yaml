@@ -1,0 +1,94 @@
+# Staging deployment for sparkfn/hyperP.
+#
+# The Woodpecker agent is containerized on dev211. The deploy step therefore
+# uses a strictly verified SSH boundary back to the same host and executes the
+# repository-owned deployment script there. No developer workstation or local
+# Support-repository proxy participates in this path.
+when:
+  event:
+    - push
+  branch:
+    - staging
+
+steps:
+  - name: deploy-script-syntax
+    image: alpine:3.22
+    depends_on: []
+    commands:
+      - apk add --no-cache bash
+      - bash -n scripts/deploy/hyperp-staging.sh
+      - bash -n scripts/lifecycle-worker-deploy-guard.sh
+
+  - name: deploy-hyperp-staging
+    depends_on:
+      - deploy-script-syntax
+    image: alpine:3.22
+    environment:
+      HYPERP_STAGING_SSH_HOST:
+        from_secret: hyperp_staging_ssh_host
+      HYPERP_STAGING_SSH_PORT:
+        from_secret: hyperp_staging_ssh_port
+      HYPERP_STAGING_SSH_USER:
+        from_secret: hyperp_staging_ssh_user
+      HYPERP_STAGING_SSH_KEY_B64:
+        from_secret: hyperp_staging_ssh_key_b64
+      HYPERP_STAGING_SSH_KNOWN_HOSTS:
+        from_secret: hyperp_staging_ssh_known_hosts
+      HYPERP_STAGING_HEALTH_URL:
+        from_secret: hyperp_staging_health_url
+    commands:
+      - apk add --no-cache bash openssh-client
+      - |
+        set -eu
+        set +x
+
+        require_value() {
+          variable_name="$${1}"
+          eval "variable_value=\$$${variable_name}"
+          [ -n "$${variable_value}" ] || {
+            printf 'deploy configuration is missing %s\n' "$${variable_name}" >&2
+            exit 1
+          }
+        }
+
+        for variable_name in \
+          HYPERP_STAGING_SSH_HOST \
+          HYPERP_STAGING_SSH_PORT \
+          HYPERP_STAGING_SSH_USER \
+          HYPERP_STAGING_SSH_KEY_B64 \
+          HYPERP_STAGING_SSH_KNOWN_HOSTS \
+          HYPERP_STAGING_HEALTH_URL
+        do
+          require_value "$${variable_name}"
+        done
+
+        printf '%s' "$${CI_COMMIT_SHA}" | grep -Eq '^[0-9a-f]{40}$' || {
+          printf 'CI_COMMIT_SHA is not a full lowercase SHA\n' >&2
+          exit 1
+        }
+        printf '%s' "$${HYPERP_STAGING_SSH_PORT}" | grep -Eq '^[0-9]{1,5}$' || {
+          printf 'HyperP staging SSH port is invalid\n' >&2
+          exit 1
+        }
+
+        umask 077
+        ssh_dir="$$(mktemp -d)"
+        trap 'rm -rf "$${ssh_dir}"' EXIT
+        printf '%s' "$${HYPERP_STAGING_SSH_KEY_B64}" | base64 -d > "$${ssh_dir}/id_ed25519"
+        printf '%s\n' "$${HYPERP_STAGING_SSH_KNOWN_HOSTS}" > "$${ssh_dir}/known_hosts"
+        chmod 600 "$${ssh_dir}/id_ed25519" "$${ssh_dir}/known_hosts"
+        health_url_b64="$$(printf '%s' "$${HYPERP_STAGING_HEALTH_URL}" | base64 | tr -d '\n')"
+
+        ssh \
+          -i "$${ssh_dir}/id_ed25519" \
+          -p "$${HYPERP_STAGING_SSH_PORT}" \
+          -o BatchMode=yes \
+          -o ConnectTimeout=15 \
+          -o IdentitiesOnly=yes \
+          -o ServerAliveCountMax=3 \
+          -o ServerAliveInterval=15 \
+          -o StrictHostKeyChecking=yes \
+          -o UserKnownHostsFile="$${ssh_dir}/known_hosts" \
+          "$${HYPERP_STAGING_SSH_USER}@$${HYPERP_STAGING_SSH_HOST}" \
+          bash -s -- "$${CI_COMMIT_SHA}" "$${health_url_b64}" \
+          < scripts/deploy/hyperp-staging.sh
