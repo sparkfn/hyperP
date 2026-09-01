@@ -545,3 +545,71 @@ def test_mapping_publication_selects_dedicated_zero_bitrix_task() -> None:
     assert MAPPING_CHILD_TASK_NAME == (
         "src.standalone_crm_census_tasks.run_standalone_crm_mapping_activation"
     )
+
+
+def test_mapping_freeze_uses_legacy_target_and_v2_rollback_head_work_identity() -> None:
+    from src.standalone_crm_census_models import MappingRollbackCensusRequest
+    from src.standalone_crm_census_requests import MappingRollbackAuthority
+
+    class MappingRepository(_Repository):
+        def __init__(self, request: MappingRollbackCensusRequest) -> None:
+            del request
+            self.frozen: object | None = None
+
+        def freeze_no_source_window(self, _census: str, _generation: int, window: object) -> bool:
+            self.frozen = window
+            return True
+
+        def allocate_units(self, _census: str, _generation: int, units: tuple[object, ...]) -> int:
+            return len(units)
+
+        def pause(self, *_: object) -> bool:
+            return True
+
+    budget = StandaloneCrmBudget(1, 1, 1, 1, 1, 1, "2099-01-02T00:00:00Z")
+    rollback_digest = "sha256:" + "c" * 64
+    for authority, expected in (
+        (
+            MappingRollbackAuthority("target", "target-digest", "head", "rollback"),
+            ("target", "target-digest"),
+        ),
+        (
+            MappingRollbackAuthority(
+                "target",
+                "target-digest",
+                "head",
+                "rollback",
+                rollback_digest,
+                "release",
+                "sha256:" + "a" * 64,
+                None,
+                None,
+                None,
+                "projection",
+                None,
+                None,
+                None,
+            ),
+            ("rollback", rollback_digest),
+        ),
+    ):
+        request = MappingRollbackCensusRequest(
+            "bitrix_chat",
+            "source",
+            "control",
+            "mapping",
+            ("lead",),
+            budget,
+            "policy",
+            "association",
+            "sha256:" + "b" * 64,
+            authority,
+        )
+        repository = MappingRepository(request)
+        runtime = StandaloneCrmCensusRuntime(
+            repository, _Authority(), BitrixOpenLinesConfig(standalone_crm_identity_enabled=True)
+        )
+        runtime._freeze_mapping("census", request, 1)
+        assert repository.frozen is not None
+        assert repository.frozen.revision_id == expected[0]
+        assert repository.frozen.revision_digest == expected[1]

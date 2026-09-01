@@ -28,7 +28,7 @@ from src.standalone_crm_census_models import (
     StandaloneCrmStreamKind,
     StandaloneCrmTerminalState,
 )
-from src.standalone_crm_census_requests import mapping_candidate_identity
+from src.standalone_crm_census_requests import mapping_work_identity
 
 SOURCE_CHILD_TASK_NAME = "src.standalone_crm_census_tasks.run_standalone_crm_census_unit"
 MAPPING_CHILD_TASK_NAME = "src.standalone_crm_census_tasks.run_standalone_crm_mapping_activation"
@@ -444,7 +444,7 @@ class StandaloneCrmCensusRuntime:
         request: MappingPrepareCensusRequest | MappingRollbackCensusRequest,
         generation: int,
     ) -> StandaloneCrmRuntimeResult:
-        revision_id, revision_digest = mapping_candidate_identity(request.authority)
+        revision_id, revision_digest = mapping_work_identity(request.authority)
         self._revalidate(request)
         if not self._repository.freeze_no_source_window(
             census_id, generation, NoSourceWindow(revision_id, revision_digest)
@@ -664,4 +664,4 @@ class StandaloneCrmCensusRuntime:
             )
         if isinstance(request, MappingPrepareCensusRequest):
             return request.authority.prepared_revision_digest
-        return mapping_candidate_identity(request.authority)[1]
+        return mapping_work_identity(request.authority)[1]

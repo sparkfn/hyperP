@@ -10,6 +10,7 @@ from src.standalone_crm_census_models import (
     MappingPrepareAuthority,
     MappingPrepareCensusRequest,
     MappingRollbackAuthority,
+    MappingRollbackCensusRequest,
     NoSourceWindow,
     SourceSyncAuthority,
     SourceSyncCensusRequest,
@@ -456,6 +457,10 @@ def test_legacy_and_v2_authority_contexts_preserve_contract_identity() -> None:
         MappingRollbackAuthority("target", "sha256:" + "c" * 64, "head", "rollback"),
     )
     assert authority_revision(legacy_rollback) == "sha256:" + "c" * 64
+    legacy_rollback_context = authority_context(legacy_rollback)
+    assert '"rollback_head_id":"rollback"' in legacy_rollback_context
+    assert '"rollback_head_digest"' not in legacy_rollback_context
+    assert '"completed_release_id"' not in legacy_rollback_context
     v2_prepare = MappingPrepareCensusRequest(
         "bitrix_chat",
         "portal-a",
@@ -483,3 +488,53 @@ def test_legacy_and_v2_authority_contexts_preserve_contract_identity() -> None:
     )
     assert '"completed_release_id":"release"' in authority_context(v2_prepare)
     assert '"expected_mapping_active_revision_id":null' in authority_context(v2_prepare)
+
+
+def test_rollback_work_identity_preserves_v1_target_and_v2_prepared_head() -> None:
+    from src.standalone_crm_census_requests import mapping_work_identity
+
+    prepared_digest = "sha256:" + "b" * 64
+    legacy = MappingRollbackAuthority("target-v1", "digest-v1", "head", "rollback-head")
+    v2 = MappingRollbackAuthority(
+        "target-v2",
+        "digest-target",
+        "head",
+        "rollback-prepared",
+        prepared_digest,
+        "release",
+        "sha256:" + "a" * 64,
+        None,
+        None,
+        None,
+        "projection",
+        None,
+        None,
+        None,
+    )
+    assert mapping_work_identity(legacy) == ("target-v1", "digest-v1")
+    assert mapping_work_identity(v2) == ("rollback-prepared", prepared_digest)
+
+
+def test_legacy_rollback_terminal_window_uses_historical_target_identity() -> None:
+    request = MappingRollbackCensusRequest(
+        "bitrix_chat",
+        "portal-a",
+        "control-a",
+        "legacy-window",
+        ("lead",),
+        _budget(),
+        "policy-v1",
+        "association-v1",
+        "sha256:" + "a" * 64,
+        MappingRollbackAuthority("target-v1", "digest-v1", "head", "rollback-head"),
+    )
+    window = json.dumps(
+        {
+            "window_version": "standalone-crm-no-source-window-v1",
+            "revision_id": "target-v1",
+            "revision_digest": "digest-v1",
+        }
+    )
+    assert terminal_window_expectations(request, window) == [
+        {"stream_kind": "lead", "frozen_upper_id": None, "revision_id": "target-v1"}
+    ]
