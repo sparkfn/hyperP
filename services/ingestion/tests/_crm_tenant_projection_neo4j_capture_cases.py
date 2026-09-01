@@ -225,6 +225,11 @@ def test_real_neo4j_duplicate_checkpoint_after_allocation_fails_closed(
     repository = _repository(neo4j_driver, monkeypatch)
     release = repository.allocate_or_replay(_command())
     with neo4j_driver.session() as session:
+        # The production uniqueness constraint prevents this corrupt topology
+        # from being created through supported writes. Drop it only in this
+        # disposable fixture so the repository's independent fail-closed
+        # readback guard is exercised as intended.
+        session.run("DROP CONSTRAINT standalone_crm_checkpoint_unique IF EXISTS").consume()
         session.run(
             "CREATE (:StandaloneCrmCensusCheckpoint {census_id: 'issue-305-census', "
             "stream_kind: 'contact', generation: 1, frozen_upper_id: 101, "
