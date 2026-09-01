@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -185,7 +186,7 @@ def _authority_evidence(
                     ),
                 )
             )
-    return tuple(evidence)
+    return tuple(sorted(evidence, key=_evidence_sort_key))
 
 
 def _evidence_item(
@@ -204,7 +205,27 @@ def _evidence_item(
             or {request.inventory.source_record_pk}
         )
     )
-    return RepairAuthorityEvidence(person_id, provenance, source_pks, tuple(rows))
+    return RepairAuthorityEvidence(
+        person_id,
+        provenance,
+        source_pks,
+        tuple(sorted(rows, key=_canonical_row_json)),
+    )
+
+
+def _evidence_sort_key(item: RepairAuthorityEvidence) -> tuple[str, str, tuple[str, ...], str]:
+    return (
+        item.person_id,
+        item.provenance_class,
+        item.source_record_pks,
+        json.dumps(
+            list(item.evidence_rows), sort_keys=True, separators=(",", ":"), ensure_ascii=False
+        ),
+    )
+
+
+def _canonical_row_json(row: dict[str, JsonValue]) -> str:
+    return json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
 
 
 def _lock_support_records(

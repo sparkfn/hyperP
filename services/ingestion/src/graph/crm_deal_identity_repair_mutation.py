@@ -163,9 +163,7 @@ class CrmDealIdentityRepairMutationRepository:
     def _lock_unit(self, tx: ManagedTransaction, request: RepairMutationCommand) -> None:
         row = tx.run(
             LOCK_REPAIR_MUTATION_UNIT,
-            run_id=request.unit.run_id,
-            unit_id=request.unit.unit_id,
-            mutation_id=request.mutation_id,
+            **_guard_parameters(request),
         ).single()
         if row is None:
             replay = self._replay(tx, request)

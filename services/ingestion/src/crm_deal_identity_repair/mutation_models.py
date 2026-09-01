@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from dataclasses import dataclass
 from typing import Literal
 from uuid import NAMESPACE_URL, uuid5
@@ -236,8 +237,11 @@ class RepairMutationPlan:
     def authority_digest(self) -> str:
         return authority_evidence_digest(
             {
-                "current_owner_ids": list(self.current_owner_ids),
-                "evidence": [item.to_dict() for item in self.authority_evidence],
+                "current_owner_ids": list(_canonical_owner_ids(self.current_owner_ids)),
+                "evidence": [
+                    item.to_dict()
+                    for item in _canonical_authority_evidence(self.authority_evidence)
+                ],
             }
         )
 
@@ -282,8 +286,8 @@ def external_authority_evidence_digest(
     )
     return authority_evidence_digest(
         {
-            "current_owner_ids": list(current_owner_ids),
-            "evidence": [item.to_dict() for item in external],
+            "current_owner_ids": list(_canonical_owner_ids(current_owner_ids)),
+            "evidence": [item.to_dict() for item in _canonical_authority_evidence(external)],
         }
     )
 
@@ -293,10 +297,10 @@ def _external_authority_item(
     mutation_id: str | None,
     excluded_source_record_pks: frozenset[str],
 ) -> RepairAuthorityEvidence | None:
-    if item.provenance_class in {"historical_deal_only", "self_supporting"}:
-        return None
     if item.provenance_class == "blocked_or_conflicting":
-        blocker_rows = tuple(_stable_blocker_row(row) for row in item.evidence_rows)
+        blocker_rows = tuple(
+            sorted((_stable_blocker_row(row) for row in item.evidence_rows), key=_row_json)
+        )
         if not blocker_rows:
             return None
         return RepairAuthorityEvidence(
@@ -306,9 +310,14 @@ def _external_authority_item(
             blocker_rows,
         )
     rows = tuple(
-        row
-        for row in item.evidence_rows
-        if not _mutation_owned_authority_row(row, mutation_id, excluded_source_record_pks)
+        sorted(
+            (
+                row
+                for row in item.evidence_rows
+                if not _mutation_owned_authority_row(row, mutation_id, excluded_source_record_pks)
+            ),
+            key=_row_json,
+        )
     )
     if not rows:
         return None
@@ -329,6 +338,39 @@ def _external_authority_item(
         item.provenance_class,
         source_record_pks,
         rows,
+    )
+
+
+def _row_json(row: dict[str, JsonValue]) -> str:
+    return json.dumps(row, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+
+
+def _canonical_owner_ids(current_owner_ids: tuple[str, ...]) -> tuple[str, ...]:
+    return tuple(sorted(set(current_owner_ids)))
+
+
+def _canonical_authority_evidence(
+    evidence: tuple[RepairAuthorityEvidence, ...],
+) -> tuple[RepairAuthorityEvidence, ...]:
+    canonical = tuple(
+        RepairAuthorityEvidence(
+            item.person_id,
+            item.provenance_class,
+            tuple(sorted(item.source_record_pks)),
+            tuple(sorted((dict(row) for row in item.evidence_rows), key=_row_json)),
+        )
+        for item in evidence
+    )
+    return tuple(
+        sorted(
+            canonical,
+            key=lambda item: (
+                item.person_id,
+                item.provenance_class,
+                item.source_record_pks,
+                _row_json({"evidence_rows": list(item.evidence_rows)}),
+            ),
+        )
     )
 
 

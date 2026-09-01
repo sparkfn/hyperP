@@ -3,7 +3,15 @@
 from __future__ import annotations
 
 LOCK_REPAIR_MUTATION_UNIT = """
-MATCH (unit:CrmDealRepairUnit {run_id: $run_id, unit_id: $unit_id})
+MATCH (unit:CrmDealRepairUnit {
+  run_id: $run_id, unit_id: $unit_id, generation: $generation, sequence: $sequence,
+  attempt: $attempt, boundary_digest: $boundary_digest,
+  inventory_fingerprint: $unit_fingerprint, inventory_key: $inventory_key,
+  source_record_pk: $source_record_pk,
+  inventory_graph_fingerprint: $inventory_graph_fingerprint,
+  inventory_stored_payload_fingerprint: $inventory_stored_payload_fingerprint,
+  inventory_binding_digest: $inventory_binding_digest
+})
 SET unit.mutation_lock_id = coalesce(unit.mutation_lock_id, $mutation_id)
 WITH unit
 WHERE unit.mutation_lock_id = $mutation_id
