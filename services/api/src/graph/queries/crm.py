@@ -151,13 +151,13 @@ CALL (person, as_of_at) {{
          count(DISTINCT CASE WHEN {_RECENT} THEN sr END) AS recent_30d_conversation_count
 }}
 
-{_daily_buckets('crm_deal', 'sr.observed_at', 'deal')}
+{_daily_buckets("crm_deal", "sr.observed_at", "deal")}
 
-{_daily_buckets('crm_history', 'coalesce(sr.event_at, sr.observed_at)', 'activity')}
+{_daily_buckets("crm_history", "coalesce(sr.event_at, sr.observed_at)", "activity")}
 
-{_daily_buckets('call', 'sr.observed_at', 'call')}
+{_daily_buckets("call", "sr.observed_at", "call")}
 
-{_daily_buckets('conversation', 'sr.observed_at', 'conversation')}
+{_daily_buckets("conversation", "sr.observed_at", "conversation")}
 
 CALL (person) {{
   OPTIONAL MATCH (sr:SourceRecord)-[link:LINKED_TO]->(person)
@@ -304,4 +304,3 @@ RETURN deal_count,
             ELSE toInteger(floor(duration.inSeconds(last_activity_at, as_of_at).seconds / 86400.0))
        END AS days_since_last_activity
 """
-
