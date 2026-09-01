@@ -264,6 +264,69 @@ def test_real_neo4j_deduplicates_company_paths_and_retains_each_support(
     assert (completed.association_count, completed.support_count) == (1, 2)
 
 
+def test_real_neo4j_projection_rejects_over_limit_support_fan_out(
+    neo4j_driver: Driver,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    bindings = tuple(
+        CrmCompanyBindingPayload(str(company_id), None, None, company_id == 1)
+        for company_id in range(1, 502)
+    )
+    _seed(neo4j_driver, contact_bindings=bindings)
+    repository = _repository(neo4j_driver, monkeypatch)
+    release = repository.allocate_or_replay(_command())
+    while release.phase == "capture":
+        release = repository.capture_page(release.release_id, release.release_fingerprint, 1)
+
+    with pytest.raises(CrmTenantProjectionIntegrityError, match="support fan-out exceeds"):
+        repository.project_page(release.release_id, release.release_fingerprint, 1)
+    with neo4j_driver.session() as session:
+        projection_children = session.run(
+            "MATCH (release:CrmTenantProjectionRelease {release_id: $release_id}) "
+            "OPTIONAL MATCH "
+            "(decision:CrmTenantProjectionDecision {release_id: release.release_id}) "
+            "WITH release, count(decision) AS decisions "
+            "OPTIONAL MATCH "
+            "(association:CrmTenantProjectionAssociation {release_id: release.release_id}) "
+            "WITH release, decisions, count(association) AS associations "
+            "OPTIONAL MATCH "
+            "(support:CrmTenantProjectionSupport {release_id: release.release_id}) "
+            "RETURN decisions, associations, count(support) AS supports",
+            release_id=release.release_id,
+        ).single(strict=True)
+    assert dict(projection_children) == {"decisions": 0, "associations": 0, "supports": 0}
+
+
+def test_real_neo4j_sparse_mapping_preflight_ignores_unrelated_targets(
+    neo4j_driver: Driver,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manifest = _mapping_manifest(
+        tuple(
+            CrmTenantMappingCompanyEntry(
+                str(company_id),
+                (CrmTenantMappingTarget("issue-305-entity"),),
+            )
+            for company_id in range(1000, 1251)
+        )
+    )
+    _seed(
+        neo4j_driver,
+        manifest,
+        (
+            CrmCompanyBindingPayload("303", None, None, True),
+            CrmCompanyBindingPayload("404", None, None, False),
+        ),
+    )
+    repository = _repository(neo4j_driver, monkeypatch)
+    release = _drive_to_projection_complete(repository, _command(manifest=manifest))
+
+    completed = repository.complete(release.release_id, release.release_fingerprint)
+
+    assert completed.state == "completed"
+    assert (completed.association_count, completed.support_count) == (0, 0)
+
+
 def test_real_neo4j_acknowledgement_loss_replay_converges_without_duplicate_supports(
     neo4j_driver: Driver,
     monkeypatch: pytest.MonkeyPatch,
@@ -328,6 +391,180 @@ def test_real_neo4j_completion_and_reader_reject_orphan_release_children(
         ).consume()
     with pytest.raises(CrmTenantProjectionIntegrityError, match="persisted input"):
         repository.complete(release.release_id, release.release_fingerprint)
+
+
+def test_real_neo4j_completion_write_rejects_post_validation_ledger_race(
+    neo4j_driver: Driver,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed(neo4j_driver)
+    repository = _repository(neo4j_driver, monkeypatch)
+    release = _drive_to_projection_complete(repository, _command())
+    validate = projection_graph._validate_release_topology_bounded
+
+    def validate_then_corrupt(client: object, current: CrmTenantProjectionReleaseSummary) -> None:
+        validate(client, current)
+        with neo4j_driver.session() as session:
+            session.run(
+                "CREATE (:CrmTenantProjectionDecision {release_id: $release_id, input_id: 'race', "
+                "decision: 'zero_target', zero_target_reason: 'empty_membership', "
+                "decision_digest: $digest})",
+                release_id=current.release_id,
+                digest=_DIGEST,
+            ).consume()
+
+    monkeypatch.setattr(
+        projection_graph, "_validate_release_topology_bounded", validate_then_corrupt
+    )
+
+    with pytest.raises(CrmTenantProjectionConflictError, match="completion conflicts"):
+        repository.complete(release.release_id, release.release_fingerprint)
+    with neo4j_driver.session() as session:
+        state = session.run(
+            "MATCH (release:CrmTenantProjectionRelease {release_id: $release_id}) "
+            "RETURN release.state AS state",
+            release_id=release.release_id,
+        ).single(strict=True)
+    assert state["state"] == "building"
+
+
+def test_real_neo4j_completion_write_rejects_post_validation_identity_race(
+    neo4j_driver: Driver,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed(neo4j_driver)
+    repository = _repository(neo4j_driver, monkeypatch)
+    release = _drive_to_projection_complete(repository, _command())
+    validate = projection_graph._validate_release_topology_bounded
+
+    def validate_then_corrupt(client: object, current: CrmTenantProjectionReleaseSummary) -> None:
+        validate(client, current)
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (:CrmTenantProjectionRelease {release_id: $release_id})"
+                "-[:HAS_PROJECTION_INPUT]->(:CrmTenantProjectionInput)"
+                "-[:HAS_PROJECTION_DECISION]->(decision) "
+                "SET decision.input_id = 'cross-release-input'",
+                release_id=current.release_id,
+            ).consume()
+
+    monkeypatch.setattr(
+        projection_graph, "_validate_release_topology_bounded", validate_then_corrupt
+    )
+
+    with pytest.raises(CrmTenantProjectionConflictError, match="completion conflicts"):
+        repository.complete(release.release_id, release.release_fingerprint)
+    with neo4j_driver.session() as session:
+        state = session.run(
+            "MATCH (release:CrmTenantProjectionRelease {release_id: $release_id}) "
+            "RETURN release.state AS state",
+            release_id=release.release_id,
+        ).single(strict=True)
+    assert state["state"] == "building"
+
+
+def test_real_neo4j_completion_write_rejects_post_validation_zero_target_reason_race(
+    neo4j_driver: Driver,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed(neo4j_driver)
+    repository = _repository(neo4j_driver, monkeypatch)
+    release = _drive_to_projection_complete(repository, _command())
+    validate = projection_graph._validate_release_topology_bounded
+
+    def validate_then_corrupt(client: object, current: CrmTenantProjectionReleaseSummary) -> None:
+        validate(client, current)
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (:CrmTenantProjectionRelease {release_id: $release_id})"
+                "-[:HAS_PROJECTION_INPUT]->(:CrmTenantProjectionInput {subject_kind: 'lead'})"
+                "-[:HAS_PROJECTION_DECISION]->(decision) "
+                "SET decision.zero_target_reason = 'no_mapped_targets'",
+                release_id=current.release_id,
+            ).consume()
+
+    monkeypatch.setattr(
+        projection_graph, "_validate_release_topology_bounded", validate_then_corrupt
+    )
+
+    with pytest.raises(CrmTenantProjectionConflictError, match="completion conflicts"):
+        repository.complete(release.release_id, release.release_fingerprint)
+    with neo4j_driver.session() as session:
+        state = session.run(
+            "MATCH (release:CrmTenantProjectionRelease {release_id: $release_id}) "
+            "RETURN release.state AS state",
+            release_id=release.release_id,
+        ).single(strict=True)
+    assert state["state"] == "building"
+
+
+def test_real_neo4j_completion_write_rejects_post_validation_foreign_input_owner_race(
+    neo4j_driver: Driver,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed(neo4j_driver)
+    repository = _repository(neo4j_driver, monkeypatch)
+    release = _drive_to_projection_complete(repository, _command())
+    validate = projection_graph._validate_release_topology_bounded
+
+    def validate_then_corrupt(client: object, current: CrmTenantProjectionReleaseSummary) -> None:
+        validate(client, current)
+        with neo4j_driver.session() as session:
+            session.run(
+                "CREATE (foreign:CrmTenantProjectionRelease {release_id: 'foreign-release'}) "
+                "WITH foreign MATCH (:CrmTenantProjectionRelease {release_id: $release_id})"
+                "-[:HAS_PROJECTION_INPUT]->(input:CrmTenantProjectionInput) "
+                "WITH foreign, input ORDER BY input.input_id LIMIT 1 "
+                "CREATE (foreign)-[:HAS_PROJECTION_INPUT]->(input)",
+                release_id=current.release_id,
+            ).consume()
+
+    monkeypatch.setattr(
+        projection_graph, "_validate_release_topology_bounded", validate_then_corrupt
+    )
+
+    with pytest.raises(CrmTenantProjectionConflictError, match="completion conflicts"):
+        repository.complete(release.release_id, release.release_fingerprint)
+    with neo4j_driver.session() as session:
+        state = session.run(
+            "MATCH (release:CrmTenantProjectionRelease {release_id: $release_id}) "
+            "RETURN release.state AS state",
+            release_id=release.release_id,
+        ).single(strict=True)
+    assert state["state"] == "building"
+
+
+def test_real_neo4j_completion_write_rejects_post_validation_support_correlation_race(
+    neo4j_driver: Driver,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed(neo4j_driver)
+    repository = _repository(neo4j_driver, monkeypatch)
+    release = _drive_to_projection_complete(repository, _command())
+    validate = projection_graph._validate_release_topology_bounded
+
+    def validate_then_corrupt(client: object, current: CrmTenantProjectionReleaseSummary) -> None:
+        validate(client, current)
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (support:CrmTenantProjectionSupport {release_id: $release_id}) "
+                "SET support.membership_observation_id = 'wrong-observation-id'",
+                release_id=current.release_id,
+            ).consume()
+
+    monkeypatch.setattr(
+        projection_graph, "_validate_release_topology_bounded", validate_then_corrupt
+    )
+
+    with pytest.raises(CrmTenantProjectionConflictError, match="completion conflicts"):
+        repository.complete(release.release_id, release.release_fingerprint)
+    with neo4j_driver.session() as session:
+        state = session.run(
+            "MATCH (release:CrmTenantProjectionRelease {release_id: $release_id}) "
+            "RETURN release.state AS state",
+            release_id=release.release_id,
+        ).single(strict=True)
+    assert state["state"] == "building"
 
 
 def test_real_neo4j_page_replay_and_stale_projection_head_are_safe(

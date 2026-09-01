@@ -18,6 +18,35 @@ ORDER BY CASE input.subject_kind WHEN 'contact' THEN 0 ELSE 1 END, toInteger(inp
 LIMIT $page_limit
 """
 
+READ_INPUT_SUPPORT_BOUND = """
+MATCH (release:CrmTenantProjectionRelease {
+  release_id: $release_id, mapping_revision_id: $mapping_revision_id,
+  state: 'building', phase: 'projection'
+})-[:MATERIALIZES_MAPPING_REVISION]->(revision:CrmTenantMappingRevision {
+  revision_id: $mapping_revision_id, manifest_digest: release.mapping_manifest_digest,
+  state: 'prepared'
+})
+MATCH (release)-[:HAS_PROJECTION_INPUT]->(input:CrmTenantProjectionInput {input_id: $input_id})
+MATCH (input)-[:SELECTS_MEMBERSHIP_SNAPSHOT]->(snapshot:CrmCompanyMembershipSnapshot {
+  snapshot_id: $snapshot_id
+})
+CALL {
+  WITH revision, snapshot
+  OPTIONAL MATCH (snapshot)-[:HAS_MEMBERSHIP_OBSERVATION]->(
+    observation:CrmCompanyMembershipObservation
+  )
+  WITH DISTINCT revision, observation
+  OPTIONAL MATCH (observation)-[:REFERENCES_COMPANY]->(company_reference:CrmCompanyReference)
+  OPTIONAL MATCH (revision)-[:HAS_MAPPING_ENTRY]->(entry:CrmTenantMappingEntry {
+    revision_id: $mapping_revision_id, company_id: observation.company_id
+  })-[:HAS_MAPPING_TARGET]->(target:CrmTenantMappingTarget)-[:TARGETS_ENTITY]->(entity:Entity)
+  WITH observation, company_reference, target, entity
+  LIMIT $support_row_limit
+  RETURN count(*) AS support_row_count
+}
+RETURN snapshot.binding_count AS binding_count, support_row_count
+"""
+
 READ_INPUT_SUPPORTS = """
 MATCH (release:CrmTenantProjectionRelease {
   release_id: $release_id, mapping_revision_id: $mapping_revision_id,
@@ -76,6 +105,7 @@ RETURN snapshot.binding_count AS binding_count, snapshot.snapshot_digest AS snap
   target.target_id AS mapping_target_id,
   target.entity_key AS entity_key, target.relationship_kind AS relationship_kind
 ORDER BY observation.observation_id, target.target_id
+LIMIT $support_row_limit
 """
 
 WRITE_ASSOCIATIONS = """

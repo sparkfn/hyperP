@@ -89,6 +89,176 @@ WHERE contact.generation = release.contact_unit_generation
       AND projection_head.active_release_number = release.expected_prior_release_number
       AND projection_head.active_release_fingerprint = release.expected_prior_release_fingerprint
       AND release.release_number > release.expected_prior_release_number))
+CALL {
+  WITH release
+  OPTIONAL MATCH (input:CrmTenantProjectionInput {release_id: release.release_id})
+  RETURN count(DISTINCT input) AS actual_input_count
+}
+CALL {
+  WITH release
+  OPTIONAL MATCH (decision:CrmTenantProjectionDecision {release_id: release.release_id})
+  RETURN count(DISTINCT decision) AS actual_decision_count
+}
+CALL {
+  WITH release
+  OPTIONAL MATCH (association:CrmTenantProjectionAssociation {release_id: release.release_id})
+  RETURN count(DISTINCT association) AS actual_association_count
+}
+CALL {
+  WITH release
+  OPTIONAL MATCH (support:CrmTenantProjectionSupport {release_id: release.release_id})
+  RETURN count(DISTINCT support) AS actual_support_count
+}
+WITH release, actual_input_count, actual_decision_count, actual_association_count,
+  actual_support_count
+WHERE actual_input_count = release.input_count
+  AND actual_decision_count = release.decision_count
+  AND actual_association_count = release.association_count
+  AND actual_support_count = release.support_count
+  AND actual_input_count = actual_decision_count
+  AND NOT EXISTS {
+    MATCH (release)-[:HAS_PROJECTION_INPUT]->(owned_input:CrmTenantProjectionInput)
+    WHERE owned_input.release_id <> release.release_id
+    RETURN owned_input
+  }
+  AND NOT EXISTS {
+    MATCH (input:CrmTenantProjectionInput {release_id: release.release_id})
+    OPTIONAL MATCH (owner)-[owner_link:HAS_PROJECTION_INPUT]->(input)
+    OPTIONAL MATCH (input)-[snapshot_link:SELECTS_MEMBERSHIP_SNAPSHOT]->(snapshot)
+    OPTIONAL MATCH (input)-[decision_link:HAS_PROJECTION_DECISION]->(decision)
+    WITH release, input, count(DISTINCT owner_link) AS owner_links,
+      count(DISTINCT owner) AS owner_nodes,
+      count(DISTINCT CASE WHEN owner:CrmTenantProjectionRelease
+        AND owner.release_id = release.release_id THEN owner END) AS current_release_owners,
+      count(DISTINCT snapshot_link) AS snapshot_links, count(DISTINCT snapshot) AS snapshots,
+      count(DISTINCT decision_link) AS decisions, collect(DISTINCT snapshot.snapshot_id) AS snapshot_ids,
+      collect(DISTINCT snapshot.binding_count) AS snapshot_binding_counts,
+      collect(DISTINCT snapshot.snapshot_digest) AS snapshot_digests,
+      collect(DISTINCT snapshot.subject_kind) AS snapshot_subject_kinds,
+      collect(DISTINCT snapshot.subject_id) AS snapshot_subject_ids
+    WHERE owner_links <> 1 OR owner_nodes <> 1 OR current_release_owners <> 1
+      OR snapshot_links <> 1 OR snapshots <> 1 OR decisions <> 1
+      OR snapshot_ids <> [input.snapshot_id] OR size(snapshot_binding_counts) <> 1
+      OR snapshot_digests <> [input.snapshot_digest]
+      OR snapshot_subject_kinds <> [input.subject_kind] OR snapshot_subject_ids <> [input.subject_id]
+      OR snapshot_binding_counts[0] IS NULL OR snapshot_binding_counts[0] < 0
+      OR size(snapshot_digests) <> 1 OR snapshot_digests[0] IS NULL
+      OR size(snapshot_digests[0]) <> 71 OR NOT (snapshot_digests[0] STARTS WITH 'sha256:')
+      OR input.subject_kind IS NULL OR input.subject_kind NOT IN ['contact', 'lead']
+      OR input.subject_id IS NULL OR input.input_digest IS NULL OR input.snapshot_digest IS NULL
+      OR size(input.input_digest) <> 71 OR NOT (input.input_digest STARTS WITH 'sha256:')
+      OR size(input.snapshot_digest) <> 71 OR NOT (input.snapshot_digest STARTS WITH 'sha256:')
+    RETURN input
+  }
+  AND NOT EXISTS {
+    MATCH (decision:CrmTenantProjectionDecision {release_id: release.release_id})
+    OPTIONAL MATCH (input)-[owner:HAS_PROJECTION_DECISION]->(decision)
+    OPTIONAL MATCH (input)-[:HAS_PROJECTION_ASSOCIATION]->(association)
+    OPTIONAL MATCH (input)-[:SELECTS_MEMBERSHIP_SNAPSHOT]->(snapshot)
+    WITH release, decision, count(DISTINCT owner) AS owners, count(DISTINCT input) AS inputs,
+      count(DISTINCT association) AS associations, collect(DISTINCT input.release_id) AS input_release_ids,
+      collect(DISTINCT input.input_id) AS input_ids,
+      collect(DISTINCT association.release_id) AS association_release_ids,
+      collect(DISTINCT snapshot.binding_count) AS snapshot_binding_counts
+    WHERE owners <> 1 OR inputs <> 1
+      OR input_release_ids <> [release.release_id] OR input_ids <> [decision.input_id]
+      OR decision.decision IS NULL OR decision.decision NOT IN ['associated', 'zero_target']
+      OR decision.decision_digest IS NULL OR size(decision.decision_digest) <> 71
+      OR NOT (decision.decision_digest STARTS WITH 'sha256:')
+      OR (decision.decision = 'associated'
+        AND (associations = 0 OR association_release_ids <> [release.release_id]
+          OR decision.zero_target_reason IS NOT NULL))
+      OR (decision.decision = 'zero_target' AND (associations <> 0
+        OR decision.zero_target_reason IS NULL
+        OR decision.zero_target_reason NOT IN ['empty_membership', 'no_mapped_targets']
+        OR (decision.zero_target_reason = 'empty_membership'
+          AND snapshot_binding_counts <> [0])
+        OR (decision.zero_target_reason = 'no_mapped_targets'
+          AND (snapshot_binding_counts = [0] OR size(snapshot_binding_counts) <> 1))))
+    RETURN decision
+  }
+  AND NOT EXISTS {
+    MATCH (association:CrmTenantProjectionAssociation {release_id: release.release_id})
+    OPTIONAL MATCH (input)-[input_link:HAS_PROJECTION_ASSOCIATION]->(association)
+    OPTIONAL MATCH (association)-[entity_link:TARGETS_ENTITY]->(entity:Entity)
+    OPTIONAL MATCH (association)-[support_link:HAS_PROJECTION_SUPPORT]->(support)
+    WITH release, association, count(DISTINCT input_link) AS inputs,
+      count(DISTINCT input) AS input_nodes, count(DISTINCT entity_link) AS entities,
+      count(DISTINCT entity) AS entity_nodes, count(DISTINCT support_link) AS supports,
+      collect(DISTINCT input.release_id) AS input_release_ids,
+      collect(DISTINCT input.input_id) AS input_ids,
+      collect(DISTINCT input.subject_kind) AS input_subject_kinds,
+      collect(DISTINCT input.subject_id) AS input_subject_ids,
+      collect(DISTINCT entity.entity_key) AS entity_keys,
+      collect(DISTINCT support.release_id) AS support_release_ids
+    WHERE inputs <> 1 OR input_nodes <> 1 OR entities <> 1 OR entity_nodes <> 1 OR supports = 0
+      OR input_release_ids <> [release.release_id] OR input_ids <> [association.input_id]
+      OR input_subject_kinds <> [association.subject_kind]
+      OR input_subject_ids <> [association.subject_id]
+      OR association.relationship_kind IS NULL OR association.relationship_kind <> 'tenant_member'
+      OR association.association_id IS NULL OR size(association.association_id) <> 71
+      OR NOT (association.association_id STARTS WITH 'sha256:')
+      OR entity_keys <> [association.entity_key] OR support_release_ids <> [release.release_id]
+    RETURN association
+  }
+  AND NOT EXISTS {
+    MATCH (support:CrmTenantProjectionSupport {release_id: release.release_id})
+    OPTIONAL MATCH (association)-[association_link:HAS_PROJECTION_SUPPORT]->(support)
+    OPTIONAL MATCH (input)-[input_link:HAS_PROJECTION_ASSOCIATION]->(association)
+    OPTIONAL MATCH (input)-[snapshot_link:SELECTS_MEMBERSHIP_SNAPSHOT]->(snapshot)
+    OPTIONAL MATCH (support)-[observation_link:SUPPORTED_BY_MEMBERSHIP]->(observation)
+    OPTIONAL MATCH (snapshot)-[snapshot_observation_link:HAS_MEMBERSHIP_OBSERVATION]->(observation)
+    OPTIONAL MATCH (support)-[target_link:SUPPORTED_BY_MAPPING_TARGET]->(target)
+    OPTIONAL MATCH (revision)-[entry_link:HAS_MAPPING_ENTRY]->(entry:CrmTenantMappingEntry)
+      -[target_owner_link:HAS_MAPPING_TARGET]->(target)
+    OPTIONAL MATCH (target)-[entity_link:TARGETS_ENTITY]->(entity:Entity)
+    WITH release, support, count(DISTINCT association_link) AS associations,
+      count(DISTINCT association) AS association_nodes, count(DISTINCT input_link) AS input_links,
+      count(DISTINCT input) AS input_nodes, count(DISTINCT snapshot_link) AS snapshot_links,
+      count(DISTINCT snapshot) AS snapshots, count(DISTINCT observation_link) AS observations,
+      count(DISTINCT snapshot_observation_link) AS snapshot_observations,
+      count(DISTINCT target_link) AS targets, count(DISTINCT entry_link) AS entries,
+      count(DISTINCT target_owner_link) AS target_owners, count(DISTINCT entity_link) AS entities,
+      collect(DISTINCT association.release_id) AS association_release_ids,
+      collect(DISTINCT association.association_id) AS association_ids,
+      collect(DISTINCT association.input_id) AS association_input_ids,
+      collect(DISTINCT input.release_id) AS input_release_ids,
+      collect(DISTINCT input.input_id) AS input_ids,
+      collect(DISTINCT input.subject_kind) AS input_subject_kinds,
+      collect(DISTINCT input.subject_id) AS input_subject_ids,
+      collect(DISTINCT snapshot.snapshot_id) AS snapshot_ids,
+      collect(DISTINCT observation.observation_id) AS observation_ids,
+      collect(DISTINCT observation.snapshot_id) AS observation_snapshot_ids,
+      collect(DISTINCT observation.subject_kind) AS observation_subject_kinds,
+      collect(DISTINCT observation.subject_id) AS observation_subject_ids,
+      collect(DISTINCT entry.revision_id) AS entry_revision_ids,
+      collect(DISTINCT entry.company_id) AS entry_company_ids,
+      collect(DISTINCT observation.company_id) AS observation_company_ids,
+      collect(DISTINCT target.target_id) AS target_ids,
+      collect(DISTINCT target.entity_key) AS target_entity_keys,
+      collect(DISTINCT target.relationship_kind) AS target_relationship_kinds,
+      collect(DISTINCT entity.entity_key) AS entity_keys
+    WHERE associations <> 1 OR association_nodes <> 1 OR input_links <> 1 OR input_nodes <> 1
+      OR snapshot_links <> 1 OR snapshots <> 1 OR observations <> 1 OR snapshot_observations <> 1
+      OR targets <> 1 OR entries <> 1 OR target_owners <> 1 OR entities <> 1
+      OR association_release_ids <> [release.release_id]
+      OR association_ids <> [support.association_id] OR association_input_ids <> input_ids
+      OR input_release_ids <> [release.release_id]
+      OR snapshot_ids <> [input.snapshot_id]
+      OR observation_ids <> [support.membership_observation_id]
+      OR observation_snapshot_ids <> snapshot_ids
+      OR observation_subject_kinds <> input_subject_kinds
+      OR observation_subject_ids <> input_subject_ids
+      OR entry_revision_ids <> [release.mapping_revision_id]
+      OR entry_company_ids <> observation_company_ids
+      OR target_ids <> [support.mapping_target_id]
+      OR target_entity_keys <> entity_keys OR entity_keys <> [association.entity_key]
+      OR target_relationship_kinds <> [association.relationship_kind]
+      OR support.support_id IS NULL OR support.support_digest IS NULL
+      OR size(support.support_id) <> 71 OR NOT (support.support_id STARTS WITH 'sha256:')
+      OR size(support.support_digest) <> 71 OR NOT (support.support_digest STARTS WITH 'sha256:')
+    RETURN support
+  }
 SET release.state = 'completed', release.completed_at = datetime(), release.updated_at = datetime()
 RETURN properties(release) AS release
 """

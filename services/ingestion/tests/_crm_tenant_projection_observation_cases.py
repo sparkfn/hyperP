@@ -66,12 +66,24 @@ class _ProjectionRowsResult:
 
 
 class _ProjectionTx:
-    def __init__(self, rows: list[dict[str, object]]) -> None:
+    def __init__(
+        self,
+        rows: list[dict[str, object]],
+        support_bound: dict[str, object] | None = None,
+    ) -> None:
         self.rows = rows
+        self._support_bound = support_bound or {
+            "binding_count": _row_binding_count(rows),
+            "support_row_count": len(rows),
+        }
         self.calls: list[str] = []
+        self.parameters: list[dict[str, object]] = []
 
     def run(self, query: str, **parameters: object) -> _ProjectionRowsResult:
         self.calls.append(query)
+        self.parameters.append(parameters)
+        if query == projection_queries.READ_INPUT_SUPPORT_BOUND:
+            return _ProjectionRowsResult([self._support_bound])
         if query == projection_queries.READ_INPUT_SUPPORTS:
             return _ProjectionRowsResult(self.rows)
         if query == projection_queries.WRITE_DECISION:
@@ -157,6 +169,54 @@ def _unmapped_observation_row(**overrides: object) -> dict[str, object]:
     }
     row.update(overrides)
     return row
+
+
+def _row_binding_count(rows: list[dict[str, object]]) -> int:
+    if not rows:
+        return 0
+    binding_count = rows[0].get("binding_count")
+    if not isinstance(binding_count, int):
+        raise AssertionError("projection fake rows must include an integer binding_count")
+    return binding_count
+
+
+def test_projection_support_fan_out_limit_fails_before_writes() -> None:
+    tx = _ProjectionTx(
+        [_unmapped_observation_row()],
+        {"binding_count": 501, "support_row_count": 501},
+    )
+
+    with pytest.raises(CrmTenantProjectionIntegrityError, match="support fan-out exceeds"):
+        projection_write._project_one_input(
+            tx, _projection_release(), "input-a", "contact", "101", "x"
+        )
+
+    assert tx.calls == [projection_queries.READ_INPUT_SUPPORT_BOUND]
+    assert tx.parameters == [
+        {
+            "release_id": "release-a",
+            "mapping_revision_id": _projection_release().mapping_revision_id,
+            "input_id": "input-a",
+            "snapshot_id": "x",
+            "support_row_limit": 501,
+        }
+    ]
+
+
+def test_projection_support_preflight_uses_actual_rows_not_global_mapping_targets() -> None:
+    tx = _ProjectionTx(
+        [_unmapped_observation_row()],
+        {"binding_count": 1, "support_row_count": 1},
+    )
+
+    assert projection_write._project_one_input(
+        tx, _projection_release(), "input-a", "contact", "101", _snapshot_record().snapshot_id
+    ) == (0, 0)
+    assert tx.calls == [
+        projection_queries.READ_INPUT_SUPPORT_BOUND,
+        projection_queries.READ_INPUT_SUPPORTS,
+        projection_queries.WRITE_DECISION,
+    ]
 
 
 def _replacement_observation_row() -> dict[str, object]:
@@ -271,7 +331,11 @@ def test_unmapped_observation_is_validated_before_zero_target_decision() -> None
     assert projection_write._project_one_input(
         tx, _projection_release(), "input-a", "contact", "101", _snapshot_record().snapshot_id
     ) == (0, 0)
-    assert tx.calls == [projection_queries.READ_INPUT_SUPPORTS, projection_queries.WRITE_DECISION]
+    assert tx.calls == [
+        projection_queries.READ_INPUT_SUPPORT_BOUND,
+        projection_queries.READ_INPUT_SUPPORTS,
+        projection_queries.WRITE_DECISION,
+    ]
 
 
 @pytest.mark.parametrize(
@@ -292,7 +356,10 @@ def test_snapshot_content_corruption_fails_before_decision(
             tx, _projection_release(), "input-a", "contact", "101", _snapshot_record().snapshot_id
         )
 
-    assert tx.calls == [projection_queries.READ_INPUT_SUPPORTS]
+    assert tx.calls == [
+        projection_queries.READ_INPUT_SUPPORT_BOUND,
+        projection_queries.READ_INPUT_SUPPORTS,
+    ]
 
 
 @pytest.mark.parametrize(
@@ -318,7 +385,10 @@ def test_unmapped_observation_topology_fails_closed_before_decision(
             tx, _projection_release(), "input-a", "contact", "101", _snapshot_record().snapshot_id
         )
 
-    assert tx.calls == [projection_queries.READ_INPUT_SUPPORTS]
+    assert tx.calls == [
+        projection_queries.READ_INPUT_SUPPORT_BOUND,
+        projection_queries.READ_INPUT_SUPPORTS,
+    ]
 
 
 def test_snapshot_contents_uses_canonical_multibinding_order_for_digest_and_identity() -> None:

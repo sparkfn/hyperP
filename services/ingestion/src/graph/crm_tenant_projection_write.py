@@ -49,11 +49,16 @@ from src.graph.queries.crm_tenant_projection_integrity import (
 )
 from src.graph.queries.crm_tenant_projection_projection import (
     ADVANCE_PROJECTION,
+    READ_INPUT_SUPPORT_BOUND,
     READ_INPUT_SUPPORTS,
     READ_PROJECTION_INPUTS,
     WRITE_ASSOCIATIONS,
     WRITE_DECISION,
 )
+
+# A deliberately conservative ceiling: each input is read and written in one
+# transaction, so this bounds both the support-row result and UNWIND payload.
+_MAX_INPUT_SUPPORT_ROWS = 500
 
 
 def _capture_page(
@@ -190,6 +195,20 @@ def _project_one_input(
     subject_id: str,
     snapshot_id: str,
 ) -> tuple[int, int]:
+    bound = tx.run(
+        READ_INPUT_SUPPORT_BOUND,
+        release_id=release.release_id,
+        mapping_revision_id=release.mapping_revision_id,
+        input_id=input_id,
+        snapshot_id=snapshot_id,
+        support_row_limit=_MAX_INPUT_SUPPORT_ROWS + 1,
+    ).single()
+    if bound is None:
+        raise CrmTenantProjectionIntegrityError("captured input snapshot is missing")
+    binding_count = _required_int(bound, "binding_count")
+    support_row_count = _required_int(bound, "support_row_count")
+    if support_row_count > _MAX_INPUT_SUPPORT_ROWS:
+        raise CrmTenantProjectionIntegrityError("projection input support fan-out exceeds limit")
     rows = list(
         tx.run(
             READ_INPUT_SUPPORTS,
@@ -197,11 +216,19 @@ def _project_one_input(
             mapping_revision_id=release.mapping_revision_id,
             input_id=input_id,
             snapshot_id=snapshot_id,
+            # A single input may fan out across observations and mapping targets.
+            # Read one extra row so oversized immutable inputs fail before any write.
+            support_row_limit=_MAX_INPUT_SUPPORT_ROWS + 1,
         )
     )
+    if len(rows) > _MAX_INPUT_SUPPORT_ROWS:
+        raise CrmTenantProjectionIntegrityError("projection input support fan-out exceeds limit")
+    if len(rows) != support_row_count:
+        raise CrmTenantProjectionIntegrityError("projection input support bound is malformed")
     if not rows:
         raise CrmTenantProjectionIntegrityError("captured input snapshot is missing")
-    binding_count = _required_int(rows[0], "binding_count")
+    if _required_int(rows[0], "binding_count") != binding_count:
+        raise CrmTenantProjectionIntegrityError("projection input support bound is malformed")
     observation_ids: set[str] = set()
     observation_nodes: dict[str, str] = {}
     supports_by_id: dict[str, dict[str, str]] = {}

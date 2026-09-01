@@ -61,6 +61,70 @@ def test_completion_boundary_retains_census_for_checkpoint_uniqueness_checks() -
     assert completion_scope < checkpoint_guard
 
 
+def test_completion_query_authorizes_ledger_integrity_atomically() -> None:
+    query = integrity_queries.COMPLETE_RELEASE
+
+    assert "actual_input_count = release.input_count" in query
+    assert "actual_decision_count = release.decision_count" in query
+    assert "actual_association_count = release.association_count" in query
+    assert "actual_support_count = release.support_count" in query
+    assert "input_ids <> [decision.input_id]" in query
+    assert "input_ids <> [association.input_id]" in query
+    assert "input_release_ids <> [release.release_id]" in query
+    assert "entity_keys <> [association.entity_key]" in query
+    assert "support_release_ids <> [release.release_id]" in query
+    assert "association_release_ids <> [release.release_id]" in query
+    assert "association_ids <> [support.association_id]" in query
+    assert "observation_ids <> [support.membership_observation_id]" in query
+    assert "target_ids <> [support.mapping_target_id]" in query
+    assert "owned_input.release_id <> release.release_id" in query
+    assert "snapshot_digests <> [input.snapshot_digest]" in query
+    assert "snapshot_subject_kinds <> [input.subject_kind]" in query
+    assert "snapshot_binding_counts <> [0]" in query
+    assert "snapshot_binding_counts = [0]" in query
+    assert "input_subject_kinds <> [association.subject_kind]" in query
+    assert "input_subject_ids <> [association.subject_id]" in query
+    assert "association.relationship_kind <> 'tenant_member'" in query
+    assert "observation_snapshot_ids <> snapshot_ids" in query
+    assert "observation_subject_kinds <> input_subject_kinds" in query
+    assert "observation_subject_ids <> input_subject_ids" in query
+    assert "entry_revision_ids <> [release.mapping_revision_id]" in query
+    assert "entry_company_ids <> observation_company_ids" in query
+    assert "target_entity_keys <> entity_keys" in query
+    assert "target_relationship_kinds <> [association.relationship_kind]" in query
+    assert "size(input.input_digest) <> 71" in query
+    assert "size(decision.decision_digest) <> 71" in query
+    assert "size(support.support_digest) <> 71" in query
+    assert (
+        "decision.decision IS NULL OR decision.decision NOT IN ['associated', 'zero_target']"
+        in query
+    )
+    assert "decision.zero_target_reason IS NOT NULL" in query
+    assert "decision.zero_target_reason IS NULL" in query
+    assert "decision.zero_target_reason NOT IN ['empty_membership', 'no_mapped_targets']" in query
+    assert query.index("actual_input_count = release.input_count") < query.index(
+        "SET release.state = 'completed'"
+    )
+
+
+def test_projection_support_read_is_hard_limited_after_deterministic_ordering() -> None:
+    query = projection_queries.READ_INPUT_SUPPORTS
+    preflight = projection_queries.READ_INPUT_SUPPORT_BOUND
+
+    assert "ORDER BY observation.observation_id, target.target_id" in query
+    assert "LIMIT $support_row_limit" in query
+    assert query.index("ORDER BY observation.observation_id, target.target_id") < query.index(
+        "LIMIT $support_row_limit"
+    )
+    assert "snapshot.binding_count AS binding_count" in preflight
+    assert "count(*) AS support_row_count" in preflight
+    assert "LIMIT $support_row_limit" in preflight
+    assert "ORDER BY" not in preflight
+    assert "release.mapping_target_count" not in preflight
+    assert "OPTIONAL MATCH (snapshot)-[:HAS_MEMBERSHIP_OBSERVATION]" in preflight
+    assert "OPTIONAL MATCH (revision)-[:HAS_MAPPING_ENTRY]" in preflight
+
+
 def test_failure_code_is_rejected_before_any_graph_write() -> None:
     class _Result:
         def single(self) -> dict[str, object]:

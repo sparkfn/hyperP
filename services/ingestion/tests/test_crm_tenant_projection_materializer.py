@@ -16,6 +16,7 @@ from src.crm_tenant_projection_materializer import CrmTenantProjectionMaterializ
 from src.crm_tenant_projection_models import (
     CrmTenantProjectionCancelledError,
     CrmTenantProjectionConflictError,
+    CrmTenantProjectionCursor,
     CrmTenantProjectionIntegrityError,
     CrmTenantProjectionMaterializationCommand,
     CrmTenantProjectionReleaseSummary,
@@ -121,6 +122,123 @@ def test_materializer_drives_capture_projection_and_completion() -> None:
     assert result.state == "completed"
     assert reader.calls == 1
     assert repository.calls == ["allocate", "capture", "project", "complete"]
+
+
+def test_materializer_rejects_unchanged_capture_page() -> None:
+    class _UnchangedCaptureRepository(_Repository):
+        def capture_page(self, *args: object) -> CrmTenantProjectionReleaseSummary:
+            self.calls.append("capture")
+            return self.release
+
+    repository = _UnchangedCaptureRepository(_release())
+
+    with pytest.raises(CrmTenantProjectionIntegrityError, match="capture page made no monotonic"):
+        CrmTenantProjectionMaterializer(repository, _MappingReader()).materialize(_command())
+
+    assert repository.calls == ["allocate", "capture", "fail"]
+    assert repository.failure_codes == ["integrity_error"]
+
+
+def test_materializer_rejects_invalid_capture_terminal_transitions() -> None:
+    class _CompletedCaptureRepository(_Repository):
+        def capture_page(self, *args: object) -> CrmTenantProjectionReleaseSummary:
+            self.calls.append("capture")
+            return replace(self.release, state="completed", phase="complete")
+
+    completed = _CompletedCaptureRepository(_release())
+    with pytest.raises(CrmTenantProjectionIntegrityError, match="invalid terminal transition"):
+        CrmTenantProjectionMaterializer(completed, _MappingReader()).materialize(_command())
+    assert completed.calls == ["allocate", "capture", "fail"]
+    assert completed.failure_codes == ["integrity_error"]
+
+    class _RegressedFailedCaptureRepository(_Repository):
+        def capture_page(self, *args: object) -> CrmTenantProjectionReleaseSummary:
+            self.calls.append("capture")
+            return replace(
+                self.release,
+                state="failed",
+                phase="projection",
+                failure_code="integrity_error",
+            )
+
+    failed = _RegressedFailedCaptureRepository(_release())
+    with pytest.raises(CrmTenantProjectionIntegrityError, match="invalid terminal transition"):
+        CrmTenantProjectionMaterializer(failed, _MappingReader()).materialize(_command())
+    assert failed.calls == ["allocate", "capture", "fail"]
+    assert failed.failure_codes == ["integrity_error"]
+
+
+def test_materializer_rejects_unchanged_projection_page() -> None:
+    class _UnchangedProjectionRepository(_Repository):
+        def project_page(self, *args: object) -> CrmTenantProjectionReleaseSummary:
+            self.calls.append("project")
+            return self.release
+
+    repository = _UnchangedProjectionRepository(_release())
+
+    with pytest.raises(
+        CrmTenantProjectionIntegrityError, match="projection page made no monotonic"
+    ):
+        CrmTenantProjectionMaterializer(repository, _MappingReader()).materialize(_command())
+
+    assert repository.calls == ["allocate", "capture", "project", "fail"]
+    assert repository.failure_codes == ["integrity_error"]
+
+
+def test_materializer_rejects_projection_phase_regression() -> None:
+    class _RegressingProjectionRepository(_Repository):
+        def project_page(self, *args: object) -> CrmTenantProjectionReleaseSummary:
+            self.calls.append("project")
+            return replace(self.release, phase="capture")
+
+    repository = _RegressingProjectionRepository(replace(_release(), phase="projection"))
+
+    with pytest.raises(CrmTenantProjectionIntegrityError, match="projection page transitioned"):
+        CrmTenantProjectionMaterializer(repository, _MappingReader()).materialize(_command())
+
+    assert repository.calls == ["allocate", "project", "fail"]
+    assert repository.failure_codes == ["integrity_error"]
+
+
+def test_materializer_accepts_same_phase_monotonic_progress() -> None:
+    class _ProgressingRepository(_Repository):
+        def __init__(self, release: CrmTenantProjectionReleaseSummary) -> None:
+            super().__init__(release)
+            self.capture_calls = 0
+            self.projection_calls = 0
+
+        def capture_page(self, *args: object) -> CrmTenantProjectionReleaseSummary:
+            self.calls.append("capture")
+            self.capture_calls += 1
+            if self.capture_calls == 1:
+                self.release = replace(
+                    self.release,
+                    capture_cursor=CrmTenantProjectionCursor("contact", 1),
+                    input_count=1,
+                )
+            else:
+                self.release = replace(self.release, phase="projection")
+            return self.release
+
+        def project_page(self, *args: object) -> CrmTenantProjectionReleaseSummary:
+            self.calls.append("project")
+            self.projection_calls += 1
+            if self.projection_calls == 1:
+                self.release = replace(
+                    self.release,
+                    projection_cursor=CrmTenantProjectionCursor("contact", 1),
+                    decision_count=1,
+                )
+            else:
+                self.release = replace(self.release, phase="complete")
+            return self.release
+
+    repository = _ProgressingRepository(_release())
+
+    result = CrmTenantProjectionMaterializer(repository, _MappingReader()).materialize(_command())
+
+    assert result.state == "completed"
+    assert repository.calls == ["allocate", "capture", "capture", "project", "project", "complete"]
 
 
 def test_terminal_exact_replay_is_read_only() -> None:
