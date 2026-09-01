@@ -5,7 +5,7 @@ from __future__ import annotations
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from src.crm_deal_identity_repair.digests import object_digest
+from src.crm_deal_identity_repair.digests import object_digest, rollback_image_digest
 from src.crm_deal_identity_repair.execution_records import (
     RepairCheckpoint,
     RepairMutationResult,
@@ -14,6 +14,7 @@ from src.crm_deal_identity_repair.execution_records import (
 )
 from src.crm_deal_identity_repair.mutation_models import RepairMutationCommand, build_outbox_digest
 from src.graph.crm_deal_identity_repair_mutation_records import (
+    canonical_payload,
     checkpoint_from_properties,
     mutation_result_from_properties,
     outbox_event_from_properties,
@@ -35,6 +36,7 @@ class VerificationBundle:
     checkpoint: RepairCheckpoint
     outbox: RepairOutboxEvent
     replacement_pk: str
+    rollback_payload: Mapping[str, JsonValue]
 
 
 def decode_verification_bundle(
@@ -56,9 +58,24 @@ def decode_verification_bundle(
     )
     _validate_scope(command, result, image, checkpoint, outbox)
     _validate_ids(command, result_values, result, image, checkpoint, outbox, replacement_pks[0])
+    rollback_payload = _decode_rollback_payload(image_values, image)
     _validate_digests(command, result_values, result, image, checkpoint, outbox)
     _validate_outcome(command, result)
-    return VerificationBundle(result, image, checkpoint, outbox, replacement_pks[0])
+    return VerificationBundle(
+        result, image, checkpoint, outbox, replacement_pks[0], rollback_payload
+    )
+
+
+def _decode_rollback_payload(
+    image_values: Mapping[str, JsonValue], image: RepairRollbackImage
+) -> Mapping[str, JsonValue]:
+    try:
+        payload = canonical_payload(_required_string(image_values, "payload_json"))
+    except RuntimeError as exc:
+        raise VerificationBundleError("repair rollback payload is malformed") from exc
+    if rollback_image_digest(dict(payload)) != image.image_digest:
+        raise VerificationBundleError("repair rollback payload digest differs")
+    return payload
 
 
 def _validate_replacement_cardinality(replacement_pks: tuple[str, ...], source_count: int) -> None:

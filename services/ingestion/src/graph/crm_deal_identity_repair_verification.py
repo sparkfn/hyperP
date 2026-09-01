@@ -23,8 +23,8 @@ from src.graph.crm_deal_identity_repair_mutation_payloads import _postcondition_
 from src.graph.crm_deal_identity_repair_mutation_records import outbox_event_from_properties
 from src.graph.crm_deal_identity_repair_verification_derived import (
     PersonDerivedState,
+    accepted_input_person_ids,
     affected_person_ids,
-    assert_no_existing_dispositions,
     build_context_details,
     build_invalidation_details,
     build_person_details,
@@ -33,7 +33,10 @@ from src.graph.crm_deal_identity_repair_verification_derived import (
     read_person_states,
     reconcile_identity_link_revision,
 )
-from src.graph.crm_deal_identity_repair_verification_errors import RepairVerificationDriftError
+from src.graph.crm_deal_identity_repair_verification_errors import (
+    RepairVerificationDriftError,
+    RepairVerificationReplayRaceError,
+)
 from src.graph.crm_deal_identity_repair_verification_pair import (
     read_pair_snapshot,
     reconcile_pair_cases,
@@ -64,6 +67,8 @@ from src.graph.crm_deal_identity_repair_verification_support import (
     required_str,
     retired_source_record_pks,
     retirement_requirements,
+    retirement_snapshot_from_row,
+    retirement_snapshot_matches,
     strings,
 )
 from src.graph.queries import crm_deal_identity_repair_verification as queries
@@ -95,7 +100,10 @@ class CrmDealIdentityRepairVerificationRepository:
     def verify_and_reconcile_unit(
         self, command: RepairVerificationCommand
     ) -> RepairAtomicVerificationResult:
-        return self._client.execute_write(lambda tx: self._verify(tx, command))
+        try:
+            return self._client.execute_write(lambda tx: self._verify(tx, command))
+        except RepairVerificationReplayRaceError:
+            return self._replay_after_claim_race(command)
 
     def read_run_equation(self, command: RepairRunEquationCommand) -> RepairRunEquationResult:
         return self._client.execute_read(lambda tx: read_run_equation(tx, command))
@@ -119,15 +127,26 @@ class CrmDealIdentityRepairVerificationRepository:
                 queries.READ_EXACT_OUTBOX_STATE, **outbox_parameters(command, outbox)
             ).single()
             if state is not None and state["state"] == "acknowledged":
-                return replay_acknowledged_verification(tx, command, bundle)
+                # The losing transaction read its bundle before the winner
+                # acknowledged it.  Re-decode the exact current immutable
+                # bundle before entering the strictly read-only replay path.
+                acknowledged_bundle = self._decode_bundle(command, self._bundle(tx, command))
+                if acknowledged_bundle.outbox.state != "acknowledged":
+                    raise RepairVerificationDriftError(
+                        "verification outbox acknowledgement differs"
+                    )
+                return replay_acknowledged_verification(tx, command, acknowledged_bundle)
             raise RepairVerificationDriftError("verification outbox CAS rejected")
+        self._raise_for_existing_verification(tx, command)
         self._fail("after_claim")
         primary = self._read_primary(tx, command, bundle)
-        person_ids = affected_person_ids(
+        current_person_ids = affected_person_ids(
             tx, (*retired_source_record_pks(command), bundle.replacement_pk)
         )
+        accepted_person_ids = accepted_input_person_ids(tx, command, bundle)
+        person_ids = tuple(sorted(set(current_person_ids) | set(accepted_person_ids)))
         details, states, changed_person_ids, before_revisions = self._rebuild_derived_state(
-            tx, command, person_ids
+            tx, command, person_ids, accepted_person_ids
         )
         self._fail("after_profiles")
         details.extend(reconcile_pair_cases(tx, command, person_ids))
@@ -150,6 +169,7 @@ class CrmDealIdentityRepairVerificationRepository:
         tx: ManagedTransaction,
         command: RepairVerificationCommand,
         person_ids: tuple[str, ...],
+        accepted_person_ids: tuple[str, ...],
     ) -> tuple[
         list[RepairSecondaryDispositionDetail],
         tuple[PersonDerivedState, ...],
@@ -167,9 +187,8 @@ class CrmDealIdentityRepairVerificationRepository:
             if profile is not None:
                 conflicts[person_id] = profile.conflict_fields
         states = read_person_states(tx, person_ids)
-        before_by_id = {state.person_id: state for state in before_states}
         changed_person_ids = tuple(
-            state.person_id for state in states if state.person_id in before_by_id
+            state.person_id for state in states if state.person_id in set(accepted_person_ids)
         )
         before_revisions = {
             state.person_id: state.analysis_revision
@@ -208,7 +227,6 @@ class CrmDealIdentityRepairVerificationRepository:
     ) -> RepairAtomicVerificationResult:
         details = canonical_details(details)
         records = tuple(detail.record(command) for detail in details)
-        assert_no_existing_dispositions(tx, command)
         state = derive_state_digest(
             primary, records, read_person_states(tx, person_ids), read_pair_snapshot(tx, command)
         )
@@ -239,18 +257,62 @@ class CrmDealIdentityRepairVerificationRepository:
             state,
         )
 
+    def _raise_for_existing_verification(
+        self, tx: ManagedTransaction, command: RepairVerificationCommand
+    ) -> None:
+        row = tx.run(
+            queries.READ_EXISTING_VERIFICATION_DISPOSITIONS,
+            run_id=command.unit.run_id,
+            unit_id=command.unit.unit_id,
+        ).single()
+        if row is None:
+            raise RepairVerificationDriftError("verification ledger guard is incomplete")
+        if (
+            required_record_int(row, "verification_count") != 0
+            or required_record_int(row, "disposition_count") != 0
+        ):
+            raise RepairVerificationReplayRaceError()
+
+    def _replay_after_claim_race(
+        self, command: RepairVerificationCommand
+    ) -> RepairAtomicVerificationResult:
+        return self._client.execute_read(
+            lambda tx: self._read_acknowledged_race_replay(tx, command)
+        )
+
+    def _read_acknowledged_race_replay(
+        self, tx: ManagedTransaction, command: RepairVerificationCommand
+    ) -> RepairAtomicVerificationResult:
+        bundle = self._decode_bundle(command, self._bundle(tx, command))
+        if bundle.outbox.state != "acknowledged":
+            raise RepairVerificationDriftError(
+                "existing verification is not an acknowledged exact replay"
+            )
+        return replay_acknowledged_verification(tx, command, bundle)
+
     def _read_primary(
         self,
         tx: ManagedTransaction,
         command: RepairVerificationCommand,
         bundle: VerificationBundle,
     ) -> Record:
+        requirements = retirement_requirements(command, bundle)
+        snapshots = tuple(
+            retirement_snapshot_from_row(row, command.mutation_id)
+            for row in tx.run(
+                queries.READ_RETIRED_RELATIONSHIP_SNAPSHOTS,
+                retired_source_record_pks=list(retired_source_record_pks(command)),
+            )
+        )
+        snapshot_failure = int(
+            not retirement_snapshot_matches(requirements, snapshots, command.mutation_id)
+        )
         row = tx.run(
             queries.READ_PRIMARY_POSTCONDITIONS,
             new_source_record_pk=bundle.replacement_pk,
             mutation_id=command.mutation_id,
             retired_source_record_pks=list(retired_source_record_pks(command)),
-            retirement_requirements=list(retirement_requirements(command)),
+            retirement_snapshot_failure_count=snapshot_failure,
             closure_source_record_pks=list(
                 postcondition_closure_source_record_pks(command, bundle.replacement_pk)
             ),

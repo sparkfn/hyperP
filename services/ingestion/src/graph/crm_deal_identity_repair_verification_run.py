@@ -37,6 +37,7 @@ def read_run_equation(
         source_instance_id=command.source_instance_id,
         control_instance_id=command.control_instance_id,
         source_record_pks_json=canonical_source_record_pks_json(command.inventory),
+        replay_request_digest=command.replay_request_digest,
     ).single()
     if counts is None:
         raise RepairVerificationDriftError("run equation immutable boundary differs")
@@ -63,6 +64,9 @@ def read_run_equation(
         }
     )
     evidence = object_digest(b"crm-deal-identity-repair-run-equation-evidence-v1\x00", payload)
+    replay_attempts = required_count(counts, "replay_no_op_attempts")
+    if replay_attempts > 1:
+        raise RepairVerificationDriftError("run equation replay attempt evidence is ambiguous")
     return RepairRunEquationResult(
         qualified_inventory_rows=len(command.inventory),
         executable_inventory_rows=len(command.inventory) - len(negatives),
@@ -74,7 +78,7 @@ def read_run_equation(
         drifted_units=required_count(counts, "drifted_units"),
         failed_units=required_count(counts, "failed_units"),
         committed_attempts=required_count(counts, "committed_attempts"),
-        replay_no_op_attempts=required_count(counts, "replay_no_op_attempts"),
+        replay_no_op_attempts=replay_attempts,
         active_links=required_count(graph, "active_links"),
         unsupported_multi_links=required_count(graph, "unsupported_multi_links"),
         active_deal_origin_phone_projections=required_count(graph, "phones"),

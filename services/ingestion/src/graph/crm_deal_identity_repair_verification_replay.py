@@ -16,6 +16,7 @@ from src.golden_profile import derive_golden_profile_from_active_authority
 from src.graph.crm_deal_identity_repair_mutation_records import outbox_event_from_properties
 from src.graph.crm_deal_identity_repair_verification_derived import (
     PersonDerivedState,
+    accepted_input_person_ids,
     affected_person_ids,
     build_context_details,
     build_person_details,
@@ -25,9 +26,13 @@ from src.graph.crm_deal_identity_repair_verification_derived import (
     verify_replayed_revision,
 )
 from src.graph.crm_deal_identity_repair_verification_errors import RepairVerificationDriftError
-from src.graph.crm_deal_identity_repair_verification_pair import read_pair_snapshot
+from src.graph.crm_deal_identity_repair_verification_pair import (
+    read_pair_snapshot,
+    validate_replayed_pair_dispositions,
+)
 from src.graph.crm_deal_identity_repair_verification_records import VerificationBundle
 from src.graph.crm_deal_identity_repair_verification_support import (
+    build_replay_unit_equation,
     disposition_from_properties,
     list_mappings,
     mapping,
@@ -37,6 +42,8 @@ from src.graph.crm_deal_identity_repair_verification_support import (
     required_str,
     retired_source_record_pks,
     retirement_requirements,
+    retirement_snapshot_from_row,
+    retirement_snapshot_matches,
     verification_from_properties,
 )
 from src.graph.queries import crm_deal_identity_repair_verification as queries
@@ -72,26 +79,42 @@ def replay_acknowledged_verification(
         disposition_values,
         dispositions,
     )
-    person_ids = affected_person_ids(
+    current_person_ids = affected_person_ids(
         tx, (*retired_source_record_pks(command), bundle.replacement_pk)
     )
+    invalidated_person_ids = accepted_input_person_ids(tx, command, bundle)
+    person_ids = tuple(sorted(set(current_person_ids) | set(invalidated_person_ids)))
     primary = _read_primary(tx, command, bundle)
     states = read_person_states(tx, person_ids)
     _validate_crm_deal_counts(tx, states)
     conflicts = _validate_profiles(tx, states)
     _validate_replayed_person_dispositions(command, states, conflicts, disposition_values)
+    validate_replayed_pair_dispositions(tx, command, disposition_values)
     build_context_details(tx, command)
     verify_replayed_revision(tx, command, bundle.replacement_pk, bundle.result.outcome)
-    _validate_subject_set(command, states, bundle.replacement_pk, disposition_values)
+    _validate_subject_set(
+        command,
+        states,
+        bundle.replacement_pk,
+        invalidated_person_ids,
+        disposition_values,
+    )
     state = derive_state_digest(primary, dispositions, states, read_pair_snapshot(tx, command))
     if state != verification.payload_digest:
         raise RepairVerificationDriftError("acknowledged derived state differs")
+    equation = build_replay_unit_equation(
+        bundle.result.outcome,
+        _required_primary_count(primary, "active_links"),
+        _required_primary_count(primary, "provisional_links"),
+        _required_primary_count(primary, "forbidden_projection_count"),
+        dispositions,
+    )
     return RepairAtomicVerificationResult(
         "replayed",
         verification,
         dispositions,
         outbox_event_from_properties(outbox_values),
-        None,
+        equation,
         state,
     )
 
@@ -101,12 +124,23 @@ def _read_primary(
     command: RepairVerificationCommand,
     bundle: VerificationBundle,
 ) -> Record:
+    requirements = retirement_requirements(command, bundle)
+    snapshots = tuple(
+        retirement_snapshot_from_row(item, command.mutation_id)
+        for item in tx.run(
+            queries.READ_RETIRED_RELATIONSHIP_SNAPSHOTS,
+            retired_source_record_pks=list(retired_source_record_pks(command)),
+        )
+    )
+    snapshot_failure = int(
+        not retirement_snapshot_matches(requirements, snapshots, command.mutation_id)
+    )
     row = tx.run(
         queries.READ_PRIMARY_POSTCONDITIONS,
         new_source_record_pk=bundle.replacement_pk,
         mutation_id=command.mutation_id,
         retired_source_record_pks=list(retired_source_record_pks(command)),
-        retirement_requirements=list(retirement_requirements(command)),
+        retirement_snapshot_failure_count=snapshot_failure,
         closure_source_record_pks=list(
             postcondition_closure_source_record_pks(command, bundle.replacement_pk)
         ),
@@ -283,9 +317,10 @@ def _validate_subject_set(
     command: RepairVerificationCommand,
     states: tuple[PersonDerivedState, ...],
     replacement_pk: str,
+    invalidated_person_ids: tuple[str, ...],
     values: list[Mapping[str, JsonValue]],
 ) -> None:
-    expected = expected_subject_keys(command, states, replacement_pk)
+    expected = expected_subject_keys(command, states, replacement_pk, invalidated_person_ids)
     observed = tuple(
         (required_str(value, "subject_kind"), required_str(value, "subject_stable_id"))
         for value in values
@@ -299,3 +334,7 @@ def required_int_row(row: Record, key: str) -> int:
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise RepairVerificationDriftError("acknowledged CRM deal count is malformed")
     return value
+
+
+def _required_primary_count(row: Record, key: str) -> int:
+    return required_int_row(row, key)
