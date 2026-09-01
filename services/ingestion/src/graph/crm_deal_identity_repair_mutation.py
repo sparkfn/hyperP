@@ -42,7 +42,6 @@ from src.graph.crm_deal_identity_repair_mutation_errors import (
 )
 from src.graph.crm_deal_identity_repair_mutation_payloads import (
     _canonical_json,
-    _expected_state,
     _guard_parameters,
     _ledger_parameters,
     _postcondition_state,
@@ -57,6 +56,7 @@ from src.graph.crm_deal_identity_repair_mutation_records import (
     atomic_result_from_record,
     canonical_payload,
 )
+from src.graph.crm_deal_identity_repair_mutation_state import expected_repaired_state
 from src.graph.queries.crm_deal_identity_repair_mutation import (
     ACTIVATE_REPAIRED_SOURCE_RECORD,
     CREATE_REPAIR_DECISION,
@@ -118,8 +118,8 @@ class CrmDealIdentityRepairMutationRepository:
         evidence = locked_evidence
         plan = build_repair_plan(parsed, _match_result(parsed.current_owner_ids), evidence)
         self._fail("after_classification")
-        expected_state = _expected_state(parsed.envelope, plan)
         snapshot = _snapshot(tx, request, plan.retired_source_record_pks, parsed.envelope)
+        expected_state = expected_repaired_state(request, parsed.envelope, plan, snapshot)
         rollback = _rollback_payload(request, plan, snapshot, expected_state, parsed.envelope)
         self._fail("after_rollback_image")
         self._create_source(tx, request, plan)

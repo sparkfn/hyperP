@@ -17,6 +17,10 @@ from src.graph.crm_deal_identity_repair_mutation_errors import (
     RepairMutationAuthorityError,
     RepairMutationDriftError,
 )
+from src.graph.crm_deal_identity_repair_mutation_state import (
+    canonical_state_rows,
+    normalize_repaired_state,
+)
 from src.graph.crm_deal_identity_repair_mutation_structures import (
     _created_object_specifications,
 )
@@ -28,7 +32,7 @@ from src.graph.queries.crm_deal_identity_repair_mutation import (
 from src.identifier_scopes import identifier_scope
 from src.models import JsonValue, SourceRecordEnvelope
 from src.pipeline_crm_identity import projected_identifiers
-from src.pipeline_normalization import normalize_envelope_attributes, normalize_envelope_identifiers
+from src.pipeline_normalization import normalize_envelope_identifiers
 from src.source_version_keys import encode_source_version_key
 
 
@@ -252,31 +256,6 @@ def _rollback_payload(
     )
 
 
-def _expected_state(
-    envelope: SourceRecordEnvelope | None,
-    plan: RepairMutationPlan,
-) -> dict[str, JsonValue]:
-    if plan.disposition == "review_required":
-        return {
-            "lifecycle_status": "pending_review",
-            "active_links": 0,
-            "provisional_links": 1 if plan.provisional_person_id else 0,
-            "authoritative_links": 0,
-            "active_evidence": 0,
-        }
-    if envelope is None:
-        raise RepairMutationAuthorityError("automatic repair requires a reconstructed v2 envelope")
-    identifiers = projected_identifiers(envelope, normalize_envelope_identifiers(envelope))
-    facts = normalize_envelope_attributes(envelope)
-    return {
-        "lifecycle_status": "active",
-        "active_links": 1,
-        "provisional_links": 0,
-        "authoritative_links": 1,
-        "active_evidence": len(identifiers) + len(facts),
-    }
-
-
 def _postcondition_state(tx: ManagedTransaction, source_record_pk: str) -> dict[str, JsonValue]:
     row = tx.run(
         VERIFY_REPAIRED_MUTATION_POSTCONDITIONS,
@@ -284,13 +263,16 @@ def _postcondition_state(tx: ManagedTransaction, source_record_pk: str) -> dict[
     ).single()
     if row is None:
         raise RuntimeError("repair postcondition readback is missing")
-    return {
-        "lifecycle_status": _required_record_string(row, "lifecycle_status"),
-        "active_links": _record_int(row, "active_links"),
-        "provisional_links": _record_int(row, "provisional_links"),
-        "authoritative_links": _record_int(row, "authoritative_links"),
-        "active_evidence": _record_int(row, "active_evidence"),
-    }
+    return normalize_repaired_state(
+        {
+            "source_properties": _record_object(row, "source_properties"),
+            "links": canonical_state_rows(_object_rows(row["links"])),
+            "identified_by": canonical_state_rows(_object_rows(row["identified_by"])),
+            "lives_at": canonical_state_rows(_object_rows(row["lives_at"])),
+            "has_fact": canonical_state_rows(_object_rows(row["has_fact"])),
+            "describes_address": canonical_state_rows(_object_rows(row["describes_address"])),
+        }
+    )
 
 
 def _source_values(
