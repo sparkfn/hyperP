@@ -377,19 +377,102 @@ ORDER BY person_id
 LOCK_SUPPORT_SOURCE_RECORDS = """
 UNWIND $support_rows AS support_row
 MATCH (support:SourceRecord {source_record_pk: support_row.source_record_pk})
-MATCH (support)-[:LINKED_TO]->(person:Person)
-OPTIONAL MATCH (person)-[:IDENTIFIED_BY]->(identifier:Identifier)
 MERGE (lock:SourceRecordIdentityLock {
   source_system: 'bitrix_chat', source_instance_id: support.source_instance_id,
   source_record_id: support.source_record_id
 })
-SET lock.locked_at = datetime(), lock.repair_mutation_id = $mutation_id
-SET support.source_record_pk = support.source_record_pk,
-    person.person_id = person.person_id
-FOREACH (_ IN CASE WHEN identifier IS NULL THEN [] ELSE [1] END |
-  SET identifier.identifier_type = identifier.identifier_type
-)
-RETURN count(DISTINCT support) AS locked_count
+SET lock.locked_at = datetime(), lock.repair_mutation_id = $mutation_id,
+    support.source_record_pk = support.source_record_pk
+WITH support_row, support
+CALL {
+  WITH support_row, support
+  WITH support_row, support WHERE support_row.provenance_class = 'independent_trusted'
+  MATCH (support)-[support_link:LINKED_TO]->(person:Person {
+    person_id: support_row.person_id
+  })
+  MATCH (person)-[identifier_link:IDENTIFIED_BY]->(identifier:Identifier {
+    identifier_type: support_row.identifier_type,
+    identifier_scope: support_row.identifier_scope,
+    source_instance_id: support_row.identifier_source_instance_id,
+    normalized_value: support_row.source_entity_id
+  })
+  WHERE coalesce(support_link.is_active, true) = true
+    AND coalesce(identifier_link.is_active, true) = true
+    AND identifier_link.source_record_pk = support.source_record_pk
+  MATCH (census:StandaloneCrmCensus {
+    census_id: support.standalone_crm_census_id,
+    generation: support.standalone_crm_generation,
+    source_key: 'bitrix_chat', source_instance_id: support.source_instance_id
+  })
+  MATCH (fence:StandaloneCrmCensusFence {
+    census_id: support.standalone_crm_census_id,
+    generation: support.standalone_crm_generation,
+    stream_kind: support.standalone_crm_stream_kind,
+    token: support.standalone_crm_fence_token,
+    owner_id: support.standalone_crm_fence_owner_id
+  })
+  MATCH (publication:StandaloneCrmChildPublication {
+    census_id: support.standalone_crm_census_id,
+    generation: support.standalone_crm_generation,
+    stream_kind: support.standalone_crm_stream_kind,
+    task_name: support.standalone_crm_task_name,
+    task_id: support.standalone_crm_task_id,
+    payload_digest: support.standalone_crm_payload_digest, status: 'published'
+  })
+  MATCH (reservation:StandaloneCrmHttpCallReservation {
+    intent_id: support.standalone_crm_call_intent_id,
+    census_id: support.standalone_crm_census_id,
+    generation: support.standalone_crm_generation,
+    stream_kind: support.standalone_crm_stream_kind,
+    fence_token: support.standalone_crm_fence_token,
+    task_id: support.standalone_crm_task_id, status: 'succeeded'
+  })
+  MATCH (receipt:StandaloneCrmSourceFactPageReceipt {
+    status: 'committed', census_id: support.standalone_crm_census_id,
+    generation: support.standalone_crm_generation,
+    stream_kind: support.standalone_crm_stream_kind,
+    fence_token: support.standalone_crm_fence_token,
+    fence_owner_id: support.standalone_crm_fence_owner_id,
+    source_key: 'bitrix_chat', source_instance_id: support.source_instance_id,
+    control_instance_id: support.standalone_crm_control_instance_id,
+    task_name: support.standalone_crm_task_name, task_id: support.standalone_crm_task_id,
+    payload_digest: support.standalone_crm_payload_digest,
+    call_intent_id: support.standalone_crm_call_intent_id,
+    authorization_id: support.standalone_crm_authorization_id,
+    authorization_digest: support.standalone_crm_authorization_digest,
+    available_at: support.standalone_crm_available_at,
+    availability_contract_version: support.standalone_crm_availability_contract_version,
+    frozen_upper_id: support.standalone_crm_frozen_upper_id
+  })
+  SET person.person_id = person.person_id,
+      identifier.identifier_type = identifier.identifier_type,
+      census.census_id = census.census_id,
+      fence.token = fence.token,
+      publication.task_id = publication.task_id,
+      reservation.intent_id = reservation.intent_id,
+      receipt.status = receipt.status
+  RETURN count(*) AS independent_chain_count, 0 AS reviewed_chain_count
+  UNION
+  WITH support_row, support
+  WITH support_row, support WHERE support_row.provenance_class = 'reviewed_v2'
+  MATCH (decision:MatchDecision {match_decision_id: support_row.match_decision_id})
+        -[:ABOUT_LEFT {entity_type: 'source_record'}]->(support)
+  MATCH (decision)-[:ABOUT_RIGHT {entity_type: 'person'}]->(person:Person {
+    person_id: support_row.person_id
+  })
+  MATCH (review:ReviewCase {review_case_id: support_row.review_case_id})
+        -[:FOR_DECISION]->(decision)
+  WHERE decision.policy_version = 'crm_deal_identity_v2'
+    AND decision.decision = 'merge'
+    AND review.resolution = support_row.resolution
+  SET decision.match_decision_id = decision.match_decision_id,
+      person.person_id = person.person_id,
+      review.review_case_id = review.review_case_id
+  RETURN 0 AS independent_chain_count, count(*) AS reviewed_chain_count
+}
+RETURN count(DISTINCT support) AS locked_count,
+       sum(independent_chain_count) AS independent_chain_count,
+       sum(reviewed_chain_count) AS reviewed_chain_count
 """
 
 CREATE_REPAIRED_SOURCE_RECORD = """

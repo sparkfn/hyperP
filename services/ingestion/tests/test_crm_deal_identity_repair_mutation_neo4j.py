@@ -9,7 +9,9 @@ import time
 from collections.abc import Callable, Iterator
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import replace
 from datetime import UTC, datetime
+from threading import Barrier, Event
 from typing import TypeVar, cast
 from urllib.parse import urlparse
 
@@ -316,8 +318,21 @@ def _negative_state(driver: Driver) -> tuple[str, ...]:
     )
 
 
+_DYNAMIC_TRANSACTION_KEYS = {
+    "ingested_at",
+    "activated_at",
+    "review_staged_at",
+    "created_at",
+    "updated_at",
+    "linked_at",
+    "first_seen_at",
+    "last_seen_at",
+    "last_confirmed_at",
+}
+
+
 def _rollback_dynamic(value: object, key: str | None = None) -> object:
-    if key is not None and key.endswith("_at") and key != "observed_at":
+    if key in _DYNAMIC_TRANSACTION_KEYS:
         return {"dynamic": "transaction_datetime"}
     if isinstance(value, dict):
         return {item_key: _rollback_dynamic(item, item_key) for item_key, item in value.items()}
@@ -326,8 +341,88 @@ def _rollback_dynamic(value: object, key: str | None = None) -> object:
     if hasattr(value, "iso_format"):
         formatted = value.iso_format()
         if isinstance(formatted, str):
-            return formatted
+            return _normalized_iso(formatted)
+    if isinstance(value, str):
+        return _normalized_iso(value)
     return value
+
+
+def _normalized_iso(value: str) -> str:
+    if "T" not in value:
+        return value
+    try:
+        return datetime.fromisoformat(value.replace("Z", "+00:00")).isoformat()
+    except ValueError:
+        return value
+
+
+def _assert_structural_readback(
+    driver: Driver,
+    mutation_id: str,
+    specifications: list[object],
+    node_kinds: set[str],
+    relationship_kinds: set[str],
+) -> None:
+    expected_nodes = [
+        item
+        for item in specifications
+        if isinstance(item, dict) and item.get("object_kind") in node_kinds
+    ]
+    expected_relationships = [
+        item
+        for item in specifications
+        if isinstance(item, dict) and item.get("object_kind") in relationship_kinds
+    ]
+    with driver.session() as session:
+        row = session.run(
+            """
+            CALL {
+              MATCH (node {repair_mutation_id: $mutation_id})
+              WHERE node:SourceRecord OR node:MatchDecision OR node:ReviewCase
+              RETURN collect({
+                object_kind: CASE WHEN node:SourceRecord THEN 'SourceRecord'
+                  WHEN node:MatchDecision THEN 'MatchDecision' ELSE 'ReviewCase' END,
+                identity: CASE WHEN node:SourceRecord THEN {source_record_pk: node.source_record_pk}
+                  WHEN node:MatchDecision THEN {match_decision_id: node.match_decision_id}
+                  ELSE {review_case_id: node.review_case_id} END,
+                properties: properties(node), preexisting: false, write_mode: 'created',
+                multiplicity_ordinal: 0
+              }) AS nodes
+            }
+            CALL {
+              MATCH (left)-[relationship]->(right)
+              WHERE relationship.repair_mutation_id = $mutation_id
+                AND type(relationship) IN $relationship_kinds
+              RETURN collect({
+                object_kind: type(relationship), direction: 'outgoing',
+                left_endpoint: CASE WHEN left:SourceRecord THEN {source_record_pk: left.source_record_pk}
+                  WHEN left:MatchDecision THEN {match_decision_id: left.match_decision_id}
+                  WHEN left:ReviewCase THEN {review_case_id: left.review_case_id}
+                  WHEN left:Person THEN {person_id: left.person_id}
+                  ELSE {entity_key: left.entity_key} END,
+                right_endpoint: CASE WHEN right:SourceRecord THEN {source_record_pk: right.source_record_pk}
+                  WHEN right:MatchDecision THEN {match_decision_id: right.match_decision_id}
+                  WHEN right:ReviewCase THEN {review_case_id: right.review_case_id}
+                  WHEN right:Person THEN {person_id: right.person_id}
+                  WHEN right:SourceSystem THEN {source_key: right.source_key}
+                  ELSE {entity_key: right.entity_key} END,
+                properties: properties(relationship), preexisting: false, write_mode: 'created',
+                multiplicity_ordinal: 0
+              }) AS relationships
+            }
+            RETURN nodes, relationships
+            """,
+            mutation_id=mutation_id,
+            relationship_kinds=sorted(relationship_kinds),
+        ).single(strict=True)
+    actual_nodes = [_rollback_dynamic(item) for item in row["nodes"]]
+    actual_relationships = [_rollback_dynamic(item) for item in row["relationships"]]
+    assert _canonical_rows(actual_nodes) == _canonical_rows(expected_nodes)
+    assert _canonical_rows(actual_relationships) == _canonical_rows(expected_relationships)
+
+
+def _canonical_rows(rows: list[object]) -> list[str]:
+    return sorted(json.dumps(row, sort_keys=True, separators=(",", ":")) for row in rows)
 
 
 def _rollback_specification_key(item: dict[str, object]) -> str:
@@ -656,7 +751,7 @@ def test_external_reviewed_v2_authority_applies_replays_and_detects_drift(
               source_entity_type: 'deal', source_entity_id: 'reviewed-v2',
               identity_policy_version: 'crm_deal_identity_v2',
               identity_link_key: 'bitrix:repair-test-source:deal:reviewed-v2',
-              lifecycle_status: 'active', is_latest: true, record_hash: $record_hash,
+              lifecycle_status: 'superseded', is_latest: false, record_hash: $record_hash,
               observed_at: datetime($observed_at), raw_payload: $raw_payload,
               normalized_payload: $normalized_payload
             })-[:FROM_SOURCE]->(source)
@@ -684,6 +779,18 @@ def test_external_reviewed_v2_authority_applies_replays_and_detects_drift(
     repository = _repository(neo4j_driver)
     committed = repository.commit_atomic_mutation(command)
     assert committed.mutation is not None and committed.mutation.outcome == "applied"
+    with neo4j_driver.session() as session:
+        row = session.run(
+            "MATCH (reviewed:SourceRecord {source_record_pk: 'reviewed-v2-pk'}) "
+            "OPTIONAL MATCH (lock:SourceRecordIdentityLock {source_record_id: reviewed.source_record_id}) "
+            "RETURN reviewed.lifecycle_status AS lifecycle_status, reviewed.is_latest AS is_latest, "
+            "count(lock) AS lock_count"
+        ).single(strict=True)
+    assert dict(row) == {
+        "lifecycle_status": "superseded",
+        "is_latest": False,
+        "lock_count": 1,
+    }
     assert repository.commit_atomic_mutation(command).decision == "replayed"
     with neo4j_driver.session() as session:
         session.run(
@@ -804,6 +911,52 @@ def test_rollback_image_readback_tracks_identifier_preexistence_and_source_schem
     assert delete_specifications[0]["identifier_candidates"] == candidates
     specifications = payload_body["created_object_specifications"]
     assert isinstance(specifications, list)
+    specification_kinds = {
+        item.get("object_kind") for item in specifications if isinstance(item, dict)
+    }
+    assert {
+        "SourceRecord",
+        "MatchDecision",
+        "FROM_SOURCE",
+        "PREVIOUS_VERSION_OF",
+        "ABOUT_LEFT",
+        "ABOUT_RIGHT",
+        "LINKED_TO",
+        "OWNED_BY",
+        "Identifier",
+        "IDENTIFIED_BY",
+        "HAS_FACT",
+    } <= specification_kinds
+    structural_specs = {
+        item["object_kind"]: item
+        for item in specifications
+        if isinstance(item, dict)
+        and item.get("object_kind") in {"SourceRecord", "MatchDecision", "LINKED_TO"}
+    }
+    assert structural_specs["SourceRecord"]["write_mode"] == "created"
+    assert structural_specs["MatchDecision"]["properties"]["decision"] == "merge"
+    assert structural_specs["LINKED_TO"]["properties"] == {
+        "is_active": True,
+        "provisional": False,
+        "authoritative": True,
+        "source_record_pk": structural_specs["SourceRecord"]["identity"]["source_record_pk"],
+        "repair_mutation_id": command.mutation_id,
+        "linked_at": {"dynamic": "transaction_datetime"},
+    }
+    _assert_structural_readback(
+        neo4j_driver,
+        command.mutation_id,
+        specifications,
+        {"SourceRecord", "MatchDecision"},
+        {
+            "FROM_SOURCE",
+            "PREVIOUS_VERSION_OF",
+            "ABOUT_LEFT",
+            "ABOUT_RIGHT",
+            "LINKED_TO",
+            "OWNED_BY",
+        },
+    )
     with neo4j_driver.session() as session:
         actual = session.run(
             """
@@ -842,7 +995,11 @@ def test_rollback_image_readback_tracks_identifier_preexistence_and_source_schem
         ).single(strict=True)["objects"]
     expected_by_key: dict[str, list[dict[str, object]]] = {}
     for item in specifications:
-        if isinstance(item, dict):
+        if isinstance(item, dict) and item.get("object_kind") in {
+            "Identifier",
+            "IDENTIFIED_BY",
+            "HAS_FACT",
+        }:
             expected_by_key.setdefault(_rollback_specification_key(item), []).append(item)
     actual_with_specification_metadata = [
         _with_rollback_specification_metadata(item, expected_by_key)
@@ -850,13 +1007,180 @@ def test_rollback_image_readback_tracks_identifier_preexistence_and_source_schem
         if isinstance(item, dict)
     ]
     assert all(not remaining for remaining in expected_by_key.values())
+    evidence_specifications = [
+        item
+        for item in specifications
+        if isinstance(item, dict)
+        and item.get("object_kind") in {"Identifier", "IDENTIFIED_BY", "HAS_FACT"}
+    ]
     assert sorted(
         json.dumps(_rollback_dynamic(item), sort_keys=True, separators=(",", ":"))
         for item in actual_with_specification_metadata
-    ) == sorted(json.dumps(item, sort_keys=True, separators=(",", ":")) for item in specifications)
+    ) == sorted(
+        json.dumps(item, sort_keys=True, separators=(",", ":")) for item in evidence_specifications
+    )
     assert row["link_status"] == "linked"
     assert row["observed_at"].startswith("2026-08-01T12:00:00")
     assert row["owned_by_count"] == 1
+
+
+def test_review_rollback_image_describes_review_chain_and_provisional_link(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=False)
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    result = _repository(neo4j_driver).commit_atomic_mutation(command)
+    assert result.mutation is not None and result.mutation.outcome == "review_required"
+    assert result.rollback_image is not None
+    with neo4j_driver.session() as session:
+        payload_json = session.run(
+            "MATCH (image:CrmDealRepairRollbackImage {rollback_image_id: $rollback_image_id}) "
+            "RETURN image.payload_json AS payload_json",
+            rollback_image_id=result.rollback_image.rollback_image_id,
+        ).single(strict=True)["payload_json"]
+    assert isinstance(payload_json, str)
+    payload = canonical_payload(payload_json)
+    payload_body = payload["payload"]
+    assert isinstance(payload_body, dict)
+    specifications = payload_body["created_object_specifications"]
+    assert isinstance(specifications, list)
+    kinds = {item.get("object_kind") for item in specifications if isinstance(item, dict)}
+    assert {
+        "SourceRecord",
+        "MatchDecision",
+        "ReviewCase",
+        "FROM_SOURCE",
+        "PREVIOUS_VERSION_OF",
+        "ABOUT_LEFT",
+        "ABOUT_RIGHT",
+        "LINKED_TO",
+        "FOR_DECISION",
+    } <= kinds
+    provisional = next(
+        item
+        for item in specifications
+        if isinstance(item, dict) and item.get("object_kind") == "LINKED_TO"
+    )
+    assert provisional["properties"] == {
+        "is_active": False,
+        "provisional": True,
+        "authoritative": False,
+        "source_record_pk": next(
+            item["identity"]["source_record_pk"]
+            for item in specifications
+            if isinstance(item, dict) and item.get("object_kind") == "SourceRecord"
+        ),
+        "repair_mutation_id": command.mutation_id,
+        "linked_at": {"dynamic": "transaction_datetime"},
+    }
+    _assert_structural_readback(
+        neo4j_driver,
+        command.mutation_id,
+        specifications,
+        {"SourceRecord", "MatchDecision", "ReviewCase"},
+        {
+            "FROM_SOURCE",
+            "PREVIOUS_VERSION_OF",
+            "ABOUT_LEFT",
+            "ABOUT_RIGHT",
+            "LINKED_TO",
+            "FOR_DECISION",
+        },
+    )
+
+
+def test_barrier_concurrent_conflicting_commands_commit_once_and_reject_drift(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=True)
+    _deactivate_child_contamination(neo4j_driver)
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    conflicting_inventory = replace(item, graph_fingerprint="sha256:" + "b" * 64)
+    conflicting_unit = replace(
+        command.unit,
+        inventory_fingerprint=conflicting_inventory.graph_fingerprint,
+        inventory_graph_fingerprint=conflicting_inventory.graph_fingerprint,
+        inventory_binding_digest=build_inventory_binding_digest(conflicting_inventory),
+    )
+    conflicting_command = RepairMutationCommand(
+        conflicting_unit,
+        command.fence,
+        conflicting_inventory,
+        _SOURCE,
+        _CONTROL,
+    )
+    barrier = Barrier(2)
+    repository = _repository(neo4j_driver)
+
+    def _commit(candidate: RepairMutationCommand) -> object:
+        barrier.wait(timeout=10)
+        try:
+            return repository.commit_atomic_mutation(candidate)
+        except RepairMutationDriftError as exc:
+            return exc
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(_commit, (command, conflicting_command)))
+    committed = [
+        outcome for outcome in outcomes if getattr(outcome, "decision", None) == "committed"
+    ]
+    drifted = [outcome for outcome in outcomes if isinstance(outcome, RepairMutationDriftError)]
+    assert len(committed) == 1
+    assert len(drifted) == 1
+    assert "bound" in str(drifted[0]) or "identity" in str(drifted[0])
+    with neo4j_driver.session() as session:
+        row = session.run(
+            "MATCH (result:CrmDealRepairMutationResult {run_id: 'run-a', unit_id: 'unit-a'}) "
+            "OPTIONAL MATCH (image:CrmDealRepairRollbackImage {run_id: 'run-a', unit_id: 'unit-a'}) "
+            "OPTIONAL MATCH (checkpoint:CrmDealRepairCheckpoint {run_id: 'run-a', unit_id: 'unit-a'}) "
+            "OPTIONAL MATCH (outbox:CrmDealRepairOutbox {run_id: 'run-a', unit_id: 'unit-a'}) "
+            "RETURN count(DISTINCT result) AS results, count(DISTINCT image) AS images, "
+            "count(DISTINCT checkpoint) AS checkpoints, count(DISTINCT outbox) AS outboxes"
+        ).single(strict=True)
+    assert dict(row) == {"results": 1, "images": 1, "checkpoints": 1, "outboxes": 1}
+
+
+def test_support_authority_writer_blocks_behind_serialized_repair_and_replay_drifts(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=True)
+    _deactivate_child_contamination(neo4j_driver)
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    serialized = Event()
+    release_repair = Event()
+
+    def _pause_after_serialization(stage: MutationFailureStage) -> None:
+        if stage == "after_classification":
+            serialized.set()
+            assert release_repair.wait(timeout=10)
+
+    repository = _repository(neo4j_driver, _pause_after_serialization)
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        repair = pool.submit(repository.commit_atomic_mutation, command)
+        assert serialized.wait(timeout=10)
+        writer = pool.submit(
+            lambda: _set_support_authority_digest(neo4j_driver, "sha256:" + "d" * 64)
+        )
+        time.sleep(0.2)
+        assert not writer.done()
+        release_repair.set()
+        committed = repair.result(timeout=10)
+        writer.result(timeout=10)
+    assert committed.decision == "committed"
+    with pytest.raises(RepairMutationDriftError, match="authority changed"):
+        _repository(neo4j_driver).commit_atomic_mutation(command)
+
+
+def _set_support_authority_digest(driver: Driver, digest: str) -> None:
+    with driver.session() as session:
+        session.run(
+            "MATCH (support:SourceRecord {source_record_pk: 'contact-support-pk'}) "
+            "SET support.standalone_crm_authorization_digest = $digest",
+            digest=digest,
+        ).consume()
 
 
 def test_replay_rejects_tampered_immutable_rollback_bundle(
@@ -898,22 +1222,25 @@ def test_replay_rejects_committed_bundle_cardinality_drift(neo4j_driver: Driver)
 
 
 @pytest.mark.parametrize(
-    ("label", "cypher"),
+    ("label", "cypher", "error_match"),
     [
         (
             "result_digest",
             "MATCH (result:CrmDealRepairMutationResult {mutation_id: $mutation_id}) "
             "SET result.result_digest = 'sha256:' + '0'",
+            "result digest is malformed",
         ),
         (
             "checkpoint_scope",
             "MATCH (checkpoint:CrmDealRepairCheckpoint {run_id: 'run-a', unit_id: 'unit-a'}) "
             "SET checkpoint.generation = 99",
+            "scope",
         ),
         (
             "outbox_fence",
             "MATCH (outbox:CrmDealRepairOutbox {run_id: 'run-a', unit_id: 'unit-a'}) "
             "SET outbox.delivery_token = 'tampered-token'",
+            "fence",
         ),
     ],
 )
@@ -921,6 +1248,7 @@ def test_replay_rejects_root_and_child_scope_digest_tamper(
     neo4j_driver: Driver,
     label: str,
     cypher: str,
+    error_match: str,
 ) -> None:
     _seed_domain(neo4j_driver, independent_support=True)
     _deactivate_child_contamination(neo4j_driver)
@@ -931,7 +1259,7 @@ def test_replay_rejects_root_and_child_scope_digest_tamper(
     assert committed.mutation is not None and committed.mutation.outcome == "applied"
     with neo4j_driver.session() as session:
         session.run(cypher, mutation_id=command.mutation_id).consume()
-    with pytest.raises(RepairMutationDriftError, match="(digest|scope|fence)"):
+    with pytest.raises(RepairMutationDriftError, match=error_match):
         repository.commit_atomic_mutation(command)
 
 
