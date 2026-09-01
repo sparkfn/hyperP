@@ -191,15 +191,28 @@ def _validate_row_fingerprints(item: RepairInventoryItem) -> None:
     record_hash = payload["record_hash"]
     if not isinstance(record_hash, str) or not record_hash:
         raise RuntimeError("repair inventory row record hash is invalid")
-    if item.graph_fingerprint != object_digest(_GRAPH_FINGERPRINT_DOMAIN, payload):
+    graph_fingerprint, stored_payload_fingerprint = inventory_payload_fingerprints(payload)
+    if item.graph_fingerprint != graph_fingerprint:
         raise RuntimeError("repair inventory graph fingerprint is inconsistent")
-    source_value: dict[str, JsonValue] = {
-        "record_hash": record_hash,
-        "raw_payload": payload["raw_payload"],
-        "normalized_payload": payload["normalized_payload"],
-    }
-    if item.stored_payload_fingerprint != object_digest(_SOURCE_FINGERPRINT_DOMAIN, source_value):
+    if item.stored_payload_fingerprint != stored_payload_fingerprint:
         raise RuntimeError("repair inventory source fingerprint is inconsistent")
+
+
+def inventory_payload_fingerprints(payload: dict[str, JsonValue]) -> tuple[str, str]:
+    """Return the exact #300 graph and stored-payload fingerprints for one payload."""
+    record_hash = payload.get("record_hash")
+    if not isinstance(record_hash, str) or not record_hash:
+        raise ValueError("repair inventory record hash is invalid")
+    graph_fingerprint = object_digest(_GRAPH_FINGERPRINT_DOMAIN, payload)
+    stored_payload_fingerprint = object_digest(
+        _SOURCE_FINGERPRINT_DOMAIN,
+        {
+            "record_hash": record_hash,
+            "raw_payload": payload.get("raw_payload"),
+            "normalized_payload": payload.get("normalized_payload"),
+        },
+    )
+    return graph_fingerprint, stored_payload_fingerprint
 
 
 def _partition(value: JsonValue) -> RepairPartition:
