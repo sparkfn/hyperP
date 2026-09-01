@@ -7,7 +7,7 @@ from typing import Literal, Protocol, TypedDict, cast, runtime_checkable
 
 from neo4j import Record
 
-from src.crm_deal_identity_repair.digests import verification_result_digest
+from src.crm_deal_identity_repair.digests import object_digest, verification_result_digest
 from src.crm_deal_identity_repair.execution_models import (
     RepairOutboxEvent,
     RepairSecondaryDisposition,
@@ -20,6 +20,7 @@ from src.crm_deal_identity_repair.verification_models import (
     RepairVerificationCommand,
 )
 from src.graph.crm_deal_identity_repair_verification_errors import RepairVerificationDriftError
+from src.graph.crm_deal_identity_repair_verification_records import VerificationBundle
 from src.models import JsonValue
 
 
@@ -63,13 +64,22 @@ class _PersistParameters(_OutboxParameters):
 
 
 class RetirementRequirement(TypedDict):
-    """Frozen relationship cardinality and active-stamp requirement for one source."""
+    """Exact authenticated pre/post relationship requirement, including duplicates."""
 
     relationship_type: str
-    source_record_pk: str
-    left_source_record_pk: str
-    frozen_count: int
-    frozen_active_count: int
+    left_identity: Mapping[str, JsonValue]
+    right_identity: Mapping[str, JsonValue]
+    properties: Mapping[str, JsonValue]
+    frozen_active: bool
+    multiplicity_ordinal: int
+
+
+class RetirementSnapshot(TypedDict):
+    relationship_type: str
+    left_identity: Mapping[str, JsonValue]
+    right_identity: Mapping[str, JsonValue]
+    properties: Mapping[str, JsonValue]
+    mutation_timestamp_present: bool | None
 
 
 def bundle_parameters(command: RepairVerificationCommand) -> _BundleParameters:
@@ -149,64 +159,6 @@ def retired_source_record_pks(command: RepairVerificationCommand) -> tuple[str, 
     return tuple(sorted(pks))
 
 
-def retirement_requirements(
-    command: RepairVerificationCommand,
-) -> tuple[RetirementRequirement, ...]:
-    """Bind postcondition stamping only to relationships frozen active by #300."""
-    counts: dict[tuple[str, str, str], tuple[int, int]] = {}
-    root_pk = command.inventory.source_record_pk
-    for link in _payload_rows(command, "linked_people"):
-        _required_payload_mapping(link, "relationship_properties", "linked person")
-        _add_retirement_requirement(
-            counts,
-            _required_payload_string(link, "relationship_type", "linked person"),
-            root_pk,
-            root_pk,
-            _required_payload_bool(link, "is_active", "linked person"),
-        )
-    for projection in _payload_rows(command, "projections"):
-        relationship_type = _required_payload_string(projection, "relationship_type", "projection")
-        properties = _required_payload_mapping(projection, "relationship_properties", "projection")
-        source_pk = (
-            root_pk
-            if relationship_type == "DESCRIBES_ADDRESS"
-            else _required_payload_string(properties, "source_record_pk", "projection properties")
-        )
-        _add_retirement_requirement(
-            counts,
-            relationship_type,
-            source_pk,
-            root_pk,
-            _required_payload_bool(projection, "is_active", "projection"),
-        )
-    for descendant in _payload_rows(command, "descendants"):
-        descendant_relationship_type = descendant.get("relationship_type")
-        if descendant_relationship_type is None:
-            continue
-        if not isinstance(descendant_relationship_type, str):
-            raise RepairVerificationDriftError("verification descendant relationship is malformed")
-        _add_retirement_requirement(
-            counts,
-            descendant_relationship_type,
-            _required_payload_string(descendant, "source_record_pk", "descendant"),
-            _required_payload_string(descendant, "source_record_pk", "descendant"),
-            _required_payload_bool(descendant, "relationship_is_active", "descendant"),
-        )
-    return tuple(
-        {
-            "relationship_type": relationship_type,
-            "source_record_pk": source_record_pk,
-            "left_source_record_pk": left_source_record_pk,
-            "frozen_count": frozen_count,
-            "frozen_active_count": frozen_active_count,
-        }
-        for (relationship_type, source_record_pk, left_source_record_pk), (
-            frozen_count,
-            frozen_active_count,
-        ) in sorted(counts.items())
-    )
-
-
 def _payload_rows(
     command: RepairVerificationCommand,
     key: str,
@@ -214,14 +166,7 @@ def _payload_rows(
     value = command.inventory.payload.get(key)
     if not isinstance(value, list):
         raise RepairVerificationDriftError("verification frozen inventory list is malformed")
-    rows: list[Mapping[str, JsonValue]] = []
-    for value_row in value:
-        if not isinstance(value_row, dict) or not all(
-            isinstance(row_key, str) for row_key in value_row
-        ):
-            raise RepairVerificationDriftError("verification frozen inventory row is malformed")
-        rows.append(value_row)
-    return tuple(rows)
+    return tuple(_required_payload_mapping_value(item, "inventory row") for item in value)
 
 
 def _required_payload_mapping(
@@ -230,7 +175,7 @@ def _required_payload_mapping(
     label: str,
 ) -> Mapping[str, JsonValue]:
     value = row.get(key)
-    if not isinstance(value, dict) or not all(isinstance(value_key, str) for value_key in value):
+    if not isinstance(value, dict) or not all(isinstance(item_key, str) for item_key in value):
         raise RepairVerificationDriftError(f"verification frozen {label} is malformed")
     return value
 
@@ -246,35 +191,198 @@ def _required_payload_string(
     return value
 
 
-def _required_payload_bool(
-    row: Mapping[str, JsonValue],
-    key: str,
-    label: str,
-) -> bool:
-    value = row.get(key)
-    if not isinstance(value, bool):
+def retirement_requirements(
+    command: RepairVerificationCommand,
+    bundle: VerificationBundle,
+) -> tuple[RetirementRequirement, ...]:
+    """Return #309-authenticated exact retirement rows, preserving duplicate order."""
+    body = _required_payload_mapping(bundle.rollback_payload, "payload", "rollback payload")
+    pre_state = _required_payload_mapping(body, "pre_state", "rollback payload")
+    rows = pre_state.get("relationships")
+    if not isinstance(rows, list):
+        raise RepairVerificationDriftError("verification rollback relationships are malformed")
+    retired = set(retired_source_record_pks(command))
+    requirements: list[RetirementRequirement] = []
+    for row_value in rows:
+        row = _required_payload_mapping_value(row_value, "rollback relationship")
+        relationship_type = _required_payload_string(row, "relationship_type", "relationship")
+        if relationship_type not in {
+            "LINKED_TO",
+            "IDENTIFIED_BY",
+            "LIVES_AT",
+            "HAS_FACT",
+            "DESCRIBES_ADDRESS",
+        }:
+            continue
+        properties = _required_payload_mapping(row, "relationship_properties", "relationship")
+        left_identity = _required_payload_mapping(row, "left_identity", "relationship")
+        right_identity = _required_payload_mapping(row, "right_identity", "relationship")
+        if not _is_retired_relationship(relationship_type, left_identity, properties, retired):
+            continue
+        requirements.append(
+            {
+                "relationship_type": relationship_type,
+                "left_identity": left_identity,
+                "right_identity": right_identity,
+                "properties": properties,
+                "frozen_active": _relationship_active(properties),
+                "multiplicity_ordinal": _required_payload_ordinal(row),
+            }
+        )
+    expected = tuple(sorted(requirements, key=_retirement_requirement_sort_key))
+    if len({_retirement_requirement_key(item) for item in expected}) != len(expected):
+        raise RepairVerificationDriftError("verification rollback relationship ordinal differs")
+    return expected
+
+
+def _required_payload_mapping_value(value: JsonValue, label: str) -> Mapping[str, JsonValue]:
+    if not isinstance(value, dict) or not all(isinstance(key, str) for key in value):
         raise RepairVerificationDriftError(f"verification frozen {label} is malformed")
     return value
 
 
-def _add_retirement_requirement(
-    counts: dict[tuple[str, str, str], tuple[int, int]],
+def _is_retired_relationship(
     relationship_type: str,
-    source_record_pk: str,
-    left_source_record_pk: str,
-    is_active: bool,
-) -> None:
-    if relationship_type not in {
-        "LINKED_TO",
-        "IDENTIFIED_BY",
-        "LIVES_AT",
-        "HAS_FACT",
-        "DESCRIBES_ADDRESS",
-    }:
-        raise RepairVerificationDriftError("verification frozen relationship type is invalid")
-    key = (relationship_type, source_record_pk, left_source_record_pk)
-    frozen_count, frozen_active_count = counts.get(key, (0, 0))
-    counts[key] = (frozen_count + 1, frozen_active_count + int(is_active))
+    left_identity: Mapping[str, JsonValue],
+    properties: Mapping[str, JsonValue],
+    retired: set[str],
+) -> bool:
+    if relationship_type in {"LINKED_TO", "DESCRIBES_ADDRESS"}:
+        return _identity_value(left_identity) in retired
+    source_pk = properties.get("source_record_pk")
+    return isinstance(source_pk, str) and source_pk in retired
+
+
+def _identity_value(identity: Mapping[str, JsonValue]) -> str | None:
+    value = identity.get("value")
+    return value if isinstance(value, str) else None
+
+
+def _relationship_active(properties: Mapping[str, JsonValue]) -> bool:
+    value = properties.get("is_active", True)
+    if not isinstance(value, bool):
+        raise RepairVerificationDriftError("verification frozen relationship activity is malformed")
+    return value
+
+
+def _required_payload_ordinal(row: Mapping[str, JsonValue]) -> int:
+    value = row.get("multiplicity_ordinal")
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        raise RepairVerificationDriftError(
+            "verification rollback relationship ordinal is malformed"
+        )
+    return value
+
+
+def _retirement_requirement_key(item: RetirementRequirement) -> tuple[str, str, str, int]:
+    return (
+        item["relationship_type"],
+        _canonical_json_value(item["left_identity"]),
+        _canonical_json_value(item["right_identity"]),
+        item["multiplicity_ordinal"],
+    )
+
+
+def _retirement_requirement_sort_key(item: RetirementRequirement) -> tuple[str, str, str, int]:
+    return _retirement_requirement_key(item)
+
+
+def _canonical_json_value(value: Mapping[str, JsonValue]) -> str:
+    import json
+
+    return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def retirement_snapshot_matches(
+    requirements: tuple[RetirementRequirement, ...],
+    current: tuple[RetirementSnapshot, ...],
+    mutation_id: str,
+) -> bool:
+    """Compare exact endpoints/properties and duplicate multiplicity without leaking values."""
+    expected = tuple(_expected_retirement_snapshot(item, mutation_id) for item in requirements)
+    canonical_expected = sorted(_snapshot_key(item) for item in expected)
+    canonical_current = sorted(_snapshot_key(item) for item in current)
+    return canonical_expected == canonical_current
+
+
+def _expected_retirement_snapshot(
+    requirement: RetirementRequirement, mutation_id: str
+) -> RetirementSnapshot:
+    properties = dict(requirement["properties"])
+    if requirement["frozen_active"]:
+        properties["is_active"] = False
+        properties["retired_by_repair_mutation_id"] = mutation_id
+        properties.pop("updated_at", None)
+    return {
+        "relationship_type": requirement["relationship_type"],
+        "left_identity": requirement["left_identity"],
+        "right_identity": requirement["right_identity"],
+        "properties": properties,
+        "mutation_timestamp_present": True if requirement["frozen_active"] else None,
+    }
+
+
+def _snapshot_key(item: RetirementSnapshot) -> tuple[str, str, str, str, str]:
+    return (
+        item["relationship_type"],
+        _canonical_json_value(item["left_identity"]),
+        _canonical_json_value(item["right_identity"]),
+        _canonical_json_value(item["properties"]),
+        str(item["mutation_timestamp_present"]),
+    )
+
+
+def retirement_snapshot_from_row(row: Record, mutation_id: str) -> RetirementSnapshot:
+    properties = dict(json_mapping(row, "relationship_properties"))
+    active = properties.get("is_active", True)
+    if not isinstance(active, bool):
+        raise RepairVerificationDriftError(
+            "verification retired relationship activity is malformed"
+        )
+    mutation_timestamp_present: bool | None = None
+    if not active and properties.get("retired_by_repair_mutation_id") == mutation_id:
+        # #309 owns this timestamp only for rows it retired.  A pre-existing
+        # inactive row remains a complete immutable property-map comparison.
+        mutation_timestamp_present = properties.get("updated_at") is not None
+        properties.pop("updated_at", None)
+    return {
+        "relationship_type": required_row_string(row, "relationship_type"),
+        "left_identity": _snapshot_endpoint_identity(row, "left"),
+        "right_identity": _snapshot_endpoint_identity(row, "right"),
+        "properties": properties,
+        "mutation_timestamp_present": mutation_timestamp_present,
+    }
+
+
+def _snapshot_endpoint_identity(row: Record, side: str) -> Mapping[str, JsonValue]:
+    identity = row[side + "_identity"]
+    if isinstance(identity, dict):
+        return json_object(identity)
+    labels_value = json_value(row[side + "_labels"])
+    properties = json_mapping(row, side + "_properties")
+    if not isinstance(labels_value, list) or not all(
+        isinstance(label, str) for label in labels_value
+    ):
+        raise RepairVerificationDriftError(
+            "verification relationship endpoint labels are malformed"
+        )
+    for key in (
+        "source_record_pk",
+        "person_id",
+        "match_decision_id",
+        "review_case_id",
+        "identifier_key",
+        "address_id",
+        "fact_id",
+        "entity_key",
+    ):
+        value = properties.get(key)
+        if isinstance(value, str) and value:
+            return {"labels": labels_value, "key": key, "value": value}
+    return {
+        "labels": labels_value,
+        "properties_digest": object_digest(b"graph-endpoint-v1\x00", dict(properties)),
+    }
 
 
 def postcondition_closure_source_record_pks(
@@ -339,6 +447,20 @@ def build_unit_equation(
         0,
         0,
     )
+
+
+def build_replay_unit_equation(
+    outcome: str,
+    active_links: int,
+    provisional_links: int,
+    forbidden: int,
+    records: tuple[RepairSecondaryDisposition, ...],
+) -> RepairUnitEquation:
+    committed = build_unit_equation(outcome, active_links, provisional_links, forbidden, records)
+    values = dict(committed.__dict__)
+    values["first_commit_attempt_count"] = 0
+    values["replay_no_op_count"] = 1
+    return RepairUnitEquation(**values)
 
 
 def json_mapping(row: Record, key: str) -> Mapping[str, JsonValue]:

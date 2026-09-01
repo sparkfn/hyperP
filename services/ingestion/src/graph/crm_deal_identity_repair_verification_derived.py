@@ -16,6 +16,7 @@ from src.crm_deal_identity_repair.verification_models import (
     RepairVerificationCommand,
 )
 from src.graph.crm_deal_identity_repair_verification_errors import RepairVerificationDriftError
+from src.graph.crm_deal_identity_repair_verification_records import VerificationBundle
 from src.graph.crm_deal_identity_repair_verification_secondary import (
     FrozenContextSubject,
     SecondarySubjectError,
@@ -44,6 +45,44 @@ def affected_person_ids(tx: ManagedTransaction, pks: tuple[str, ...]) -> tuple[s
         str(row["person_id"])
         for row in tx.run(queries.READ_AFFECTED_PERSON_IDS, source_record_pks=list(pks))
     )
+
+
+def accepted_input_person_ids(
+    tx: ManagedTransaction,
+    command: RepairVerificationCommand,
+    bundle: VerificationBundle,
+) -> tuple[str, ...]:
+    """Return active People whose accepted evidence changed in this mutation only."""
+    from src.graph.crm_deal_identity_repair_verification_support import retirement_requirements
+
+    values: set[str] = set()
+    for requirement in retirement_requirements(command, bundle):
+        if not requirement["frozen_active"]:
+            continue
+        if requirement["relationship_type"] == "LINKED_TO":
+            person_id = _identity_person_id(requirement["right_identity"])
+        else:
+            person_id = _identity_person_id(requirement["left_identity"])
+        if person_id is not None:
+            values.add(person_id)
+    if bundle.result.outcome == "applied":
+        row = tx.run(
+            queries.READ_APPLIED_REPLACEMENT_OWNER,
+            source_record_pk=bundle.replacement_pk,
+            mutation_id=command.mutation_id,
+        ).single()
+        if row is None:
+            raise RepairVerificationDriftError("applied replacement owner is missing")
+        values.add(required_row_string(row, "person_id"))
+    rows = tuple(tx.run(queries.READ_ACTIVE_PERSON_IDS, person_ids=sorted(values)))
+    return tuple(required_row_string(row, "person_id") for row in rows)
+
+
+def _identity_person_id(identity: Mapping[str, JsonValue]) -> str | None:
+    if identity.get("key") != "person_id":
+        return None
+    value = identity.get("value")
+    return value if isinstance(value, str) and value else None
 
 
 @dataclass(frozen=True)
@@ -145,6 +184,7 @@ def expected_subject_keys(
     command: RepairVerificationCommand,
     states: tuple[PersonDerivedState, ...],
     replacement_pk: str,
+    invalidated_person_ids: tuple[str, ...],
 ) -> tuple[tuple[str, str], ...]:
     """Derive the read-only exact secondary subject closure without action writes."""
     values: list[tuple[str, str]] = []
@@ -153,13 +193,15 @@ def expected_subject_keys(
             (
                 ("crm_deal_count", state.person_id),
                 ("golden_profile", state.person_id),
-                ("profile_analysis_invalidation", state.person_id),
             )
         )
         values.extend(
             ("survivorship_override", stable_id)
             for stable_id, _ in override_entries(state.person_id, state.overrides)
         )
+    values.extend(
+        ("profile_analysis_invalidation", person_id) for person_id in invalidated_person_ids
+    )
     context_subjects = frozen_context_subjects(command.inventory.payload)
     values.extend((item.kind, item.stable_id) for item in context_subjects)
     pair_case_ids = frozen_pair_case_ids(command.inventory.payload)

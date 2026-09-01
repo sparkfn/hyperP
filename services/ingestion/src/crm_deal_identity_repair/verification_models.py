@@ -273,7 +273,7 @@ class RepairAtomicVerificationResult:
         if replayed and (
             self.verification is None
             or self.outbox is None
-            or self.unit_equation is not None
+            or self.unit_equation is None
             or self.derived_state_digest is None
         ):
             raise ValueError("replayed verification result is incoherent")
@@ -296,5 +296,11 @@ class RepairAtomicVerificationResult:
                 or not self.unit_equation.balanced
             ):
                 raise ValueError("committed verification result is incoherent")
-        if replayed and not self.dispositions:
+        if replayed and (
+            not self.dispositions
+            or self.unit_equation is None
+            or not self.unit_equation.balanced
+            or self.unit_equation.first_commit_attempt_count != 0
+            or self.unit_equation.replay_no_op_count != 1
+        ):
             raise ValueError("replayed verification result is incoherent")

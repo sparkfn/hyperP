@@ -96,6 +96,7 @@ class RepairRunEquationCommand:
     inventory_digest_expected: str
     source_instance_id: str
     control_instance_id: str
+    replay_request_digest: str | None = None
 
     def __post_init__(self) -> None:
         keys = tuple(item.inventory_key for item in self.inventory)
@@ -115,6 +116,14 @@ class RepairRunEquationCommand:
             raise ValueError("run equation inventory digest differs")
         if any(item.source_system != "bitrix_chat" for item in self.inventory):
             raise ValueError("run equation inventory source is invalid")
+        if self.replay_request_digest is not None:
+            value = self.replay_request_digest
+            if (
+                not value.startswith("sha256:")
+                or len(value) != 71
+                or any(character not in "0123456789abcdef" for character in value[7:])
+            ):
+                raise ValueError("run equation replay request digest is invalid")
 
 
 @dataclass(frozen=True)
@@ -152,6 +161,8 @@ class RepairRunEquationResult:
         for name, value in self.__dict__.items():
             if name != "evidence_digest":
                 _nonnegative(value, name)
+        if self.replay_no_op_attempts > 1:
+            raise ValueError("run equation replay attempts must be bounded to one")
 
     @property
     def balanced(self) -> bool:
@@ -162,7 +173,8 @@ class RepairRunEquationResult:
             == self.applied_units + self.review_required_units + self.incomplete_units
             and self.verified_units == self.executable_inventory_rows
             and self.committed_attempts == self.verified_units
-            and self.replay_no_op_attempts == 0
+            # Replay is current-operation evidence supplied by the authenticated
+            # reader, not a durable attempt ledger entry.
             and self.active_links == self.applied_units
             and (self.incomplete_units == self.drifted_units == self.failed_units == 0)
             and self.unsupported_multi_links == 0

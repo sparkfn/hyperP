@@ -187,7 +187,14 @@ def _derived_fields(
     identifiers: tuple[AuthorityIdentifier, ...],
     addresses: tuple[AuthorityAddress, ...],
 ) -> GoldenProfileFields:
-    full_name = _best_fact(facts, ("full_name", "preferred_name", "legal_name"))
+    # Preserve the established ingestion survivorship stages.  A valid full_name
+    # wins over any preferred/legal fallback regardless of the latter's trust or
+    # recency; fallbacks are considered only when the preceding stage is absent.
+    full_name = _best_fact(facts, ("full_name",))
+    if full_name is None:
+        full_name = _best_fact(facts, ("preferred_name",))
+    if full_name is None:
+        full_name = _best_fact(facts, ("legal_name",))
     dob = _best_fact(facts, ("dob",))
     phone = _best_identifier(identifiers, "phone")
     email = _best_identifier(identifiers, "email")

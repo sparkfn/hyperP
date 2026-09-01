@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Mapping
+from typing import cast
 
 from neo4j import ManagedTransaction, Record
 
@@ -158,4 +159,68 @@ def read_pair_snapshot(
     rows = tuple(tx.run(queries.READ_REPAIR_PAIR_AUDIT_CASES, review_case_ids=list(expected_ids)))
     if tuple(required_row_string(row, "review_case_id") for row in rows) != expected_ids:
         raise RepairVerificationDriftError("current pair closure differs")
-    return tuple(_pair_state(row) for row in rows)
+    snapshots: list[Mapping[str, JsonValue]] = []
+    for row in rows:
+        state = dict(_pair_state(row))
+        state["bridge_supported"] = _bridge_supported(
+            tx,
+            required_row_string(row, "left_person_id"),
+            required_row_string(row, "right_person_id"),
+        )
+        snapshots.append(state)
+    return tuple(snapshots)
+
+
+def validate_replayed_pair_dispositions(
+    tx: ManagedTransaction,
+    command: RepairVerificationCommand,
+    values: list[Mapping[str, JsonValue]],
+) -> None:
+    """Bind acknowledged pair dispositions to current bridge evidence without writes."""
+    snapshots = read_pair_snapshot(tx, command)
+    expected: dict[str, RepairSecondaryAction] = {}
+    for snapshot in snapshots:
+        case_id = snapshot.get("review_case_id")
+        queue_state = snapshot.get("queue_state")
+        bridge = snapshot.get("bridge_supported")
+        resolution = snapshot.get("resolution")
+        if (
+            not isinstance(case_id, str)
+            or not isinstance(queue_state, str)
+            or not isinstance(bridge, bool)
+        ):
+            raise RepairVerificationDriftError("replayed pair snapshot is malformed")
+        expected[case_id] = _replayed_pair_action(queue_state, resolution, bridge)
+    observed: dict[str, RepairSecondaryAction] = {}
+    for value in values:
+        if value.get("subject_kind") != "pair_audit_case":
+            continue
+        case_id = value.get("subject_stable_id")
+        action = value.get("action")
+        outcome = value.get("outcome")
+        if (
+            not isinstance(case_id, str)
+            or action not in {"cancelled_stale_pair", "rescored_pair", "preserved"}
+            or outcome != "reconciled"
+            or case_id in observed
+        ):
+            raise RepairVerificationDriftError("replayed pair disposition is malformed")
+        observed[case_id] = cast(RepairSecondaryAction, action)
+    if observed != expected:
+        raise RepairVerificationDriftError("replayed pair bridge disposition differs")
+
+
+def _replayed_pair_action(
+    queue_state: str,
+    resolution: JsonValue,
+    bridge_supported: bool,
+) -> RepairSecondaryAction:
+    if (
+        not bridge_supported
+        and queue_state == "resolved"
+        and resolution == "cancelled_stale_repair_bridge"
+    ):
+        return "cancelled_stale_pair"
+    if bridge_supported and queue_state in {"open", "assigned", "deferred"}:
+        return "rescored_pair"
+    return "preserved"

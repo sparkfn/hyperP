@@ -14,6 +14,7 @@ from urllib.parse import urlparse
 
 import pytest
 from neo4j import Driver, GraphDatabase, ManagedTransaction, Session
+from src.crm_deal_identity_repair.digests import object_digest
 from src.crm_deal_identity_repair.inventory import collect_repair_inventory
 from src.crm_deal_identity_repair.models import RepairInventoryItem
 from src.crm_deal_identity_repair.verification_models import RepairVerificationCommand
@@ -30,6 +31,10 @@ from src.graph.crm_deal_identity_repair_verification_secondary import (
     FrozenContextSubject,
     assert_current_context,
     expected_post_repair_context,
+)
+from src.graph.crm_deal_identity_repair_verification_support import (
+    retirement_snapshot_from_row,
+    retirement_snapshot_matches,
 )
 from src.graph.queries import crm_deal_identity_repair_verification as verification_queries
 from src.graph.queries.crm_deal_identity_repair_ledger import (
@@ -181,23 +186,6 @@ def _initialize_person_derived_state(driver: Driver, person_id: str) -> None:
         ).consume()
 
 
-def _retirement_requirement(
-    relationship_type: str,
-    source_record_pk: str,
-    left_source_record_pk: str,
-    *,
-    frozen_count: int = 1,
-    frozen_active_count: int = 1,
-) -> dict[str, str | int]:
-    return {
-        "relationship_type": relationship_type,
-        "source_record_pk": source_record_pk,
-        "left_source_record_pk": left_source_record_pk,
-        "frozen_count": frozen_count,
-        "frozen_active_count": frozen_active_count,
-    }
-
-
 def _classify(driver: Driver, item: RepairInventoryItem) -> tuple[str, ...]:
     with driver.session() as session:
         rows = list(
@@ -207,6 +195,128 @@ def _classify(driver: Driver, item: RepairInventoryItem) -> tuple[str, ...]:
             )
         )
     return classify_negative_controls((item,), rows)
+
+
+def test_retired_snapshot_rejects_retarget_and_duplicate_substitution(neo4j_driver: Driver) -> None:
+    """The exact postcondition reader binds endpoints and duplicate multiplicity."""
+    with neo4j_driver.session() as session:
+        session.run(
+            """
+            CREATE (old:SourceRecord {source_record_pk: 'old-pk'})
+            CREATE (first:Person {person_id: 'person-first'})
+            CREATE (second:Person {person_id: 'person-second'})
+            CREATE (old)-[:LINKED_TO {is_active: false, authoritative: true,
+              retired_by_repair_mutation_id: 'mutation-a', updated_at: datetime()}]->(second)
+            """
+        ).consume()
+        rows = tuple(
+            session.run(
+                verification_queries.READ_RETIRED_RELATIONSHIP_SNAPSHOTS,
+                retired_source_record_pks=["old-pk"],
+            )
+        )
+    actual = tuple(retirement_snapshot_from_row(row, "mutation-a") for row in rows)
+    requirement = {
+        "relationship_type": "LINKED_TO",
+        "left_identity": {"labels": ["SourceRecord"], "key": "source_record_pk", "value": "old-pk"},
+        "right_identity": {"labels": ["Person"], "key": "person_id", "value": "person-first"},
+        "properties": {"is_active": True, "authoritative": True},
+        "frozen_active": True,
+        "multiplicity_ordinal": 0,
+    }
+    assert not retirement_snapshot_matches((requirement,), actual, "mutation-a")
+
+    with neo4j_driver.session() as session:
+        session.run(
+            """
+            MATCH (old:SourceRecord {source_record_pk: 'old-pk'})
+            MATCH (first:Person {person_id: 'person-first'})
+            CREATE (old)-[:LINKED_TO {is_active: false, authoritative: true,
+              retired_by_repair_mutation_id: 'mutation-a', updated_at: datetime()}]->(first)
+            """
+        ).consume()
+        rows = tuple(
+            session.run(
+                verification_queries.READ_RETIRED_RELATIONSHIP_SNAPSHOTS,
+                retired_source_record_pks=["old-pk"],
+            )
+        )
+    actual = tuple(retirement_snapshot_from_row(row, "mutation-a") for row in rows)
+    assert not retirement_snapshot_matches((requirement,), actual, "mutation-a")
+
+
+def test_retired_identifier_without_identifier_key_uses_exact_properties_digest(
+    neo4j_driver: Driver,
+) -> None:
+    """Keyless Identifier endpoints use the same #309 fallback identity as rollback snapshots."""
+    identifier_properties = {
+        "identifier_type": "phone",
+        "identifier_scope": "portal-a",
+        "normalized_value": "+6500000000",
+    }
+    with neo4j_driver.session() as session:
+        session.run(
+            """
+            CREATE (owner:Person {person_id: 'person-a'})
+            CREATE (identifier:Identifier $identifier_properties)
+            CREATE (owner)-[:IDENTIFIED_BY {source_record_pk: 'old-pk', is_active: false,
+              retired_by_repair_mutation_id: 'mutation-a', updated_at: datetime()}]->(identifier)
+            """,
+            identifier_properties=identifier_properties,
+        ).consume()
+        rows = tuple(
+            session.run(
+                verification_queries.READ_RETIRED_RELATIONSHIP_SNAPSHOTS,
+                retired_source_record_pks=["old-pk"],
+            )
+        )
+    requirement = {
+        "relationship_type": "IDENTIFIED_BY",
+        "left_identity": {"labels": ["Person"], "key": "person_id", "value": "person-a"},
+        "right_identity": {
+            "labels": ["Identifier"],
+            "properties_digest": object_digest(b"graph-endpoint-v1\x00", identifier_properties),
+        },
+        "properties": {"source_record_pk": "old-pk", "is_active": True},
+        "frozen_active": True,
+        "multiplicity_ordinal": 0,
+    }
+    actual = tuple(retirement_snapshot_from_row(row, "mutation-a") for row in rows)
+    assert retirement_snapshot_matches((requirement,), actual, "mutation-a")
+
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (identifier:Identifier {normalized_value: '+6500000000'}) "
+            "SET identifier.normalized_value = '+6500000001'"
+        ).consume()
+        rows = tuple(
+            session.run(
+                verification_queries.READ_RETIRED_RELATIONSHIP_SNAPSHOTS,
+                retired_source_record_pks=["old-pk"],
+            )
+        )
+    actual = tuple(retirement_snapshot_from_row(row, "mutation-a") for row in rows)
+    assert not retirement_snapshot_matches((requirement,), actual, "mutation-a")
+
+    with neo4j_driver.session() as session:
+        session.run(
+            """
+            MATCH (owner:Person {person_id: 'person-a'})-[link:IDENTIFIED_BY]->()
+            DELETE link
+            CREATE (identifier:Identifier {identifier_type: 'phone', identifier_scope: 'portal-a',
+              normalized_value: '+6500000002'})
+            CREATE (owner)-[:IDENTIFIED_BY {source_record_pk: 'old-pk', is_active: false,
+              retired_by_repair_mutation_id: 'mutation-a', updated_at: datetime()}]->(identifier)
+            """
+        ).consume()
+        rows = tuple(
+            session.run(
+                verification_queries.READ_RETIRED_RELATIONSHIP_SNAPSHOTS,
+                retired_source_record_pks=["old-pk"],
+            )
+        )
+    actual = tuple(retirement_snapshot_from_row(row, "mutation-a") for row in rows)
+    assert not retirement_snapshot_matches((requirement,), actual, "mutation-a")
 
 
 def _state(driver: Driver) -> tuple[str, ...]:
@@ -259,6 +369,7 @@ def test_run_verification_counts_accepts_300_canonical_source_pk_boundary(
             source_instance_id=_SOURCE,
             control_instance_id="control-a",
             source_record_pks_json=canonical_source_record_pks_json((item,)),
+            replay_request_digest=None,
         ).single(strict=True)
     assert row is not None
 
@@ -366,11 +477,8 @@ def test_primary_query_counts_applied_review_retirement_and_forbidden_evidence(
             verification_queries.READ_PRIMARY_POSTCONDITIONS,
             new_source_record_pk="new-pk",
             mutation_id="mutation-a",
+            retirement_snapshot_failure_count=0,
             retired_source_record_pks=["old-pk"],
-            retirement_requirements=[
-                _retirement_requirement("LINKED_TO", "old-pk", "old-pk"),
-                _retirement_requirement("IDENTIFIED_BY", "old-pk", "old-pk"),
-            ],
             closure_source_record_pks=["old-pk", "new-pk"],
         ).single(strict=True)
     assert row["active_links"] == 1
@@ -414,8 +522,8 @@ def test_primary_query_reports_forbidden_retired_projection(
             verification_queries.READ_PRIMARY_POSTCONDITIONS,
             new_source_record_pk="new-pk",
             mutation_id="mutation-a",
+            retirement_snapshot_failure_count=0,
             retired_source_record_pks=["old-pk"],
-            retirement_requirements=[],
             closure_source_record_pks=["old-pk", "new-pk"],
         ).single(strict=True)
     assert row["forbidden_projection_count"] == 1
@@ -442,8 +550,8 @@ def test_primary_query_reports_forbidden_replacement_projection(neo4j_driver: Dr
             verification_queries.READ_PRIMARY_POSTCONDITIONS,
             new_source_record_pk="new-pk",
             mutation_id="mutation-a",
+            retirement_snapshot_failure_count=0,
             retired_source_record_pks=[],
-            retirement_requirements=[],
             closure_source_record_pks=["new-pk"],
         ).single(strict=True)
     assert row["forbidden_projection_count"] == 1
@@ -497,8 +605,8 @@ def test_primary_query_reports_review_required_invariant_failures(neo4j_driver: 
             verification_queries.READ_PRIMARY_POSTCONDITIONS,
             new_source_record_pk="new-pk",
             mutation_id="mutation-review",
+            retirement_snapshot_failure_count=0,
             retired_source_record_pks=[],
-            retirement_requirements=[],
             closure_source_record_pks=["new-pk"],
         ).single(strict=True)
     assert row["active_links"] == 0
@@ -545,8 +653,8 @@ def test_primary_query_exposes_extra_inactive_review_required_links(
             verification_queries.READ_PRIMARY_POSTCONDITIONS,
             new_source_record_pk="new-pk",
             mutation_id="mutation-review",
+            retirement_snapshot_failure_count=0,
             retired_source_record_pks=[],
-            retirement_requirements=[],
             closure_source_record_pks=["new-pk"],
         ).single(strict=True)
     assert row["all_links"] > row["provisional_links"] or row["provisional_links"] > 1
@@ -581,11 +689,8 @@ def test_primary_query_reports_missing_retirement_stamp_and_preserves_independen
             verification_queries.READ_PRIMARY_POSTCONDITIONS,
             new_source_record_pk="new-pk",
             mutation_id="mutation-a",
+            retirement_snapshot_failure_count=2,
             retired_source_record_pks=["old-pk"],
-            retirement_requirements=[
-                _retirement_requirement("LINKED_TO", "old-pk", "old-pk"),
-                _retirement_requirement("IDENTIFIED_BY", "old-pk", "old-pk"),
-            ],
             closure_source_record_pks=["old-pk", "new-pk"],
         ).single(strict=True)
         independent = session.run(
@@ -625,14 +730,8 @@ def test_primary_query_counts_missing_stamp_on_inactive_relationship(neo4j_drive
             verification_queries.READ_PRIMARY_POSTCONDITIONS,
             new_source_record_pk="new-pk",
             mutation_id="mutation-a",
+            retirement_snapshot_failure_count=1,
             retired_source_record_pks=["old-pk"],
-            retirement_requirements=[
-                _retirement_requirement(
-                    "DESCRIBES_ADDRESS",
-                    "old-pk",
-                    "old-pk",
-                )
-            ],
             closure_source_record_pks=["old-pk", "new-pk"],
         ).single(strict=True)
     assert row["retirement_stamp_failure_count"] == 1
@@ -661,15 +760,8 @@ def test_primary_query_accepts_frozen_inactive_relationship_with_prior_stamp(
             verification_queries.READ_PRIMARY_POSTCONDITIONS,
             new_source_record_pk="new-pk",
             mutation_id="mutation-a",
+            retirement_snapshot_failure_count=0,
             retired_source_record_pks=["old-pk"],
-            retirement_requirements=[
-                _retirement_requirement(
-                    "LINKED_TO",
-                    "old-pk",
-                    "old-pk",
-                    frozen_active_count=0,
-                )
-            ],
             closure_source_record_pks=["old-pk", "new-pk"],
         ).single(strict=True)
     assert row["retirement_stamp_failure_count"] == 0
@@ -700,8 +792,8 @@ def test_primary_query_accepts_exact_review_required_shape(neo4j_driver: Driver)
             verification_queries.READ_PRIMARY_POSTCONDITIONS,
             new_source_record_pk="new-pk",
             mutation_id="mutation-review",
+            retirement_snapshot_failure_count=0,
             retired_source_record_pks=[],
-            retirement_requirements=[],
             closure_source_record_pks=["new-pk"],
         ).single(strict=True)
     assert row["active_any_links"] == 0
