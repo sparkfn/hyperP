@@ -51,6 +51,14 @@ def prevalidate_source_sync(
         authority.mapping_head_digest,
     ):
         raise CrmTenantMappingConflictError("source-sync mapping authority is stale")
+    if authority.mapping_active_revision_id is not None and (
+        head.active_revision_id,
+        head.active_revision_number,
+    ) != (
+        authority.mapping_active_revision_id,
+        authority.mapping_active_revision_number,
+    ):
+        raise CrmTenantMappingConflictError("source-sync mapping head snapshot is stale")
     if active is None:
         raise CrmTenantMappingIntegrityError("active mapping head has no active revision")
 
@@ -83,7 +91,9 @@ def prevalidate_mapping_prepare(
 def prevalidate_mapping_rollback(
     tx: ManagedTransaction, scope: CrmTenantMappingScope, authority: MappingRollbackAuthority
 ) -> CrmTenantMappingRevisionSnapshot:
-    snapshot = _require_prepared(tx, scope, authority.rollback_head_id, None)
+    snapshot = _require_prepared(
+        tx, scope, authority.rollback_head_id, authority.rollback_head_digest
+    )
     provenance = snapshot.revision.rollback_provenance
     if provenance is None or (
         provenance.rollback_of_revision_id,

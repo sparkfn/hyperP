@@ -537,3 +537,11 @@ def test_repair_does_not_publish_when_child_handler_is_absent() -> None:
 
     assert result.state == "paused_with_checkpoint"
     assert publisher.calls == []
+
+
+def test_mapping_publication_selects_dedicated_zero_bitrix_task() -> None:
+    from src.standalone_crm_census_runtime import MAPPING_CHILD_TASK_NAME
+
+    assert MAPPING_CHILD_TASK_NAME == (
+        "src.standalone_crm_census_tasks.run_standalone_crm_mapping_activation"
+    )

@@ -224,3 +224,47 @@ warning appears:
 4. pause lifecycle consumption with the supported script if acquisition does not
    follow the current initialization section;
 5. retain the safe lock events and task IDs for incident follow-up.
+
+## Standalone CRM mapping/projection activation (#307)
+
+The standalone CRM identity plane is **off by default**. Both
+`standalone_crm_identity_enabled` and `standalone_crm_identity_schedule_enabled` must be
+true before the manual `dispatch_standalone_crm_source_sync` task can enqueue a bounded
+source-sync census. It is deliberately absent from Celery Beat; operators must invoke the
+task explicitly. The dispatch captures complete active mapping and projection heads before
+building the immutable request, and never calls a live source directly.
+
+Mapping changes are operated as `prepare → project → activate` (or `rollback → project →
+activate`). Prepare and rollback are accepted only with an unexpired exact configured grant:
+there are no wildcards or implicit authorization. `project` preserves the existing projection
+materializer semantics. `activate` is a Celery census admission, not a direct graph mutation;
+the zero-Bitrix mapping child performs the atomic mapping/projection head CAS from the persisted
+payload only. `status`, `reconcile`, and the bounded manual source-sync command are read/dispatch
+controls. Reconcile is the acknowledgement-loss recovery path: if CAS committed but census
+settlement did not, it reads the durable release receipt and settles the checkpoint/accounting
+without rematerializing, moving heads, or counting the unit again.
+
+Published mapping payloads and source payloads are mutually exclusive. A mapping worker rejects
+source payloads before source client construction; a source worker rejects mapping payloads.
+
+Concrete operator entry points are registered Celery task names:
+
+```text
+celery call src.crm_tenant_operator_tasks.prepare --args '[{"scope":...,"manifest":...,"authorization":...}]'
+celery call src.crm_tenant_operator_tasks.project --args '[{"scope":...,"request_id":...,"expected_prior_head":...}]'
+celery call src.crm_tenant_operator_tasks.activate --args '[{"census_kind":"mapping_prepare",...}]'
+celery call src.crm_tenant_operator_tasks.rollback --args '[{"scope":...,"rollback_of_revision_id":...,"authorization":...}]'
+celery call src.crm_tenant_operator_tasks.status --args '["<census-id>"]'
+celery call src.crm_tenant_operator_tasks.reconcile --args '["<census-id>"]'
+celery call src.crm_tenant_operator_tasks.source_sync --args '[{"census_kind":"source_sync",...}]'
+```
+
+The manual scheduler invokes `src.standalone_crm_schedule_tasks.dispatch_standalone_crm_source_sync`.
+That task captures exact heads, enqueues `admit_and_run_standalone_crm_census`, and the latter admits
+then runs the parent state machine; neither task performs a live source call itself.
+
+Operator tasks receive JSON objects, never Python dataclasses. For example, `prepare` receives:
+
+```json
+{"scope":{"source_key":"bitrix_chat","source_instance_id":"portal-a","control_instance_id":"default"},"preparation_request_id":"prepare-20260901","manifest":{"entries":[{"company_id":"42","targets":[{"entity_key":"tenant-a"}]}]},"expected_head_boundary":{"head_id":"<deterministic-mapping-head-id>","expected_head":null},"authorization":{"actor":"operator","authorization_reference":"change-ticket","authorization_digest":"sha256:<64-hex>","authorized_at":"2026-09-01T00:00:00Z","expires_at":"2026-09-02T00:00:00Z"},"operation_time":"2026-09-01T00:00:00Z"}
+```

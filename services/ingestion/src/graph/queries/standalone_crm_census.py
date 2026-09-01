@@ -999,3 +999,83 @@ CLASSIFY_UNRESOLVED_CALLS = (
     "SET call.status = 'unknown', call.error_code = 'reservation_unresolved', call.completed_at = datetime() "
     "RETURN count(call) AS classified"
 )
+
+# Mapping activation never constructs or authorizes a Bitrix source client.  These
+# queries deliberately do not reuse the source-child predicates above.
+CLAIM_MAPPING_PUBLICATION = (
+    "MATCH (census:StandaloneCrmCensus {census_id: $census_id, generation: $generation, "
+    "census_kind: $census_kind, request_json: $request_json, authority_revision: $authority_revision, "
+    "authority_json: $authority_json}) "
+    "MATCH (attempt:StandaloneCrmCensusAttempt {census_id: $census_id, generation: $generation, status: 'running'}) "
+    "MATCH (unit:StandaloneCrmCensusUnit {census_id: $census_id, generation: $generation, stream_kind: $stream_kind, "
+    "revision_id: $revision_id}) "
+    "MATCH (publication:StandaloneCrmChildPublication {census_id: $census_id, generation: $generation, "
+    "stream_kind: $stream_kind, task_name: $task_name, task_id: $task_id, payload_digest: $payload_digest, "
+    "payload_json: $payload_json, payload_version: $payload_version, queue: $queue, status: 'published'}) "
+    "WHERE coalesce(census.cancel_requested, false) = false AND census.status IN ['running', 'publishing', 'recovering'] "
+    "AND unit.state IN ['queued', 'running'] "
+    "MERGE (fence:StandaloneCrmCensusFence {census_id: $census_id, generation: $generation, stream_kind: $stream_kind}) "
+    "ON CREATE SET fence.token = 0, fence.status = 'retired' "
+    "WITH census, unit, fence WHERE fence.status = 'retired' OR fence.lease_until < datetime() OR fence.owner_id = $owner_id "
+    "SET fence.token = CASE WHEN fence.status = 'active' AND fence.owner_id = $owner_id THEN fence.token ELSE fence.token + 1 END, "
+    "fence.status = 'active', fence.owner_id = $owner_id, "
+    "fence.lease_until = datetime() + duration({seconds: $lease_seconds}), fence.updated_at = datetime(), "
+    "unit.state = 'running', unit.updated_at = datetime() "
+    "RETURN fence.token AS fence_token, census.request_json AS request_json"
+)
+
+SETTLE_MAPPING_RECEIPT = (
+    "MATCH (census:StandaloneCrmCensus {census_id: $census_id, generation: $generation, census_kind: $census_kind, request_json: $request_json, authority_revision: $authority_revision, authority_json: $authority_json}) "
+    "MATCH (attempt:StandaloneCrmCensusAttempt {census_id: $census_id, generation: $generation, status: 'running'}) "
+    "MATCH (unit:StandaloneCrmCensusUnit {census_id: $census_id, generation: $generation, stream_kind: $stream_kind, revision_id: $revision_id, state: 'running'}) "
+    "MATCH (publication:StandaloneCrmChildPublication {census_id: $census_id, generation: $generation, stream_kind: $stream_kind, task_name: $task_name, task_id: $task_id, queue: $queue, payload_version: $payload_version, payload_digest: $payload_digest, payload_json: $payload_json, status: 'published'}) "
+    "MATCH (fence:StandaloneCrmCensusFence {census_id: $census_id, generation: $generation, stream_kind: $stream_kind, token: $fence_token, owner_id: $owner_id, status: 'active'}) "
+    "MATCH (release:CrmTenantProjectionRelease {source_key: $source_key, source_instance_id: $source_instance_id, control_instance_id: $control_instance_id, release_id: $release_id, release_fingerprint: $release_fingerprint, state: 'published', mapping_revision_id: $revision_id, mapping_manifest_digest: $candidate_manifest_digest, activation_census_id: $census_id, activation_generation: $generation, activation_task_id: $task_id, activation_candidate_revision_id: $revision_id, activation_candidate_manifest_digest: $candidate_manifest_digest, activation_activated_at: $activated_at}) "
+    "WITH census, attempt, unit, publication, fence, release, collect(unit) AS units, collect(publication) AS publications, collect(fence) AS fences, collect(attempt) AS attempts "
+    "WHERE size(units) = 1 AND size(publications) = 1 AND size(fences) = 1 AND size(attempts) = 1 "
+    "OPTIONAL MATCH (checkpoint:StandaloneCrmCensusCheckpoint {census_id: $census_id, stream_kind: $stream_kind}) "
+    "WITH census, attempt, unit, publication, fence, release, collect(checkpoint) AS checkpoints "
+    "WHERE size(checkpoints) <= 1 "
+    "MERGE (stored:StandaloneCrmCensusCheckpoint {census_id: $census_id, stream_kind: $stream_kind}) "
+    "ON CREATE SET stored.last_committed_id = 0, stored.processed_rows = 0, stored.skipped_rows = 0, stored.generation = $generation, stored.fence_token = $fence_token, stored.revision_id = $revision_id, stored.completed_release_id = $release_id, stored.activation_task_id = $task_id, stored.created_at = datetime() "
+    "WITH census, attempt, unit, publication, fence, stored WHERE stored.generation = $generation AND stored.fence_token = $fence_token AND stored.revision_id = $revision_id AND stored.completed_release_id = $release_id AND stored.activation_task_id = $task_id AND stored.last_committed_id = 0 AND stored.processed_rows = 0 AND stored.skipped_rows = 0 "
+    "SET unit.state = 'completed', unit.updated_at = datetime(), publication.status = 'retired', publication.retired_at = datetime(), fence.status = 'retired', fence.retired_at = datetime(), attempt.status = 'completed', attempt.updated_at = datetime(), census.expected_units = 1, census.completed_units = 1, census.failed_units = 0, census.cancelled_units = 0, census.no_work_units = 0, census.status = 'completed', census.completed_at = datetime(), census.updated_at = datetime() "
+    "RETURN census.census_id AS census_id"
+)
+
+RECONCILE_MAPPING_RECEIPT = (
+    "MATCH (census:StandaloneCrmCensus {census_id: $census_id, generation: $generation, census_kind: $census_kind, request_json: $request_json, authority_revision: $authority_revision, authority_json: $authority_json}) "
+    "MATCH (unit:StandaloneCrmCensusUnit {census_id: $census_id, generation: $generation}) "
+    "MATCH (publication:StandaloneCrmChildPublication {census_id: $census_id, generation: $generation}) "
+    "MATCH (attempt:StandaloneCrmCensusAttempt {census_id: $census_id, generation: $generation}) "
+    "OPTIONAL MATCH (fence:StandaloneCrmCensusFence {census_id: $census_id, generation: $generation, stream_kind: $stream_kind}) "
+    "WITH census, collect(unit) AS units, collect(publication) AS publications, collect(attempt) AS attempts, collect(fence) AS fences "
+    "WHERE size(units) = 1 AND size(publications) = 1 AND size(attempts) = 1 AND size(fences) <= 1 "
+    "WITH census, units[0] AS unit, publications[0] AS publication, attempts[0] AS attempt, CASE WHEN size(fences)=0 THEN NULL ELSE fences[0] END AS fence "
+    "WHERE unit.stream_kind = $stream_kind AND unit.revision_id = $revision_id AND publication.stream_kind = $stream_kind AND publication.task_name = $task_name AND publication.task_id = $task_id AND publication.queue = $queue AND publication.payload_version = $payload_version AND publication.payload_digest = $payload_digest AND publication.payload_json = $payload_json "
+    "MATCH (release:CrmTenantProjectionRelease {source_key: $source_key, source_instance_id: $source_instance_id, control_instance_id: $control_instance_id, release_id: $release_id, release_fingerprint: $release_fingerprint, state: 'published', mapping_revision_id: $revision_id, mapping_manifest_digest: $candidate_manifest_digest, activation_census_id: $census_id, activation_generation: $generation, activation_task_id: $task_id, activation_candidate_revision_id: $revision_id, activation_candidate_manifest_digest: $candidate_manifest_digest, activation_activated_at: $activated_at}) "
+    "WHERE fence IS NULL OR fence.status IN ['active', 'retired'] "
+    "OPTIONAL MATCH (checkpoint:StandaloneCrmCensusCheckpoint {census_id: $census_id, stream_kind: $stream_kind}) "
+    "WITH census, unit, publication, attempt, fence, collect(checkpoint) AS checkpoints "
+    "WHERE size(checkpoints) <= 1 "
+    "MERGE (stored:StandaloneCrmCensusCheckpoint {census_id: $census_id, stream_kind: $stream_kind}) "
+    "ON CREATE SET stored.last_committed_id = 0, stored.processed_rows = 0, stored.skipped_rows = 0, stored.generation = $generation, stored.fence_token = CASE WHEN fence IS NULL THEN 0 ELSE fence.token END, stored.revision_id = $revision_id, stored.completed_release_id = $release_id, stored.activation_task_id = $task_id, stored.created_at = datetime(), stored.updated_at = datetime() "
+    "WITH census, unit, publication, attempt, fence, stored WHERE stored.generation = $generation AND stored.revision_id = $revision_id AND stored.completed_release_id = $release_id AND stored.activation_task_id = $task_id AND stored.last_committed_id = 0 AND stored.processed_rows = 0 AND stored.skipped_rows = 0 AND (fence IS NULL OR stored.fence_token = fence.token) "
+    "FOREACH (_ IN CASE WHEN unit.state <> 'completed' THEN [1] ELSE [] END | SET unit.state = 'completed', unit.updated_at = datetime()) "
+    "FOREACH (_ IN CASE WHEN publication.status <> 'retired' THEN [1] ELSE [] END | SET publication.status = 'retired', publication.retired_at = datetime()) "
+    "FOREACH (_ IN CASE WHEN attempt.status <> 'completed' THEN [1] ELSE [] END | SET attempt.status = 'completed', attempt.updated_at = datetime()) "
+    "FOREACH (_ IN CASE WHEN fence IS NOT NULL AND fence.status <> 'retired' THEN [1] ELSE [] END | SET fence.status = 'retired', fence.retired_at = datetime(), fence.updated_at = datetime()) "
+    "SET census.expected_units = 1, census.completed_units = 1, census.failed_units = 0, census.cancelled_units = 0, census.no_work_units = 0, census.processed_rows = 0, census.skipped_rows = 0 "
+    "FOREACH (_ IN CASE WHEN census.status <> 'completed' THEN [1] ELSE [] END | SET census.status = 'completed', census.completed_at = datetime(), census.updated_at = datetime()) "
+    "RETURN census.census_id AS census_id"
+)
+
+FIND_MAPPING_RECEIPT = (
+    "MATCH (census:StandaloneCrmCensus {census_id: $census_id, generation: $generation, census_kind: $census_kind, request_json: $request_json, authority_revision: $authority_revision, authority_json: $authority_json}) "
+    "MATCH (unit:StandaloneCrmCensusUnit {census_id: $census_id, generation: $generation, stream_kind: $stream_kind, revision_id: $revision_id}) "
+    "MATCH (publication:StandaloneCrmChildPublication {census_id: $census_id, generation: $generation, stream_kind: $stream_kind, task_name: $task_name, task_id: $task_id, queue: $queue, payload_version: $payload_version, payload_digest: $payload_digest, payload_json: $payload_json}) "
+    "MATCH (release:CrmTenantProjectionRelease {source_key: $source_key, source_instance_id: $source_instance_id, control_instance_id: $control_instance_id, release_id: $release_id, release_fingerprint: $release_fingerprint, state: 'published', mapping_revision_id: $revision_id, mapping_manifest_digest: $candidate_manifest_digest, activation_census_id: $census_id, activation_generation: $generation, activation_task_id: $task_id, activation_candidate_revision_id: $revision_id, activation_candidate_manifest_digest: $candidate_manifest_digest}) "
+    "WITH collect(unit) AS units, collect(publication) AS publications, collect(release) AS releases "
+    "WHERE size(units)=1 AND size(publications)=1 AND size(releases)=1 "
+    "RETURN $payload_json AS payload_json, $release_id AS release_id, releases[0].activation_activated_at AS activated_at"
+)
