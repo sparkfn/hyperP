@@ -22,9 +22,9 @@ from urllib.parse import urlparse
 import pytest
 from neo4j import Driver, GraphDatabase, ManagedTransaction, Session
 from src.crm_deal_identity_repair.allocation import AllocationPlan
+from src.crm_deal_identity_repair.control_models import RepairControlRequest
 from src.crm_deal_identity_repair.execution_models import (
     RepairBoundarySnapshot,
-    RepairControlRequest,
     RepairExecutionBoundaryManifest,
     RepairQualificationRun,
 )

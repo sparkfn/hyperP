@@ -29,6 +29,12 @@ from src.crm_deal_identity_repair.mutation_models import (
     RepairAtomicMutationResult,
     RepairMutationCommand,
 )
+from src.crm_deal_identity_repair.verification_models import (
+    RepairAtomicVerificationResult,
+    RepairRunEquationCommand,
+    RepairRunEquationResult,
+    RepairVerificationCommand,
+)
 
 
 class RepairQualificationRepository(Protocol):
@@ -157,6 +163,12 @@ class RepairVerificationRepository(Protocol):
         unit_id: str,
         generation: int,
     ) -> tuple[RepairVerificationResult, ...]: ...
+
+    def verify_and_reconcile_unit(
+        self, command: RepairVerificationCommand
+    ) -> RepairAtomicVerificationResult: ...
+
+    def read_run_equation(self, command: RepairRunEquationCommand) -> RepairRunEquationResult: ...
 
 
 class RepairRollbackRepository(Protocol):

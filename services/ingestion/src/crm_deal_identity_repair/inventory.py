@@ -470,3 +470,61 @@ def _json_value(value: object) -> JsonValue:
 @runtime_checkable
 class _IsoFormatValue(Protocol):
     def iso_format(self) -> str: ...
+
+
+def rebuild_inventory_payload(
+    source_properties: dict[str, JsonValue],
+    linked_people: list[JsonValue],
+    projections: list[JsonValue],
+    logical_versions: list[JsonValue],
+    descendants: list[JsonValue],
+    decisions_and_reviews: list[JsonValue],
+    owner_impacts: list[JsonValue],
+) -> dict[str, JsonValue]:
+    """Rebuild the #300 payload shape from an exact current-state graph snapshot."""
+    source_record_pk = _required_mapping_string(source_properties, "source_record_pk")
+    raw_payload = _mapping_value(source_properties, "raw_payload")
+    normalized_payload = _mapping_value(source_properties, "normalized_payload")
+    versions = _sorted_json_objects(logical_versions, "logical_versions")
+    return {
+        "source_record_version": _mapping_value(source_properties, "source_record_version"),
+        "lifecycle_status": _mapping_value(source_properties, "lifecycle_status"),
+        "is_latest": _mapping_value(source_properties, "is_latest"),
+        "record_hash": _required_mapping_string(source_properties, "record_hash"),
+        "observed_at": _optional_mapping_string(source_properties, "observed_at"),
+        "raw_payload": raw_payload,
+        "normalized_payload": normalized_payload,
+        "linked_people": _sorted_json_objects(linked_people, "linked_people"),
+        "projections": _sorted_json_objects(projections, "projections"),
+        "logical_version_evidence": _logical_version_evidence(
+            versions, current_source_record_pk=source_record_pk
+        ),
+        "lifecycle_policy_evidence": _lifecycle_policy_evidence(raw_payload, normalized_payload),
+        "descendants": _sorted_json_objects(descendants, "descendants"),
+        "decisions_and_reviews": _sorted_json_objects(
+            decisions_and_reviews, "decisions_and_reviews"
+        ),
+        "owner_impacts": _sorted_json_objects(owner_impacts, "owner_impacts"),
+    }
+
+
+def _required_mapping_string(values: dict[str, JsonValue], key: str) -> str:
+    value = values.get(key)
+    if not isinstance(value, str) or not value:
+        raise ValueError("repair inventory snapshot string is invalid")
+    return value
+
+
+def _optional_mapping_string(values: dict[str, JsonValue], key: str) -> str | None:
+    value = values.get(key)
+    if value is None:
+        return None
+    if not isinstance(value, str):
+        raise ValueError("repair inventory snapshot optional string is invalid")
+    return value
+
+
+def _mapping_value(values: dict[str, JsonValue], key: str) -> JsonValue:
+    if key not in values:
+        raise ValueError("repair inventory snapshot property is missing")
+    return values[key]

@@ -2,14 +2,8 @@
 
 from __future__ import annotations
 
-from src.crm_deal_identity_repair.control_models import (
-    RepairAllocationCompletion,
-    RepairControlRequest,
-    RepairControlState,
-    RepairControlStatus,
-    RepairDispatchLease,
-    RepairPublicationReservation,
-)
+from typing import TYPE_CHECKING
+
 from src.crm_deal_identity_repair.execution_boundary_models import (
     RepairBoundaryDriftReason,
     RepairBoundarySnapshot,
@@ -48,12 +42,6 @@ __all__ = (
     "RepairBoundaryDriftReason",
     "RepairCheckpoint",
     "RepairCheckpointState",
-    "RepairControlRequest",
-    "RepairControlState",
-    "RepairControlStatus",
-    "RepairDispatchLease",
-    "RepairPublicationReservation",
-    "RepairAllocationCompletion",
     "RepairExecutionBoundaryManifest",
     "RepairFence",
     "RepairFenceState",
@@ -76,4 +64,42 @@ __all__ = (
     "RepairUnitState",
     "RepairVerificationOutcome",
     "RepairVerificationResult",
+    "RepairAtomicVerificationResult",
+    "RepairRunEquationCommand",
+    "RepairRunEquationResult",
+    "RepairSecondaryAction",
+    "RepairSecondarySubject",
+    "RepairSecondarySubjectKind",
+    "RepairUnitEquation",
+    "RepairVerificationCommand",
 )
+
+if TYPE_CHECKING:
+    from src.crm_deal_identity_repair.verification_models import (
+        RepairAtomicVerificationResult,
+        RepairRunEquationCommand,
+        RepairRunEquationResult,
+        RepairSecondaryAction,
+        RepairSecondarySubject,
+        RepairSecondarySubjectKind,
+        RepairUnitEquation,
+        RepairVerificationCommand,
+    )
+
+
+def __getattr__(name: str) -> object:
+    """Lazily expose #311 contracts without introducing a #309 import cycle."""
+    if name in {
+        "RepairAtomicVerificationResult",
+        "RepairRunEquationCommand",
+        "RepairRunEquationResult",
+        "RepairSecondaryAction",
+        "RepairSecondarySubject",
+        "RepairSecondarySubjectKind",
+        "RepairUnitEquation",
+        "RepairVerificationCommand",
+    }:
+        from src.crm_deal_identity_repair import verification_models
+
+        return getattr(verification_models, name)
+    raise AttributeError(name)

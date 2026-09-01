@@ -14,6 +14,14 @@ MUTATION_ROLLBACK_DIGEST_DOMAIN = b"crm-deal-identity-repair-rollback-v1\x00"
 MUTATION_REPAIRED_STATE_DIGEST_DOMAIN = b"crm-deal-identity-repair-repaired-state-v1\x00"
 MUTATION_RESULT_DIGEST_DOMAIN = b"crm-deal-identity-repair-result-v1\x00"
 MUTATION_OUTBOX_DIGEST_DOMAIN = b"crm-deal-identity-repair-outbox-v1\x00"
+VERIFICATION_REQUEST_DIGEST_DOMAIN = b"crm-deal-identity-repair-verification-request-v1\x00"
+VERIFICATION_RESULT_DIGEST_DOMAIN = b"crm-deal-identity-repair-verification-result-v1\x00"
+VERIFICATION_SUBJECT_DIGEST_DOMAIN = b"crm-deal-identity-repair-verification-subject-v1\x00"
+VERIFICATION_DISPOSITION_DIGEST_DOMAIN = b"crm-deal-identity-repair-verification-disposition-v1\x00"
+VERIFICATION_DERIVED_STATE_DIGEST_DOMAIN = b"crm-deal-identity-repair-verification-state-v1\x00"
+VERIFICATION_NEGATIVE_CONTROL_DIGEST_DOMAIN = b"crm-deal-identity-repair-negative-control-v1\x00"
+VERIFICATION_RUN_EQUATION_DIGEST_DOMAIN = b"crm-deal-identity-repair-run-equation-v1\x00"
+VERIFICATION_OUTBOX_CLAIM_DIGEST_DOMAIN = b"crm-deal-identity-repair-outbox-claim-v1\x00"
 
 INVENTORY_DIGEST_DOMAIN = b"crm-deal-identity-repair-inventory-v1\x00"
 
@@ -92,3 +100,35 @@ def mutation_result_digest(value: dict[str, JsonValue]) -> str:
 def outbox_event_digest(value: dict[str, JsonValue]) -> str:
     """Digest the bounded, non-sensitive pending outbox stub."""
     return object_digest(MUTATION_OUTBOX_DIGEST_DOMAIN, value)
+
+
+def verification_request_digest(value: dict[str, JsonValue]) -> str:
+    return object_digest(VERIFICATION_REQUEST_DIGEST_DOMAIN, value)
+
+
+def verification_result_digest(value: dict[str, JsonValue]) -> str:
+    return object_digest(VERIFICATION_RESULT_DIGEST_DOMAIN, value)
+
+
+def subject_digest(value: dict[str, JsonValue]) -> str:
+    return object_digest(VERIFICATION_SUBJECT_DIGEST_DOMAIN, value)
+
+
+def disposition_digest(value: dict[str, JsonValue]) -> str:
+    return object_digest(VERIFICATION_DISPOSITION_DIGEST_DOMAIN, value)
+
+
+def derived_state_digest(value: dict[str, JsonValue]) -> str:
+    return object_digest(VERIFICATION_DERIVED_STATE_DIGEST_DOMAIN, value)
+
+
+def negative_control_digest(value: dict[str, JsonValue]) -> str:
+    return object_digest(VERIFICATION_NEGATIVE_CONTROL_DIGEST_DOMAIN, value)
+
+
+def run_equation_digest(value: dict[str, JsonValue]) -> str:
+    return object_digest(VERIFICATION_RUN_EQUATION_DIGEST_DOMAIN, value)
+
+
+def outbox_claim_digest(value: dict[str, JsonValue]) -> str:
+    return object_digest(VERIFICATION_OUTBOX_CLAIM_DIGEST_DOMAIN, value)
