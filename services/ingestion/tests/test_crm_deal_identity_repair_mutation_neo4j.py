@@ -38,6 +38,27 @@ from src.graph.crm_deal_identity_repair_mutation_records import canonical_payloa
 from src.graph.queries.crm_deal_identity_repair_ledger import (
     CREATE_CRM_DEAL_REPAIR_LEDGER_SCHEMA,
 )
+from src.models import (
+    EngineType,
+    MatchDecision,
+    MatchResult,
+    RawIdentifier,
+    RecordType,
+    SourceRecordEnvelope,
+    SourceRecordLifecycleStatus,
+)
+from src.pipeline_normalization import (
+    normalize_envelope_addresses,
+    normalize_envelope_attributes,
+    normalize_envelope_identifiers,
+)
+from src.pipeline_writes import persist_source_record
+from src.record_lifecycle import (
+    DuplicateVersion,
+    activate_staged_version,
+    load_locked_source_state,
+    plan_incoming_version,
+)
 
 T = TypeVar("T")
 _DIGEST = "sha256:" + "a" * 64
@@ -155,14 +176,28 @@ def _deal_payload(
     )
 
 
-def _seed_domain(driver: Driver, *, independent_support: bool) -> None:
-    deal = _deal_payload("1", "contact-1")
+def _seed_domain(
+    driver: Driver,
+    *,
+    independent_support: bool,
+    deal_full_name: str | None = None,
+) -> None:
+    deal = _deal_payload("1", "contact-1", full_name=deal_full_name)
     negative = _deal_payload("2", "contact-2")
+    deal_attributes = deal["attributes"]
+    deal_identifiers = deal["identifiers"]
+    assert isinstance(deal_attributes, dict)
+    assert isinstance(deal_identifiers, list)
     params = {
         "source_instance_id": _SOURCE,
         "control_instance_id": _CONTROL,
         "observed_at": _OBSERVED.isoformat(),
         "deal_raw": json.dumps(deal["raw_payload"], sort_keys=True, separators=(",", ":")),
+        "deal_normalized": json.dumps(
+            {"attributes": deal_attributes, "identifiers": deal_identifiers},
+            sort_keys=True,
+            separators=(",", ":"),
+        ),
         "deal_hash": deal["record_hash"],
         "negative_raw": json.dumps(negative["raw_payload"], sort_keys=True, separators=(",", ":")),
         "negative_hash": negative["record_hash"],
@@ -179,7 +214,7 @@ def _seed_domain(driver: Driver, *, independent_support: bool) -> None:
             CREATE (:Entity {entity_key: 'tenant-a'})
             CREATE (person:Person {person_id: 'person-a', status: 'active'})
             CREATE (other:Person {person_id: 'person-negative', status: 'active'})
-            CREATE (deal:SourceRecord {source_record_pk: 'deal-pk', source_record_id: 'bitrix-crm-deal-1', source_record_version: '1', source_version_key: 'deal-v1', source_instance_id: $source_instance_id, entity_key: 'tenant-a', record_type: 'crm_deal', source_entity_type: 'deal', source_entity_id: '1', identity_policy_version: 'crm_deal_identity_v2', lifecycle_status: 'active', is_latest: true, observed_at: datetime($observed_at), record_hash: $deal_hash, raw_payload: $deal_raw, normalized_payload: '{}'})-[:FROM_SOURCE]->(source)
+            CREATE (deal:SourceRecord {source_record_pk: 'deal-pk', source_record_id: 'bitrix-crm-deal-1', source_record_version: '1', source_version_key: 'deal-v1', source_instance_id: $source_instance_id, entity_key: 'tenant-a', record_type: 'crm_deal', source_entity_type: 'deal', source_entity_id: '1', identity_policy_version: 'crm_deal_identity_v2', lifecycle_status: 'active', is_latest: true, observed_at: datetime($observed_at), record_hash: $deal_hash, raw_payload: $deal_raw, normalized_payload: $deal_normalized})-[:FROM_SOURCE]->(source)
             CREATE (deal)-[:LINKED_TO {is_active: true, source_record_pk: 'deal-pk'}]->(person)
             CREATE (contact:Identifier {identifier_type: 'crm_contact_id', identifier_scope: $source_instance_id, source_instance_id: $source_instance_id, normalized_value: 'contact-1'})
             CREATE (person)-[:IDENTIFIED_BY {is_active: true, source_record_pk: 'deal-pk'}]->(contact)
@@ -725,6 +760,54 @@ def test_review_required_replay_rejects_authority_drift(neo4j_driver: Driver) ->
         repository.commit_atomic_mutation(command)
 
 
+@pytest.mark.parametrize("evidence_kind", ["historical", "self_supporting"])
+def test_replay_rejects_unrelated_disqualifying_authority_evidence(
+    neo4j_driver: Driver,
+    evidence_kind: str,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=True)
+    _deactivate_child_contamination(neo4j_driver)
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    repository = _repository(neo4j_driver)
+    committed = repository.commit_atomic_mutation(command)
+    assert committed.mutation is not None and committed.mutation.outcome == "applied"
+    with neo4j_driver.session() as session:
+        if evidence_kind == "historical":
+            session.run(
+                """
+                MATCH (source:SourceSystem {source_key: 'bitrix_chat'}),
+                      (person:Person {person_id: 'person-a'})
+                CREATE (historical:SourceRecord {
+                  source_record_pk: 'unrelated-historical-pk',
+                  source_record_id: 'bitrix-crm-deal-unrelated', source_instance_id: $source,
+                  record_type: 'crm_deal', lifecycle_status: 'active', is_latest: true
+                })-[:FROM_SOURCE]->(source)
+                CREATE (historical)-[:LINKED_TO {is_active: true}]->(person)
+                """,
+                source=_SOURCE,
+            ).consume()
+        else:
+            session.run(
+                """
+                MATCH (replacement:SourceRecord {repair_mutation_id: $mutation_id}),
+                      (source:SourceSystem {source_key: 'bitrix_chat'}),
+                      (person:Person {person_id: 'person-a'})
+                CREATE (child:SourceRecord {
+                  source_record_pk: 'unrelated-self-pk', source_record_id: 'unrelated-history',
+                  source_instance_id: $source, record_type: 'crm_history',
+                  lifecycle_status: 'active', is_latest: true
+                })-[:FROM_SOURCE]->(source)
+                CREATE (child)-[:CHILD_OF]->(replacement)
+                CREATE (child)-[:LINKED_TO {is_active: true}]->(person)
+                """,
+                mutation_id=command.mutation_id,
+                source=_SOURCE,
+            ).consume()
+    with pytest.raises(RepairMutationDriftError, match="authority changed"):
+        repository.commit_atomic_mutation(command)
+
+
 def test_external_reviewed_v2_authority_applies_replays_and_detects_drift(
     neo4j_driver: Driver,
 ) -> None:
@@ -861,7 +944,7 @@ def test_lane_a_lineage_mismatch_forces_review_and_post_commit_drift_is_rejected
 def test_rollback_image_readback_tracks_identifier_preexistence_and_source_schema(
     neo4j_driver: Driver,
 ) -> None:
-    _seed_domain(neo4j_driver, independent_support=True)
+    _seed_domain(neo4j_driver, independent_support=True, deal_full_name="Ada Lovelace")
     _deactivate_child_contamination(neo4j_driver)
     with neo4j_driver.session() as session:
         session.run(
@@ -964,7 +1047,7 @@ def test_rollback_image_readback_tracks_identifier_preexistence_and_source_schem
             CALL {
               WITH new
               MATCH (person)-[link:IDENTIFIED_BY {repair_mutation_id: $mutation_id}]->(identifier)
-              RETURN collect({object_kind: 'IDENTIFIED_BY', direction: 'Person_to_Identifier',
+              RETURN collect({object_kind: 'IDENTIFIED_BY', direction: 'outgoing',
                 left_endpoint: {person_id: person.person_id}, right_endpoint: {
                   identifier_type: identifier.identifier_type, identifier_scope: identifier.identifier_scope,
                   normalized_value: identifier.normalized_value}, properties: properties(link)}) AS links
@@ -985,7 +1068,7 @@ def test_rollback_image_readback_tracks_identifier_preexistence_and_source_schem
             CALL {
               WITH new
               MATCH (person)-[fact:HAS_FACT {repair_mutation_id: $mutation_id}]->(new)
-              RETURN collect({object_kind: 'HAS_FACT', direction: 'Person_to_SourceRecord',
+              RETURN collect({object_kind: 'HAS_FACT', direction: 'outgoing',
                 left_endpoint: {person_id: person.person_id}, right_endpoint: {
                   source_record_pk: new.source_record_pk}, properties: properties(fact)}) AS facts
             }
@@ -1022,6 +1105,32 @@ def test_rollback_image_readback_tracks_identifier_preexistence_and_source_schem
     assert row["link_status"] == "linked"
     assert row["observed_at"].startswith("2026-08-01T12:00:00")
     assert row["owned_by_count"] == 1
+
+
+def test_rollback_image_omits_fact_specification_when_deal_has_no_attributes(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_domain(neo4j_driver, independent_support=True)
+    _deactivate_child_contamination(neo4j_driver)
+    item, _ = _inventory(neo4j_driver)
+    command = _seed_authority(neo4j_driver, item)
+    result = _repository(neo4j_driver).commit_atomic_mutation(command)
+    assert result.rollback_image is not None
+    with neo4j_driver.session() as session:
+        payload_json = session.run(
+            "MATCH (image:CrmDealRepairRollbackImage {rollback_image_id: $rollback_image_id}) "
+            "RETURN image.payload_json AS payload_json",
+            rollback_image_id=result.rollback_image.rollback_image_id,
+        ).single(strict=True)["payload_json"]
+    payload = canonical_payload(payload_json)
+    body = payload["payload"]
+    assert isinstance(body, dict)
+    specifications = body["created_object_specifications"]
+    assert isinstance(specifications, list)
+    assert all(
+        not isinstance(item, dict) or item.get("object_kind") != "HAS_FACT"
+        for item in specifications
+    )
 
 
 def test_review_rollback_image_describes_review_chain_and_provisional_link(
@@ -1161,6 +1270,8 @@ def test_support_authority_writer_blocks_behind_serialized_repair_and_replay_dri
     command = _seed_authority(neo4j_driver, item)
     serialized = Event()
     release_repair = Event()
+    writer_started = Event()
+    lifecycle_locked = Event()
 
     def _pause_after_serialization(stage: MutationFailureStage) -> None:
         if stage == "after_classification":
@@ -1172,10 +1283,13 @@ def test_support_authority_writer_blocks_behind_serialized_repair_and_replay_dri
         repair = pool.submit(repository.commit_atomic_mutation, command)
         assert serialized.wait(timeout=10)
         writer = pool.submit(
-            lambda: _set_support_authority_digest(neo4j_driver, "sha256:" + "d" * 64)
+            _write_new_support_source_version,
+            neo4j_driver,
+            writer_started,
+            lifecycle_locked,
         )
-        time.sleep(0.2)
-        assert not writer.done()
+        assert writer_started.wait(timeout=10)
+        assert not lifecycle_locked.wait(timeout=0.2)
         release_repair.set()
         committed = repair.result(timeout=10)
         writer.result(timeout=10)
@@ -1184,13 +1298,75 @@ def test_support_authority_writer_blocks_behind_serialized_repair_and_replay_dri
         _repository(neo4j_driver).commit_atomic_mutation(command)
 
 
-def _set_support_authority_digest(driver: Driver, digest: str) -> None:
+def _write_new_support_source_version(
+    driver: Driver,
+    started: Event,
+    lifecycle_locked: Event,
+) -> None:
+    """Use the ordinary lifecycle lock/plan/persist/activate path for a support revision."""
     with driver.session() as session:
-        session.run(
-            "MATCH (support:SourceRecord {source_record_pk: 'contact-support-pk'}) "
-            "SET support.standalone_crm_authorization_digest = $digest",
-            digest=digest,
-        ).consume()
+
+        def _write(tx: ManagedTransaction) -> None:
+            started.set()
+            state = load_locked_source_state(
+                tx,
+                "bitrix_chat",
+                "bitrix-crm-contact-contact-1",
+                _SOURCE,
+            )
+            planned = plan_incoming_version(state, "e" * 64)
+            if isinstance(planned, DuplicateVersion):
+                raise AssertionError("support lifecycle writer unexpectedly deduplicated")
+            lifecycle_locked.set()
+            envelope = SourceRecordEnvelope(
+                source_system="bitrix_chat",
+                source_instance_id=_SOURCE,
+                source_record_id="bitrix-crm-contact-contact-1",
+                record_type=RecordType.IDENTITY,
+                observed_at=_OBSERVED.isoformat(),
+                record_hash="e" * 64,
+                identifiers=[
+                    RawIdentifier(
+                        type="crm_contact_id",
+                        value="contact-1",
+                        source_instance_id=_SOURCE,
+                    )
+                ],
+                raw_payload={"ID": "contact-1"},
+                source_entity_type="contact",
+                source_entity_id="contact-1",
+                identity_policy_version="crm_contact_identity_v1",
+                identity_link_key=f"bitrix:{_SOURCE}:contact:contact-1",
+            )
+            envelope.source_record_version = str(planned.version)
+            source_record_pk = persist_source_record(
+                tx,
+                envelope=envelope,
+                identifiers=normalize_envelope_identifiers(envelope),
+                addresses=normalize_envelope_addresses(envelope),
+                attributes=normalize_envelope_attributes(envelope),
+                match_result=MatchResult(
+                    decision=MatchDecision.MERGE,
+                    confidence=1.0,
+                    matched_person_id="person-a",
+                    engine_type=EngineType.DETERMINISTIC,
+                ),
+                is_new_person=False,
+                ingest_run_id=None,
+                lifecycle_status=SourceRecordLifecycleStatus.PENDING_REVIEW,
+                expected_active_source_record_pk=planned.active_source_record_pk,
+                control_instance_id=_CONTROL,
+            )
+            activate_staged_version(
+                tx,
+                source_system="bitrix_chat",
+                source_record_id=envelope.source_record_id,
+                source_instance_id=_SOURCE,
+                old_source_record_pk=planned.active_source_record_pk,
+                new_source_record_pk=source_record_pk,
+            )
+
+        session.execute_write(_write)
 
 
 def test_replay_rejects_tampered_immutable_rollback_bundle(
