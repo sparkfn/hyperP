@@ -17,7 +17,9 @@ def test_worker_concurrency_and_task_routes_are_fixed_in_code() -> None:
         "src.tasks.run_ingestion_task": {"queue": "ingestion"},
         "src.ingestion_orchestration_tasks.*": {"queue": "ingestion"},
         "src.scheduled_ingestion_tasks.*": {"queue": "ingestion"},
+        "src.standalone_crm_schedule_tasks.*": {"queue": "ingestion"},
         "src.standalone_crm_census_tasks.*": {"queue": "ingestion"},
+        "src.crm_tenant_operator_tasks.*": {"queue": "ingestion"},
         "src.stage_history_tasks.*": {"queue": "ingestion"},
         "src.tasks.reconcile_lifecycle_task": {"queue": "lifecycle"},
         "src.tasks.materialize_knows_task": {"queue": "lifecycle"},
@@ -43,3 +45,19 @@ def test_compose_workers_are_exclusive_and_use_code_concurrency() -> None:
     assert "MAX_CONCURRENT_INGESTIONS" not in compose
     assert "stop_grace_period: 5m" in ingestion_worker
     assert "stop_grace_period: 5m" in lifecycle_worker
+
+
+def test_crm_tenant_operator_commands_are_registered_and_routed() -> None:
+    import src.crm_tenant_operator_tasks  # noqa: F401
+
+    expected = {
+        "src.crm_tenant_operator_tasks.prepare",
+        "src.crm_tenant_operator_tasks.project",
+        "src.crm_tenant_operator_tasks.activate",
+        "src.crm_tenant_operator_tasks.rollback",
+        "src.crm_tenant_operator_tasks.status",
+        "src.crm_tenant_operator_tasks.reconcile",
+        "src.crm_tenant_operator_tasks.source_sync",
+    }
+    assert expected <= set(celery_app.tasks)
+    assert celery_app.conf.task_routes["src.crm_tenant_operator_tasks.*"] == {"queue": "ingestion"}

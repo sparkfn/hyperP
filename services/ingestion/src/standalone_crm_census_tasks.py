@@ -8,18 +8,34 @@ from collections.abc import Mapping
 from celery import Task, current_app, shared_task
 
 from src.config import get_settings
+from src.crm_tenant_activation_service import CrmTenantActivationService
+from src.crm_tenant_mapping_contracts import CrmTenantMappingScope
 from src.graph.client import Neo4jClient
 from src.graph.crm_company_membership import CrmCompanyMembershipRepository
+from src.graph.crm_tenant_activation import Neo4jCrmTenantActivationRepository
+from src.graph.crm_tenant_mapping import Neo4jCrmTenantMappingRepository
+from src.graph.crm_tenant_projection_freshness import Neo4jCrmTenantProjectionFreshnessAuthority
 from src.graph.standalone_crm_census import StandaloneCrmCensusRepository
 from src.graph.standalone_crm_source_fact_repository import StandaloneCrmSourceFactRepository
-from src.standalone_crm_census_authority import UnavailableStandaloneCrmCensusAuthority
+from src.standalone_crm_census_authority import ProductionStandaloneCrmCensusAuthority
 from src.standalone_crm_census_control import StandaloneCrmCensusService
 from src.standalone_crm_census_lifecycle import StandaloneCrmCheckpoint
-from src.standalone_crm_census_models import parse_census_request
+from src.standalone_crm_census_models import (
+    MappingPrepareCensusRequest,
+    MappingRollbackCensusRequest,
+    SourceSyncCensusRequest,
+    parse_census_request,
+)
 from src.standalone_crm_child_contracts import ContactSourceChildEnvelope, LeadSourceChildEnvelope
 from src.standalone_crm_company_child import StandaloneCrmCompanySourceHandler
 from src.standalone_crm_contact_child import StandaloneCrmContactSourceHandler
 from src.standalone_crm_lead_child import StandaloneCrmLeadSourceHandler
+from src.standalone_crm_mapping_child import (
+    MAPPING_CHILD_TASK_NAME,
+    activation_command,
+    build_mapping_claim,
+    parse_mapping_publication,
+)
 from src.standalone_crm_source_child_client import (
     StandaloneCrmSourceChildBitrixSession,
     StandaloneCrmSourceChildBitrixSessionFactory,
@@ -43,16 +59,44 @@ _LEASE_HELD_RETRY_COUNTDOWN_SECONDS: int = 45
 _LEASE_HELD_MAX_RETRIES: int = 3
 
 
+def request_scope(
+    request: SourceSyncCensusRequest | MappingPrepareCensusRequest | MappingRollbackCensusRequest,
+) -> CrmTenantMappingScope:
+    return CrmTenantMappingScope(
+        request.source_key, request.source_instance_id, request.control_instance_id
+    )
+
+
 def _service() -> tuple[StandaloneCrmCensusService, Neo4jClient]:
     client = Neo4jClient(get_settings())
+    mapping = Neo4jCrmTenantMappingRepository(client)
     return (
         StandaloneCrmCensusService(
             StandaloneCrmCensusRepository(client),
-            UnavailableStandaloneCrmCensusAuthority(),
+            ProductionStandaloneCrmCensusAuthority(
+                _MappingCensusAuthority(mapping),
+                Neo4jCrmTenantProjectionFreshnessAuthority(client),
+            ),
             publisher=_CeleryStandaloneCrmChildPublisher(),
         ),
         client,
     )
+
+
+class _MappingCensusAuthority:
+    """Adapt the #304 strict reader to the request-shaped production authority."""
+
+    def __init__(self, repository: Neo4jCrmTenantMappingRepository) -> None:
+        self._repository = repository
+
+    def validate_source_sync(self, request: SourceSyncCensusRequest) -> None:
+        self._repository.validate_source_sync(request_scope(request), request.authority)
+
+    def validate_mapping_prepare(self, request: MappingPrepareCensusRequest) -> None:
+        self._repository.validate_mapping_prepare(request_scope(request), request.authority)
+
+    def validate_mapping_rollback(self, request: MappingRollbackCensusRequest) -> None:
+        self._repository.validate_mapping_rollback(request_scope(request), request.authority)
 
 
 def _runtime_state(census_id: str, operation: str) -> str | None:
@@ -76,6 +120,18 @@ def start_standalone_crm_census(raw_request: Mapping[str, object]) -> str:
     service, client = _service()
     try:
         return service.start(request).census_id
+    finally:
+        client.close()
+
+
+@shared_task(name="src.standalone_crm_census_tasks.admit_and_run_standalone_crm_census")
+def admit_and_run_standalone_crm_census(raw_request: Mapping[str, object]) -> str:
+    """Admit an exact request then run its durable parent state machine once."""
+    request = parse_census_request(raw_request)
+    service, client = _service()
+    try:
+        admission = service.start(request)
+        return service.run_parent(admission.census_id).census_id
     finally:
         client.close()
 
@@ -130,7 +186,10 @@ class _CeleryStandaloneCrmChildPublisher:
     """Publish only the exact durable outbox payload and deterministic task identity."""
 
     def has_handler(self, task_name: str) -> bool:
-        return task_name == SOURCE_CHILD_TASK_NAME and task_name in current_app.tasks
+        return (
+            task_name in {SOURCE_CHILD_TASK_NAME, MAPPING_CHILD_TASK_NAME}
+            and task_name in current_app.tasks
+        )
 
     def publish(self, task_name: str, task_id: str, queue: str, payload_json: str) -> None:
         raw = json.loads(payload_json)
@@ -230,6 +289,47 @@ def run_standalone_crm_census_unit(self: Task, raw_payload: Mapping[str, object]
                 max_retries=_LEASE_HELD_MAX_RETRIES,
             )
         return result
+    finally:
+        client.close()
+
+
+@shared_task(name=MAPPING_CHILD_TASK_NAME, bind=True)
+def run_standalone_crm_mapping_activation(self: Task, raw_payload: Mapping[str, object]) -> str:
+    """Activate only a persisted mapping publication; this path imports no Bitrix runtime."""
+    task_id = getattr(getattr(self, "request", None), "id", None)
+    if not isinstance(task_id, str) or not task_id:
+        raise RuntimeError("mapping activation child requires its Celery task identity")
+    payload_json, envelope = parse_mapping_publication(raw_payload)
+    if task_id != envelope.task_id:
+        raise RuntimeError("mapping activation child task identity conflicts with publication")
+    client = Neo4jClient(get_settings())
+    try:
+        census = StandaloneCrmCensusRepository(client)
+        row = census.claim_mapping_publication(
+            envelope, owner_id=task_id, payload_json=payload_json
+        )
+        if row is None:
+            raise RuntimeError("mapping activation publication is no longer claimable")
+        claim = build_mapping_claim(envelope, row)
+        result = CrmTenantActivationService(Neo4jCrmTenantActivationRepository(client)).activate(
+            activation_command(claim)
+        )
+        if not census.settle_mapping_receipt(
+            envelope,
+            owner_id=task_id,
+            fence_token=claim.fence_token,
+            payload_json=payload_json,
+            release_id=result.receipt.release_id,
+            activated_at=result.receipt.activated_at,
+        ):
+            raise RuntimeError(
+                "mapping activation committed; durable census settlement requires reconcile"
+            )
+        return (
+            "mapping_activation_settled"
+            if not result.replayed
+            else "mapping_activation_replay_settled"
+        )
     finally:
         client.close()
 

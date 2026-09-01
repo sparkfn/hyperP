@@ -23,15 +23,19 @@ def parse_census_request(raw: Mapping[str, object]) -> StandaloneCrmCensusReques
     kind = _raw_text(raw, "census_kind")
     if kind not in _CENSUS_KINDS:
         raise ValueError("unsupported census_kind")
-    return _parsed_request(kind, _common_values(raw), _raw_mapping(raw, "authority"))
+    authority = _raw_mapping(raw, "authority")
+    return _parsed_request(
+        kind, _common_values(raw), authority, _external_contract(kind, authority)
+    )
 
 
 def parse_stored_census_request(raw: Mapping[str, object]) -> StandaloneCrmCensusRequest:
     _exact_keys(raw, _stored_request_keys())
-    if _raw_text(raw, "contract") != "standalone-crm-census-v1":
+    contract = _raw_text(raw, "contract")
+    if contract not in {"standalone-crm-census-v1", "standalone-crm-census-v2"}:
         raise ValueError("unsupported stored census contract")
     return _parsed_request(
-        _raw_text(raw, "kind"), _common_values(raw), _raw_mapping(raw, "authority")
+        _raw_text(raw, "kind"), _common_values(raw), _raw_mapping(raw, "authority"), contract
     )
 
 
@@ -49,10 +53,13 @@ class _CommonRequestValues:
 
 
 def _parsed_request(
-    kind: str, values: _CommonRequestValues, authority: Mapping[str, object]
+    kind: str,
+    values: _CommonRequestValues,
+    authority: Mapping[str, object],
+    contract: str = "standalone-crm-census-v2",
 ) -> StandaloneCrmCensusRequest:
     if kind == "source_sync":
-        _exact_keys(authority, _source_authority_keys())
+        _exact_keys(authority, _source_authority_keys(contract))
         return SourceSyncCensusRequest(
             values.source_key,
             values.source_instance_id,
@@ -68,10 +75,14 @@ def _parsed_request(
                 _raw_text(authority, "mapping_head_digest"),
                 _raw_text(authority, "projection_head_id"),
                 _raw_text(authority, "projection_head_digest"),
+                _optional_text(authority, "mapping_active_revision_id"),
+                _optional_int(authority, "mapping_active_revision_number"),
+                _optional_text(authority, "projection_active_release_id"),
+                _optional_int(authority, "projection_active_release_number"),
             ),
         )
     if kind == "mapping_prepare":
-        _exact_keys(authority, _prepare_authority_keys())
+        _exact_keys(authority, _prepare_authority_keys(contract))
         return MappingPrepareCensusRequest(
             values.source_key,
             values.source_instance_id,
@@ -86,10 +97,19 @@ def _parsed_request(
                 _raw_text(authority, "prepared_revision_id"),
                 _raw_text(authority, "prepared_revision_digest"),
                 _raw_text(authority, "expected_current_head_id"),
+                _optional_text(authority, "completed_release_id"),
+                _optional_text(authority, "completed_release_fingerprint"),
+                _optional_text(authority, "expected_mapping_active_revision_id"),
+                _optional_int(authority, "expected_mapping_active_revision_number"),
+                _optional_text(authority, "expected_mapping_active_manifest_digest"),
+                _optional_text(authority, "expected_projection_head_id"),
+                _optional_text(authority, "expected_projection_active_release_id"),
+                _optional_int(authority, "expected_projection_active_release_number"),
+                _optional_text(authority, "expected_projection_active_release_fingerprint"),
             ),
         )
     if kind == "mapping_rollback":
-        _exact_keys(authority, _rollback_authority_keys())
+        _exact_keys(authority, _rollback_authority_keys(contract))
         return MappingRollbackCensusRequest(
             values.source_key,
             values.source_instance_id,
@@ -105,6 +125,16 @@ def _parsed_request(
                 _raw_text(authority, "target_revision_digest"),
                 _raw_text(authority, "expected_current_head_id"),
                 _raw_text(authority, "rollback_head_id"),
+                _optional_text(authority, "rollback_head_digest"),
+                _optional_text(authority, "completed_release_id"),
+                _optional_text(authority, "completed_release_fingerprint"),
+                _optional_text(authority, "expected_mapping_active_revision_id"),
+                _optional_int(authority, "expected_mapping_active_revision_number"),
+                _optional_text(authority, "expected_mapping_active_manifest_digest"),
+                _optional_text(authority, "expected_projection_head_id"),
+                _optional_text(authority, "expected_projection_active_release_id"),
+                _optional_int(authority, "expected_projection_active_release_number"),
+                _optional_text(authority, "expected_projection_active_release_fingerprint"),
             ),
         )
     raise ValueError("unsupported stored census kind")
@@ -143,26 +173,68 @@ def _stored_request_keys() -> set[str]:
     }
 
 
-def _source_authority_keys() -> set[str]:
-    return {
+def _source_authority_keys(contract: str) -> set[str]:
+    keys = {
         "mapping_head_id",
         "mapping_head_digest",
         "projection_head_id",
         "projection_head_digest",
     }
+    if contract == "standalone-crm-census-v2":
+        keys.update(
+            {
+                "mapping_active_revision_id",
+                "mapping_active_revision_number",
+                "projection_active_release_id",
+                "projection_active_release_number",
+            }
+        )
+    return keys
 
 
-def _prepare_authority_keys() -> set[str]:
-    return {"prepared_revision_id", "prepared_revision_digest", "expected_current_head_id"}
+def _prepare_authority_keys(contract: str) -> set[str]:
+    keys = {"prepared_revision_id", "prepared_revision_digest", "expected_current_head_id"}
+    if contract == "standalone-crm-census-v2":
+        keys.update(_activation_authority_keys())
+    return keys
 
 
-def _rollback_authority_keys() -> set[str]:
-    return {
+def _rollback_authority_keys(contract: str) -> set[str]:
+    keys = {
         "target_revision_id",
         "target_revision_digest",
         "expected_current_head_id",
         "rollback_head_id",
     }
+    if contract == "standalone-crm-census-v2":
+        keys.add("rollback_head_digest")
+        keys.update(_activation_authority_keys())
+    return keys
+
+
+def _activation_authority_keys() -> set[str]:
+    return {
+        "completed_release_id",
+        "completed_release_fingerprint",
+        "expected_mapping_active_revision_id",
+        "expected_mapping_active_revision_number",
+        "expected_mapping_active_manifest_digest",
+        "expected_projection_head_id",
+        "expected_projection_active_release_id",
+        "expected_projection_active_release_number",
+        "expected_projection_active_release_fingerprint",
+    }
+
+
+def _external_contract(kind: str, authority: Mapping[str, object]) -> str:
+    expected = (
+        _source_authority_keys("standalone-crm-census-v2")
+        if kind == "source_sync"
+        else _prepare_authority_keys("standalone-crm-census-v2")
+        if kind == "mapping_prepare"
+        else _rollback_authority_keys("standalone-crm-census-v2")
+    )
+    return "standalone-crm-census-v2" if set(authority) == expected else "standalone-crm-census-v1"
 
 
 def _common_values(raw: Mapping[str, object]) -> _CommonRequestValues:
@@ -218,6 +290,18 @@ def _raw_text(raw: Mapping[str, object], key: str) -> str:
     if not isinstance(value, str):
         raise ValueError(f"{key} must be a string")
     return value
+
+
+def _optional_text(raw: Mapping[str, object], key: str) -> str | None:
+    value = raw.get(key)
+    return value if isinstance(value, str) else None
+
+
+def _optional_int(raw: Mapping[str, object], key: str) -> int | None:
+    value = raw.get(key)
+    if value is None:
+        return None
+    return _raw_int(raw, key)
 
 
 def _raw_int(raw: Mapping[str, object], key: str) -> int:

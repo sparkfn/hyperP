@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -18,6 +19,7 @@ from src.standalone_crm_census_models import (
     SourceSyncCensusRequest,
     SourceWindow,
     StandaloneCrmCensusAuthorityError,
+    StandaloneCrmCensusConflictError,
     StandaloneCrmCensusRequest,
     StandaloneCrmCensusUnit,
     StandaloneCrmChildEnvelope,
@@ -26,6 +28,10 @@ from src.standalone_crm_census_models import (
     StandaloneCrmStreamKind,
     StandaloneCrmTerminalState,
 )
+from src.standalone_crm_census_requests import mapping_candidate_identity
+
+SOURCE_CHILD_TASK_NAME = "src.standalone_crm_census_tasks.run_standalone_crm_census_unit"
+MAPPING_CHILD_TASK_NAME = "src.standalone_crm_census_tasks.run_standalone_crm_mapping_activation"
 
 
 class StandaloneCrmCensusProbe(Protocol):
@@ -120,6 +126,20 @@ class StandaloneCrmCensusRuntime:
         snapshot = self._repository.runtime_snapshot(census_id)
         if snapshot is None:
             return StandaloneCrmRuntimeResult(census_id, "missing", 0, "census not found")
+        if not isinstance(snapshot.request, SourceSyncCensusRequest):
+            try:
+                receipt = self._repository.find_mapping_receipt(census_id)
+                if receipt is not None:
+                    receipt_result = self._settle_mapping_receipt(census_id, snapshot, receipt)
+                    if receipt_result is not None:
+                        return receipt_result
+            except (json.JSONDecodeError, StandaloneCrmCensusConflictError, ValueError):
+                return StandaloneCrmRuntimeResult(
+                    census_id,
+                    "paused_with_checkpoint",
+                    snapshot.generation,
+                    "activation receipt conflicts with persisted mapping work",
+                )
         self._require_enabled()
         try:
             self._revalidate(snapshot.request)
@@ -189,6 +209,40 @@ class StandaloneCrmCensusRuntime:
             current.state,
             current.generation,
             f"classified={classified}; {repaired.detail}",
+        )
+
+    def _settle_mapping_receipt(
+        self,
+        census_id: str,
+        snapshot: StandaloneCrmRuntimeSnapshot,
+        receipt: dict[str, object],
+    ) -> StandaloneCrmRuntimeResult | None:
+        from src.standalone_crm_mapping_child import parse_mapping_publication
+
+        payload = receipt.get("payload_json")
+        release_id = receipt.get("release_id")
+        activated_at = receipt.get("activated_at")
+        if not all(isinstance(value, str) for value in (payload, release_id, activated_at)):
+            raise StandaloneCrmCensusConflictError("mapping activation receipt is malformed")
+        assert isinstance(payload, str)
+        assert isinstance(release_id, str)
+        assert isinstance(activated_at, str)
+        decoded = json.loads(payload)
+        if not isinstance(decoded, dict):
+            raise StandaloneCrmCensusConflictError("mapping activation payload is malformed")
+        payload_json, envelope = parse_mapping_publication(decoded)
+        if not self._repository.reconcile_mapping_receipt(
+            envelope,
+            payload_json=payload_json,
+            release_id=release_id,
+            activated_at=activated_at,
+        ):
+            return None
+        return StandaloneCrmRuntimeResult(
+            census_id,
+            "completed",
+            snapshot.generation,
+            "activation receipt settled",
         )
 
     def repair_publications(self, census_id: str) -> StandaloneCrmRuntimeResult:
@@ -390,16 +444,7 @@ class StandaloneCrmCensusRuntime:
         request: MappingPrepareCensusRequest | MappingRollbackCensusRequest,
         generation: int,
     ) -> StandaloneCrmRuntimeResult:
-        revision_id = (
-            request.authority.prepared_revision_id
-            if isinstance(request, MappingPrepareCensusRequest)
-            else request.authority.target_revision_id
-        )
-        revision_digest = (
-            request.authority.prepared_revision_digest
-            if isinstance(request, MappingPrepareCensusRequest)
-            else request.authority.target_revision_digest
-        )
+        revision_id, revision_digest = mapping_candidate_identity(request.authority)
         self._revalidate(request)
         if not self._repository.freeze_no_source_window(
             census_id, generation, NoSourceWindow(revision_id, revision_digest)
@@ -437,7 +482,11 @@ class StandaloneCrmCensusRuntime:
                 census_id, generation, request, "child_handler_unavailable", "publisher unavailable"
             )
         for unit in positive:
-            task_name = "src.standalone_crm_census_tasks.run_standalone_crm_census_unit"
+            task_name = (
+                SOURCE_CHILD_TASK_NAME
+                if isinstance(request, SourceSyncCensusRequest)
+                else MAPPING_CHILD_TASK_NAME
+            )
             if not self._publisher.has_handler(task_name):
                 return self._pause(
                     census_id, generation, request, "handler_missing", "child handler unavailable"
@@ -602,7 +651,8 @@ class StandaloneCrmCensusRuntime:
 
     def _revalidate(self, request: StandaloneCrmCensusRequest) -> None:
         self._authority.verify(request)
-        self._repository.require_active_source(request)
+        if isinstance(request, SourceSyncCensusRequest):
+            self._repository.require_active_source(request)
 
     @staticmethod
     def _authority_revision(request: StandaloneCrmCensusRequest) -> str:
@@ -614,4 +664,4 @@ class StandaloneCrmCensusRuntime:
             )
         if isinstance(request, MappingPrepareCensusRequest):
             return request.authority.prepared_revision_digest
-        return request.authority.target_revision_digest
+        return mapping_candidate_identity(request.authority)[1]
