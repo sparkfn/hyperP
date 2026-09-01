@@ -2,8 +2,14 @@
 
 from __future__ import annotations
 
+import json
+
 import pytest
-from src.crm_deal_identity_repair.digests import object_digest
+from src.crm_deal_identity_repair.digests import (
+    object_digest,
+    repaired_state_digest,
+    rollback_image_digest,
+)
 from src.crm_deal_identity_repair.execution_records import RepairFence, RepairUnit
 from src.crm_deal_identity_repair.models import RepairInventoryItem
 from src.crm_deal_identity_repair.mutation_models import (
@@ -54,6 +60,15 @@ def _command() -> RepairVerificationCommand:
 
 def _bundle(command: RepairVerificationCommand) -> tuple[dict[str, JsonValue], ...]:
     result_digest = "sha256:" + "2" * 64
+    rollback_payload: dict[str, JsonValue] = {
+        "payload": {
+            "contract_version": "crm_deal_identity_repair_mutation_v1",
+            "pre_state": {"relationships": []},
+        },
+        "expected_repaired_state": {"nodes": [], "relationships": []},
+    }
+    image_digest = rollback_image_digest(rollback_payload)
+    expected_repaired_digest = repaired_state_digest({"nodes": [], "relationships": []})
     checkpoint_digest = object_digest(
         b"crm-deal-identity-repair-checkpoint-v1\x00", {"result_digest": result_digest}
     )
@@ -71,12 +86,12 @@ def _bundle(command: RepairVerificationCommand) -> tuple[dict[str, JsonValue], .
         "result_digest": result_digest,
         "rollback_image_id": command.rollback_image_id,
         "new_source_record_pk": "new-pk",
-        "rollback_image_digest": _DIGEST,
+        "rollback_image_digest": image_digest,
         "evidence_digest": _DIGEST,
-        "payload_digest": _DIGEST,
+        "payload_digest": image_digest,
         "outcome": "applied",
         "request_digest": command.mutation_command.request_digest,
-        "repaired_state_digest": _DIGEST,
+        "repaired_state_digest": expected_repaired_digest,
         "checkpoint_id": command.checkpoint_id,
         "outbox_event_id": command.outbox_event_id,
     }
@@ -91,10 +106,11 @@ def _bundle(command: RepairVerificationCommand) -> tuple[dict[str, JsonValue], .
         "fence_token": "token",
         "boundary_digest": _DIGEST,
         "source_fingerprint": _DIGEST,
-        "image_digest": _DIGEST,
-        "expected_repaired_digest": _DIGEST,
+        "image_digest": image_digest,
+        "expected_repaired_digest": expected_repaired_digest,
         "evidence_digest": _DIGEST,
-        "payload_digest": _DIGEST,
+        "payload_digest": image_digest,
+        "payload_json": json.dumps(rollback_payload, sort_keys=True, separators=(",", ":")),
         "state": "available",
     }
     checkpoint: dict[str, JsonValue] = {
@@ -197,5 +213,14 @@ def test_rejects_malformed_property() -> None:
     command = _command()
     rows = [dict(row) for row in _bundle(command)]
     del rows[0]["mutation_id"]
+    with pytest.raises(VerificationBundleError):
+        _decode(command, tuple(rows))
+
+
+@pytest.mark.parametrize("payload_json", ("{}", "not-json"))
+def test_rejects_malformed_or_substituted_rollback_payload(payload_json: str) -> None:
+    command = _command()
+    rows = [dict(row) for row in _bundle(command)]
+    rows[1]["payload_json"] = payload_json
     with pytest.raises(VerificationBundleError):
         _decode(command, tuple(rows))

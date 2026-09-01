@@ -130,29 +130,6 @@ CALL {
       AS active_retired_relationship_count
 }
 CALL {
-  WITH $retirement_requirements AS retirement_requirements, $mutation_id AS mutation_id
-  UNWIND retirement_requirements AS requirement
-  OPTIONAL MATCH (left)-[relationship:LINKED_TO|IDENTIFIED_BY|LIVES_AT|HAS_FACT|DESCRIBES_ADDRESS]->()
-  WHERE type(relationship) = requirement.relationship_type
-    AND (
-      (requirement.relationship_type IN ['LINKED_TO', 'DESCRIBES_ADDRESS']
-       AND left:SourceRecord
-       AND left.source_record_pk = requirement.left_source_record_pk)
-      OR (requirement.relationship_type IN ['IDENTIFIED_BY', 'LIVES_AT', 'HAS_FACT']
-          AND relationship.source_record_pk = requirement.source_record_pk)
-    )
-  WITH requirement, count(relationship) AS current_count,
-    count(CASE WHEN relationship IS NOT NULL
-        AND coalesce(relationship.is_active, true) = false
-        AND coalesce(relationship.retired_by_repair_mutation_id, '') = mutation_id
-      THEN relationship END) AS current_mutation_stamp_count
-  WITH collect(CASE WHEN current_count <> requirement.frozen_count
-        OR current_mutation_stamp_count < requirement.frozen_active_count THEN 1 ELSE 0 END)
-      AS requirement_failures
-  RETURN reduce(failure_count = 0, requirement_failure IN requirement_failures |
-      failure_count + requirement_failure) AS frozen_retirement_requirement_failure_count
-}
-CALL {
   WITH $closure_source_record_pks AS closure_source_record_pks
   MATCH (:Person)-[projection:IDENTIFIED_BY]->(identifier:Identifier)
   WHERE projection.source_record_pk IN closure_source_record_pks
@@ -164,7 +141,7 @@ CALL {
 RETURN new.link_status AS link_status, active_links, active_any_links, provisional_links, all_links,
   active_new_evidence, repair_review_count, repair_decision_count,
   retired_relationship_count,
-  active_retired_relationship_count + frozen_retirement_requirement_failure_count
+  active_retired_relationship_count + $retirement_snapshot_failure_count
     AS retirement_stamp_failure_count,
   forbidden_projection_count
 """
@@ -230,6 +207,7 @@ MATCH (review:ReviewCase {review_case_id: review_case_id})-[:FOR_DECISION]->
 MATCH (decision)-[:ABOUT_LEFT {entity_type: 'person'}]->(left:Person)
 MATCH (decision)-[:ABOUT_RIGHT {entity_type: 'person'}]->(right:Person)
 RETURN review.review_case_id AS review_case_id, review.queue_state AS queue_state,
+  review.resolution AS resolution,
   left.person_id AS left_person_id, right.person_id AS right_person_id,
   decision.confidence AS confidence, decision.reasons AS reasons,
   decision.feature_snapshot AS feature_snapshot, decision.engine_version AS engine_version,
@@ -333,9 +311,9 @@ RETURN run.eligible_unit_count AS eligible_unit_count,
     + size([verification IN verifications WHERE verification.outcome = 'failed']) AS failed_units,
   size([outbox IN outboxes WHERE outbox.state = 'acknowledged'
     AND outbox.verification_result_digest IS NOT NULL]) AS committed_attempts,
-  // Exact acknowledged replay is intentionally read-only, therefore it leaves no durable
-  // replay-attempt ledger event to aggregate. The observable current count is exactly zero.
-  0 AS replay_no_op_attempts,
+  size([outbox IN outboxes WHERE outbox.state = 'acknowledged'
+    AND $replay_request_digest IS NOT NULL
+    AND outbox.verification_request_digest = $replay_request_digest]) AS replay_no_op_attempts,
   coalesce(reduce(total = 0, verification IN verifications |
     total + coalesce(verification.expected_disposition_count, 0)), 0) AS expected_secondary_count,
   size(dispositions) AS observed_secondary_count,
@@ -672,6 +650,7 @@ MATCH (review:ReviewCase {review_case_id: review_case_id})-[:FOR_DECISION]->
 MATCH (decision)-[:ABOUT_LEFT {entity_type: 'person'}]->(left:Person)
 MATCH (decision)-[:ABOUT_RIGHT {entity_type: 'person'}]->(right:Person)
 RETURN review.review_case_id AS review_case_id, review.queue_state AS queue_state,
+  review.resolution AS resolution,
   left.person_id AS left_person_id, right.person_id AS right_person_id,
   decision.confidence AS confidence, decision.reasons AS reasons,
   decision.feature_snapshot AS feature_snapshot, decision.engine_version AS engine_version,
@@ -686,4 +665,48 @@ RETURN review.review_case_id AS review_case_id, review.queue_state AS queue_stat
   review.resolution AS resolution, decision.reasons AS reasons,
   decision.confidence AS confidence, decision.feature_snapshot AS feature_snapshot,
   decision.engine_version AS engine_version, decision.policy_version AS policy_version
+"""
+
+READ_RETIRED_RELATIONSHIP_SNAPSHOTS = """
+WITH $retired_source_record_pks AS retired_source_record_pks
+MATCH (left)-[relationship:LINKED_TO|IDENTIFIED_BY|LIVES_AT|HAS_FACT|DESCRIBES_ADDRESS]->(right)
+WHERE (type(relationship) IN ['LINKED_TO', 'DESCRIBES_ADDRESS']
+       AND left:SourceRecord AND left.source_record_pk IN retired_source_record_pks)
+   OR (type(relationship) IN ['IDENTIFIED_BY', 'LIVES_AT', 'HAS_FACT']
+       AND relationship.source_record_pk IN retired_source_record_pks)
+RETURN type(relationship) AS relationship_type,
+  labels(left) AS left_labels,
+  properties(left) AS left_properties,
+  CASE
+    WHEN left.source_record_pk IS NOT NULL THEN {labels: labels(left), key: 'source_record_pk', value: left.source_record_pk}
+    WHEN left.person_id IS NOT NULL THEN {labels: labels(left), key: 'person_id', value: left.person_id}
+    WHEN left.match_decision_id IS NOT NULL THEN {labels: labels(left), key: 'match_decision_id', value: left.match_decision_id}
+    WHEN left.review_case_id IS NOT NULL THEN {labels: labels(left), key: 'review_case_id', value: left.review_case_id}
+    WHEN left.identifier_key IS NOT NULL THEN {labels: labels(left), key: 'identifier_key', value: left.identifier_key}
+    WHEN left.address_id IS NOT NULL THEN {labels: labels(left), key: 'address_id', value: left.address_id}
+    WHEN left.fact_id IS NOT NULL THEN {labels: labels(left), key: 'fact_id', value: left.fact_id}
+    WHEN left.entity_key IS NOT NULL THEN {labels: labels(left), key: 'entity_key', value: left.entity_key}
+    ELSE null
+  END AS left_identity,
+  labels(right) AS right_labels,
+  properties(right) AS right_properties,
+  CASE
+    WHEN right.source_record_pk IS NOT NULL THEN {labels: labels(right), key: 'source_record_pk', value: right.source_record_pk}
+    WHEN right.person_id IS NOT NULL THEN {labels: labels(right), key: 'person_id', value: right.person_id}
+    WHEN right.match_decision_id IS NOT NULL THEN {labels: labels(right), key: 'match_decision_id', value: right.match_decision_id}
+    WHEN right.review_case_id IS NOT NULL THEN {labels: labels(right), key: 'review_case_id', value: right.review_case_id}
+    WHEN right.identifier_key IS NOT NULL THEN {labels: labels(right), key: 'identifier_key', value: right.identifier_key}
+    WHEN right.address_id IS NOT NULL THEN {labels: labels(right), key: 'address_id', value: right.address_id}
+    WHEN right.fact_id IS NOT NULL THEN {labels: labels(right), key: 'fact_id', value: right.fact_id}
+    WHEN right.entity_key IS NOT NULL THEN {labels: labels(right), key: 'entity_key', value: right.entity_key}
+    ELSE null
+  END AS right_identity,
+  properties(relationship) AS relationship_properties
+ORDER BY relationship_type, elementId(relationship)
+"""
+
+READ_ACTIVE_PERSON_IDS = """
+UNWIND $person_ids AS person_id
+MATCH (person:Person {person_id: person_id, status: 'active'})
+RETURN person.person_id AS person_id ORDER BY person_id
 """

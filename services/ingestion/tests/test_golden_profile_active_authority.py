@@ -125,6 +125,25 @@ def test_invalid_facts_are_excluded_and_changed_profile_writes_once() -> None:
     assert len(tx.writes) == 1
 
 
+def test_full_name_stage_wins_over_higher_ranked_fallback() -> None:
+    fallback = _fact("Preferred", source="source-preferred")
+    fallback.update(
+        {
+            "attribute_name": "preferred_name",
+            "source_trust_tier": "tier_1",
+            "observed_at": "2026-09-02T00:00:00+00:00",
+        }
+    )
+    full_name = _fact("Canonical", source="source-full")
+    full_name.update({"source_trust_tier": "tier_4", "observed_at": "2026-01-01T00:00:00+00:00"})
+    tx = _Transaction(_row(facts=[fallback, full_name]))
+    result = recompute_golden_profile_from_active_authority(
+        tx, "person-a", invalidate_analysis=False
+    )
+    assert result is not None
+    assert result.profile["preferred_full_name"] == "Canonical"
+
+
 def test_custom_and_active_source_backed_fact_identifier_and_address_overrides() -> None:
     overrides = (
         '{"preferred_full_name":{"custom_value":"Custom"},'

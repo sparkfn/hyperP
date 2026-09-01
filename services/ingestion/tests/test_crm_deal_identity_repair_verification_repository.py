@@ -60,10 +60,11 @@ def test_primary_query_separates_retirement_and_forbidden_projection_pk_domains(
     assert "WITH $retired_source_record_pks AS retired_source_record_pks" in (
         queries.READ_PRIMARY_POSTCONDITIONS
     )
-    assert "WITH $retirement_requirements AS retirement_requirements" in (
-        queries.READ_PRIMARY_POSTCONDITIONS
-    )
-    assert "frozen_active_count" in queries.READ_PRIMARY_POSTCONDITIONS
+    assert "$retirement_snapshot_failure_count" in queries.READ_PRIMARY_POSTCONDITIONS
+    assert "READ_RETIRED_RELATIONSHIP_SNAPSHOTS" in queries.__dict__
+    snapshot_query = queries.READ_RETIRED_RELATIONSHIP_SNAPSHOTS
+    assert "properties(left) AS left_properties" in snapshot_query
+    assert "properties(right) AS right_properties" in snapshot_query
     assert "type(relationship) IN ['LINKED_TO', 'DESCRIBES_ADDRESS']" in (
         queries.READ_PRIMARY_POSTCONDITIONS
     )
@@ -83,6 +84,7 @@ def test_acknowledged_replay_rederives_state_without_write_helpers() -> None:
     source = inspect.getsource(replay_acknowledged_verification)
     assert "read_person_states" in source
     assert "read_pair_snapshot" in source
+    assert "validate_replayed_pair_dispositions" in source
     assert "verify_replayed_revision" in source
     assert "recompute_person_crm_deal_counts" not in source
     assert "recompute_golden_profile_from_active_authority" not in source
@@ -95,12 +97,16 @@ def test_cas_loser_can_only_route_to_exact_acknowledged_read_only_replay() -> No
     source = inspect.getsource(CrmDealIdentityRepairVerificationRepository._verify)
     assert "READ_EXACT_OUTBOX_STATE" in source
     assert 'state["state"] == "acknowledged"' in source
+    assert "acknowledged_bundle" in source
+    assert "self._bundle(tx, command)" in source
     assert "replay_acknowledged_verification" in source
 
 
 def test_pair_reconciliation_is_limited_to_authenticated_review_case_ids() -> None:
-    assert "UNWIND $review_case_ids AS review_case_id" in queries.READ_PAIR_AUDIT_CASES
-    assert "$person_ids" not in queries.READ_PAIR_AUDIT_CASES
+    query = queries.READ_REPAIR_PAIR_AUDIT_CASES
+    assert "UNWIND $review_case_ids AS review_case_id" in query
+    assert "$person_ids" not in query
+    assert "review.resolution AS resolution" in query
 
 
 def test_acknowledged_replay_binds_request_and_outbox_immutables() -> None:
