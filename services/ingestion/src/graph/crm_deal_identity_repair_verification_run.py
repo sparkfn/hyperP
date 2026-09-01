@@ -153,7 +153,9 @@ def negative_control_query_items(
                     "negative-control descendant identity is malformed"
                 )
             closure.add(source_record_pk)
-        closure_values: list[JsonValue] = [value for value in sorted(closure)]
+        closure_values: list[JsonValue] = []
+        for source_record_pk in sorted(closure):
+            closure_values.append(source_record_pk)
         values.append(
             {
                 "source_record_pk": item.source_record_pk,
@@ -167,8 +169,11 @@ def canonical_source_record_pks_json(
     inventory: tuple[RepairInventoryItem, ...],
 ) -> str:
     """Use the exact #300 canonical object shape stored on qualified runs."""
+    source_record_pks: list[JsonValue] = []
+    for source_record_pk in sorted(item.source_record_pk for item in inventory):
+        source_record_pks.append(source_record_pk)
     return canonical_json_text(
-        {"source_record_pks": [item.source_record_pk for item in inventory]},
+        {"source_record_pks": source_record_pks},
         "run equation source record identities",
     )
 

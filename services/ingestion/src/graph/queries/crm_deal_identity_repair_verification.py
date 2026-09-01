@@ -49,6 +49,14 @@ SET outbox.verification_claim_owner_id = $owner_id,
 RETURN properties(outbox) AS outbox
 """
 
+READ_EXACT_OUTBOX_STATE = """
+MATCH (outbox:CrmDealRepairOutbox {run_id: $run_id, unit_id: $unit_id, event_id: $event_id,
+  generation: $generation, sequence: $sequence, attempt: $attempt, boundary_digest: $boundary_digest,
+  owner_id: $owner_id, delivery_token: $fence_token, mutation_id: $mutation_id,
+  payload_digest: $outbox_payload_digest, evidence_digest: $outbox_evidence_digest})
+RETURN outbox.state AS state
+"""
+
 READ_ACKNOWLEDGED_VERIFICATION = """
 MATCH (outbox:CrmDealRepairOutbox {run_id: $run_id, unit_id: $unit_id, event_id: $event_id,
   state: 'acknowledged', verification_request_digest: $request_digest})
@@ -148,6 +156,7 @@ CALL (source_record_pks) {
     lifecycle_status: child.lifecycle_status,
     relationship_type: type(link),
     relationship_is_active: coalesce(link.is_active, true),
+    retired_by_repair_mutation_id: link.retired_by_repair_mutation_id,
     owner_person_id: owner.person_id
   } AS evidence
   UNION

@@ -7,6 +7,7 @@ from src.graph.crm_deal_identity_repair_verification_secondary import (
     FrozenContextSubject,
     SecondarySubjectError,
     assert_current_context,
+    expected_post_repair_context,
     frozen_context_subjects,
     frozen_pair_case_ids,
     override_entries,
@@ -64,6 +65,86 @@ def test_context_requires_same_id_evidence_to_remain_exact() -> None:
     )
     with pytest.raises(SecondarySubjectError, match="closure differs"):
         assert_current_context(expected, current)
+
+
+def test_active_descendant_link_is_compared_to_exact_retired_post_state() -> None:
+    frozen = frozen_context_subjects(
+        {
+            "descendants": [
+                {
+                    "source_record_pk": "child-a",
+                    "relationship_type": "LINKED_TO",
+                    "relationship_is_active": True,
+                    "owner_person_id": "person-a",
+                }
+            ]
+        }
+    )
+    expected = expected_post_repair_context(frozen, "mutation-a")
+    assert_current_context(
+        expected,
+        (
+            FrozenContextSubject(
+                "descendant",
+                "child-a",
+                {
+                    "source_record_pk": "child-a",
+                    "relationship_type": "LINKED_TO",
+                    "relationship_is_active": False,
+                    "retired_by_repair_mutation_id": "mutation-a",
+                    "owner_person_id": "person-a",
+                },
+            ),
+        ),
+    )
+    with pytest.raises(SecondarySubjectError, match="closure differs"):
+        assert_current_context(
+            expected,
+            (
+                FrozenContextSubject(
+                    "descendant",
+                    "child-a",
+                    {
+                        "source_record_pk": "child-a",
+                        "relationship_type": "LINKED_TO",
+                        "relationship_is_active": False,
+                        "retired_by_repair_mutation_id": "other-mutation",
+                        "owner_person_id": "person-a",
+                    },
+                ),
+            ),
+        )
+
+
+def test_inactive_descendant_retains_unauthenticated_prior_retirement_stamp() -> None:
+    frozen = frozen_context_subjects(
+        {
+            "descendants": [
+                {
+                    "source_record_pk": "child-a",
+                    "relationship_type": "LINKED_TO",
+                    "relationship_is_active": False,
+                    "owner_person_id": "person-a",
+                }
+            ]
+        }
+    )
+    assert_current_context(
+        expected_post_repair_context(frozen, "mutation-a"),
+        (
+            FrozenContextSubject(
+                "descendant",
+                "child-a",
+                {
+                    "source_record_pk": "child-a",
+                    "relationship_type": "LINKED_TO",
+                    "relationship_is_active": False,
+                    "retired_by_repair_mutation_id": "prior-mutation",
+                    "owner_person_id": "person-a",
+                },
+            ),
+        ),
+    )
 
 
 def test_override_entries_are_per_field_and_source_identity() -> None:

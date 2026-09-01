@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from dataclasses import dataclass
 
+from neo4j.time import DateTime
 from src.golden_profile import recompute_golden_profile_from_active_authority
 from src.graph.queries.persons import (
     FETCH_ACTIVE_PERSON_AUTHORITY_WITH_OVERRIDES,
@@ -231,3 +232,28 @@ def test_legacy_compute_profile_survivorship_output_remains_compatible() -> None
     assert profile["preferred_full_name"] == "Alice"
     assert profile["profile_completeness_score"] == 0.2
     assert len(tx.writes) == 1
+
+
+def test_legacy_compute_profile_accepts_real_neo4j_datetime_evidence() -> None:
+    from src.golden_profile import compute_golden_profile
+
+    class _Neo4jTemporalTransaction(_LegacyTransaction):
+        def run(self, query: str, **params: object) -> _LegacyResult:
+            if query == FETCH_PERSON_FACTS:
+                return _LegacyResult(
+                    [
+                        _Row(
+                            {
+                                "attribute_name": "full_name",
+                                "attribute_value": "Ada",
+                                "quality_flag": "valid",
+                                "source_trust_tier": "tier_1",
+                                "observed_at": DateTime(2020, 1, 1, 0, 0, 0),
+                            }
+                        )
+                    ]
+                )
+            return super().run(query, **params)
+
+    profile = compute_golden_profile(_Neo4jTemporalTransaction(), "person-a")
+    assert profile["preferred_full_name"] == "Ada"

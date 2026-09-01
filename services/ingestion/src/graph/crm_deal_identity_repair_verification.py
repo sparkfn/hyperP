@@ -114,6 +114,11 @@ class CrmDealIdentityRepairVerificationRepository:
             queries.CLAIM_VERIFICATION_OUTBOX, **outbox_parameters(command, outbox)
         ).single()
         if claimed is None:
+            state = tx.run(
+                queries.READ_EXACT_OUTBOX_STATE, **outbox_parameters(command, outbox)
+            ).single()
+            if state is not None and state["state"] == "acknowledged":
+                return replay_acknowledged_verification(tx, command, bundle)
             raise RepairVerificationDriftError("verification outbox CAS rejected")
         self._fail("after_claim")
         primary = self._read_primary(tx, command, bundle)

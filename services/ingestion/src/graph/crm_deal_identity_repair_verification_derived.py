@@ -20,6 +20,7 @@ from src.graph.crm_deal_identity_repair_verification_secondary import (
     FrozenContextSubject,
     SecondarySubjectError,
     assert_current_context,
+    expected_post_repair_context,
     frozen_context_subjects,
     frozen_pair_case_ids,
     override_entries,
@@ -172,7 +173,8 @@ def expected_subject_keys(
 def build_context_details(
     tx: ManagedTransaction, command: RepairVerificationCommand
 ) -> list[RepairSecondaryDispositionDetail]:
-    expected = frozen_context_subjects(command.inventory.payload)
+    frozen = frozen_context_subjects(command.inventory.payload)
+    expected = expected_post_repair_context(frozen, command.mutation_id)
     current_rows = tuple(
         FrozenContextSubject(
             _context_kind(row),

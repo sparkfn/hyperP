@@ -109,8 +109,6 @@ class RepairRunEquationCommand:
             raise ValueError("run equation identity is invalid")
         if keys != tuple(sorted(keys)) or len(keys) != len(set(keys)):
             raise ValueError("run equation inventory must be canonical and unique")
-        if source_record_pks != tuple(sorted(source_record_pks)):
-            raise ValueError("run equation source PKs must be canonical")
         if len(source_record_pks) != len(set(source_record_pks)):
             raise ValueError("run equation source PKs must be unique")
         if inventory_digest(self.inventory) != self.inventory_digest_expected:
