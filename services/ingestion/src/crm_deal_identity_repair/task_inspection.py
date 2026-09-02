@@ -12,7 +12,10 @@ from datetime import UTC, datetime, timedelta
 from typing import Protocol, cast
 
 from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json_bytes
-from src.crm_deal_identity_repair.control_models import CapturedTaskTopologyIdentity
+from src.crm_deal_identity_repair.control_models import (
+    CapturedTaskTopologyIdentity,
+    control_token_digest,
+)
 from src.crm_deal_identity_repair.digests import object_digest
 from src.models import JsonValue
 
@@ -53,7 +56,7 @@ class TaskAbsenceEvidence:
     run_id: str
     boundary_digest: str
     owner_id: str
-    token: str
+    token_digest: str
     dispatch_revision: int
     topology_digest: str
     selectors: tuple[str, ...]
@@ -68,13 +71,16 @@ class TaskAbsenceEvidence:
     payload_digest: str
     hmac_hex: str
 
+    def __post_init__(self) -> None:
+        object.__setattr__(self, "token_digest", control_token_digest(self.token_digest))
+
     def is_fresh_for(
         self,
         *,
         run_id: str,
         boundary_digest: str,
         owner_id: str,
-        token: str,
+        token_digest: str,
         revision: int,
         now: datetime,
     ) -> bool:
@@ -82,9 +88,9 @@ class TaskAbsenceEvidence:
             self.run_id,
             self.boundary_digest,
             self.owner_id,
-            self.token,
+            self.token_digest,
             self.dispatch_revision,
-        ) != (run_id, boundary_digest, owner_id, token, revision):
+        ) != (run_id, boundary_digest, owner_id, token_digest, revision):
             return False
         try:
             return datetime.fromisoformat(self.expires_at) > now
@@ -96,7 +102,7 @@ class TaskAbsenceEvidence:
             "run_id": self.run_id,
             "boundary_digest": self.boundary_digest,
             "owner_id": self.owner_id,
-            "token": self.token,
+            "token_digest": self.token_digest,
             "dispatch_revision": self.dispatch_revision,
             "topology_digest": self.topology_digest,
             "selectors": list(self.selectors),
@@ -125,7 +131,7 @@ def collect_absence_evidence(
     captured_tasks: tuple[CapturedTaskTopologyIdentity, ...],
     boundary_digest: str,
     owner_id: str,
-    token: str,
+    token_digest: str,
     dispatch_revision: int,
     topology_digest: str,
     expected_workers: tuple[str, ...],
@@ -140,6 +146,7 @@ def collect_absence_evidence(
         raise RuntimeError("repair expected worker IDs must be a non-empty canonical set")
     if timeout_seconds < 1 or timeout_seconds > 60 or max_age_seconds < 1 or max_age_seconds > 300:
         raise ValueError("repair task inspection bounds are invalid")
+    token_digest = control_token_digest(token_digest)
     instant = now or datetime.now(UTC)
     selectors = _selectors(captured_tasks)
     observations = _canonical_observations(worker.inspect(timeout_seconds))
@@ -159,7 +166,7 @@ def collect_absence_evidence(
         "run_id": run_id,
         "boundary_digest": boundary_digest,
         "owner_id": owner_id,
-        "token": token,
+        "token_digest": token_digest,
         "dispatch_revision": dispatch_revision,
         "topology_digest": topology_digest,
         "selectors": list(selectors),
@@ -180,7 +187,7 @@ def collect_absence_evidence(
         run_id,
         boundary_digest,
         owner_id,
-        token,
+        token_digest,
         dispatch_revision,
         topology_digest,
         selectors,
@@ -210,18 +217,28 @@ def verify_absence_evidence(evidence: TaskAbsenceEvidence, *, secret: bytes, now
         return False
     if not evidence.expected_workers or evidence.responding_workers != evidence.expected_workers:
         return False
+    try:
+        canonical_topology = _canonical_broker_topology(evidence.broker_topology)
+        canonical_observations = _canonical_broker_observations(evidence.broker_observations)
+    except RuntimeError:
+        return False
+    if (
+        evidence.broker_topology != canonical_topology
+        or evidence.broker_observations != canonical_observations
+    ):
+        return False
     if not evidence.is_fresh_for(
         run_id=evidence.run_id,
         boundary_digest=evidence.boundary_digest,
         owner_id=evidence.owner_id,
-        token=evidence.token,
+        token_digest=evidence.token_digest,
         revision=evidence.dispatch_revision,
         now=now,
     ):
         return False
     captured_tasks = _captured_tasks_from_selectors(evidence.selectors)
     return not _has_affected_task(evidence.observations, captured_tasks) and not _has_affected_task(
-        evidence.broker_observations, captured_tasks
+        canonical_observations, captured_tasks
     )
 
 
@@ -257,7 +274,7 @@ class RedisCeleryBrokerInspector:
     def __init__(self, broker_url: str) -> None:
         self._broker_url = broker_url
 
-    def inspect(self, selectors: tuple[str, ...]) -> Mapping[str, tuple[dict[str, JsonValue], ...]]:
+    def inspect(self, selectors: tuple[str, ...]) -> BrokerInspection:
         if not self._broker_url.startswith("redis://"):
             raise RuntimeError("unsupported broker topology for repair absence inspection")
         import redis
@@ -356,7 +373,7 @@ def _canonical_broker_topology(raw: Mapping[str, JsonValue]) -> dict[str, JsonVa
     keys = raw["ready_priority_keys"]
     if not isinstance(keys, list) or not all(isinstance(key, str) for key in keys):
         raise RuntimeError("broker priority topology is malformed")
-    canonical_keys = list(_redis_priority_queue_names("ingestion"))
+    canonical_keys: list[JsonValue] = list(_redis_priority_queue_names("ingestion"))
     if (
         keys != canonical_keys
         or raw["unacked_hash"] != "unacked"

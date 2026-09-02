@@ -94,7 +94,7 @@ class RepairQuiescenceService:
             captured_tasks=captured_tasks,
             boundary_digest=boundary_digest,
             owner_id=request.owner_id,
-            token=request.token,
+            token_digest=request.token_digest,
             dispatch_revision=lease.revision,
             topology_digest=topology_digest,
             expected_workers=expected_workers,
@@ -106,7 +106,11 @@ class RepairQuiescenceService:
         if not verify_absence_evidence(evidence, secret=proof_secret, now=datetime.now(UTC)):
             raise RuntimeError("repair task absence evidence is not authentic and fresh")
         final_request = RepairControlRequest(
-            request.repair_id, request.run_id, request.owner_id, request.token, lease.revision
+            request.repair_id,
+            request.run_id,
+            request.owner_id,
+            request.token_digest,
+            lease.revision,
         )
         final = self._repository.complete_quiescence(
             final_request,
