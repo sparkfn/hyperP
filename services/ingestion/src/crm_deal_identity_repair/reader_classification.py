@@ -30,7 +30,10 @@ _OWNERSHIP_BOUNDARY_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"\b(?:WITH|RETURN|UNWIND)\b|\bCALL\s*(?:\{|\([^)]*\)\s*\{)",
     re.IGNORECASE,
 )
-_CREATE_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\bCREATE\b", re.IGNORECASE)
+_CLAUSE_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:OPTIONAL\s+MATCH|MATCH|MERGE|CREATE|WITH|RETURN|UNWIND|CALL|SET|DELETE|REMOVE|FOREACH)\b",
+    re.IGNORECASE,
+)
 _RELATIONSHIP_BINDING_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"\[\s*(?:(?P<name>[A-Za-z_]\w*)\s*)?:\s*(?:" + _RELATIONSHIP_TYPES + r")\b"
 )
@@ -423,15 +426,17 @@ def _relationship_read_bindings(query: str) -> tuple[re.Match[str], ...]:
 def _is_write_only_relationship(query: str, position: int) -> bool:
     """Return whether a pattern is a proven write-only ``CREATE`` target.
 
-    ``MERGE`` is read-modify-write and must be classified. A CREATE owns only
-    patterns before its next scope boundary; a following ``WITH``, ``RETURN``,
-    ``CALL``, ``UNWIND``, or subquery delimiter resumes reader discovery.
+    ``MERGE`` is read-modify-write and must be classified. Only a relationship
+    whose immediate governing Cypher clause is ``CREATE`` is write-only; an
+    earlier node CREATE cannot hide a later relationship MERGE.
     """
     boundary = _last_scope_boundary(query, position)
-    return any(
-        not re.search(r"\bON\s*$", query[boundary : create.start()], re.IGNORECASE)
-        for create in _CREATE_TOKEN_PATTERN.finditer(query, boundary, position)
+    clauses = tuple(
+        clause
+        for clause in _CLAUSE_PATTERN.finditer(query, boundary, position)
+        if clause.group().isupper()
     )
+    return bool(clauses) and clauses[-1].group() == "CREATE"
 
 
 def _generic_repairable_relationship_read(query: str) -> bool:

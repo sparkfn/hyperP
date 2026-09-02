@@ -969,6 +969,10 @@ def test_review_activation_scopes_knows_declarer_to_payload_source_system() -> N
 
 def test_review_activation_replaces_sourced_projection_lifecycles_atomically() -> None:
     query = ACTIVATE_PENDING_REVIEW_RECORD
+    assert (
+        "MERGE (old)-[:PREVIOUS_VERSION_OF]->(pending)\n)\n"
+        "WITH pending, approved, source, old_versions\nCALL" in query
+    )
     assert "old_direct_link.is_active, true) = true" in query
     assert "retired_by_review_case_id" in query
     assert "MERGE (pending)-[pending_link:LINKED_TO {is_active: true}]->(approved)" in query

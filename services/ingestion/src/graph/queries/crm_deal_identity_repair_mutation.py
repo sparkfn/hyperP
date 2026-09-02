@@ -679,8 +679,11 @@ ON CREATE SET link.is_verified = identifier_row.is_verified,
   link.verification_method = null, link.is_active = true,
   link.quality_flag = identifier_row.quality_flag,
   link.first_seen_at = datetime(), link.last_seen_at = datetime(),
-  link.last_confirmed_at = datetime(), link.repair_mutation_id = $mutation_id
-ON MATCH SET link.is_active = true, link.last_seen_at = datetime(),
+  link.last_confirmed_at = datetime(), link.activated_at = datetime(),
+  link.retired_at = null, link.repair_mutation_id = $mutation_id
+ON MATCH SET link.is_active = true,
+  link.activated_at = coalesce(link.activated_at, datetime()),
+  link.retired_at = null, link.last_seen_at = datetime(),
   link.last_confirmed_at = datetime()
 RETURN count(link) AS identifier_count
 """
