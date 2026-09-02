@@ -16,6 +16,7 @@ from uuid import uuid4
 import pytest
 from neo4j import Driver, GraphDatabase
 from src.graph.queries.crm import GET_PERSON_CRM_METRICS
+from src.graph.queries.persons import COUNT_PERSON_TIMELINE, GET_PERSON_TIMELINE
 from src.graph.queries.review import ACTIVATE_PENDING_REVIEW_RECORD
 
 
@@ -229,6 +230,18 @@ def test_review_activation_returns_link_only_owner_of_superseded_crm_deal(
             CREATE (approved:Person {
               person_id: 'approved', status: 'active', _crm_metrics_test_run: $test_run_id
             })
+            CREATE (pending_prior_owner:Person {
+              person_id: 'pending-prior-owner', status: 'active',
+              _crm_metrics_test_run: $test_run_id
+            })
+            CREATE (call_prior_owner:Person {
+              person_id: 'call-prior-owner', status: 'active',
+              _crm_metrics_test_run: $test_run_id
+            })
+            CREATE (already_retired_owner:Person {
+              person_id: 'already-retired-owner', status: 'active',
+              _crm_metrics_test_run: $test_run_id
+            })
             CREATE (old:SourceRecord {
               source_record_pk: 'old-deal', source_instance_id: 'bitrix-primary',
               source_record_id: 'deal-1',
@@ -249,6 +262,21 @@ def test_review_activation_returns_link_only_owner_of_superseded_crm_deal(
               _crm_metrics_test_run: $test_run_id
             })-[:FROM_SOURCE]->(source)
             CREATE (old)-[:LINKED_TO]->(old_owner)
+            CREATE (old)-[:LINKED_TO {
+              is_active: false, retired_at: datetime('2026-08-01T00:00:00Z'),
+              retired_by_review_case_id: 'already-retired'
+            }]->(already_retired_owner)
+            CREATE (pending)-[:LINKED_TO {is_active: true}]->(pending_prior_owner)
+            CREATE (history:SourceRecord {
+              source_record_pk: 'pending-history', record_type: 'crm_history',
+              history_family: 'activity', _crm_metrics_test_run: $test_run_id
+            })-[:CHILD_OF]->(pending)
+            CREATE (call:SourceRecord {
+              source_record_pk: 'pending-call', record_type: 'call',
+              lifecycle_status: 'pending_review', is_latest: false,
+              _crm_metrics_test_run: $test_run_id
+            })-[:CHILD_OF]->(history)
+            CREATE (call)-[:LINKED_TO {is_active: true}]->(call_prior_owner)
             CREATE (decision:MatchDecision {
               match_decision_id: 'decision-1', _crm_metrics_test_run: $test_run_id
             })
@@ -294,6 +322,111 @@ def test_review_activation_returns_link_only_owner_of_superseded_crm_deal(
             """
         ).single(strict=True)
 
-    assert set(row["affected_person_ids"]) == {"approved", "old-owner"}
+        retired_links = {
+            row["person_id"]: {
+                "is_active": row["is_active"],
+                "retired": row["retired"],
+                "retired_by_review_case_id": row["retired_by_review_case_id"],
+            }
+            for row in session.run(
+                """
+                MATCH (:SourceRecord {source_record_pk: 'old-deal'})-[link:LINKED_TO]->
+                      (owner:Person)
+                RETURN owner.person_id AS person_id, link.is_active AS is_active,
+                       link.retired_at IS NOT NULL AS retired,
+                       link.retired_by_review_case_id AS retired_by_review_case_id
+                """
+            )
+        }
+        retired_pending_and_call_links = {
+            row["source_record_pk"]: {
+                "is_active": row["is_active"],
+                "retired": row["retired"],
+                "retired_by_review_case_id": row["retired_by_review_case_id"],
+            }
+            for row in session.run(
+                """
+                MATCH (record:SourceRecord)-[link:LINKED_TO]->(:Person)
+                WHERE record.source_record_pk IN ['pending-deal', 'pending-call']
+                  AND link.is_active = false
+                RETURN record.source_record_pk AS source_record_pk, link.is_active AS is_active,
+                       link.retired_at IS NOT NULL AS retired,
+                       link.retired_by_review_case_id AS retired_by_review_case_id
+                """
+            )
+        }
+        old_timeline_count = session.run(COUNT_PERSON_TIMELINE, person_id="old-owner").single(
+            strict=True
+        )["total"]
+        approved_timeline = list(
+            session.run(GET_PERSON_TIMELINE, person_id="approved", skip=0, limit=10)
+        )
+        audit_link_count = session.run(
+            """
+            MATCH (:SourceRecord {source_record_pk: 'old-deal'})-[link:LINKED_TO]->
+                  (:Person {person_id: 'old-owner'})
+            RETURN count(link) AS total
+            """
+        ).single(strict=True)["total"]
+        second = session.run(
+            ACTIVATE_PENDING_REVIEW_RECORD,
+            review_case_id="review-1",
+            pending_source_record_pk="pending-deal",
+            source_system_key="bitrix_chat",
+            expected_active_source_record_pk="old-deal",
+            approved_person_id="approved",
+            observed_at="2026-08-21T00:00:00Z",
+            identifiers=[],
+            addresses=[],
+            attributes=[],
+            bankruptcy_cases=[],
+            vehicle_mentions=[],
+            knows_relationships=[],
+        ).single()
+        link_counts = session.run(
+            """
+            MATCH (record:SourceRecord)-[link:LINKED_TO]->(:Person)
+            WHERE record.source_record_pk IN ['old-deal', 'pending-deal', 'pending-call']
+            RETURN count(link) AS total, count(CASE WHEN link.is_active THEN 1 END) AS active_total
+            """
+        ).single(strict=True)
+
+    assert set(row["affected_person_ids"]) == {
+        "approved",
+        "already-retired-owner",
+        "old-owner",
+        "pending-prior-owner",
+    }
     assert row["old_source_record_pks"] == ["old-deal"]
     assert foreign == {"lifecycle_status": "active", "is_latest": True}
+    assert retired_links == {
+        "old-owner": {
+            "is_active": False,
+            "retired": True,
+            "retired_by_review_case_id": "review-1",
+        },
+        "already-retired-owner": {
+            "is_active": False,
+            "retired": True,
+            "retired_by_review_case_id": "already-retired",
+        },
+    }
+    assert retired_pending_and_call_links == {
+        "pending-deal": {
+            "is_active": False,
+            "retired": True,
+            "retired_by_review_case_id": "review-1",
+        },
+        "pending-call": {
+            "is_active": False,
+            "retired": True,
+            "retired_by_review_case_id": "review-1",
+        },
+    }
+    assert old_timeline_count == 0
+    assert all(
+        item["source_record"]["source_record_pk"] != "old-deal" for item in approved_timeline
+    )
+    assert audit_link_count == 2
+    assert second is None
+    assert link_counts == {"total": 6, "active_total": 2}

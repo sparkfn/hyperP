@@ -673,7 +673,7 @@ MERGE (identifier:Identifier {
 ON CREATE SET identifier.source_instance_id = identifier_row.source_instance_id,
   identifier.created_at = datetime(), identifier.repair_mutation_id = $mutation_id
 MERGE (person)-[link:IDENTIFIED_BY {
-  source_system_key: 'bitrix_chat', source_record_pk: $source_record_pk
+  source_system_key: 'bitrix_chat', source_record_pk: $source_record_pk, is_active: true
 }]->(identifier)
 ON CREATE SET link.is_verified = identifier_row.is_verified,
   link.verification_method = null, link.is_active = true,

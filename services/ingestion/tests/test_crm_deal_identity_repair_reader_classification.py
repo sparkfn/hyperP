@@ -106,6 +106,10 @@ def test_new_authority_readers_remain_active_filtered() -> None:
             "authoritative_mutation",
         ),
         (
+            "ingestion/graph/queries/crm_deal_identity_repair_mutation.py:STAGE_REPAIR_IDENTIFIERS",
+            "authoritative_mutation",
+        ),
+        (
             "ingestion/graph/queries/crm_history.py:ACTIVATE_PENDING_CALLS_FOR_DEAL",
             "authoritative_mutation",
         ),
@@ -114,13 +118,16 @@ def test_new_authority_readers_remain_active_filtered() -> None:
         assert reader.classification == classification
         assert _has_active_predicate(reader)
         if classification == "authoritative_mutation":
+            inactive_query = reader.query.replace(
+                "coalesce(deal_link.is_active, true) = true", "true"
+            ).replace("coalesce(link.is_active, true) = true", "true")
+            if identifier.endswith(":STAGE_REPAIR_IDENTIFIERS"):
+                inactive_query = inactive_query.replace("is_active: true", "is_active: false")
             inactive = RelationshipReader(
                 reader.module,
                 reader.symbol,
                 reader.classification,
-                reader.query.replace("coalesce(deal_link.is_active, true) = true", "true").replace(
-                    "coalesce(link.is_active, true) = true", "true"
-                ),
+                inactive_query,
             )
             assert not _has_active_predicate(inactive)
 
@@ -180,6 +187,38 @@ def test_clause_boundaries_discover_pattern_expressions_after_create(
         assert_reader_contract(module)
 
 
+def test_on_create_set_does_not_hide_a_later_relationship_merge(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A node's ``ON CREATE`` action cannot make a later relationship MERGE write-only."""
+    module = tmp_path / "services" / "api" / "src" / "graph" / "queries" / "activation.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(
+        'ACTIVATE = """\n'
+        "MATCH (approved:Person {person_id: $person_id})\n"
+        "MERGE (identifier:Identifier {normalized_value: $value})\n"
+        "ON CREATE SET identifier.identifier_id = randomUUID()\n"
+        "MERGE (approved)-[rel:IDENTIFIED_BY]->(identifier)\n"
+        "RETURN approved\n"
+        '"""\n',
+        encoding="utf-8",
+    )
+    identifier = "api/graph/queries/activation.py:ACTIVATE"
+    monkeypatch.setattr(reader_classification, "_AUDIT_READERS", frozenset())
+    monkeypatch.setattr(reader_classification, "_MUTATION_READERS", frozenset())
+    monkeypatch.setattr(reader_classification, "_AUTHORITATIVE_READERS", frozenset())
+    monkeypatch.setattr(
+        reader_classification, "_AUTHORITATIVE_MUTATION_READERS", frozenset({identifier})
+    )
+
+    readers = discover_relationship_readers(module)
+    assert [reader.identifier for reader in readers] == [identifier]
+    with pytest.raises(
+        RuntimeError, match="authoritative relationship reader lacks active predicate"
+    ):
+        assert_reader_contract(module)
+
+
 def test_repeated_binding_name_requires_a_predicate_in_each_scope() -> None:
     reader = RelationshipReader(
         "ingestion/graph/queries/example.py",
@@ -203,6 +242,7 @@ def test_all_repairable_merge_materializers_are_authoritative_and_active() -> No
     expected = {
         "api/graph/queries/review.py:LINK_REVIEW_SALES_BOUGHT_VEHICLE",
         "api/graph/queries/review.py:LINK_REVIEW_SALES_PURCHASED_ORDER",
+        "ingestion/graph/queries/crm_deal_identity_repair_mutation.py:STAGE_REPAIR_IDENTIFIERS",
         "ingestion/graph/queries/crm_history.py:LINK_CONVERSATION_TO_CRM_HISTORY",
         "ingestion/graph/queries/crm_history.py:LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS",
         "ingestion/graph/queries/knows.py:LINK_PERSON_KNOWS",

@@ -2389,6 +2389,53 @@ def test_310_exact_allocation_replay_rejects_tampered_immutable_receipt(
         )
 
 
+def test_310_exact_allocation_replay_rejects_correlated_public_receipt_corruption(
+    neo4j_driver: Driver,
+) -> None:
+    """A recomputed public receipt cannot detach completion evidence from its caller boundary."""
+    _, control, run = _qualified_control_repository(
+        neo4j_driver, repair_id="repair-310-correlated-receipt"
+    )
+    _seed_quiesced_allocation_control(neo4j_driver, run)
+    request = RepairControlRequest("repair-310-correlated-receipt", run.run_id, "owner", "token", 1)
+    plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 1)
+    control.allocate(
+        request,
+        boundary_digest=run.boundary_digest,
+        proof_digest="proof",
+        plan=plan,
+    )
+    tampered_boundary = "coherently-tampered-boundary"
+    tampered_receipt_digest = control_repository_module._allocation_receipt_digest(
+        control_instance_id=run.control_instance_id,
+        run_id=run.run_id,
+        owner_id="owner",
+        token_digest="token",
+        revision=2,
+        boundary_digest=tampered_boundary,
+        sealed_boundary_digest=run.boundary_digest,
+    )
+    with neo4j_driver.session() as session:
+        session.run(
+            """
+            MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
+            SET completion.boundary_digest = $boundary_digest,
+                completion.receipt_boundary_digest = $boundary_digest,
+                completion.receipt_digest = $receipt_digest
+            """,
+            run_id=run.run_id,
+            boundary_digest=tampered_boundary,
+            receipt_digest=tampered_receipt_digest,
+        ).consume()
+    with pytest.raises(RuntimeError):
+        control.allocate(
+            request,
+            boundary_digest=run.boundary_digest,
+            proof_digest="proof",
+            plan=plan,
+        )
+
+
 @pytest.mark.parametrize(
     ("mutation_query", "mutation_params"),
     (
