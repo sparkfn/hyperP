@@ -8,6 +8,8 @@ import pytest
 from src.crm_deal_identity_repair.reader_classification import (
     _AUDIT_READERS,
     _AUTHORITATIVE_READERS,
+    _MUTATION_READERS,
+    RelationshipReader,
     _has_active_predicate,
     approved_reader_sources,
     assert_reader_contract,
@@ -21,8 +23,12 @@ def test_all_executable_relationship_readers_are_explicitly_classified() -> None
     readers = assert_reader_contract(*approved_reader_sources(_REPO_ROOT))
 
     assert readers
-    assert {reader.identifier for reader in readers} == _AUDIT_READERS | _AUTHORITATIVE_READERS
-    assert all(reader.classification in {"authoritative", "audit"} for reader in readers)
+    assert {reader.identifier for reader in readers} == (
+        _AUDIT_READERS | _AUTHORITATIVE_READERS | _MUTATION_READERS
+    )
+    assert all(
+        reader.classification in {"authoritative", "audit", "mutation"} for reader in readers
+    )
 
 
 def test_authoritative_readers_exclude_inactive_relationships() -> None:
@@ -77,6 +83,20 @@ def test_new_authority_readers_remain_active_filtered() -> None:
         reader = readers[identifier]
         assert reader.classification == "authoritative"
         assert _has_active_predicate(reader)
+
+
+def test_active_predicate_must_cover_each_relationship_binding() -> None:
+    reader = RelationshipReader(
+        "ingestion/graph/queries/example.py",
+        "MULTI_LINK_READ",
+        "authoritative",
+        """MATCH (source:SourceRecord)-[link:LINKED_TO]->(:Person)
+        MATCH (:Person)-[other:KNOWS]->(:Person)
+        WHERE _LINK_ACTIVE
+        RETURN source""",
+    )
+
+    assert not _has_active_predicate(reader)
 
 
 def test_unclassified_reader_fails_closed(tmp_path: Path) -> None:

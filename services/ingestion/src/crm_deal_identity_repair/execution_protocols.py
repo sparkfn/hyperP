@@ -5,7 +5,7 @@ from __future__ import annotations
 from typing import Protocol
 
 from src.crm_deal_identity_repair.control_models import (
-    RepairControlRequest,
+    RepairControlCommand,
     RepairControlStatus,
     RepairDispatchLease,
 )
@@ -98,12 +98,12 @@ class RepairControlRepository(Protocol):
     """#310 metadata-only CAS control; it never releases dispatch or executes CRM work."""
 
     def claim(
-        self, request: RepairControlRequest, *, boundary_digest: str, control_instance_id: str
+        self, request: RepairControlCommand, *, boundary_digest: str, control_instance_id: str
     ) -> RepairDispatchLease: ...
 
-    def pause(self, request: RepairControlRequest) -> RepairDispatchLease: ...
+    def pause(self, request: RepairControlCommand) -> RepairDispatchLease: ...
 
-    def resume(self, request: RepairControlRequest) -> RepairDispatchLease: ...
+    def resume(self, request: RepairControlCommand) -> RepairDispatchLease: ...
 
     def status(self, repair_id: str) -> RepairControlStatus: ...
 

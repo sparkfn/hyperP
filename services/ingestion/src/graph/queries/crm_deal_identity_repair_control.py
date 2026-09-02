@@ -9,6 +9,22 @@ CREATE_CRM_DEAL_REPAIR_CONTROL_SCHEMA: tuple[str, ...] = (
     "CREATE INDEX crm_deal_repair_control_state IF NOT EXISTS FOR (n:CrmDealRepairControl) ON (n.state, n.control_instance_id, n.revision)",
 )
 
+READ_COMPLETED_CLAIM_REPLAY = """
+MATCH (run:CrmDealRepairRun {repair_id: $repair_id, run_id: $run_id, status: 'qualified',
+  boundary_digest: $boundary_digest, control_instance_id: $control_instance_id, execution_allowed: false})
+MATCH (control:CrmDealRepairControl {run_id: $run_id, repair_id: $repair_id,
+  control_instance_id: $control_instance_id, owner_id: $owner_id, token_digest: $token_digest,
+  boundary_digest: $boundary_digest, claim_expected_revision: $expected_revision})
+MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', control_instance_id: $control_instance_id,
+  blocked: true, repair_run_id: $run_id, repair_owner_id: $owner_id, repair_token_digest: $token_digest,
+  repair_revision: control.revision})
+WHERE control.state IN ['quiesced', 'allocated']
+RETURN control.control_instance_id AS control_instance_id, control.run_id AS run_id,
+       control.owner_id AS owner_id, control.token_digest AS token_digest, control.revision AS revision,
+       control.state AS state, control.boundary_digest AS boundary_digest
+"""
+
+
 CLAIM_REPAIR_DISPATCH = """
 MATCH (run:CrmDealRepairRun {repair_id: $repair_id, run_id: $run_id, status: 'qualified',
   boundary_digest: $boundary_digest, control_instance_id: $control_instance_id, execution_allowed: false})
@@ -26,7 +42,7 @@ WHERE unsettled = 0
       AND coalesce(dispatch.repair_revision, 0) = $expected_revision)
     OR
     (existing IS NOT NULL AND existing.owner_id = $owner_id AND existing.token_digest = $token_digest
-      AND existing.state IN ['quiescing', 'quiesced', 'allocated', 'paused']
+      AND existing.state = 'quiescing'
       AND dispatch.repair_run_id = $run_id AND dispatch.repair_owner_id = $owner_id
       AND dispatch.repair_token_digest = $token_digest
       AND (
@@ -38,7 +54,8 @@ WHERE unsettled = 0
 MERGE (control:CrmDealRepairControl {run_id: $run_id})
 ON CREATE SET control.repair_id = $repair_id, control.control_instance_id = $control_instance_id,
   control.owner_id = $owner_id, control.token_digest = $token_digest, control.boundary_digest = $boundary_digest,
-  control.state = 'quiescing', control.revision = $expected_revision + 1, control.created_at = datetime()
+  control.state = 'quiescing', control.revision = $expected_revision + 1,
+  control.claim_expected_revision = $expected_revision, control.created_at = datetime()
 WITH dispatch, control, existing
 WHERE control.repair_id = $repair_id AND control.control_instance_id = $control_instance_id
   AND control.owner_id = $owner_id AND control.token_digest = $token_digest AND control.boundary_digest = $boundary_digest
@@ -47,7 +64,8 @@ SET control.revision = CASE
   WHEN existing.revision = $expected_revision THEN control.revision + 1
   ELSE control.revision
 END,
-    control.state = CASE WHEN control.state = 'paused' THEN 'paused' ELSE 'quiescing' END,
+    control.state = CASE WHEN existing.state IN ['quiesced', 'allocated'] THEN existing.state
+      ELSE 'quiescing' END,
     control.updated_at = datetime(),
     dispatch.blocked = true, dispatch.block_reason = 'crm_deal_identity_repair_quiesce',
     dispatch.repair_run_id = $run_id, dispatch.repair_owner_id = $owner_id, dispatch.repair_token_digest = $token_digest,
@@ -56,6 +74,35 @@ RETURN control.control_instance_id AS control_instance_id, control.run_id AS run
        control.owner_id AS owner_id, control.token_digest AS token_digest, control.revision AS revision,
        control.state AS state, control.boundary_digest AS boundary_digest
 """
+
+LOCK_REPAIR_TOPOLOGY = """
+UNWIND $captures AS captured
+MATCH (stream:BitrixIngestionStream {source_key: 'bitrix_chat',
+  control_instance_id: $control_instance_id, stream_key: captured.stream_key,
+  logical_run_id: captured.logical_run_id, ingest_run_id: captured.ingest_run_id,
+  attempt_generation: captured.attempt_generation, stream_generation: captured.stream_generation,
+  fencing_token: captured.fencing_token, status: 'active'})
+MATCH (logical:IngestionLogicalRun {logical_run_id: captured.logical_run_id,
+  control_instance_id: $control_instance_id, status: 'stop_requested'})
+MATCH (attempt:IngestRun {ingest_run_id: captured.ingest_run_id,
+  control_instance_id: $control_instance_id, generation: captured.attempt_generation,
+  status: captured.attempt_status})
+MATCH (generation:BitrixBackfillGeneration {control_instance_id: $control_instance_id})
+  -[fence:HAS_STREAM]->(stream)
+WHERE any(captured_fence IN captured.fences WHERE captured_fence.generation_id = generation.generation_id
+  AND captured_fence.stream_generation = fence.stream_generation
+  AND captured_fence.fencing_token = fence.fencing_token)
+WITH stream, logical, attempt, fence
+ORDER BY stream.stream_key, stream.logical_run_id, stream.attempt_generation, fence.fencing_token
+SET stream.repair_quiescence_lock = coalesce(stream.repair_quiescence_lock, 0) + 1,
+    logical.repair_quiescence_lock = coalesce(logical.repair_quiescence_lock, 0) + 1,
+    attempt.repair_quiescence_lock = coalesce(attempt.repair_quiescence_lock, 0) + 1,
+    fence.repair_quiescence_lock = coalesce(fence.repair_quiescence_lock, 0) + 1
+REMOVE stream.repair_quiescence_lock, logical.repair_quiescence_lock,
+  attempt.repair_quiescence_lock, fence.repair_quiescence_lock
+RETURN count(DISTINCT stream) AS locked_stream_count, count(DISTINCT fence) AS locked_fence_count
+"""
+
 
 COMPLETE_QUIESCENCE = """
 MATCH (run:CrmDealRepairRun {repair_id: $repair_id, run_id: $run_id, status: 'qualified',
@@ -221,7 +268,8 @@ FOREACH (_ IN CASE WHEN $stale_snapshot.state IN ['orphan', 'owned'] THEN [1] EL
 SET control.state = 'quiesced', control.revision = control.revision + 1,
     control.proof_payload_json = $proof_payload_json, control.proof_digest = $proof_digest,
     control.proof_hmac = $proof_hmac, control.proof_expires_at = $proof_expires_at,
-    control.topology_digest = $topology_digest, control.updated_at = datetime(),
+    control.topology_digest = $topology_digest,
+    control.updated_at = datetime(),
     dispatch.repair_revision = control.revision, dispatch.updated_at = datetime()
 RETURN control.control_instance_id AS control_instance_id, control.run_id AS run_id,
        control.owner_id AS owner_id, control.token_digest AS token_digest, control.revision AS revision,
@@ -231,32 +279,50 @@ RETURN control.control_instance_id AS control_instance_id, control.run_id AS run
 """
 
 REQUEST_REPAIR_TOPOLOGY_STOP = """
-MATCH (stream:BitrixIngestionStream {source_key: 'bitrix_chat', control_instance_id: $control_instance_id,
-  status: 'active'})
-WHERE stream.stream_key IN ['crm_deals', 'crm_activities', 'openlines_conversations']
-MATCH (logical:IngestionLogicalRun {logical_run_id: stream.logical_run_id,
-  control_instance_id: $control_instance_id})
-MATCH (attempt:IngestRun {ingest_run_id: stream.ingest_run_id,
-  control_instance_id: $control_instance_id, generation: stream.attempt_generation})
-SET logical.status = CASE WHEN logical.status IN ['queued', 'running'] THEN 'stop_requested' ELSE logical.status END,
+MATCH (:BitrixBackfillGeneration {control_instance_id: $control_instance_id})
+  -[membership:HAS_LOGICAL_RUN]->(logical:IngestionLogicalRun {source_key: 'bitrix_chat',
+    control_instance_id: $control_instance_id})
+WHERE membership.stream_key IN ['crm_deals', 'crm_activities', 'openlines_conversations']
+  AND logical.status IN ['queued', 'running', 'stop_requested', 'paused_with_checkpoint']
+WITH DISTINCT logical
+OPTIONAL MATCH (logical)-[:HAS_CONTINUATION|CONTINUES_AS]->
+  (continuation:IngestionLogicalRun {control_instance_id: $control_instance_id})
+WITH logical, collect(continuation) AS continuations
+ORDER BY logical.logical_run_id
+SET logical.status = CASE WHEN logical.status IN ['queued', 'running', 'paused_with_checkpoint'] THEN 'stop_requested' ELSE logical.status END,
     logical.stop_requested_at = coalesce(logical.stop_requested_at, datetime()),
     logical.stop_requested_by = coalesce(logical.stop_requested_by, $owner_id),
     logical.stop_reason = coalesce(logical.stop_reason, 'crm_deal_identity_repair_quiesce'),
     logical.updated_at = datetime()
-RETURN count(stream) AS stopped_count
+FOREACH (continuation IN continuations |
+  SET continuation.status = CASE WHEN continuation.status IN ['queued', 'running', 'paused_with_checkpoint']
+      THEN 'stop_requested' ELSE continuation.status END,
+      continuation.stop_requested_at = coalesce(continuation.stop_requested_at, datetime()),
+      continuation.stop_requested_by = coalesce(continuation.stop_requested_by, $owner_id),
+      continuation.stop_reason = coalesce(continuation.stop_reason, 'crm_deal_identity_repair_quiesce'),
+      continuation.updated_at = datetime()
+)
+RETURN count(DISTINCT logical) AS stopped_count
 """
 
 READ_REPAIR_TOPOLOGY_SNAPSHOT = """
 MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', control_instance_id: $control_instance_id})
 CALL {
   WITH dispatch
-  MATCH (stream:BitrixIngestionStream {source_key: 'bitrix_chat',
-    control_instance_id: $control_instance_id, status: 'active'})
+  MATCH (:BitrixBackfillGeneration {control_instance_id: $control_instance_id})
+    -[membership:HAS_LOGICAL_RUN]->(logical:IngestionLogicalRun {source_key: 'bitrix_chat',
+      control_instance_id: $control_instance_id})
+  WHERE membership.stream_key IN ['crm_deals', 'crm_activities', 'openlines_conversations']
+    AND logical.status IN ['queued', 'running', 'stop_requested', 'paused_with_checkpoint']
+  WITH DISTINCT logical
+  OPTIONAL MATCH (logical)-[:HAS_ATTEMPT|ACTIVE_ATTEMPT]->
+    (matched_attempt:IngestRun {control_instance_id: $control_instance_id})
+  WITH logical, collect(DISTINCT matched_attempt) AS attempts
+  UNWIND CASE WHEN size(attempts) = 1 THEN attempts ELSE [NULL] END AS attempt
+  OPTIONAL MATCH (stream:BitrixIngestionStream {source_key: 'bitrix_chat',
+    control_instance_id: $control_instance_id, logical_run_id: logical.logical_run_id,
+    ingest_run_id: attempt.ingest_run_id, attempt_generation: attempt.generation, status: 'active'})
   WHERE stream.stream_key IN ['crm_deals', 'crm_activities', 'openlines_conversations']
-  MATCH (logical:IngestionLogicalRun {logical_run_id: stream.logical_run_id,
-    control_instance_id: $control_instance_id})
-  MATCH (attempt:IngestRun {ingest_run_id: stream.ingest_run_id,
-    control_instance_id: $control_instance_id, generation: stream.attempt_generation})
   CALL {
     WITH logical
     OPTIONAL MATCH (checkpoint:IngestionCheckpoint {control_instance_id: $control_instance_id,
@@ -264,8 +330,8 @@ CALL {
     RETURN collect(checkpoint.checkpoint_id) AS checkpoint_ids
   }
   RETURN collect({
-    stream_key: stream.stream_key, logical_run_id: stream.logical_run_id,
-    ingest_run_id: stream.ingest_run_id, attempt_generation: stream.attempt_generation,
+    stream_key: stream.stream_key, logical_run_id: logical.logical_run_id,
+    ingest_run_id: attempt.ingest_run_id, attempt_generation: attempt.generation,
     stream_generation: stream.stream_generation, fencing_token: stream.fencing_token,
     attempt_status: attempt.status,
     checkpoint_ids: checkpoint_ids,
@@ -409,6 +475,57 @@ RETURN control.control_instance_id AS control_instance_id, control.run_id AS run
        control.state AS state, control.boundary_digest AS boundary_digest
 """
 
+SEAL_QUIESCENCE_BOUNDARY = """
+MATCH (control:CrmDealRepairControl {run_id: $run_id, owner_id: $owner_id, token_digest: $token_digest,
+  state: 'quiesced', revision: $revision})
+MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', control_instance_id: control.control_instance_id,
+  blocked: true, repair_run_id: $run_id, repair_owner_id: $owner_id, repair_token_digest: $token_digest,
+  repair_revision: $revision})
+SET control.sealed_boundary_digest = $sealed_boundary_digest,
+    control.sealed_source_records_digest = $sealed_source_records_digest,
+    control.sealed_source_instance_digest = $sealed_source_instance_digest,
+    control.sealed_stale_run_evidence_digest = $sealed_stale_run_evidence_digest,
+    control.sealed_control_digest = $sealed_control_digest,
+    control.sealed_inventory_digest = $sealed_inventory_digest,
+    control.sealed_inventory_row_count = $sealed_inventory_row_count,
+    control.sealed_eligible_unit_count = $sealed_eligible_unit_count,
+    control.sealed_negative_control_count = $sealed_negative_control_count,
+    control.updated_at = datetime()
+RETURN control.run_id AS run_id
+"""
+
+
+READ_ALLOCATION_SEALED_BOUNDARY = """
+MATCH (control:CrmDealRepairControl {run_id: $run_id})
+RETURN control.sealed_boundary_digest AS boundary_digest,
+       control.sealed_source_records_digest AS source_records_digest,
+       control.sealed_source_instance_digest AS source_instance_digest,
+       control.sealed_stale_run_evidence_digest AS stale_run_evidence_digest,
+       control.sealed_control_digest AS control_digest,
+       control.sealed_inventory_digest AS inventory_digest,
+       control.sealed_inventory_row_count AS inventory_row_count,
+       control.sealed_eligible_unit_count AS eligible_unit_count,
+       control.sealed_negative_control_count AS negative_control_count
+"""
+
+
+READ_ALLOCATION_REPLAY = """
+MATCH (control:CrmDealRepairControl {run_id: $run_id, owner_id: $owner_id,
+  token_digest: $token_digest})
+MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id,
+  request_action: 'allocate', request_expected_revision: $expected_revision,
+  request_digest: $request_digest})
+MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat',
+  control_instance_id: control.control_instance_id, blocked: true, repair_run_id: $run_id,
+  repair_owner_id: $owner_id, repair_token_digest: $token_digest,
+  repair_revision: control.revision})
+WHERE control.state = 'allocated'
+RETURN control.control_instance_id AS control_instance_id, control.run_id AS run_id,
+       control.owner_id AS owner_id, control.token_digest AS token_digest, control.revision AS revision,
+       control.state AS state, control.boundary_digest AS boundary_digest
+"""
+
+
 ALLOCATE_REPAIR_UNITS = """
 MATCH (run:CrmDealRepairRun {repair_id: $repair_id, run_id: $run_id, status: 'qualified',
   boundary_digest: $boundary_digest, execution_allowed: false})
@@ -440,13 +557,21 @@ WHERE size(prior_completions) = 0 OR (
   AND prior_completions[0].overlay_digest = $overlay_digest
   AND prior_completions[0].allocation_digest = $allocation_digest
   AND prior_completions[0].unit_count = $unit_count
+  AND prior_completions[0].request_action = 'allocate'
+  AND prior_completions[0].request_expected_revision = $expected_revision
+  AND prior_completions[0].request_digest = $request_digest
 )
 MERGE (completion:CrmDealRepairAllocationCompletion {run_id: $run_id, completion_id: $completion_id})
 ON CREATE SET completion.boundary_digest = $boundary_digest, completion.overlay_digest = $overlay_digest,
-  completion.allocation_digest = $allocation_digest, completion.unit_count = $unit_count, completion.created_at = datetime()
+  completion.allocation_digest = $allocation_digest, completion.unit_count = $unit_count,
+  completion.request_action = 'allocate', completion.request_expected_revision = $expected_revision,
+  completion.request_digest = $request_digest, completion.created_at = datetime()
 WITH control, dispatch, completion
 WHERE completion.boundary_digest = $boundary_digest AND completion.overlay_digest = $overlay_digest
   AND completion.allocation_digest = $allocation_digest AND completion.unit_count = $unit_count
+  AND completion.request_action = 'allocate'
+  AND completion.request_expected_revision = $expected_revision
+  AND completion.request_digest = $request_digest
 CALL (control) {
   WITH control
   UNWIND $units AS unit
@@ -500,10 +625,18 @@ RETURN run.run_id AS run_id, run.status AS qualification_status, control.state A
 """
 
 READ_REPAIR_CONTROL_PROOF = """
-MATCH (control:CrmDealRepairControl {run_id: $run_id, owner_id: $owner_id, token_digest: $token_digest,
-  revision: $revision})
-WHERE control.state IN ['quiesced', 'allocated']
-  AND control.proof_expires_at > datetime()
+MATCH (control:CrmDealRepairControl {run_id: $run_id, owner_id: $owner_id, token_digest: $token_digest})
+WHERE control.proof_expires_at > datetime()
+  AND (
+    (control.revision = $revision AND control.state IN ['quiesced', 'allocated'])
+    OR (
+      control.state = 'allocated'
+      AND EXISTS {
+        MATCH (:CrmDealRepairAllocationCompletion {run_id: $run_id,
+          request_action: 'allocate', request_expected_revision: $revision})
+      }
+    )
+  )
 RETURN control.proof_digest AS proof_digest
 """
 
