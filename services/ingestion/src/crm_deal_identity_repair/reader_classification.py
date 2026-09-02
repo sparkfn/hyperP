@@ -31,7 +31,8 @@ _OWNERSHIP_BOUNDARY_PATTERN: Final[re.Pattern[str]] = re.compile(
     re.IGNORECASE,
 )
 _CLAUSE_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"\b(?:OPTIONAL\s+MATCH|MATCH|MERGE|CREATE|WITH|RETURN|UNWIND|CALL|SET|DELETE|REMOVE|FOREACH)\b",
+    r"\b(?:OPTIONAL\s+MATCH|MATCH|MERGE|CREATE|WITH|RETURN|UNWIND|SET|DELETE|REMOVE|FOREACH)\b"
+    r"|\bCALL\s*(?:\{|\([^)]*\)\s*\{)",
     re.IGNORECASE,
 )
 _RELATIONSHIP_BINDING_PATTERN: Final[re.Pattern[str]] = re.compile(
@@ -432,11 +433,10 @@ def _is_write_only_relationship(query: str, position: int) -> bool:
     """
     boundary = _last_scope_boundary(query, position)
     clauses = tuple(
-        clause
+        clause.group().upper()
         for clause in _CLAUSE_PATTERN.finditer(query, boundary, position)
-        if clause.group().isupper()
     )
-    return bool(clauses) and clauses[-1].group() == "CREATE"
+    return bool(clauses) and clauses[-1] == "CREATE"
 
 
 def _generic_repairable_relationship_read(query: str) -> bool:

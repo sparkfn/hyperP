@@ -364,7 +364,7 @@ def test_review_activation_returns_link_only_owner_of_superseded_crm_deal(
         audit_link_count = session.run(
             """
             MATCH (:SourceRecord {source_record_pk: 'old-deal'})-[link:LINKED_TO]->
-                  (:Person {person_id: 'old-owner'})
+                  (:Person)
             RETURN count(link) AS total
             """
         ).single(strict=True)["total"]
