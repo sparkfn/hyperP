@@ -126,13 +126,17 @@ ON CREATE SET
     rel.first_seen_at = datetime(),
     rel.last_seen_at = datetime(),
     rel.last_confirmed_at = datetime(),
+    rel.activated_at = datetime(),
+    rel.retired_at = null,
     rel.source_system_key = $source_system_key,
     rel.source_record_pk = $source_record_pk
 ON MATCH SET
     rel.last_seen_at = datetime(),
     rel.last_confirmed_at = datetime(),
     rel.is_active = true,
-    rel.source_record_pk = $source_record_pk
+    rel.source_record_pk = $source_record_pk,
+    rel.activated_at = coalesce(rel.activated_at, datetime()),
+    rel.retired_at = null
 """
 
 LINK_PERSON_TO_ADDRESS = """
@@ -169,12 +173,16 @@ ON CREATE SET
     rel.source_record_pk = $source_record_pk,
     rel.first_seen_at = datetime(),
     rel.last_seen_at = datetime(),
-    rel.last_confirmed_at = datetime()
+    rel.last_confirmed_at = datetime(),
+    rel.activated_at = datetime(),
+    rel.retired_at = null
 ON MATCH SET
     rel.last_seen_at = datetime(),
     rel.last_confirmed_at = datetime(),
     rel.is_active = true,
-    rel.source_record_pk = $source_record_pk
+    rel.source_record_pk = $source_record_pk,
+    rel.activated_at = coalesce(rel.activated_at, datetime()),
+    rel.retired_at = null
 """
 
 LINK_SOURCE_RECORD_TO_ADDRESS = """

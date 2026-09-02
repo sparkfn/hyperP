@@ -1981,8 +1981,14 @@ def test_310_real_neo4j_sales_materializers_preserve_retired_active_projections(
             "source_order_id: $source_order_id}) "
             "CREATE (vehicle:Vehicle {vehicle_id: $vehicle_id}) "
             "CREATE (person)-[:PURCHASED {source_system_key: $source_system_key, "
+            "source_order_id: $source_order_id, is_active: true, "
+            "retired_at: datetime()}]->(sale_order) "
+            "CREATE (person)-[:PURCHASED {source_system_key: $source_system_key, "
             "source_order_id: $source_order_id, is_active: false, "
             "retired_at: datetime()}]->(sale_order) "
+            "CREATE (person)-[:BOUGHT_VEHICLE {source_system_key: $source_system_key, "
+            "source_order_id: $source_order_id, is_active: true, "
+            "retired_at: datetime()}]->(vehicle) "
             "CREATE (person)-[:BOUGHT_VEHICLE {source_system_key: $source_system_key, "
             "source_order_id: $source_order_id, is_active: false, "
             "retired_at: datetime()}]->(vehicle)",
@@ -1996,7 +2002,9 @@ def test_310_real_neo4j_sales_materializers_preserve_retired_active_projections(
             "(:Order {source_system_key: $source_system_key, source_order_id: $source_order_id}) "
             "RETURN count(rel) AS total, "
             "count(CASE WHEN rel.is_active = true THEN rel END) AS active, "
-            "count(CASE WHEN rel.is_active = false THEN rel END) AS retired",
+            "count(CASE WHEN rel.is_active = false THEN rel END) AS retired, "
+            "count(CASE WHEN rel.is_active = true AND rel.retired_at IS NOT NULL THEN rel END) "
+            "AS contradictory",
             **parameters,
         ).single(strict=True)
         vehicle_counts = session.run(
@@ -2004,11 +2012,13 @@ def test_310_real_neo4j_sales_materializers_preserve_retired_active_projections(
             "(:Vehicle {vehicle_id: $vehicle_id}) "
             "RETURN count(rel) AS total, "
             "count(CASE WHEN rel.is_active = true THEN rel END) AS active, "
-            "count(CASE WHEN rel.is_active = false THEN rel END) AS retired",
+            "count(CASE WHEN rel.is_active = false THEN rel END) AS retired, "
+            "count(CASE WHEN rel.is_active = true AND rel.retired_at IS NOT NULL THEN rel END) "
+            "AS contradictory",
             **parameters,
         ).single(strict=True)
-    assert dict(purchase_counts) == {"total": 2, "active": 1, "retired": 1}
-    assert dict(vehicle_counts) == {"total": 2, "active": 1, "retired": 1}
+    assert dict(purchase_counts) == {"total": 2, "active": 1, "retired": 1, "contradictory": 0}
+    assert dict(vehicle_counts) == {"total": 2, "active": 1, "retired": 1, "contradictory": 0}
 
 
 def test_310_real_neo4j_sales_materializers_normalize_legacy_active_edges(
@@ -2247,6 +2257,22 @@ def test_310_allocated_pause_resume_reseals_and_allocation_replay_is_exact(
         plan=plan,
     )
     assert replay == allocated
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (unit:CrmDealRepairUnit {run_id: $run_id, unit_id: 'allocation-unit-0'}) "
+            "SET unit.inventory_key = 'tampered-after-resume'",
+            run_id=run.run_id,
+        ).consume()
+    # The exact original request/revision remains a replay request after resume;
+    # it must reject corrupt persisted allocation evidence, not fall through to
+    # a fresh CAS at the resumed revision.
+    with pytest.raises(RuntimeError):
+        control.allocate(
+            allocation_request,
+            boundary_digest=run.boundary_digest,
+            proof_digest="proof",
+            plan=plan,
+        )
 
 
 def test_310_allocation_persists_exact_multi_unit_set_and_replay_conflicts(
@@ -2321,6 +2347,45 @@ def test_310_exact_allocation_replay_rejects_a_corrupted_current_seal(
             boundary_digest=run.boundary_digest,
             proof_digest=control.proof_digest(request),
             plan=plan,
+        )
+
+
+@pytest.mark.parametrize(
+    ("property_name", "value"),
+    (
+        ("receipt_control_instance_id", "tampered-control"),
+        ("receipt_run_id", "tampered-run"),
+        ("receipt_owner_id", "tampered-owner"),
+        ("receipt_token_digest", "tampered-token"),
+        ("receipt_revision", 999),
+        ("receipt_state", "paused"),
+        ("receipt_boundary_digest", "tampered-boundary"),
+        ("receipt_sealed_boundary_digest", "tampered-seal"),
+        ("receipt_digest", "sha256:tampered"),
+    ),
+)
+def test_310_exact_allocation_replay_rejects_tampered_immutable_receipt(
+    neo4j_driver: Driver, property_name: str, value: str | int
+) -> None:
+    _, control, run = _qualified_control_repository(
+        neo4j_driver, repair_id=f"repair-310-receipt-{property_name}"
+    )
+    _seed_quiesced_allocation_control(neo4j_driver, run)
+    request = RepairControlRequest(
+        f"repair-310-receipt-{property_name}", run.run_id, "owner", "token", 1
+    )
+    plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 1)
+    control.allocate(request, boundary_digest=run.boundary_digest, proof_digest="proof", plan=plan)
+    with neo4j_driver.session() as session:
+        session.run(
+            f"MATCH (completion:CrmDealRepairAllocationCompletion {{run_id: $run_id}}) "
+            f"SET completion.{property_name} = $value",
+            run_id=run.run_id,
+            value=value,
+        ).consume()
+    with pytest.raises(RuntimeError):
+        control.allocate(
+            request, boundary_digest=run.boundary_digest, proof_digest="proof", plan=plan
         )
 
 

@@ -221,7 +221,10 @@ SET rel.source_record_pk = $source_record_pk,
     rel.quality_flag = $quality_flag,
     rel.last_seen_at = datetime(),
     rel.last_confirmed_at = datetime(),
-    rel.updated_at = datetime()
+    rel.updated_at = datetime(),
+    rel.activated_at = CASE WHEN $is_active THEN coalesce(rel.activated_at, datetime())
+                            ELSE rel.activated_at END,
+    rel.retired_at = CASE WHEN $is_active THEN null ELSE rel.retired_at END
 """
 
 # Generic "this SourceRecord mentions this Vehicle" edge, used by non-chat
@@ -245,7 +248,10 @@ SET rel.source_system_key = $source_system_key,
     rel.observed_at = $observed_at,
     rel.confidence = $confidence,
     rel.quality_flag = $quality_flag,
-    rel.updated_at = datetime()
+    rel.updated_at = datetime(),
+    rel.is_active = true,
+    rel.activated_at = coalesce(rel.activated_at, datetime()),
+    rel.retired_at = null
 """
 
 # Explicit ownership edge (registration / LTA record, not a sale). Idempotent on
@@ -280,7 +286,10 @@ SET rel.raw_context = $raw_context,
     rel.quality_flag = $quality_flag,
     rel.last_seen_at = datetime(),
     rel.last_confirmed_at = datetime(),
-    rel.updated_at = datetime()
+    rel.updated_at = datetime(),
+    rel.is_active = true,
+    rel.activated_at = coalesce(rel.activated_at, datetime()),
+    rel.retired_at = null
 """
 
 # Flag Vehicles owned by more than one active Person. Mirrors the legacy

@@ -182,16 +182,26 @@ def test_late_call_uses_current_logical_deal_for_person_context() -> None:
 
 def test_crm_history_can_link_to_one_conversation_for_each_activity() -> None:
     assert "UNWIND $crm_activity_ids AS crm_activity_id" in LINK_CONVERSATION_TO_CRM_HISTORY
-    assert "MERGE (history)-[:LINKED_TO" in LINK_CONVERSATION_TO_CRM_HISTORY
+    assert "MERGE (history)-[link:LINKED_TO {is_active: true}]->(conversation)" in (
+        LINK_CONVERSATION_TO_CRM_HISTORY
+    )
+    assert "link.activated_at = coalesce(link.activated_at, datetime())" in (
+        LINK_CONVERSATION_TO_CRM_HISTORY
+    )
+    assert "link.retired_at = null" in LINK_CONVERSATION_TO_CRM_HISTORY
     assert "MERGE (conversation)-[:CHILD_OF]" not in LINK_CONVERSATION_TO_CRM_HISTORY
 
 
 def test_history_links_to_existing_current_bitrix_chat_conversations() -> None:
     assert "is_latest: true" in LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS
     assert "bitrix-openlines-chat-" in LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS
-    assert "MERGE (history)-[:LINKED_TO]->(conversation)" in (
+    assert "MERGE (history)-[link:LINKED_TO {is_active: true}]->(conversation)" in (
         LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS
     )
+    assert "link.activated_at = coalesce(link.activated_at, datetime())" in (
+        LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS
+    )
+    assert "link.retired_at = null" in LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS
     assert "link_method: 'crm_activity_id'" in LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS
 
 

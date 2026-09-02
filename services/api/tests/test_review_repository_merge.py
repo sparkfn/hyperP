@@ -17,9 +17,9 @@ from src.graph.queries import (
     CREATE_NO_MATCH_LOCK_FROM_REVIEW,
     EXECUTE_MANUAL_MERGE,
     FINALIZE_STAGED_REVIEW_SALE,
+    GET_AFFECTED_IDENTITY_LINK_HEADS,
     GET_PENDING_REVIEW_RECORD,
     GET_PERSONS_FOR_REVIEW_MERGE,
-    GET_AFFECTED_IDENTITY_LINK_HEADS,
     GET_REVIEW_SALES_RECORD,
     LINK_REVIEW_SALES_BOUGHT_VEHICLE,
     LINK_REVIEW_SALES_PURCHASED_ORDER,
@@ -875,7 +875,7 @@ def test_pending_review_queries_guard_lifecycle_and_source_identity() -> None:
     assert "PREVIOUS_VERSION_OF" in ACTIVATE_PENDING_REVIEW_RECORD
     assert "old.is_latest = false" in ACTIVATE_PENDING_REVIEW_RECORD
     assert "pending.is_latest = true" in ACTIVATE_PENDING_REVIEW_RECORD
-    assert "OPTIONAL MATCH (old)-[:LINKED_TO]->(old_direct_owner:Person)" in (
+    assert "OPTIONAL MATCH (old)-[old_direct_link:LINKED_TO]->(old_direct_owner:Person)" in (
         ACTIVATE_PENDING_REVIEW_RECORD
     )
     assert "old_direct_owners + old_edge_owners + old_fact_owners" in (
@@ -961,6 +961,8 @@ def test_review_activation_scopes_knows_declarer_to_payload_source_system() -> N
     assert "(declarer_sr)-[:FROM_SOURCE]->(declarer_source:SourceSystem)" in query
     assert "declarer_source.source_key = item.declarer_source_system_key" in query
     assert "declarer_sr.lifecycle_status IS NULL" in query
+    assert "[declarer_link:LINKED_TO]" in query
+    assert "coalesce(declarer_link.is_active, true) = true" in query
     assert "declarer_sr.is_latest = true" in query
     assert "coalesce(declarer_sr.is_latest, true)" not in query
 
@@ -1461,7 +1463,7 @@ async def test_specialized_blueprints_are_validated_and_forwarded(
     assert params["pending_source_record_pk"] == "pending-v2"
     assert params["expected_active_source_record_pk"] == "active-v1"
     assert "size(vehicles) = 1" in ACTIVATE_PENDING_REVIEW_RECORD
-    assert "rel.source_record_pk = old.source_record_pk" in ACTIVATE_PENDING_REVIEW_RECORD
+    assert "old_knows.source_record_pk = old.source_record_pk" in ACTIVATE_PENDING_REVIEW_RECORD
     assert "mention.is_active = false" in ACTIVATE_PENDING_REVIEW_RECORD
 
 

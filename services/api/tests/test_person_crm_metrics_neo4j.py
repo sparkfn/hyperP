@@ -121,6 +121,86 @@ def test_metrics_query_uses_projected_stage_with_persisted_json_payload(
     assert row["days_since_last_activity"] == 0
 
 
+def test_review_activation_does_not_materialize_knows_from_retired_declarer_link(
+    neo4j_driver: _TestGraph,
+) -> None:
+    """Current review authority must ignore repair-retired declarer ownership."""
+    with neo4j_driver.driver.session() as session:
+        session.run(
+            """
+            CREATE (source:SourceSystem {
+              source_key: 'bitrix_chat', _crm_metrics_test_run: $test_run_id
+            })
+            CREATE (approved:Person {
+              person_id: 'approved-declarer-target', status: 'active',
+              _crm_metrics_test_run: $test_run_id
+            })
+            CREATE (current_declarer:Person {
+              person_id: 'current-declarer', status: 'active', _crm_metrics_test_run: $test_run_id
+            })
+            CREATE (retired_declarer:Person {
+              person_id: 'retired-declarer', status: 'active', _crm_metrics_test_run: $test_run_id
+            })
+            CREATE (pending:SourceRecord {
+              source_record_pk: 'pending-declarer', source_instance_id: 'bitrix-primary',
+              source_record_id: 'deal-declarer', record_type: 'crm_deal',
+              lifecycle_status: 'pending_review', is_latest: false,
+              _crm_metrics_test_run: $test_run_id
+            })-[:FROM_SOURCE]->(source)
+            CREATE (declarer_source:SourceRecord {
+              source_record_pk: 'declarer-source-pk', source_record_id: 'declarer-source',
+              lifecycle_status: 'active', is_latest: true, _crm_metrics_test_run: $test_run_id
+            })-[:FROM_SOURCE]->(source)
+            CREATE (declarer_source)-[:LINKED_TO {is_active: true}]->(current_declarer)
+            CREATE (declarer_source)-[:LINKED_TO {is_active: false, retired_at: datetime(),
+              retired_by_repair_id: 'repair-310'}]->(retired_declarer)
+            CREATE (decision:MatchDecision {_crm_metrics_test_run: $test_run_id})
+            CREATE (review:ReviewCase {review_case_id: 'review-declarer',
+              _crm_metrics_test_run: $test_run_id})-[:FOR_DECISION]->(decision)
+            CREATE (decision)-[:ABOUT_LEFT]->(pending)
+            CREATE (decision)-[:ABOUT_RIGHT]->(approved)
+            """,
+            test_run_id=neo4j_driver.run_id,
+        ).consume()
+        session.run(
+            ACTIVATE_PENDING_REVIEW_RECORD,
+            review_case_id="review-declarer",
+            pending_source_record_pk="pending-declarer",
+            source_system_key="bitrix_chat",
+            expected_active_source_record_pk=None,
+            approved_person_id="approved-declarer-target",
+            observed_at="2026-09-02T00:00:00Z",
+            identifiers=[],
+            addresses=[],
+            attributes=[],
+            bankruptcy_cases=[],
+            vehicle_mentions=[],
+            knows_relationships=[
+                {
+                    "declarer_source_record_id": "declarer-source",
+                    "declarer_source_system_key": "bitrix_chat",
+                    "source_system_key": "bitrix_chat",
+                    "relationship_label": "knows",
+                    "relationship_category": "declared",
+                    "status": "approved",
+                    "approved_at": "2026-09-02T00:00:00Z",
+                }
+            ],
+        ).single(strict=True)
+        rows = list(
+            session.run(
+                """
+                MATCH (declarer:Person)-[knows:KNOWS {is_active: true}]->
+                      (:Person {person_id: 'approved-declarer-target'})
+                WHERE declarer.person_id IN ['current-declarer', 'retired-declarer']
+                RETURN declarer.person_id AS person_id
+                ORDER BY person_id
+                """
+            )
+        )
+    assert [row["person_id"] for row in rows] == ["current-declarer"]
+
+
 def test_review_activation_returns_link_only_owner_of_superseded_crm_deal(
     neo4j_driver: _TestGraph,
 ) -> None:

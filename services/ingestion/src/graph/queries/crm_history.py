@@ -212,6 +212,9 @@ FOREACH (legacy_relationship IN legacy_relationships |
         legacy_relationship.retired_at = null
 )
 MERGE (history)-[link:LINKED_TO {is_active: true}]->(conversation)
+SET link.is_active = true,
+    link.activated_at = coalesce(link.activated_at, datetime()),
+    link.retired_at = null
 MERGE (conversation)-[:REPRESENTS_HISTORY_ITEM {
     crm_activity_id: crm_activity_id,
     link_method: 'crm_activity_id'
@@ -240,6 +243,9 @@ FOREACH (legacy_relationship IN legacy_relationships |
         legacy_relationship.retired_at = null
 )
 MERGE (history)-[link:LINKED_TO {is_active: true}]->(conversation)
+SET link.is_active = true,
+    link.activated_at = coalesce(link.activated_at, datetime()),
+    link.retired_at = null
 MERGE (conversation)-[:REPRESENTS_HISTORY_ITEM {
     crm_activity_id: $crm_activity_id,
     link_method: 'crm_activity_id'
