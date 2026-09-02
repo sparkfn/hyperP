@@ -142,7 +142,9 @@ def _specified_relationship_row(specification: JsonValue) -> dict[str, JsonValue
 
 def _normalize_repaired_value(value: JsonValue, key: str | None = None) -> JsonValue:
     if key in _TRANSACTION_DYNAMIC_KEYS:
-        return {"dynamic": "transaction_datetime"}
+        if value == {"dynamic": "transaction_datetime"} or is_transaction_datetime(value):
+            return {"dynamic": "transaction_datetime"}
+        return value
     if isinstance(value, list):
         return [_normalize_repaired_value(item) for item in value]
     if isinstance(value, dict):
@@ -152,6 +154,17 @@ def _normalize_repaired_value(value: JsonValue, key: str | None = None) -> JsonV
     if isinstance(value, str):
         return _normalized_iso(value)
     return value
+
+
+def is_transaction_datetime(value: JsonValue) -> bool:
+    """Accept only the ISO datetime representation emitted by the Neo4j value codec."""
+    if not isinstance(value, str) or "T" not in value:
+        return False
+    try:
+        datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    return True
 
 
 def _normalized_iso(value: str) -> str:

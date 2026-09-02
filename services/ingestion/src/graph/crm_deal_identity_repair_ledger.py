@@ -86,6 +86,8 @@ class _QualificationParameters:
     eligible_unit_count: int
     negative_control_count: int
     execution_allowed: bool
+    rollback_authority_reference: str
+    rollback_authority_policy: str
 
 
 @dataclass(frozen=True)
@@ -406,6 +408,8 @@ def _qualify_transaction(
         eligible_unit_count=parameters.eligible_unit_count,
         negative_control_count=parameters.negative_control_count,
         execution_allowed=parameters.execution_allowed,
+        rollback_authority_reference=parameters.rollback_authority_reference,
+        rollback_authority_policy=parameters.rollback_authority_policy,
     ).single()
     if record is None or record["status"] != "qualified":
         raise RuntimeError("repair qualification conflicts with immutable ledger state")
@@ -444,4 +448,6 @@ def _qualification_parameters(
         eligible_unit_count=manifest.eligible_unit_count,
         negative_control_count=manifest.negative_control_count,
         execution_allowed=manifest.execution_allowed,
+        rollback_authority_reference=manifest.rollback_authority_reference,
+        rollback_authority_policy=manifest.rollback_authority_policy,
     )

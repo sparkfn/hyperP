@@ -35,6 +35,10 @@ REQUIRED_CONSTRAINTS = {
         "CrmDealRepairRollbackImage",
         ("run_id", "rollback_image_id"),
     ),
+    "crm_deal_repair_rollback_authorization_unique": (
+        "CrmDealRepairRollbackAuthorization",
+        ("run_id", "authorization_transition_id"),
+    ),
     "crm_deal_repair_secondary_unique": (
         "CrmDealRepairSecondaryDisposition",
         ("run_id", "disposition_id"),

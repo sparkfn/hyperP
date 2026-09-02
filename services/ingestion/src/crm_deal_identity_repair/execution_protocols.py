@@ -24,6 +24,11 @@ from src.crm_deal_identity_repair.mutation_models import (
     RepairAtomicMutationResult,
     RepairMutationCommand,
 )
+from src.crm_deal_identity_repair.rollback_models import (
+    RepairRollbackCommand,
+    RepairRollbackResult,
+    RepairRollbackStatus,
+)
 from src.crm_deal_identity_repair.verification_models import (
     RepairAtomicVerificationResult,
     RepairRunEquationCommand,
@@ -165,6 +170,12 @@ class RepairRollbackRepository(Protocol):
         self,
         disposition: RepairSecondaryDisposition,
     ) -> RepairSecondaryDisposition: ...
+
+    def commit_atomic_rollback(self, command: RepairRollbackCommand) -> RepairRollbackResult:
+        """Consume a valid fenced transition or return a validated no-op/rejection."""
+
+    def get_rollback_status(self, command: RepairRollbackCommand) -> RepairRollbackStatus:
+        """Read a fully cross-validated immutable rollback bundle without writing."""
 
 
 class RepairIntegrationRepository(Protocol):

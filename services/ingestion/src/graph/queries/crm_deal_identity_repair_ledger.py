@@ -15,6 +15,7 @@ CREATE_CRM_DEAL_REPAIR_LEDGER_SCHEMA: tuple[str, ...] = (
     "CREATE CONSTRAINT crm_deal_repair_fence_unique IF NOT EXISTS FOR (n:CrmDealRepairFence) REQUIRE (n.run_id, n.fence_id) IS UNIQUE",
     "CREATE CONSTRAINT crm_deal_repair_mutation_unique IF NOT EXISTS FOR (n:CrmDealRepairMutationResult) REQUIRE (n.run_id, n.mutation_id) IS UNIQUE",
     "CREATE CONSTRAINT crm_deal_repair_rollback_unique IF NOT EXISTS FOR (n:CrmDealRepairRollbackImage) REQUIRE (n.run_id, n.rollback_image_id) IS UNIQUE",
+    "CREATE CONSTRAINT crm_deal_repair_rollback_authorization_unique IF NOT EXISTS FOR (n:CrmDealRepairRollbackAuthorization) REQUIRE (n.run_id, n.authorization_transition_id) IS UNIQUE",
     "CREATE CONSTRAINT crm_deal_repair_secondary_unique IF NOT EXISTS FOR (n:CrmDealRepairSecondaryDisposition) REQUIRE (n.run_id, n.disposition_id) IS UNIQUE",
     "CREATE CONSTRAINT crm_deal_repair_verification_unique IF NOT EXISTS FOR (n:CrmDealRepairVerification) REQUIRE (n.run_id, n.verification_id) IS UNIQUE",
     "CREATE CONSTRAINT crm_deal_repair_outbox_unique IF NOT EXISTS FOR (n:CrmDealRepairOutbox) REQUIRE (n.run_id, n.event_id) IS UNIQUE",
@@ -205,6 +206,8 @@ ON CREATE SET run.run_id = $run_id, run.qualification_identity = $qualification_
   run.manifest_json = $manifest_json, run.inventory_row_count = $inventory_row_count,
   run.eligible_unit_count = $eligible_unit_count,
   run.negative_control_count = $negative_control_count,
+  run.rollback_authority_reference = $rollback_authority_reference,
+  run.rollback_authority_policy = $rollback_authority_policy,
   run.execution_allowed = $execution_allowed,
   run.status = 'qualified', run.created_at = datetime()
 WITH run
@@ -217,6 +220,10 @@ WHERE run.qualification_identity = $qualification_identity
   AND run.inventory_row_count = $inventory_row_count
   AND run.eligible_unit_count = $eligible_unit_count
   AND run.negative_control_count = $negative_control_count AND run.status = 'qualified'
+  AND (run.rollback_authority_reference IS NULL
+    OR run.rollback_authority_reference = $rollback_authority_reference)
+  AND (run.rollback_authority_policy IS NULL
+    OR run.rollback_authority_policy = $rollback_authority_policy)
   AND run.execution_allowed = false
 MERGE (boundary:RepairExecutionBoundary {manifest_digest: $manifest_digest})
 ON CREATE SET boundary.artifact_id = $artifact_id, boundary.artifact_manifest_hmac = $artifact_manifest_hmac,
@@ -226,6 +233,8 @@ ON CREATE SET boundary.artifact_id = $artifact_id, boundary.artifact_manifest_hm
   boundary.inventory_row_count = $inventory_row_count,
   boundary.eligible_unit_count = $eligible_unit_count,
   boundary.negative_control_count = $negative_control_count,
+  boundary.rollback_authority_reference = $rollback_authority_reference,
+  boundary.rollback_authority_policy = $rollback_authority_policy,
   boundary.execution_allowed = $execution_allowed, boundary.created_at = datetime()
 WITH run, boundary
 WHERE boundary.artifact_id = $artifact_id AND boundary.artifact_manifest_hmac = $artifact_manifest_hmac
@@ -236,6 +245,10 @@ WHERE boundary.artifact_id = $artifact_id AND boundary.artifact_manifest_hmac = 
   AND boundary.inventory_row_count = $inventory_row_count
   AND boundary.eligible_unit_count = $eligible_unit_count
   AND boundary.negative_control_count = $negative_control_count
+  AND (boundary.rollback_authority_reference IS NULL
+    OR boundary.rollback_authority_reference = $rollback_authority_reference)
+  AND (boundary.rollback_authority_policy IS NULL
+    OR boundary.rollback_authority_policy = $rollback_authority_policy)
   AND boundary.execution_allowed = false
 MERGE (run)-[:QUALIFIED_WITH]->(boundary)
 RETURN run.run_id AS run_id, run.status AS status
@@ -258,6 +271,8 @@ WITH run, count(qualification) AS qualification_link_count,
     inventory_row_count: boundary.inventory_row_count,
     eligible_unit_count: boundary.eligible_unit_count,
     negative_control_count: boundary.negative_control_count,
+    rollback_authority_reference: boundary.rollback_authority_reference,
+    rollback_authority_policy: boundary.rollback_authority_policy,
     execution_allowed: boundary.execution_allowed
   } END) AS boundaries
 RETURN run.run_id AS run_id, run.manifest_digest AS manifest_digest, run.artifact_id AS artifact_id,
@@ -268,6 +283,8 @@ RETURN run.run_id AS run_id, run.manifest_digest AS manifest_digest, run.artifac
   run.source_record_pks_json AS source_record_pks_json, run.manifest_json AS manifest_json,
   run.inventory_row_count AS inventory_row_count, run.eligible_unit_count AS eligible_unit_count,
   run.negative_control_count AS negative_control_count,
+  run.rollback_authority_reference AS rollback_authority_reference,
+  run.rollback_authority_policy AS rollback_authority_policy,
   run.execution_allowed AS execution_allowed,
   qualification_link_count, boundaries
 """

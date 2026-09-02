@@ -28,7 +28,14 @@ class StoredQualification:
 
 
 def stored_qualification_from_record(repair_id: str, record: Record) -> StoredQualification:
-    values = _record_json_dict(record)
+    return stored_qualification_from_values(repair_id, _record_json_dict(record))
+
+
+def stored_qualification_from_values(
+    repair_id: str,
+    values: Mapping[str, JsonValue],
+) -> StoredQualification:
+    """Decode one canonical qualification, permitting only absent legacy projections."""
     manifest = _manifest_from_stored_json(values)
     source_record_pks = _source_record_pks_from_stored_json(values)
     _assert_run_and_boundary_properties(values, repair_id, manifest, source_record_pks)
@@ -120,7 +127,7 @@ def _assert_run_and_boundary_properties(
     source_record_pks: tuple[str, ...],
 ) -> None:
     for key, value in _run_properties(manifest).items():
-        if values.get(key) != value:
+        if not _matches_manifest_property(values, key, value):
             raise RuntimeError(f"repair ledger persisted {key} differs from manifest")
     if _required_string(values, "boundary_digest") != manifest.graph_boundary_digest:
         raise RuntimeError("repair ledger persisted boundary digest differs from manifest")
@@ -147,10 +154,20 @@ def _assert_single_matching_boundary(
         raise RuntimeError("repair ledger qualification boundary is invalid")
     expected = _boundary_properties(manifest, source_record_pks, run)
     boundary = boundaries[0]
-    if set(boundary) != set(expected) or any(
-        boundary[key] != value for key, value in expected.items()
+    if set(boundary) - set(expected) or any(
+        not _matches_manifest_property(boundary, key, value) for key, value in expected.items()
     ):
         raise RuntimeError("repair ledger boundary differs from immutable run")
+
+
+def _matches_manifest_property(
+    values: Mapping[str, JsonValue], key: str, expected: JsonValue
+) -> bool:
+    """Allow only the two omitted materialized manifest projections from #300/#309."""
+    actual = values.get(key)
+    if key in _LEGACY_OPTIONAL_MANIFEST_PROPERTIES and actual is None:
+        return True
+    return actual == expected
 
 
 def _run_properties(manifest: RepairExecutionBoundaryManifest) -> dict[str, JsonValue]:
@@ -164,6 +181,8 @@ def _run_properties(manifest: RepairExecutionBoundaryManifest) -> dict[str, Json
         "inventory_row_count": manifest.inventory_row_count,
         "eligible_unit_count": manifest.eligible_unit_count,
         "negative_control_count": manifest.negative_control_count,
+        "rollback_authority_reference": manifest.rollback_authority_reference,
+        "rollback_authority_policy": manifest.rollback_authority_policy,
         "execution_allowed": manifest.execution_allowed,
     }
 
@@ -246,6 +265,10 @@ def _qualification_status(values: Mapping[str, JsonValue]) -> Literal["qualified
         raise RuntimeError("repair ledger run status is invalid")
     return "qualified"
 
+
+_LEGACY_OPTIONAL_MANIFEST_PROPERTIES = frozenset(
+    {"rollback_authority_reference", "rollback_authority_policy"}
+)
 
 _MANIFEST_KEYS = frozenset(
     {

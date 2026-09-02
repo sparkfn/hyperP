@@ -72,6 +72,8 @@ def _record() -> dict[str, object]:
         "inventory_row_count": 2,
         "eligible_unit_count": 1,
         "negative_control_count": 1,
+        "rollback_authority_reference": manifest.rollback_authority_reference,
+        "rollback_authority_policy": manifest.rollback_authority_policy,
         "execution_allowed": False,
     }
     return {
@@ -110,6 +112,23 @@ def test_stored_qualification_rejects_noncanonical_or_mismatched_boundary() -> N
     record["manifest_json"] = '{"repair_id":"repair-300"}'
     with pytest.raises(RuntimeError):
         _stored_qualification_from_record("repair-300", cast(Record, record))
+
+
+def test_stored_qualification_accepts_only_absent_legacy_authority_projections() -> None:
+    record = _record()
+    record.pop("rollback_authority_reference")
+    record.pop("rollback_authority_policy")
+    boundary = cast(list[dict[str, object]], record["boundaries"])[0]
+    boundary.pop("rollback_authority_reference")
+    boundary.pop("rollback_authority_policy")
+
+    stored = _stored_qualification_from_record("repair-300", cast(Record, record))
+    assert stored.manifest.rollback_authority_reference == "rollback-300"
+
+    conflicting = _record()
+    conflicting["rollback_authority_reference"] = "different-approval"
+    with pytest.raises(RuntimeError, match="rollback_authority_reference"):
+        _stored_qualification_from_record("repair-300", cast(Record, conflicting))
     record = _record()
     cast(list[object], record["boundaries"])[0] = {"manifest_digest": "bad"}
     with pytest.raises(RuntimeError):

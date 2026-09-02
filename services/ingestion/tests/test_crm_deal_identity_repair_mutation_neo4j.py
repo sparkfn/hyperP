@@ -270,9 +270,11 @@ def _inventory(driver: Driver) -> tuple[RepairInventoryItem, RepairInventoryItem
     return by_pk["deal-pk"], by_pk["negative-pk"]
 
 
-def _seed_authority(driver: Driver, item: RepairInventoryItem) -> RepairMutationCommand:
+def _seed_authority(
+    driver: Driver, item: RepairInventoryItem, *, run_id: str = "run-a"
+) -> RepairMutationCommand:
     unit = RepairUnit(
-        "run-a",
+        run_id,
         "unit-a",
         1,
         0,
@@ -287,15 +289,15 @@ def _seed_authority(driver: Driver, item: RepairInventoryItem) -> RepairMutation
         build_inventory_binding_digest(item),
     )
     fence = RepairFence(
-        "run-a", "unit-a", "fence-a", 1, 0, 1, "worker-a", "token-a", _DIGEST, _DIGEST, "claimed"
+        run_id, "unit-a", "fence-a", 1, 0, 1, "worker-a", "token-a", _DIGEST, _DIGEST, "claimed"
     )
     command = RepairMutationCommand(unit, fence, item, _SOURCE, _CONTROL)
     with driver.session() as session:
         session.run(
             """
-            CREATE (:CrmDealRepairRun {run_id: $run_id, boundary_digest: $boundary_digest, source_instance_id: $source_instance_id, control_instance_id: $control_instance_id, status: 'qualified', execution_allowed: false, source_record_pks_json: $source_record_pks_json})
+            CREATE (:CrmDealRepairRun {run_id: $run_id, boundary_digest: $boundary_digest, source_instance_id: $source_instance_id, control_instance_id: $control_instance_id, rollback_authority_reference: $rollback_authority_reference, rollback_authority_policy: $rollback_authority_policy, status: 'qualified', execution_allowed: false, source_record_pks_json: $source_record_pks_json})
             CREATE (:CrmDealRepairUnit {run_id: $run_id, unit_id: $unit_id, generation: 1, sequence: 0, attempt: 1, boundary_digest: $boundary_digest, inventory_fingerprint: $unit_fingerprint, inventory_key: $inventory_key, source_record_pk: $source_record_pk, inventory_graph_fingerprint: $inventory_graph_fingerprint, inventory_stored_payload_fingerprint: $inventory_stored_payload_fingerprint, inventory_binding_digest: $inventory_binding_digest, state: 'allocated'})
-            CREATE (:CrmDealRepairFence {run_id: $run_id, unit_id: $unit_id, fence_id: 'fence-a', generation: 1, sequence: 0, attempt: 1, owner_id: 'worker-a', token: 'token-a', boundary_digest: $boundary_digest, state: 'claimed'})
+            CREATE (:CrmDealRepairFence {run_id: $run_id, unit_id: $unit_id, fence_id: 'fence-a', generation: 1, sequence: 0, attempt: 1, owner_id: 'worker-a', token: 'token-a', boundary_digest: $boundary_digest, fence_fingerprint: $fence_fingerprint, state: 'claimed'})
             """,
             run_id=unit.run_id,
             unit_id=unit.unit_id,
@@ -309,6 +311,9 @@ def _seed_authority(driver: Driver, item: RepairInventoryItem) -> RepairMutation
             inventory_graph_fingerprint=item.graph_fingerprint,
             inventory_stored_payload_fingerprint=item.stored_payload_fingerprint,
             inventory_binding_digest=command.inventory_binding_digest,
+            rollback_authority_reference="reviewed-312",
+            rollback_authority_policy="reviewed_rollback_v1",
+            fence_fingerprint=fence.fence_fingerprint,
         ).consume()
     return command
 
