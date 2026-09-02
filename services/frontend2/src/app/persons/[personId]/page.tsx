@@ -42,6 +42,7 @@ import ReviewActionsPanel from "@/components/ReviewActionsPanel";
 import { ReviewCaseDetailModal } from "@/app/review/[reviewCaseId]/ReviewCaseDetailModal";
 import type { ReviewCaseDetail, ReviewCaseSummary } from "@/lib/api-types-ops";
 import { mergeIdentifierPage } from "./person-detail-data";
+import { timelineLoadState, type TimelineLoadState } from "./timeline-load-state";
 import styles from "./person.module.css";
 import { sidebarResourceState } from "./sidebar-resource-state";
 
@@ -1093,6 +1094,8 @@ function TimelineTab({
   const timelineRef = useRef<HTMLElement | null>(null);
   const [activated, setActivated] = useState(false);
   const [loaded, setLoaded] = useState(false);
+  const [loadState, setLoadState] = useState<TimelineLoadState>("loading");
+  const [retryVersion, setRetryVersion] = useState(0);
   const [timelineData, setTimelineData] = useState<Pick<DetailData, "sourceRecords" | "sales" | "audit">>({
     sourceRecords: detailData.sourceRecords,
     sales: detailData.sales,
@@ -1143,6 +1146,7 @@ function TimelineTab({
       };
       setTimelineData(nextTimelineData);
       onActivityCountLoaded(buildTimeline({ ...EMPTY_DETAIL, ...nextTimelineData }).length);
+      setLoadState(timelineLoadState([sourceRecordsResult, salesResult, auditResult]));
       setLoaded(true);
     });
     return () => controller.abort();
@@ -1153,6 +1157,7 @@ function TimelineTab({
     detailData.sourceRecords,
     onActivityCountLoaded,
     personId,
+    retryVersion,
   ]);
 
   const combinedDetailData: DetailData = {
@@ -1175,7 +1180,8 @@ function TimelineTab({
         >Audit</button>
       </div>
       {subTab === "activity"
-        ? <TimelineActivity person={person} detailData={combinedDetailData} loading={!loaded} />
+        ? <><TimelineActivity person={person} detailData={combinedDetailData} loading={!loaded} />
+          {loadState === "incomplete" && <div className={styles.tabError}>Timeline incomplete. <button type="button" className={styles.tabPagBtn} onClick={() => { setLoaded(false); setLoadState("loading"); setRetryVersion((value) => value + 1); }}>Retry</button></div>}</>
         : <AuditTab personId={personId} onTotalLoaded={() => { /* count shown inside */ }} />
       }
     </section>
@@ -2296,6 +2302,8 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
   const [recreateConfirm, setRecreateConfirm] = useState<{ reviewCaseId: string; mergeEventId: string | null; summary: ReviewCaseSummary } | null>(null);
   const [operationToast, setOperationToast] = useState<{ type: "success" | "error"; message: string } | null>(null);
   const [viewingReviewCaseId, setViewingReviewCaseId] = useState<string | null>(null);
+  const recommendedDetailInFlight = useRef<Set<string>>(new Set());
+  const reviewCaseDetailInFlight = useRef<Set<string>>(new Set());
 
   const recommendedResult = usePaginatedFetch<PersonMatchDecision>(
     `/bff/persons/${encodeURIComponent(personId)}/matches`,
@@ -2374,7 +2382,7 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
     return () => { ignore = true; controller.abort(); };
   }, [personId, showResolvedReviewCases]);
 
-  const recommendedPersonIds = recommendedReviewCases
+  const recommendedPersonIds = useMemo(() => recommendedReviewCases
     .map((reviewCase) => {
       const rightId = reviewCase.right_person_id ?? null;
       const leftId = reviewCase.left_person_id ?? null;
@@ -2382,7 +2390,7 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
       if (leftId !== null && leftId !== personId) return leftId;
       return null;
     })
-    .filter((id): id is string => id !== null);
+    .filter((id): id is string => id !== null), [personId, recommendedReviewCases]);
   const mergeHistoryRows = mergeHistoryResult.rows ?? [];
   const recommendedPersonIdsKey = recommendedPersonIds.join("|");
 
@@ -2405,7 +2413,7 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
       });
     }).catch(() => undefined);
     return () => { ignore = true; controller.abort(); };
-  }, [recommendedPersonIdsKey, recommendedPeople, recommendedPersonIds]);
+  }, [recommendedPeople, recommendedPersonIds, recommendedPersonIdsKey]);
 
   useEffect(() => {
     const missingIds = recommendedPersonIds.filter((id) => recommendedIdentifiers[id] === undefined);
@@ -2429,7 +2437,7 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
       setRecommendedIdentifiers((prev) => ({ ...prev, ...Object.fromEntries(items) }));
     });
     return () => { ignore = true; controller.abort(); };
-  }, [recommendedPersonIdsKey, recommendedIdentifiers, recommendedPersonIds]);
+  }, [recommendedIdentifiers, recommendedPersonIds, recommendedPersonIdsKey]);
 
   const loadCandidateDetail = useCallback(async (candidateId: string): Promise<PossibleMatchDetail | undefined> => {
     if (candidateDetails[candidateId]) return candidateDetails[candidateId];
@@ -2457,14 +2465,19 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
     }
   }, [reviewCaseDetails]);
 
+  const recommendedCaseKey = useMemo(
+    () => recommendedReviewCases.map((item) => item.review_case_id).join("|"),
+    [recommendedReviewCases],
+  );
+
   useEffect(() => {
     const controller = new AbortController();
     for (const reviewCase of recommendedReviewCases) {
       const rightId = reviewCase.right_person_id ?? null;
       const leftId = reviewCase.left_person_id ?? null;
       const candidateId = (rightId !== null && rightId !== personId) ? rightId : leftId;
-      if (candidateId === null || recommendedDetails[reviewCase.review_case_id] !== undefined || recommendedErrors[reviewCase.review_case_id] !== undefined) continue;
-      setRecommendedErrors((prev) => ({ ...prev, [reviewCase.review_case_id]: "" }));
+      if (candidateId === null || recommendedDetailInFlight.current.has(reviewCase.review_case_id)) continue;
+      recommendedDetailInFlight.current.add(reviewCase.review_case_id);
       void bffFetch<PossibleMatchDetail>(
         `/bff/persons/${encodeURIComponent(personId)}/shared-identifiers/${encodeURIComponent(candidateId)}/detail`,
         { signal: controller.signal },
@@ -2474,26 +2487,28 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
         })
         .catch((e: unknown) => {
           setRecommendedErrors((prev) => ({ ...prev, [reviewCase.review_case_id]: e instanceof Error ? e.message : "Failed to load match comparison." }));
-        });
+        }).finally(() => { recommendedDetailInFlight.current.delete(reviewCase.review_case_id); });
     }
     return () => controller.abort();
-  }, [personId, recommendedDetails, recommendedErrors, recommendedReviewCases]);
+  }, [personId, recommendedCaseKey, recommendedReviewCases]);
 
   useEffect(() => {
     const missingIds = recommendedReviewCases
       .map((rc) => rc.review_case_id)
-      .filter((id) => reviewCaseDetails[id] === undefined);
+      .filter((id) => !reviewCaseDetailInFlight.current.has(id));
     if (missingIds.length === 0) return;
     const controller = new AbortController();
     for (const id of missingIds) {
+      reviewCaseDetailInFlight.current.add(id);
       void bffFetch<ReviewCaseDetail>(`/bff/review-cases/${encodeURIComponent(id)}`, {
         signal: controller.signal,
       })
         .then((detail) => { setReviewCaseDetails((prev) => ({ ...prev, [id]: detail })); })
-        .catch(() => undefined);
+        .catch(() => undefined)
+        .finally(() => { reviewCaseDetailInFlight.current.delete(id); });
     }
     return () => controller.abort();
-  }, [recommendedReviewCases, reviewCaseDetails]);
+  }, [personId, recommendedCaseKey, recommendedReviewCases]);
 
   const toggleCandidate = useCallback((candidateId: string): void => {
     if (expandedCandidate === candidateId) {

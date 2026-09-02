@@ -293,6 +293,8 @@ export interface EntitySummary {
   last_ingested_at: string | null;
   active_review_cases: number;
 }
+export interface EntityMetadata { entity_key: string; display_name: string | null; entity_type: string | null; country_code: string | null; is_active: boolean; }
+export interface EntityMetrics { entity_key: string; person_count: number; source_record_count: number; last_ingested_at: string | null; active_review_cases: number; }
 
 export interface EntityFilterOption {
   entity_key: string;

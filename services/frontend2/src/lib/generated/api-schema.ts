@@ -103,6 +103,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/entities/metadata": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List lightweight entity metadata */
+        get: operations["list_entity_metadata"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/entities/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List exact entity metrics */
+        get: operations["list_entity_metrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/persons/search": {
         parameters: {
             query?: never;
@@ -1643,6 +1677,28 @@ export interface components {
             /** @default  */
             updated_at: string;
         };
+        EntityMetadata: {
+            entity_key: string;
+            display_name: string | null;
+            entity_type: string | null;
+            country_code: string | null;
+            is_active: boolean;
+        };
+        EntityMetrics: {
+            entity_key: string;
+            person_count: number;
+            source_record_count: number;
+            last_ingested_at: string | null;
+            active_review_cases: number;
+        };
+        EntityMetadataListEnvelope: {
+            data: components["schemas"]["EntityMetadata"][];
+            meta: components["schemas"]["Meta"];
+        };
+        EntityMetricsListEnvelope: {
+            data: components["schemas"]["EntityMetrics"][];
+            meta: components["schemas"]["Meta"];
+        };
         PersonEntitySummary: {
             entity_key: string;
             display_name?: string | null;
@@ -2494,6 +2550,54 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["EntityFilterOptionsEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    list_entity_metadata: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Entity metadata without aggregate metrics */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityMetadataListEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    list_entity_metrics: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Exact entity aggregate metrics keyed by entity */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityMetricsListEnvelope"];
                 };
             };
             401: components["responses"]["Unauthorized"];

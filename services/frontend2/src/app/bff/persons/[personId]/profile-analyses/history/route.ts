@@ -14,6 +14,6 @@ export async function GET(request: Request, context: RouteContext): Promise<Next
   const { searchParams } = new URL(request.url);
   return proxyToApi<ProfileAnalysisHistoryItem[]>(
     `/persons/${encodeURIComponent(personId)}/profile-analyses/history`,
-    { query: searchParamsToQuery(searchParams) },
+    { query: searchParamsToQuery(searchParams), signal: request.signal },
   );
 }

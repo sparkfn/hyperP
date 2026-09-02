@@ -155,3 +155,41 @@ async def test_disconnect_cancels_downstream_handler_promptly() -> None:
         await task
     assert cancelled.is_set()
     assert sent == []
+
+
+@pytest.mark.anyio
+async def test_bounded_read_ahead_and_full_queue_disconnect_cancellation() -> None:
+    calls = 0
+    second_read = asyncio.Event()
+    allow_second_receive = asyncio.Event()
+    cancelled = asyncio.Event()
+    events: list[Message] = [
+        {"type": "http.request", "body": b"", "more_body": False},
+        {"type": "http.request", "body": b"one", "more_body": True},
+        {"type": "http.disconnect"},
+    ]
+
+    async def receive() -> Message:
+        nonlocal calls
+        calls += 1
+        if calls == 2:
+            second_read.set()
+            await allow_second_receive.wait()
+        return events.pop(0)
+
+    async def downstream(_scope: Scope, receive_fn: Receive, _send: Send) -> None:
+        await receive_fn()
+        try:
+            await asyncio.Event().wait()
+        except asyncio.CancelledError:
+            cancelled.set()
+            raise
+
+    middleware = RequestTimingMiddleware(downstream)
+    task = asyncio.create_task(middleware(_scope([]), receive, lambda _message: asyncio.sleep(0)))
+    await asyncio.wait_for(second_read.wait(), timeout=1)
+    assert calls == 2
+    allow_second_receive.set()
+    with pytest.raises(asyncio.CancelledError):
+        await asyncio.wait_for(task, timeout=1)
+    assert cancelled.is_set()

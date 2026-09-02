@@ -889,3 +889,16 @@ def test_completeness_score_predicate_composes_with_scalar_and_entity_filters() 
     assert "p.is_high_value = $is_high_value" in scalar
     assert "e.entity_key IN $entity_keys" in entity
     assert "ss.source_key IN $source_keys" in source_count
+
+
+def test_identifier_pagination_has_complete_deterministic_provenance_tiebreakers() -> None:
+    from src.graph.queries.persons import GET_PERSON_IDENTIFIERS
+
+    order = GET_PERSON_IDENTIFIERS.split("SKIP $skip", maxsplit=1)[0]
+    assert "coalesce(source_system_key, '')" in order
+    assert "coalesce(last_confirmed_at" in order
+    assert "coalesce(toString(source_record_pks), '')" in order
+    final_order = GET_PERSON_IDENTIFIERS.rsplit("ORDER BY", maxsplit=1)[1]
+    assert "coalesce(item.source_system_key, '')" in final_order
+    assert "coalesce(item.last_confirmed_at" in final_order
+    assert "coalesce(toString(item.source_record_pks), '')" in final_order

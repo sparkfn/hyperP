@@ -506,13 +506,17 @@ ORDER BY e.display_name
 
 GET_PERSON_IDENTIFIERS = """
 MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY]->(id:Identifier)
+WITH id, rel
+ORDER BY coalesce(rel.source_record_pk, '')
 WITH id,
      rel.is_active AS is_active,
      rel.is_verified AS is_verified,
      rel.last_confirmed_at AS last_confirmed_at,
      rel.source_system_key AS source_system_key,
      collect(DISTINCT rel.source_record_pk) AS source_record_pks
-ORDER BY is_active DESC, id.identifier_type, id.normalized_value
+ORDER BY is_active DESC, id.identifier_type, id.normalized_value,
+         coalesce(source_system_key, ''), coalesce(last_confirmed_at, datetime('1970-01-01T00:00:00Z')),
+         coalesce(toString(source_record_pks), '')
 SKIP $skip LIMIT $limit
 WITH collect({
   identifier: id,
@@ -587,7 +591,10 @@ RETURN item.identifier.identifier_type AS identifier_type,
        source_records AS source_records
 ORDER BY item.is_active DESC,
          item.identifier.identifier_type,
-         item.identifier.normalized_value
+         item.identifier.normalized_value,
+         coalesce(item.source_system_key, ''),
+         coalesce(item.last_confirmed_at, datetime('1970-01-01T00:00:00Z')),
+         coalesce(toString(item.source_record_pks), '')
 """
 GET_PERSON_SHARED_IDENTIFIERS = """
 MATCH (p:Person {person_id: $person_id})-[p_identifier:IDENTIFIED_BY]->(id:Identifier)
