@@ -42,6 +42,10 @@ _GENERIC_RELATIONSHIP_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"(?:<-|-)\s*\[\s*(?P<name>[A-Za-z_]\w*)\s*"
     r"(?:\*[^]]*)?(?:\{[^]]*\})?\s*\]\s*(?:->|-)"
 )
+_ANONYMOUS_RELATIONSHIP_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"(?:<-|-)\s*\[\s*(?:\*[^]]*)?\]\s*(?:->|-)"
+    r"|\)\s*(?:<--|-->|--)\s*\("
+)
 _WRITE_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b(?:CREATE|MERGE|SET|DELETE|REMOVE)\b")
 _ACTIVE_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"coalesce\s*\([^)]*\.is_active\s*,\s*true\s*\)\s*=\s*true"
@@ -51,7 +55,6 @@ _ACTIVE_PATTERN: Final[re.Pattern[str]] = re.compile(
 # that reads a repairable relationship must update this contract and its tests.
 _AUDIT_READERS: Final[frozenset[str]] = frozenset(
     {
-        "api/graph/queries/graph.py:_QUERY_BODY",
         "api/graph/queries/review.py:GET_PENDING_REVIEW_RECORD",
         "ingestion/graph/fundbox_source_migration.py:CHECK_LEGACY_SOURCE_LINKS",
         "ingestion/graph/queries/crm_deal_identity_repair.py:INVENTORY_ACTIVE_CRM_DEALS",
@@ -84,6 +87,7 @@ _AUDIT_READERS: Final[frozenset[str]] = frozenset(
 
 _AUTHORITATIVE_READERS: Final[frozenset[str]] = frozenset(
     """api/graph/queries/crm.py:GET_PERSON_CRM_METRICS
+api/graph/queries/graph.py:_QUERY_BODY
 api/graph/queries/crm.py:_daily_buckets
 api/graph/queries/entities.py:LIST_ENTITIES
 api/graph/queries/entities.py:LIST_FILTER_SOURCE_SYSTEMS
@@ -255,6 +259,7 @@ ingestion/graph/queries/crm_deal_identity_repair_rollback.py:READ_ROLLBACK_CURRE
 ingestion/graph/queries/crm_deal_identity_repair_rollback.py:RESTORE_PREEXISTING_RELATIONSHIPS
 ingestion/graph/queries/crm_deal_identity_repair_rollback.py:MAKE_MUTATION_EVIDENCE_HISTORICAL
 ingestion/graph/queries/identifier_scope_migrations.py:MIGRATE_CRM_IDENTIFIER_RELATIONSHIPS_BATCH
+ingestion/graph/queries/identifier_scope_migrations.py:DELETE_EMPTY_UNSCOPED_CRM_IDENTIFIERS_BATCH
 ingestion/graph/queries/identifier_scope_migrations.py:CONSOLIDATE_SCOPED_IDENTIFIER_DUPLICATES_BATCH
 ingestion/graph/queries/knows.py:REWIRE_KNOWS_OUT
 ingestion/graph/queries/knows.py:RETIRE_KNOWS_PROJECTION
@@ -462,10 +467,11 @@ def _generic_repairable_relationship_read(query: str) -> bool:
     ``type(...) IN [...]``, or compared with a dynamic type value. Such runtime
     constraints cannot prove that repairable relationship types are excluded.
     """
-    return any(
-        not _is_write_only_relationship(query, match.start())
-        for match in _GENERIC_RELATIONSHIP_PATTERN.finditer(query)
+    matches = (
+        *_GENERIC_RELATIONSHIP_PATTERN.finditer(query),
+        *_ANONYMOUS_RELATIONSHIP_PATTERN.finditer(query),
     )
+    return any(not _is_write_only_relationship(query, match.start()) for match in matches)
 
 
 def _has_active_predicate(reader: RelationshipReader) -> bool:
@@ -477,10 +483,26 @@ def _has_active_predicate(reader: RelationshipReader) -> bool:
     per-binding active predicate.
     """
     bindings = _relationship_read_bindings(reader.query)
-    if not bindings:
+    generic_bindings = tuple(
+        match
+        for match in _GENERIC_RELATIONSHIP_PATTERN.finditer(reader.query)
+        if not _is_write_only_relationship(reader.query, match.start())
+    )
+    anonymous_bindings = tuple(
+        match
+        for match in _ANONYMOUS_RELATIONSHIP_PATTERN.finditer(reader.query)
+        if not _is_write_only_relationship(reader.query, match.start())
+    )
+    if not bindings and not generic_bindings and not anonymous_bindings:
         return False
-    if _generic_repairable_relationship_read(reader.query):
-        return False
+    for match in generic_bindings:
+        if not _binding_has_active_predicate(
+            match.group("name"), reader.identifier, reader.query, match.start()
+        ):
+            return False
+    for match in anonymous_bindings:
+        if not _anonymous_path_has_active_predicate(reader.query, match.start()):
+            return False
     exempt_bindings = _EXEMPT_MUTATION_READ_BINDINGS.get(reader.identifier, frozenset())
     for match in bindings:
         binding = match.group("name")
@@ -496,6 +518,32 @@ def _has_active_predicate(reader: RelationshipReader) -> bool:
         ):
             return False
     return True
+
+
+def _anonymous_path_has_active_predicate(query: str, occurrence: int) -> bool:
+    """Recognize active filtering over the relationships of an anonymous path."""
+    scope = _relationship_scope(query, occurrence)
+    path_matches = tuple(
+        re.finditer(r"\b(?:OPTIONAL\s+)?MATCH\s+(?P<path>[A-Za-z_]\w*)\s*=", scope, re.IGNORECASE)
+    )
+    if not path_matches:
+        return False
+    path = path_matches[-1].group("path")
+    for predicate in re.finditer(
+        rf"ALL\s*\(\s*(?P<binding>[A-Za-z_]\w*)\s+IN\s+relationships\s*"
+        rf"\(\s*{re.escape(path)}\s*\)\s+WHERE",
+        scope,
+        re.IGNORECASE,
+    ):
+        binding = predicate.group("binding")
+        if re.search(
+            rf"coalesce\s*\(\s*{re.escape(binding)}\.is_active\s*,\s*true\s*\)"
+            rf"\s*=\s*true",
+            scope[predicate.end() :],
+            re.IGNORECASE,
+        ):
+            return True
+    return False
 
 
 def _binding_has_active_predicate(

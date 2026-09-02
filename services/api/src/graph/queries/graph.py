@@ -39,6 +39,18 @@ _EXCLUDED_REL_TYPES = (
 )
 
 _REL_FILTER = " AND ".join(f"type(r) <> '{rt}'" for rt in _EXCLUDED_REL_TYPES)
+_REPAIRABLE_REL_TYPES = (
+    "LINKED_TO",
+    "IDENTIFIED_BY",
+    "LIVES_AT",
+    "HAS_FACT",
+    "KNOWS",
+    "PURCHASED",
+    "BOUGHT_VEHICLE",
+    "OWNS_VEHICLE",
+    "MENTIONS_VEHICLE",
+)
+_REPAIRABLE_REL_TYPE_LIST = "[" + ", ".join(repr(value) for value in _REPAIRABLE_REL_TYPES) + "]"
 
 # Dead-end labels: these nodes can appear at the END of a path but must not
 # be intermediate waypoints. This prevents fan-out through shared nodes
@@ -59,7 +71,8 @@ CALL {{
   WITH start
   MATCH path = (start)-[*1..{max_hops}]-(n)
   WHERE {label_filter}
-    AND ALL(r IN relationships(path) WHERE {rel_filter})
+    AND ALL(r IN relationships(path) WHERE {rel_filter}
+      AND (type(r) NOT IN {repairable_rel_types} OR coalesce(r.is_active, true) = true))
     AND {dead_end_filter}
   WITH DISTINCT start, n
   LIMIT {node_cap}
@@ -73,6 +86,7 @@ UNWIND unique_nodes AS a
 OPTIONAL MATCH (a)-[r]-(b)
 WHERE b IN unique_nodes
   AND elementId(a) < elementId(b)
+  AND (type(r) NOT IN {repairable_rel_types} OR coalesce(r.is_active, true) = true)
 WITH unique_nodes, collect(DISTINCT r) AS unique_rels
 UNWIND unique_nodes AS node
 WITH collect(DISTINCT {{
@@ -103,6 +117,7 @@ _NODE_START = """MATCH (start) WHERE elementId(start) = $element_id
 _FMT: dict[str, str | int] = {
     "label_filter": _LABEL_FILTER,
     "rel_filter": _REL_FILTER,
+    "repairable_rel_types": _REPAIRABLE_REL_TYPE_LIST,
     "dead_end_filter": _DEAD_END_FILTER,
     "node_cap": _NODE_CAP,
 }
