@@ -35,18 +35,10 @@ _CLAUSE_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"|\bCALL\s*(?:\{|\([^)]*\)\s*\{)",
     re.IGNORECASE,
 )
-_RELATIONSHIP_BINDING_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"\[\s*(?:(?P<name>[A-Za-z_]\w*)\s*)?:\s*(?:" + _RELATIONSHIP_TYPES + r")\b"
+_BRACKETED_RELATIONSHIP_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"(?:<-|-)\s*\[(?P<filler>.*?)\]\s*(?:->|-)", re.DOTALL
 )
-_GENERIC_RELATIONSHIP_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"(?:<-|-)\s*\[\s*(?P<name>[A-Za-z_]\w*)\s*"
-    r"(?:\*[^]]*)?(?:\{[^]]*\})?\s*\]\s*(?:->|-)"
-)
-_ANONYMOUS_RELATIONSHIP_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"(?:<-|-)\s*\[(?P<filler>.*?)\]\s*(?:->|-)"
-    r"|\)\s*(?:<--|-->|--)\s*\(",
-    re.DOTALL,
-)
+_BARE_RELATIONSHIP_PATTERN: Final[re.Pattern[str]] = re.compile(r"\)\s*(?:<--|-->|--)\s*\(")
 _WRITE_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b(?:CREATE|MERGE|SET|DELETE|REMOVE)\b")
 _ACTIVE_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"coalesce\s*\([^)]*\.is_active\s*,\s*true\s*\)\s*=\s*true"
@@ -251,6 +243,7 @@ ingestion/graph/fundbox_source_migration.py:REWRITE_SOURCE_PROVENANCE
 ingestion/graph/fundbox_source_migration.py:REWRITE_SOURCE_RECORD_REFERENCES
 ingestion/graph/migrations.py:DEDUPLICATE_LEGACY_BITRIX_PROJECTIONS
 ingestion/graph/migrations.py:REWRITE_LEGACY_BITRIX_PROJECTION_KEYS
+ingestion/graph/migrations.py:REWRITE_DIRECT_BITRIX_PROJECTION_KEYS
 ingestion/graph/migrations.py:MIGRATE_PROJECTION_RELATIONSHIP_LIFECYCLE
 ingestion/graph/migrations.py:RECONCILE_PROJECTION_RELATIONSHIP_LIFECYCLE
 ingestion/graph/queries/crm_deal_identity_repair_mutation.py:READ_LOCKED_REPAIR_AUTHORITY
@@ -290,6 +283,14 @@ def approved_reader_sources(repository_root: Path) -> tuple[Path, ...]:
     if not api.is_dir() or not ingestion.is_dir():
         raise RuntimeError(f"unresolvable repository reader root: {repository_root}")
     return tuple(sorted((*api.rglob("*.py"), *ingestion.rglob("*.py"))))
+
+
+@dataclass(frozen=True)
+class _RelationshipOccurrence:
+    """One complete Cypher relationship pattern occurrence."""
+
+    start: int
+    name: str | None
 
 
 @dataclass(frozen=True)
@@ -432,19 +433,47 @@ def _source_segment(source: str, node: ast.AST, file_path: Path) -> str:
 
 def _is_relationship_read(query: str) -> bool:
     """Discover every repairable relationship pattern that is not write-only."""
-    return bool(
-        _READ_PATTERN.search(query)
-        and (_relationship_read_bindings(query) or _generic_repairable_relationship_read(query))
+    return bool(_READ_PATTERN.search(query) and _relationship_read_occurrences(query))
+
+
+def _relationship_read_occurrences(query: str) -> tuple[_RelationshipOccurrence, ...]:
+    """Parse complete relationship patterns and retain possible repairable reads."""
+    occurrences = [
+        _RelationshipOccurrence(match.start(), name)
+        for match in _BRACKETED_RELATIONSHIP_PATTERN.finditer(query)
+        if (name := _repairable_pattern_name(match.group("filler"))) is not False
+    ]
+    occurrences.extend(
+        _RelationshipOccurrence(match.start(), None)
+        for match in _BARE_RELATIONSHIP_PATTERN.finditer(query)
     )
-
-
-def _relationship_read_bindings(query: str) -> tuple[re.Match[str], ...]:
-    """Return repairable relationship bindings outside CREATE/MERGE clauses."""
     return tuple(
-        match
-        for match in _RELATIONSHIP_BINDING_PATTERN.finditer(query)
-        if not _is_write_only_relationship(query, match.start())
+        occurrence
+        for occurrence in sorted(occurrences, key=lambda item: item.start)
+        if not _is_write_only_relationship(query, occurrence.start)
     )
+
+
+def _repairable_pattern_name(filler: str) -> str | None | Literal[False]:
+    """Return a binding name, anonymous marker, or proven non-repairable result."""
+    value = filler.strip()
+    if not value:
+        return None
+    leading_name = re.match(r"(?P<name>[A-Za-z_]\w*)", value)
+    name: str | None = None
+    remainder = value
+    if leading_name is not None and leading_name.group("name").upper() != "WHERE":
+        name = leading_name.group("name")
+        remainder = value[leading_name.end() :].lstrip()
+    if not remainder.startswith(":"):
+        return name
+    type_expression = re.split(r"\{|\bWHERE\b|\*", remainder, maxsplit=1, flags=re.IGNORECASE)[0]
+    if re.search(r":\s*\$\(", type_expression):
+        return name
+    static_types = re.findall(r"(?::|\|)\s*([A-Za-z_]\w*)", type_expression)
+    if not static_types or any(_RELATIONSHIP_PATTERN.fullmatch(item) for item in static_types):
+        return name
+    return False
 
 
 def _is_write_only_relationship(query: str, position: int) -> bool:
@@ -461,49 +490,6 @@ def _is_write_only_relationship(query: str, position: int) -> bool:
     return bool(clauses) and clauses[-1] == "CREATE"
 
 
-def _generic_repairable_relationship_read(query: str) -> bool:
-    """Detect untyped relationship reads that may traverse repairable links.
-
-    An untyped binding remains in scope whether it is unrestricted, narrowed by
-    ``type(...) IN [...]``, or compared with a dynamic type value. Such runtime
-    constraints cannot prove that repairable relationship types are excluded.
-    """
-    matches = (
-        *_GENERIC_RELATIONSHIP_PATTERN.finditer(query),
-        *_anonymous_relationship_read_patterns(query),
-    )
-    return any(not _is_write_only_relationship(query, match.start()) for match in matches)
-
-
-def _anonymous_relationship_read_patterns(query: str) -> tuple[re.Match[str], ...]:
-    """Return anonymous patterns whose filler may select a repairable type."""
-    return tuple(
-        match
-        for match in _ANONYMOUS_RELATIONSHIP_PATTERN.finditer(query)
-        if _anonymous_filler_may_be_repairable(match.groupdict().get("filler"))
-    )
-
-
-def _anonymous_filler_may_be_repairable(filler: str | None) -> bool:
-    """Reject only fillers proven to name exclusively static non-repairable types."""
-    if filler is None:
-        return True
-    value = filler.strip()
-    if not value:
-        return True
-    # A leading variable is handled by the named generic/static binding scanners.
-    leading_name = re.match(r"[A-Za-z_]\w*", value)
-    if leading_name is not None and leading_name.group().upper() != "WHERE":
-        return False
-    if not value.startswith(":"):
-        return True
-    type_expression = re.split(r"\{|\bWHERE\b|\*", value, maxsplit=1, flags=re.IGNORECASE)[0]
-    if re.search(r":\s*\$\(", type_expression):
-        return True
-    static_types = re.findall(r"(?::|\|)\s*([A-Za-z_]\w*)", type_expression)
-    return not static_types or any(_RELATIONSHIP_PATTERN.fullmatch(item) for item in static_types)
-
-
 def _has_active_predicate(reader: RelationshipReader) -> bool:
     """Require every explicitly bound repairable link to be current-active.
 
@@ -512,39 +498,22 @@ def _has_active_predicate(reader: RelationshipReader) -> bool:
     fragments remain allowed because they are the repository's canonical
     per-binding active predicate.
     """
-    bindings = _relationship_read_bindings(reader.query)
-    generic_bindings = tuple(
-        match
-        for match in _GENERIC_RELATIONSHIP_PATTERN.finditer(reader.query)
-        if not _is_write_only_relationship(reader.query, match.start())
-    )
-    anonymous_bindings = tuple(
-        match
-        for match in _anonymous_relationship_read_patterns(reader.query)
-        if not _is_write_only_relationship(reader.query, match.start())
-    )
-    if not bindings and not generic_bindings and not anonymous_bindings:
+    occurrences = _relationship_read_occurrences(reader.query)
+    if not occurrences:
         return False
-    for match in generic_bindings:
-        if not _binding_has_active_predicate(
-            match.group("name"), reader.identifier, reader.query, match.start()
-        ):
-            return False
-    for match in anonymous_bindings:
-        if not _anonymous_path_has_active_predicate(reader.query, match.start()):
-            return False
     exempt_bindings = _EXEMPT_MUTATION_READ_BINDINGS.get(reader.identifier, frozenset())
-    for match in bindings:
-        binding = match.group("name")
-        if binding is None:
-            return False
-        if binding in exempt_bindings:
+    for occurrence in occurrences:
+        if occurrence.name is None:
+            if not _anonymous_path_has_active_predicate(reader.query, occurrence.start):
+                return False
+            continue
+        if occurrence.name in exempt_bindings:
             continue
         if not _binding_has_active_predicate(
-            binding,
+            occurrence.name,
             reader.identifier,
             reader.query,
-            match.start(),
+            occurrence.start,
         ):
             return False
     return True

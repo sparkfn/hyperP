@@ -403,51 +403,68 @@ def test_rollback_generic_relationship_readers_are_exhaustively_classified() -> 
     }
 
 
-def test_unclassified_generic_relationship_readers_fail_closed(tmp_path: Path) -> None:
+def test_relationship_pattern_filler_matrix_is_exhaustive_and_fails_closed(
+    tmp_path: Path,
+) -> None:
     module = tmp_path / "services" / "api" / "src" / "graph" / "queries" / "generic.py"
     module.parent.mkdir(parents=True)
+    cases = (
+        ("NAMED_EMPTY", "MATCH (a)-[rel]->(b) RETURN rel", True),
+        ("NAMED_STATIC_REPAIRABLE", "MATCH (a)-[rel:LINKED_TO]->(b) RETURN rel", True),
+        ("NAMED_STATIC_NON_REPAIRABLE", "MATCH (a)-[rel:CHILD_OF]->(b) RETURN rel", False),
+        (
+            "NAMED_COMPOUND_REPAIRABLE",
+            "MATCH (a)-[rel:CHILD_OF|LINKED_TO]->(b) RETURN rel",
+            True,
+        ),
+        (
+            "NAMED_COMPOUND_NON_REPAIRABLE",
+            "MATCH (a)-[rel:CHILD_OF|FROM_SOURCE]->(b) RETURN rel",
+            False,
+        ),
+        ("NAMED_DYNAMIC", "MATCH (a)-[rel:$(relationship_type)]->(b) RETURN rel", True),
+        ("NAMED_PROPERTY", "MATCH (a)-[rel {source_record_pk: $pk}]->(b) RETURN rel", True),
+        ("NAMED_PREDICATE", "MATCH (a)-[rel WHERE rel.is_active]->(b) RETURN rel", True),
+        ("NAMED_LENGTH", "MATCH (a)-[rel*1..2]->(b) RETURN rel", True),
+        ("ANONYMOUS_EMPTY", "MATCH (a)-->(b) RETURN b", True),
+        ("ANONYMOUS_REVERSE", "MATCH (a)<--(b) RETURN b", True),
+        ("ANONYMOUS_UNDIRECTED", "MATCH (a)--(b) RETURN b", True),
+        ("ANONYMOUS_STATIC_REPAIRABLE", "MATCH (a)-[:LINKED_TO]->(b) RETURN b", True),
+        ("ANONYMOUS_STATIC_NON_REPAIRABLE", "MATCH (a)-[:CHILD_OF]->(b) RETURN b", False),
+        (
+            "ANONYMOUS_COMPOUND_REPAIRABLE",
+            "MATCH (a)-[:CHILD_OF|LINKED_TO]->(b) RETURN b",
+            True,
+        ),
+        (
+            "ANONYMOUS_COMPOUND_NON_REPAIRABLE",
+            "MATCH (a)-[:CHILD_OF|FROM_SOURCE]->(b) RETURN b",
+            False,
+        ),
+        ("ANONYMOUS_DYNAMIC", "MATCH (a)-[:$(relationship_type)]->(b) RETURN b", True),
+        ("ANONYMOUS_PROPERTY", "MATCH (a)-[{source_record_pk: $pk}]-(b) RETURN b", True),
+        ("ANONYMOUS_PREDICATE", "MATCH (a)-[WHERE true]->(b) RETURN b", True),
+        ("ANONYMOUS_LENGTH", "MATCH (a)-[*1..2]->(b) RETURN b", True),
+        ("CREATE_NAMED_PROPERTY", "CREATE (a)-[rel {source_record_pk: $pk}]->(b)", False),
+        ("CREATE_ANONYMOUS_PROPERTY", "CREATE (a)-[{source_record_pk: $pk}]->(b)", False),
+        (
+            "NODE_CREATE_THEN_READ_NAMED",
+            "CREATE (seed:Person) WITH seed MATCH (a)-[rel:$(relationship_type)]->(b) RETURN b",
+            True,
+        ),
+        (
+            "NODE_CREATE_THEN_READ_ANONYMOUS",
+            "CREATE (seed:Person) WITH seed MATCH (a)-[{source_record_pk: $pk}]->(b) RETURN b",
+            True,
+        ),
+    )
     module.write_text(
-        'UNRESTRICTED = """MATCH (left)-[relationship]->(right) RETURN relationship"""\n'
-        'TYPE_IN = """MATCH (left)-[relationship]->(right) '
-        "WHERE type(relationship) IN ['LINKED_TO', 'HAS_FACT'] RETURN relationship"
-        '"""\n'
-        'DYNAMIC = """MATCH (left)-[relationship]->(right) '
-        'WHERE type(relationship) = item.relationship_type RETURN relationship"""\n'
-        'UNDIRECTED = """MATCH (left)--(right) RETURN right"""\n'
-        'DIRECTED = """MATCH (left)-->(right) RETURN right"""\n'
-        'REVERSE = """MATCH (left)<--(right) RETURN right"""\n'
-        'VARIABLE_LENGTH = """MATCH (left)-[*1..2]->(right) RETURN right"""\n'
-        'PROPERTY_DIRECTED = """MATCH (left)-[{is_active: true}]->(right) RETURN right"""\n'
-        'PROPERTY_UNDIRECTED = """MATCH (left)-[{source_record_pk: $pk}]-(right) '
-        'RETURN right"""\n'
-        'DYNAMIC_TYPE = """MATCH (left)-[:$(relationship_type)]->(right) RETURN right"""\n'
-        'INLINE_PREDICATE = """MATCH (left)-[{source_record_pk: $pk} WHERE true]->(right) '
-        'RETURN right"""\n'
-        'INLINE_ONLY = """MATCH (left)-[WHERE true]->(right) RETURN right"""\n'
-        'PURE_CREATE = """CREATE (left)-->(right) RETURN right"""\n'
-        'PURE_CREATE_PROPERTY = """CREATE (left)-[{is_active: true}]->(right) RETURN right"""\n'
-        'NODE_CREATE_THEN_READ = """CREATE (seed:Person) WITH seed '
-        'MATCH (left)-[{source_record_pk: $pk}]->(right) RETURN right"""\n'
-        'STATIC_NON_REPAIRABLE = """MATCH (left)-[:CHILD_OF {is_active: false}]->(right) '
-        'RETURN right"""\n',
+        "".join(f'{symbol} = """{query}"""\n' for symbol, query, _expected in cases),
         encoding="utf-8",
     )
 
-    assert {reader.symbol for reader in discover_relationship_readers(module)} == {
-        "UNRESTRICTED",
-        "TYPE_IN",
-        "DYNAMIC",
-        "UNDIRECTED",
-        "DIRECTED",
-        "REVERSE",
-        "VARIABLE_LENGTH",
-        "PROPERTY_DIRECTED",
-        "PROPERTY_UNDIRECTED",
-        "DYNAMIC_TYPE",
-        "INLINE_PREDICATE",
-        "INLINE_ONLY",
-        "NODE_CREATE_THEN_READ",
-    }
+    expected = {symbol for symbol, _query, discovered in cases if discovered}
+    assert {reader.symbol for reader in discover_relationship_readers(module)} == expected
     with pytest.raises(RuntimeError, match="unclassified relationship reader"):
         assert_reader_contract(module)
 
