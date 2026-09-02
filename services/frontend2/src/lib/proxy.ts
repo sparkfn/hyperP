@@ -17,6 +17,7 @@ import { UpstreamError, apiFetchWithTiming, type RequestOptions } from "./api-se
  */
 export async function proxyToApi<T>(path: string, options: RequestOptions = {}): Promise<NextResponse> {
   const startedAt = performance.now();
+  const fallbackRequestId = options.requestId ?? randomUUID();
   try {
     let authToken: string | null | undefined = options.authToken;
     if (authToken === undefined) {
@@ -26,35 +27,53 @@ export async function proxyToApi<T>(path: string, options: RequestOptions = {}):
     if (!authToken) {
       return NextResponse.json(
         { error: { code: "unauthorized", message: "Not signed in." } },
-        { status: 401 },
+        { status: 401, headers: timingHeaders(new Headers(), fallbackRequestId, startedAt) },
       );
     }
-    const requestId = options.requestId ?? randomUUID();
+    const requestId = fallbackRequestId;
     const { payload, responseHeaders } = await apiFetchWithTiming<T>(path, {
       ...options,
       authToken,
       requestId,
     });
-    const headers = new Headers();
-    headers.set("X-Request-Id", responseHeaders.get("x-request-id") ?? payload.meta.request_id ?? requestId);
-    headers.set("X-Bff-Upstream-Duration-Ms", `${(performance.now() - startedAt).toFixed(1)}`);
-    for (const header of ["x-api-duration-ms", "x-repository-duration-ms"]) {
-      const value = responseHeaders.get(header);
-      if (value !== null) headers.set(header, value);
-    }
+    const headers = timingHeaders(responseHeaders, payload.meta.request_id || requestId, startedAt);
     return NextResponse.json(payload, { headers });
   } catch (err: unknown) {
+    if (err instanceof Error && err.name === "AbortError") {
+      throw err;
+    }
     if (err instanceof UpstreamError) {
+      const headers = timingHeaders(
+        err.responseHeaders,
+        fallbackRequestId,
+        startedAt,
+      );
       return NextResponse.json(
         err.body ?? { error: { code: "upstream_error", message: err.message } },
-        { status: err.status },
+        { status: err.status, headers },
       );
     }
+    const headers = timingHeaders(new Headers(), fallbackRequestId, startedAt);
     return NextResponse.json(
       { error: { code: "internal_error", message: "Failed to reach API." } },
-      { status: 502 },
+      { status: 502, headers },
     );
   }
+}
+
+function timingHeaders(
+  upstreamHeaders: Headers,
+  fallbackRequestId: string,
+  startedAt: number,
+): Headers {
+  const headers = new Headers();
+  headers.set("X-Request-Id", upstreamHeaders.get("x-request-id") ?? fallbackRequestId);
+  headers.set("X-Bff-Upstream-Duration-Ms", `${(performance.now() - startedAt).toFixed(1)}`);
+  for (const header of ["x-api-duration-ms", "x-repository-duration-ms"]) {
+    const value = upstreamHeaders.get(header);
+    if (value !== null) headers.set(header, value);
+  }
+  return headers;
 }
 
 // Re-exported from the pure query-params module so BFF routes keep importing

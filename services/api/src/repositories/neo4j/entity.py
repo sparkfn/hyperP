@@ -19,6 +19,7 @@ from src.graph.queries import (
     LIST_FILTER_SOURCE_SYSTEMS,
     get_entity_persons_query,
 )
+from src.request_timing import create_detached_task
 from src.types import EntityFilterOption, EntityPerson, EntitySummary, SourceSystemSummary
 
 from ._utils import record_to_dict
@@ -29,6 +30,7 @@ class Neo4jEntityRepository:
         self._summary_cache: list[EntitySummary] | None = None
         self._summary_cache_expires_at = 0.0
         self._summary_cache_lock = asyncio.Lock()
+        self._summary_refresh_task: asyncio.Task[list[EntitySummary]] | None = None
 
     def _cached_summary(self) -> list[EntitySummary] | None:
         if self._summary_cache is None or monotonic() >= self._summary_cache_expires_at:
@@ -48,6 +50,9 @@ class Neo4jEntityRepository:
         cached = self._cached_summary()
         if cached is not None:
             return cached
+        if self._summary_cache is not None:
+            self._start_summary_refresh(ttl)
+            return [item.model_copy(deep=True) for item in self._summary_cache]
         async with self._summary_cache_lock:
             cached = self._cached_summary()
             if cached is not None:
@@ -56,6 +61,26 @@ class Neo4jEntityRepository:
             self._summary_cache = loaded
             self._summary_cache_expires_at = monotonic() + ttl
             return [item.model_copy(deep=True) for item in loaded]
+
+    def _start_summary_refresh(self, ttl: int) -> None:
+        if self._summary_refresh_task is not None and not self._summary_refresh_task.done():
+            return
+        task = create_detached_task(self._load_all())
+        self._summary_refresh_task = task
+
+        def store_result(completed: asyncio.Task[list[EntitySummary]]) -> None:
+            if self._summary_refresh_task is completed:
+                self._summary_refresh_task = None
+            if completed.cancelled():
+                return
+            try:
+                loaded = completed.result()
+            except Exception:
+                return
+            self._summary_cache = loaded
+            self._summary_cache_expires_at = monotonic() + ttl
+
+        task.add_done_callback(store_result)
 
     async def get_filter_options(self) -> list[EntityFilterOption]:
         async with get_session() as session:

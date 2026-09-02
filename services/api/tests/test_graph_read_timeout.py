@@ -7,7 +7,7 @@ from typing import cast
 import pytest
 from neo4j import AsyncSession, Query
 from src.graph.client import TimedAsyncSession
-from src.request_timing import begin_request, end_request
+from src.request_timing import begin_request, end_request, repository_duration_ms
 
 
 class _Session:
@@ -35,9 +35,9 @@ class _Session:
 async def test_read_session_wraps_cypher_with_configured_transaction_timeout(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    import src.graph.client as graph_client
+    from src.config import config
 
-    monkeypatch.setattr(graph_client.config, "neo4j_web_read_transaction_timeout_seconds", 12.5)
+    monkeypatch.setattr(config, "neo4j_web_read_transaction_timeout_seconds", 12.5)
     session = _Session()
     tokens = begin_request("request-read")
     try:
@@ -66,3 +66,15 @@ async def test_write_session_does_not_apply_the_web_read_timeout() -> None:
     await TimedAsyncSession(cast(AsyncSession, session), write=True).run("CREATE ()")
 
     assert session.query == "CREATE ()"
+
+
+@pytest.mark.anyio
+async def test_read_session_records_duration_after_session_close() -> None:
+    session = _Session()
+    token = begin_request("request-read")
+    try:
+        async with TimedAsyncSession(cast(AsyncSession, session), write=False) as timed:
+            await timed.run("RETURN 1")
+        assert repository_duration_ms() >= 0
+    finally:
+        end_request(token)
