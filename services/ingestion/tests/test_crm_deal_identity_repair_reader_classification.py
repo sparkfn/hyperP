@@ -59,6 +59,24 @@ def test_audit_allowlist_retains_repair_retirement_evidence() -> None:
     identifiers = set(readers)
     assert "api/graph/queries/sales_prediction_discovery.py:DISCOVERY_DEAL_RECORDS" in identifiers
     assert "api/graph/queries/users.py:GET_ENTITIES_FOR_REVIEW_CASE" in identifiers
+    assert (
+        "ingestion/graph/queries/crm_deal_identity_repair_verification.py:READ_RETIRED_RELATIONSHIP_SNAPSHOTS"
+        in audit_identifiers
+    )
+
+
+def test_new_authority_readers_remain_active_filtered() -> None:
+    readers = {
+        reader.identifier: reader
+        for reader in assert_reader_contract(*approved_reader_sources(_REPO_ROOT))
+    }
+    for identifier in (
+        "ingestion/graph/queries/pair_audit_recalc.py:READ_PAIR_AUDIT_BRIDGE",
+        "ingestion/graph/queries/persons.py:FETCH_ACTIVE_PERSON_AUTHORITY_WITH_OVERRIDES",
+    ):
+        reader = readers[identifier]
+        assert reader.classification == "authoritative"
+        assert _has_active_predicate(reader)
 
 
 def test_unclassified_reader_fails_closed(tmp_path: Path) -> None:

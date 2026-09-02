@@ -35,6 +35,16 @@ _AUDIT_READERS: Final[frozenset[str]] = frozenset(
         "ingestion/graph/queries/crm_deal_identity_repair.py:INVENTORY_ACTIVE_CRM_DEALS",
         "ingestion/graph/queries/crm_deal_identity_repair.py:INVENTORY_CRM_DEAL_PROJECTIONS",
         "ingestion/graph/queries/crm_deal_identity_repair_mutation.py:READ_REPAIRED_OWNER_IDS",
+        "ingestion/graph/queries/crm_deal_identity_repair_verification.py:READ_AFFECTED_PERSON_IDS",
+        "ingestion/graph/queries/crm_deal_identity_repair_verification.py:READ_APPLIED_REPLACEMENT_OWNER",
+        "ingestion/graph/queries/crm_deal_identity_repair_verification.py:READ_EXPECTED_AFFECTED_CRM_DEAL_COUNTS",
+        "ingestion/graph/queries/crm_deal_identity_repair_verification.py:READ_NEGATIVE_CONTROL_FULL_STATE",
+        "ingestion/graph/queries/crm_deal_identity_repair_verification.py:READ_NEGATIVE_CONTROL_SNAPSHOT",
+        "ingestion/graph/queries/crm_deal_identity_repair_verification.py:READ_PAIR_BRIDGE",
+        "ingestion/graph/queries/crm_deal_identity_repair_verification.py:READ_PRIMARY_POSTCONDITIONS",
+        "ingestion/graph/queries/crm_deal_identity_repair_verification.py:READ_RETIRED_RELATIONSHIP_SNAPSHOTS",
+        "ingestion/graph/queries/crm_deal_identity_repair_verification.py:READ_RUN_GRAPH_TOTALS",
+        "ingestion/graph/queries/crm_deal_identity_repair_verification.py:READ_SECONDARY_CONTEXT",
         "ingestion/graph/queries/merge.py:GET_AFFECTED_SOURCE_RECORDS",
         # Identifier detail intentionally presents retired projections as
         # evidence, including their is_active state and provenance.
@@ -120,6 +130,8 @@ ingestion/graph/queries/persons.py:FETCH_PERSON_IDENTIFIERS
 ingestion/graph/queries/persons.py:FETCH_PERSON_MATCH_ADDRESSES
 ingestion/graph/queries/persons.py:FETCH_PERSON_MATCH_FACTS
 ingestion/graph/queries/persons.py:FETCH_PERSON_MATCH_IDENTIFIERS
+ingestion/graph/queries/pair_audit_recalc.py:READ_PAIR_AUDIT_BRIDGE
+ingestion/graph/queries/persons.py:FETCH_ACTIVE_PERSON_AUTHORITY_WITH_OVERRIDES
 ingestion/graph/queries/profile_analysis_dirty.py:FIND_PROFILE_ANALYSIS_MERGE_AFFECTED_PERSON_IDS
 ingestion/graph/queries/sales.py:FIND_VEHICLE_CANDIDATES_FOR_SALES
 ingestion/graph/queries/sales.py:RESOLVE_SALES_CUSTOMER

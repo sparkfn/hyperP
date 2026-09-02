@@ -134,8 +134,6 @@ def _control_arguments() -> tuple[str, ...]:
         "run-1",
         "--owner-id",
         "owner-1",
-        "--control-token",
-        "token-1",
         "--expected-revision",
         "1",
         "--approval-id",

@@ -26,16 +26,24 @@ class WorkerInspector(Protocol):
     ) -> Mapping[str, Mapping[str, tuple[dict[str, JsonValue], ...]]]: ...
 
 
+@dataclass(frozen=True)
+class BrokerInspection:
+    """Canonical Redis/Kombu inventory and the topology used to obtain it."""
+
+    topology: dict[str, JsonValue]
+    observations: dict[str, tuple[dict[str, JsonValue], ...]]
+
+
 class BrokerInspector(Protocol):
-    def inspect(
-        self, selectors: tuple[str, ...]
-    ) -> Mapping[str, tuple[dict[str, JsonValue], ...]]: ...
+    def inspect(self, selectors: tuple[str, ...]) -> BrokerInspection: ...
 
 
 class _RedisInventory(Protocol):
     def lrange(self, name: str, start: int, end: int) -> list[object]: ...
 
     def hgetall(self, name: str) -> dict[object, object]: ...
+
+    def zrange(self, name: str, start: int, end: int) -> list[object]: ...
 
 
 @dataclass(frozen=True)
@@ -52,6 +60,7 @@ class TaskAbsenceEvidence:
     expected_workers: tuple[str, ...]
     responding_workers: tuple[str, ...]
     observations: dict[str, tuple[dict[str, JsonValue], ...]]
+    broker_topology: dict[str, JsonValue]
     broker_observations: dict[str, tuple[dict[str, JsonValue], ...]]
     inspected_at: str
     expires_at: str
@@ -94,6 +103,7 @@ class TaskAbsenceEvidence:
             "expected_workers": list(self.expected_workers),
             "responding_workers": list(self.responding_workers),
             "observations": _json_observations(self.observations),
+            "broker_topology": self.broker_topology,
             "broker_observations": _json_observations(self.broker_observations),
             "inspected_at": self.inspected_at,
             "expires_at": self.expires_at,
@@ -133,7 +143,9 @@ def collect_absence_evidence(
     instant = now or datetime.now(UTC)
     selectors = _selectors(captured_tasks)
     observations = _canonical_observations(worker.inspect(timeout_seconds))
-    broker_observations = _canonical_broker_observations(broker.inspect(selectors))
+    broker_inventory = broker.inspect(selectors)
+    broker_topology = _canonical_broker_topology(broker_inventory.topology)
+    broker_observations = _canonical_broker_observations(broker_inventory.observations)
     responders = tuple(sorted(observations))
     if responders != expected_workers:
         raise RuntimeError("repair expected workers did not all respond")
@@ -154,6 +166,7 @@ def collect_absence_evidence(
         "expected_workers": list(expected_workers),
         "responding_workers": list(responders),
         "observations": _json_observations(observations),
+        "broker_topology": broker_topology,
         "broker_observations": _json_observations(broker_observations),
         "inspected_at": inspected_at,
         "expires_at": expires_at,
@@ -174,6 +187,7 @@ def collect_absence_evidence(
         expected_workers,
         responders,
         observations,
+        broker_topology,
         broker_observations,
         inspected_at,
         expires_at,
@@ -249,9 +263,30 @@ class RedisCeleryBrokerInspector:
         import redis
 
         client = redis.Redis.from_url(self._broker_url, decode_responses=True)
-        ready = _redis_list_inventory(client, "ingestion")
-        unacked = _redis_hash_inventory(client, "unacked")
-        return {"ready": ready, "unacked": unacked}
+        # Kombu's Redis transport stores priority 0 at the bare queue name
+        # and nonzero priorities under its configured separator suffix.
+        # Inspect every configured priority list; a partial ready inventory is
+        # not admissible absence evidence.
+        ready = tuple(
+            delivery
+            for queue_name in _redis_priority_queue_names("ingestion")
+            for delivery in _redis_list_inventory(client, queue_name)
+        )
+        unacked_hash = "unacked"
+        unacked_index = "unacked_index"
+        unacked = _redis_unacked_inventory(client, unacked_hash, unacked_index)
+        topology: dict[str, JsonValue] = {
+            "ready_priority_keys": list(_redis_priority_queue_names("ingestion")),
+            "unacked_hash": unacked_hash,
+            "unacked_index": unacked_index,
+            "unacked_wrapper": "kombu-redis-json-v1",
+        }
+        return BrokerInspection(topology, {"ready": ready, "unacked": unacked})
+
+
+def _redis_priority_queue_names(queue_name: str) -> tuple[str, ...]:
+    """Return Kombu Redis default priority keys for the configured 0..9 topology."""
+    return (queue_name, *(f"{queue_name}\x06\x16{priority}" for priority in range(1, 10)))
 
 
 def _selectors(captured_tasks: tuple[CapturedTaskTopologyIdentity, ...]) -> tuple[str, ...]:
@@ -260,6 +295,8 @@ def _selectors(captured_tasks: tuple[CapturedTaskTopologyIdentity, ...]) -> tupl
     A repair ``run_id`` is a control-plane identity, not a Celery identity.
     The task fence instead names each captured generation/logical/attempt tuple.
     """
+    if not captured_tasks:
+        raise ValueError("captured task topology identities must be non-empty")
     if len(set(captured_tasks)) != len(captured_tasks):
         raise ValueError("captured task topology identities must be unique")
     return tuple(sorted(identity.selector() for identity in captured_tasks))
@@ -310,6 +347,29 @@ def _canonical_observations(
         )
         result[node] = tuple(sorted(tasks, key=lambda item: canonical_json_bytes(item)))
     return result
+
+
+def _canonical_broker_topology(raw: Mapping[str, JsonValue]) -> dict[str, JsonValue]:
+    required = {"ready_priority_keys", "unacked_hash", "unacked_index", "unacked_wrapper"}
+    if set(raw) != required:
+        raise RuntimeError("broker topology is unknown")
+    keys = raw["ready_priority_keys"]
+    if not isinstance(keys, list) or not all(isinstance(key, str) for key in keys):
+        raise RuntimeError("broker priority topology is malformed")
+    canonical_keys = list(_redis_priority_queue_names("ingestion"))
+    if (
+        keys != canonical_keys
+        or raw["unacked_hash"] != "unacked"
+        or raw["unacked_index"] != "unacked_index"
+        or raw["unacked_wrapper"] != "kombu-redis-json-v1"
+    ):
+        raise RuntimeError("broker topology is unsupported")
+    return {
+        "ready_priority_keys": canonical_keys,
+        "unacked_hash": "unacked",
+        "unacked_index": "unacked_index",
+        "unacked_wrapper": "kombu-redis-json-v1",
+    }
 
 
 def _canonical_broker_observations(
@@ -401,9 +461,36 @@ def _redis_list_inventory(client: object, key: str) -> tuple[dict[str, JsonValue
     return tuple(_decode_broker_delivery(value) for value in values)
 
 
-def _redis_hash_inventory(client: object, key: str) -> tuple[dict[str, JsonValue], ...]:
-    values = cast(_RedisInventory, client).hgetall(key)
-    return tuple(_decode_broker_delivery(value) for value in values.values())
+def _redis_unacked_inventory(
+    client: object, hash_key: str, index_key: str
+) -> tuple[dict[str, JsonValue], ...]:
+    inventory = cast(_RedisInventory, client)
+    values = inventory.hgetall(hash_key)
+    index = inventory.zrange(index_key, 0, -1)
+    normalized_keys = {
+        item if isinstance(item, str) else item.decode("utf-8") if isinstance(item, bytes) else None
+        for item in values
+    }
+    normalized_index = {
+        item if isinstance(item, str) else item.decode("utf-8") if isinstance(item, bytes) else None
+        for item in index
+    }
+    if None in normalized_keys or normalized_keys != normalized_index:
+        raise RuntimeError("broker unacked index/hash topology is inconsistent")
+    return tuple(_decode_unacked_delivery(value) for value in values.values())
+
+
+def _decode_unacked_delivery(value: object) -> dict[str, JsonValue]:
+    raw = value.encode("utf-8") if isinstance(value, str) else value
+    if not isinstance(raw, bytes):
+        raise RuntimeError("broker unacked delivery is malformed")
+    try:
+        wrapper = json.loads(raw)
+    except (TypeError, json.JSONDecodeError) as exc:
+        raise RuntimeError("broker unacked delivery is not JSON") from exc
+    if not isinstance(wrapper, list) or len(wrapper) != 3 or not isinstance(wrapper[0], str):
+        raise RuntimeError("broker unacked wrapper is unsupported")
+    return _decode_broker_delivery(wrapper[0])
 
 
 @dataclass(frozen=True)

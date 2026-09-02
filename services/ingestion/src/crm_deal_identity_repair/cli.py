@@ -39,7 +39,6 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--rollback-authority-policy")
     parser.add_argument("--run-id")
     parser.add_argument("--owner-id")
-    parser.add_argument("--control-token")
     parser.add_argument("--expected-revision", type=int)
     parser.add_argument("--approval-id")
     arguments = parser.parse_args(argv)
@@ -74,7 +73,7 @@ def _validate_arguments(parser: argparse.ArgumentParser, arguments: argparse.Nam
         if arguments.unit_ceiling < 1:
             parser.error("--unit-ceiling must be positive")
     if arguments.command in {"quiesce", "allocate", "pause", "resume"}:
-        required_control = ("run_id", "owner_id", "control_token", "expected_revision")
+        required_control = ("run_id", "owner_id", "expected_revision")
         if any(getattr(arguments, name) in (None, "") for name in required_control):
             parser.error(
                 f"{arguments.command} requires run ownership and expected revision arguments"

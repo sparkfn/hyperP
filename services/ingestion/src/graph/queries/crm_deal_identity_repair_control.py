@@ -25,10 +25,10 @@ WHERE unsettled = 0
     (existing IS NULL AND coalesce(dispatch.blocked, false) = false
       AND coalesce(dispatch.repair_revision, 0) = $expected_revision)
     OR
-    (existing IS NOT NULL AND existing.owner_id = $owner_id AND existing.token = $token
+    (existing IS NOT NULL AND existing.owner_id = $owner_id AND existing.token_digest = $token_digest
       AND existing.state IN ['quiescing', 'quiesced', 'allocated', 'paused']
       AND dispatch.repair_run_id = $run_id AND dispatch.repair_owner_id = $owner_id
-      AND dispatch.repair_token = $token
+      AND dispatch.repair_token_digest = $token_digest
       AND (
         (existing.revision = $expected_revision AND dispatch.repair_revision = $expected_revision)
         OR (existing.revision = $expected_revision + 1
@@ -37,11 +37,11 @@ WHERE unsettled = 0
   )
 MERGE (control:CrmDealRepairControl {run_id: $run_id})
 ON CREATE SET control.repair_id = $repair_id, control.control_instance_id = $control_instance_id,
-  control.owner_id = $owner_id, control.token = $token, control.boundary_digest = $boundary_digest,
+  control.owner_id = $owner_id, control.token_digest = $token_digest, control.boundary_digest = $boundary_digest,
   control.state = 'quiescing', control.revision = $expected_revision + 1, control.created_at = datetime()
 WITH dispatch, control, existing
 WHERE control.repair_id = $repair_id AND control.control_instance_id = $control_instance_id
-  AND control.owner_id = $owner_id AND control.token = $token AND control.boundary_digest = $boundary_digest
+  AND control.owner_id = $owner_id AND control.token_digest = $token_digest AND control.boundary_digest = $boundary_digest
 SET control.revision = CASE
   WHEN existing IS NULL THEN control.revision
   WHEN existing.revision = $expected_revision THEN control.revision + 1
@@ -50,20 +50,20 @@ END,
     control.state = CASE WHEN control.state = 'paused' THEN 'paused' ELSE 'quiescing' END,
     control.updated_at = datetime(),
     dispatch.blocked = true, dispatch.block_reason = 'crm_deal_identity_repair_quiesce',
-    dispatch.repair_run_id = $run_id, dispatch.repair_owner_id = $owner_id, dispatch.repair_token = $token,
+    dispatch.repair_run_id = $run_id, dispatch.repair_owner_id = $owner_id, dispatch.repair_token_digest = $token_digest,
     dispatch.repair_revision = control.revision, dispatch.updated_at = datetime()
 RETURN control.control_instance_id AS control_instance_id, control.run_id AS run_id,
-       control.owner_id AS owner_id, control.token AS token, control.revision AS revision,
+       control.owner_id AS owner_id, control.token_digest AS token_digest, control.revision AS revision,
        control.state AS state, control.boundary_digest AS boundary_digest
 """
 
 COMPLETE_QUIESCENCE = """
 MATCH (run:CrmDealRepairRun {repair_id: $repair_id, run_id: $run_id, status: 'qualified',
   boundary_digest: $boundary_digest, control_instance_id: $control_instance_id, execution_allowed: false})
-MATCH (control:CrmDealRepairControl {run_id: $run_id, owner_id: $owner_id, token: $token,
+MATCH (control:CrmDealRepairControl {run_id: $run_id, owner_id: $owner_id, token_digest: $token_digest,
   revision: $expected_revision, state: 'quiescing', boundary_digest: $boundary_digest})
 MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', control_instance_id: $control_instance_id,
-  blocked: true, repair_run_id: $run_id, repair_owner_id: $owner_id, repair_token: $token,
+  blocked: true, repair_run_id: $run_id, repair_owner_id: $owner_id, repair_token_digest: $token_digest,
   repair_revision: $expected_revision})
 MATCH (capture:CrmDealRepairTopologyCapture {run_id: $run_id, control_instance_id: $control_instance_id,
   topology_digest: $topology_digest})
@@ -224,7 +224,7 @@ SET control.state = 'quiesced', control.revision = control.revision + 1,
     control.topology_digest = $topology_digest, control.updated_at = datetime(),
     dispatch.repair_revision = control.revision, dispatch.updated_at = datetime()
 RETURN control.control_instance_id AS control_instance_id, control.run_id AS run_id,
-       control.owner_id AS owner_id, control.token AS token, control.revision AS revision,
+       control.owner_id AS owner_id, control.token_digest AS token_digest, control.revision AS revision,
        control.state AS state, control.boundary_digest AS boundary_digest,
        control.proof_payload_json AS proof_payload_json, control.proof_digest AS proof_digest,
        control.proof_hmac AS proof_hmac, control.proof_expires_at AS proof_expires_at
@@ -369,31 +369,43 @@ RETURN capture.captures_json AS captures_json
 """
 
 PAUSE_REPAIR_CONTROL = """
-MATCH (control:CrmDealRepairControl {run_id: $run_id, owner_id: $owner_id, token: $token,
-  revision: $expected_revision})
+MATCH (control:CrmDealRepairControl {run_id: $run_id, owner_id: $owner_id, token_digest: $token_digest})
+WHERE (control.revision = $expected_revision AND control.state IN ['quiesced', 'allocated'])
+   OR (control.revision = $expected_revision + 1 AND control.state = 'paused'
+       AND control.last_transition = 'pause'
+       AND control.last_transition_expected_revision = $expected_revision)
 MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', control_instance_id: control.control_instance_id,
-  blocked: true, repair_run_id: $run_id, repair_owner_id: $owner_id, repair_token: $token,
-  repair_revision: $expected_revision})
-WHERE control.state IN ['quiesced', 'allocated']
-SET control.paused_from_state = control.state, control.state = 'paused', control.revision = control.revision + 1,
-    control.updated_at = datetime(), dispatch.repair_revision = control.revision, dispatch.updated_at = datetime()
+  blocked: true, repair_run_id: $run_id, repair_owner_id: $owner_id, repair_token_digest: $token_digest,
+  repair_revision: control.revision})
+FOREACH (_ IN CASE WHEN control.revision = $expected_revision THEN [1] ELSE [] END |
+  SET control.paused_from_state = control.state, control.state = 'paused',
+      control.revision = control.revision + 1, control.last_transition = 'pause',
+      control.last_transition_expected_revision = $expected_revision, control.updated_at = datetime(),
+      dispatch.repair_revision = control.revision, dispatch.updated_at = datetime()
+)
 RETURN control.control_instance_id AS control_instance_id, control.run_id AS run_id,
-       control.owner_id AS owner_id, control.token AS token, control.revision AS revision,
+       control.owner_id AS owner_id, control.token_digest AS token_digest, control.revision AS revision,
        control.state AS state, control.boundary_digest AS boundary_digest
 """
 
 RESUME_REPAIR_CONTROL = """
-MATCH (control:CrmDealRepairControl {run_id: $run_id, owner_id: $owner_id, token: $token,
-  revision: $expected_revision, state: 'paused'})
+MATCH (control:CrmDealRepairControl {run_id: $run_id, owner_id: $owner_id, token_digest: $token_digest})
+WHERE (control.revision = $expected_revision AND control.state = 'paused'
+       AND control.paused_from_state IN ['quiesced', 'allocated'])
+   OR (control.revision = $expected_revision + 1 AND control.state IN ['quiesced', 'allocated']
+       AND control.last_transition = 'resume'
+       AND control.last_transition_expected_revision = $expected_revision)
 MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', control_instance_id: control.control_instance_id,
-  blocked: true, repair_run_id: $run_id, repair_owner_id: $owner_id, repair_token: $token,
-  repair_revision: $expected_revision})
-WHERE control.paused_from_state IN ['quiesced', 'allocated']
-SET control.state = control.paused_from_state, control.paused_from_state = NULL,
-    control.revision = control.revision + 1, control.updated_at = datetime(),
-    dispatch.repair_revision = control.revision, dispatch.updated_at = datetime()
+  blocked: true, repair_run_id: $run_id, repair_owner_id: $owner_id, repair_token_digest: $token_digest,
+  repair_revision: control.revision})
+FOREACH (_ IN CASE WHEN control.revision = $expected_revision THEN [1] ELSE [] END |
+  SET control.state = control.paused_from_state, control.paused_from_state = NULL,
+      control.revision = control.revision + 1, control.last_transition = 'resume',
+      control.last_transition_expected_revision = $expected_revision, control.updated_at = datetime(),
+      dispatch.repair_revision = control.revision, dispatch.updated_at = datetime()
+)
 RETURN control.control_instance_id AS control_instance_id, control.run_id AS run_id,
-       control.owner_id AS owner_id, control.token AS token, control.revision AS revision,
+       control.owner_id AS owner_id, control.token_digest AS token_digest, control.revision AS revision,
        control.state AS state, control.boundary_digest AS boundary_digest
 """
 
@@ -403,12 +415,12 @@ MATCH (run:CrmDealRepairRun {repair_id: $repair_id, run_id: $run_id, status: 'qu
 MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', control_instance_id: run.control_instance_id})
 SET dispatch.repair_allocation_lock = coalesce(dispatch.repair_allocation_lock, 0) + 1
 WITH run, dispatch
-MATCH (control:CrmDealRepairControl {run_id: $run_id, owner_id: $owner_id, token: $token,
+MATCH (control:CrmDealRepairControl {run_id: $run_id, owner_id: $owner_id, token_digest: $token_digest,
   revision: $expected_revision, boundary_digest: $boundary_digest})
 WHERE dispatch.blocked = true
   AND dispatch.repair_run_id = $run_id
   AND dispatch.repair_owner_id = $owner_id
-  AND dispatch.repair_token = $token
+  AND dispatch.repair_token_digest = $token_digest
   AND dispatch.repair_revision = $expected_revision
   AND control.control_instance_id = run.control_instance_id
   AND control.state IN ['quiesced', 'allocated']
@@ -465,7 +477,7 @@ SET control.state = 'allocated',
     control.updated_at = datetime(),
     dispatch.repair_revision = control.revision, dispatch.updated_at = datetime()
 RETURN control.control_instance_id AS control_instance_id, control.run_id AS run_id,
-       control.owner_id AS owner_id, control.token AS token, control.revision AS revision,
+       control.owner_id AS owner_id, control.token_digest AS token_digest, control.revision AS revision,
        control.state AS state, control.boundary_digest AS boundary_digest
 """
 
@@ -488,7 +500,7 @@ RETURN run.run_id AS run_id, run.status AS qualification_status, control.state A
 """
 
 READ_REPAIR_CONTROL_PROOF = """
-MATCH (control:CrmDealRepairControl {run_id: $run_id, owner_id: $owner_id, token: $token,
+MATCH (control:CrmDealRepairControl {run_id: $run_id, owner_id: $owner_id, token_digest: $token_digest,
   revision: $revision})
 WHERE control.state IN ['quiesced', 'allocated']
   AND control.proof_expires_at > datetime()

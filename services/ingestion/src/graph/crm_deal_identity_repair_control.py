@@ -119,7 +119,7 @@ class CrmDealRepairControlRepository:
                 repair_id=request.repair_id,
                 run_id=request.run_id,
                 owner_id=request.owner_id,
-                token=request.token,
+                token_digest=request.token,
                 expected_revision=request.expected_revision,
                 boundary_digest=boundary_digest,
                 control_instance_id=control_instance_id,
@@ -170,7 +170,7 @@ class CrmDealRepairControlRepository:
                 repair_id=request.repair_id,
                 run_id=request.run_id,
                 owner_id=request.owner_id,
-                token=request.token,
+                token_digest=request.token,
                 expected_revision=request.expected_revision,
                 boundary_digest=boundary_digest,
                 proof_digest=proof_digest,
@@ -243,7 +243,7 @@ class CrmDealRepairControlRepository:
                 READ_REPAIR_CONTROL_PROOF,
                 run_id=request.run_id,
                 owner_id=request.owner_id,
-                token=request.token,
+                token_digest=request.token,
                 revision=request.expected_revision,
             ).single()
             if record is None or not isinstance(record["proof_digest"], str):
@@ -485,7 +485,7 @@ class CrmDealRepairControlRepository:
                     repair_id=request.repair_id,
                     run_id=request.run_id,
                     owner_id=request.owner_id,
-                    token=request.token,
+                    token_digest=request.token,
                     expected_revision=request.expected_revision,
                     boundary_digest=boundary_digest,
                     control_instance_id=control_instance_id,
@@ -501,7 +501,7 @@ class CrmDealRepairControlRepository:
                     query,
                     run_id=request.run_id,
                     owner_id=request.owner_id,
-                    token=request.token,
+                    token_digest=request.token,
                     expected_revision=request.expected_revision,
                 ).single()
             )
@@ -517,7 +517,7 @@ def _lease(record: object) -> RepairDispatchLease:
         str(value["control_instance_id"]),
         str(value["run_id"]),
         str(value["owner_id"]),
-        str(value["token"]),
+        str(value["token_digest"]),
         _required_int(value["revision"], "dispatch revision"),
         _control_state(value["state"]),
         str(value["boundary_digest"]),
