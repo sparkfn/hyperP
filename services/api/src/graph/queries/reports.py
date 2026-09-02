@@ -146,8 +146,9 @@ SEED_REPORTS: list[dict[str, str]] = [
         ),
         "category": "sales",
         "cypher_query": (
-            "MATCH (p:Person)-[:PURCHASED]->(o:Order)\n"
+            "MATCH (p:Person)-[purchase:PURCHASED]->(o:Order)\n"
             "WHERE p.status = 'active'\n"
+            "  AND coalesce(purchase.is_active, true) = true\n"
             "WITH p,\n"
             "     count(o) AS order_count,\n"
             "     sum(o.total_amount) AS total_spend,\n"

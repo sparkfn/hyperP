@@ -7,6 +7,9 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+from src.graph.queries.persons import GET_PERSON_BY_ID
+from src.graph.queries.persons_list import _ORDER_COUNT
+
 _REPO_ROOT = Path(__file__).resolve().parents[3]
 _CLASSIFIER_PATH = (
     _REPO_ROOT
@@ -57,3 +60,10 @@ def test_api_audit_reader_is_explicitly_allowlisted_and_observable() -> None:
     assert review.classification == "audit"
     assert review.identifier in classifier._AUDIT_READERS
     assert "OPTIONAL MATCH (pending)-[:LINKED_TO]->(prior:Person)" in review.query
+
+
+def test_api_purchase_aggregates_bind_and_filter_active_relationships() -> None:
+    assert "[purchase:PURCHASED]" in GET_PERSON_BY_ID
+    assert "coalesce(purchase.is_active, true) = true" in GET_PERSON_BY_ID
+    assert "[purchase:PURCHASED]" in _ORDER_COUNT
+    assert "coalesce(purchase.is_active, true) = true" in _ORDER_COUNT

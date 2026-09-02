@@ -5,8 +5,10 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
+import src.crm_deal_identity_repair.reader_classification as reader_classification
 from src.crm_deal_identity_repair.reader_classification import (
     _AUDIT_READERS,
+    _AUTHORITATIVE_MUTATION_READERS,
     _AUTHORITATIVE_READERS,
     _MUTATION_READERS,
     RelationshipReader,
@@ -24,16 +26,25 @@ def test_all_executable_relationship_readers_are_explicitly_classified() -> None
 
     assert readers
     assert {reader.identifier for reader in readers} == (
-        _AUDIT_READERS | _AUTHORITATIVE_READERS | _MUTATION_READERS
+        _AUDIT_READERS
+        | _AUTHORITATIVE_READERS
+        | _AUTHORITATIVE_MUTATION_READERS
+        | _MUTATION_READERS
     )
     assert all(
-        reader.classification in {"authoritative", "audit", "mutation"} for reader in readers
+        reader.classification
+        in {"authoritative", "authoritative_mutation", "audit", "audit_mutation"}
+        for reader in readers
     )
 
 
 def test_authoritative_readers_exclude_inactive_relationships() -> None:
     readers = assert_reader_contract(*approved_reader_sources(_REPO_ROOT))
-    authoritative = [reader for reader in readers if reader.classification == "authoritative"]
+    authoritative = [
+        reader
+        for reader in readers
+        if reader.classification in {"authoritative", "authoritative_mutation"}
+    ]
 
     assert authoritative
     for reader in authoritative:
@@ -97,6 +108,41 @@ def test_active_predicate_must_cover_each_relationship_binding() -> None:
     )
 
     assert not _has_active_predicate(reader)
+
+
+def test_anonymous_pattern_expression_fails_active_predicate_validation() -> None:
+    reader = RelationshipReader(
+        "api/graph/queries/example.py",
+        "COUNT_RETIRED_PURCHASES",
+        "authoritative",
+        "RETURN count { (person)-[:PURCHASED]->(:Order) } AS order_count",
+    )
+
+    assert not _has_active_predicate(reader)
+
+
+def test_authoritative_mutation_without_active_filter_fails_closed(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = tmp_path / "services" / "ingestion" / "src" / "graph" / "queries" / "dirty.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(
+        'BROKEN = """MATCH (left:Person)-[knows:KNOWS]->(right:Person) '
+        'SET left.analysis_dirty_at = datetime() RETURN left"""\n',
+        encoding="utf-8",
+    )
+    identifier = "ingestion/graph/queries/dirty.py:BROKEN"
+    monkeypatch.setattr(reader_classification, "_AUDIT_READERS", frozenset())
+    monkeypatch.setattr(reader_classification, "_AUTHORITATIVE_READERS", frozenset())
+    monkeypatch.setattr(reader_classification, "_MUTATION_READERS", frozenset())
+    monkeypatch.setattr(
+        reader_classification, "_AUTHORITATIVE_MUTATION_READERS", frozenset({identifier})
+    )
+
+    with pytest.raises(
+        RuntimeError, match="authoritative relationship reader lacks active predicate"
+    ):
+        assert_reader_contract(module)
 
 
 def test_unclassified_reader_fails_closed(tmp_path: Path) -> None:

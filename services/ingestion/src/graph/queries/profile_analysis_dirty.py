@@ -70,6 +70,7 @@ CALL (source_record_pks, direct_person_ids) {
   UNWIND source_record_pks AS source_record_pk
   MATCH (left:Person)-[knows:KNOWS]->(right:Person)
   WHERE knows.source_record_pk = source_record_pk
+    AND coalesce(knows.is_active, true) = true
   UNWIND [left.person_id, right.person_id] AS person_id
   RETURN person_id
 }

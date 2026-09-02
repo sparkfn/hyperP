@@ -168,7 +168,10 @@ CALL (p) {
 
 _ORDER_COUNT = """
 CALL (p) {
-  RETURN count{ (p)-[:PURCHASED]->(:Order) } AS order_count
+  RETURN count {
+    (p)-[purchase:PURCHASED]->(:Order)
+    WHERE coalesce(purchase.is_active, true) = true
+  } AS order_count
 }
 """
 

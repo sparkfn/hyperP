@@ -82,7 +82,8 @@ CALL {
 }
 CALL {
   WITH person
-  OPTIONAL MATCH (person)-[:PURCHASED]->(o:Order)
+  OPTIONAL MATCH (person)-[purchase:PURCHASED]->(o:Order)
+  WHERE coalesce(purchase.is_active, true) = true
   RETURN sum(o.total_amount) AS lifetime_value
 }
 RETURN person {

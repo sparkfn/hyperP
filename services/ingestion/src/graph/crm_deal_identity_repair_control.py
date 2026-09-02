@@ -238,10 +238,76 @@ class CrmDealRepairControlRepository:
         return self._client.execute_write(work)
 
     def pause(self, request: RepairControlCommand) -> RepairDispatchLease:
-        return self._lease_only(PAUSE_REPAIR_CONTROL, request)
+        return self._transition_and_reseal(PAUSE_REPAIR_CONTROL, request)
 
     def resume(self, request: RepairControlCommand) -> RepairDispatchLease:
-        return self._lease_only(RESUME_REPAIR_CONTROL, request)
+        return self._transition_and_reseal(RESUME_REPAIR_CONTROL, request)
+
+    def _transition_and_reseal(
+        self, query: str, request: RepairControlCommand
+    ) -> RepairDispatchLease:
+        """Apply one CAS lifecycle transition and seal its exact resulting boundary.
+
+        Pause/resume are the only authorized mutations of the dispatch control after
+        quiescence. A successful transition reseals the full boundary in the same
+        transaction; exact replays deliberately do not rewrite either the control
+        or its existing seal.
+        """
+
+        def work(tx: ManagedTransaction) -> RepairDispatchLease:
+            # Reject unrelated control or stale-run drift before lifecycle state
+            # changes can be sealed as authorized pause/resume work.
+            self._read_allocation_boundary(tx, request.repair_id)
+            record = tx.run(
+                query,
+                run_id=request.run_id,
+                owner_id=request.owner_id,
+                token_digest=request.token_digest,
+                expected_revision=request.expected_revision,
+            ).single()
+            if record is None:
+                raise RuntimeError("repair control compare-and-set was rejected")
+            if record["transitioned"] is True:
+                self._seal_current_boundary(
+                    tx, request, _required_int(record["revision"], "revision")
+                )
+            return _lease(record)
+
+        return self._client.execute_write(work)
+
+    @staticmethod
+    def _seal_current_boundary(
+        tx: ManagedTransaction, request: RepairControlCommand, revision: int
+    ) -> None:
+        """Persist the complete snapshot that immediately follows an authorized transition."""
+        qualification = tx.run(GET_REPAIR_RUN, repair_id=request.repair_id).single()
+        if qualification is None:
+            raise RuntimeError("repair qualification boundary is missing")
+        stored = stored_qualification_from_record(request.repair_id, qualification)
+        snapshot = _snapshot_from_transaction(
+            tx,
+            stored.run.source_instance_id,
+            stored.run.control_instance_id,
+            stored.source_record_pks,
+        )
+        sealed = tx.run(
+            SEAL_QUIESCENCE_BOUNDARY,
+            run_id=stored.run.run_id,
+            owner_id=request.owner_id,
+            token_digest=request.token_digest,
+            revision=revision,
+            sealed_boundary_digest=snapshot.boundary_digest,
+            sealed_source_records_digest=snapshot.source_records_digest,
+            sealed_source_instance_digest=snapshot.source_instance_digest,
+            sealed_stale_run_evidence_digest=snapshot.stale_run_evidence_digest,
+            sealed_control_digest=snapshot.control_digest,
+            sealed_inventory_digest=snapshot.inventory_digest,
+            sealed_inventory_row_count=snapshot.inventory_row_count,
+            sealed_eligible_unit_count=snapshot.eligible_unit_count,
+            sealed_negative_control_count=snapshot.negative_control_count,
+        ).single()
+        if sealed is None:
+            raise RuntimeError("repair lifecycle boundary sealing was rejected")
 
     def allocate(
         self,
