@@ -9,5 +9,6 @@ export async function GET(request: Request): Promise<NextResponse> {
   const { searchParams } = new URL(request.url);
   return proxyToApi<PersonGraph>("/persons/graph/node", {
     query: searchParamsToQuery(searchParams),
+    signal: request.signal,
   });
 }

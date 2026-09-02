@@ -102,14 +102,6 @@ export default function EntitiesPage(): ReactElement {
                   <span className={styles.statLabel}>Records</span>
                 </div>
                 <div className={styles.stat}>
-                  {metric === undefined
-                    ? <span className={styles.statValue}>…</span>
-                    : metric.active_review_cases > 0
-                    ? <span className={styles.warnValue}>{metric.active_review_cases}</span>
-                    : <span className={styles.statValue}>—</span>}
-                  <span className={styles.statLabel}>Review</span>
-                </div>
-                <div className={styles.stat}>
                   <span className={styles.statValue} style={{ fontSize: 11 }}>{metric === undefined ? "…" : relativeTime(metric.last_ingested_at)}</span>
                   <span className={styles.statLabel}>Last sync</span>
                 </div>

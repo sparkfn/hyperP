@@ -64,6 +64,12 @@ class AppConfig(BaseSettings):
         le=300,
         alias="ENTITY_SUMMARY_CACHE_TTL_SECONDS",
     )
+    entity_summary_cache_max_stale_seconds: int = Field(
+        default=120,
+        ge=0,
+        le=900,
+        alias="ENTITY_SUMMARY_CACHE_MAX_STALE_SECONDS",
+    )
     # Minutes before a Google access token is considered expired for revocation purposes.
     # Google issues tokens with a 1-hour expiry; set this to match or slightly above.
     access_token_expiry_minutes: int = Field(default=60, alias="ACCESS_TOKEN_EXPIRY_MINUTES")

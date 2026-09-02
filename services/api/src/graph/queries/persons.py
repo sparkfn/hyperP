@@ -516,7 +516,7 @@ WITH id,
      rel.last_confirmed_at AS last_confirmed_at,
      rel.source_system_key AS source_system_key,
      collect(DISTINCT rel.source_record_pk) AS source_record_pks
-ORDER BY is_active DESC, id.identifier_type, id.normalized_value,
+ORDER BY is_active DESC, is_verified DESC, id.identifier_type, id.normalized_value,
          coalesce(source_system_key, ''), coalesce(last_confirmed_at, datetime('1970-01-01T00:00:00Z')),
          source_record_pks
 SKIP $skip LIMIT $limit
@@ -592,6 +592,7 @@ RETURN item.identifier.identifier_type AS identifier_type,
        entities AS entities,
        source_records AS source_records
 ORDER BY item.is_active DESC,
+         item.is_verified DESC,
          item.identifier.identifier_type,
          item.identifier.normalized_value,
          coalesce(item.source_system_key, ''),

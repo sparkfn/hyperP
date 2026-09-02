@@ -63,8 +63,11 @@ export default function GlobalSearch(): ReactElement {
     if (q.length < 3) { setResults([]); setLoading(false); return; }
     setLoading(true);
     let cancelled = false;
+    const controller = new AbortController();
     const timer = setTimeout(() => {
-      void bffFetchEnvelope<Person[]>(`/bff/persons/search?q=${encodeURIComponent(q)}&limit=8`)
+      void bffFetchEnvelope<Person[]>(`/bff/persons/search?q=${encodeURIComponent(q)}&limit=8`, {
+        signal: controller.signal,
+      })
         .then((res) => {
           if (!cancelled) setResults((res.data ?? []).map((p) => ({
             personId: p.person_id,
@@ -78,7 +81,7 @@ export default function GlobalSearch(): ReactElement {
         .catch(() => { if (!cancelled) setResults([]); })
         .finally(() => { if (!cancelled) setLoading(false); });
     }, 300);
-    return () => { cancelled = true; clearTimeout(timer); };
+    return () => { cancelled = true; clearTimeout(timer); controller.abort(); };
   }, [query]);
 
   // Reset highlight when results change

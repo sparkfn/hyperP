@@ -114,8 +114,11 @@ export default function PersonFocusedGraph({
     if (q.length < 3) { setSearchOptions([]); return; }
     setSearchLoading(true);
     let cancelled = false;
+    const controller = new AbortController();
     // eslint-disable-next-line react-hooks/set-state-in-effect
-    void bffFetchEnvelope<Person[]>(`/bff/persons/search?q=${encodeURIComponent(q)}&limit=8`)
+    void bffFetchEnvelope<Person[]>(`/bff/persons/search?q=${encodeURIComponent(q)}&limit=8`, {
+      signal: controller.signal,
+    })
       .then((res) => {
         if (!cancelled) {
           setSearchOptions((res.data ?? []).map((p) => ({
@@ -130,7 +133,7 @@ export default function PersonFocusedGraph({
       })
       .catch(() => { if (!cancelled) setSearchOptions([]); })
       .finally(() => { if (!cancelled) setSearchLoading(false); });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; controller.abort(); };
   }, [searchInput, isUnloaded]);
 
   const handleNavigateNode = useCallback(
