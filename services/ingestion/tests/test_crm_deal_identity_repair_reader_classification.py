@@ -380,6 +380,51 @@ def test_authoritative_mutation_without_active_filter_fails_closed(
         assert_reader_contract(module)
 
 
+def test_rollback_generic_relationship_readers_are_exhaustively_classified() -> None:
+    module = (
+        _REPO_ROOT
+        / "services"
+        / "ingestion"
+        / "src"
+        / "graph"
+        / "queries"
+        / "crm_deal_identity_repair_rollback.py"
+    )
+    readers = {
+        reader.symbol: reader.classification for reader in discover_relationship_readers(module)
+    }
+
+    assert readers == {
+        "READ_ROLLBACK_CURRENT_STATE": "audit_mutation",
+        "RESTORE_PREEXISTING_RELATIONSHIPS": "audit_mutation",
+        "MAKE_MUTATION_EVIDENCE_HISTORICAL": "audit_mutation",
+        "READ_RESTORED_ROLLBACK_STATE": "audit",
+        "READ_ROLLBACK_POSTCONDITION": "audit",
+    }
+
+
+def test_unclassified_generic_relationship_readers_fail_closed(tmp_path: Path) -> None:
+    module = tmp_path / "services" / "api" / "src" / "graph" / "queries" / "generic.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(
+        'UNRESTRICTED = """MATCH (left)-[relationship]->(right) RETURN relationship"""\n'
+        'TYPE_IN = """MATCH (left)-[relationship]->(right) '
+        "WHERE type(relationship) IN ['LINKED_TO', 'HAS_FACT'] RETURN relationship"
+        '"""\n'
+        'DYNAMIC = """MATCH (left)-[relationship]->(right) '
+        'WHERE type(relationship) = item.relationship_type RETURN relationship"""\n',
+        encoding="utf-8",
+    )
+
+    assert {reader.symbol for reader in discover_relationship_readers(module)} == {
+        "UNRESTRICTED",
+        "TYPE_IN",
+        "DYNAMIC",
+    }
+    with pytest.raises(RuntimeError, match="unclassified relationship reader"):
+        assert_reader_contract(module)
+
+
 def test_unclassified_reader_fails_closed(tmp_path: Path) -> None:
     module = tmp_path / "services" / "api" / "src" / "graph" / "queries" / "queries.py"
     module.parent.mkdir(parents=True)
