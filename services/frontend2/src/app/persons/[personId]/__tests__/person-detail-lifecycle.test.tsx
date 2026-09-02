@@ -25,7 +25,11 @@ vi.mock("@/components/MergeOverlay", () => ({ default: () => null }));
 vi.mock("@/components/PersonGraphDialog", () => ({ default: () => null }));
 vi.mock("@/components/ProfileAnalysisPanel", () => ({ default: () => null }));
 vi.mock("@/components/ReviewActionsPanel", () => ({ default: () => null }));
-vi.mock("@/app/review/[reviewCaseId]/ReviewCaseDetailModal", () => ({ ReviewCaseDetailModal: () => null }));
+vi.mock("@/app/review/[reviewCaseId]/ReviewCaseDetailModal", () => ({
+  ReviewCaseDetailModal: ({ open, onClose }: { open: boolean; onClose: () => void }): React.ReactElement | null => (
+    open ? <button type="button" onClick={onClose}>Close review modal</button> : null
+  ),
+}));
 
 import type { Person } from "@/lib/api-types";
 import type { PersonAuditEvent, PersonIdentifier } from "@/lib/api-types-person";
@@ -50,13 +54,13 @@ function person(personId = "person-a"): Person {
   };
 }
 
-function reviewCase(currentPersonId = "person-a"): ReviewCaseSummary {
+function reviewCase(currentPersonId = "person-a", reviewCaseId = "case-1"): ReviewCaseSummary {
   return {
-    review_case_id: "case-1", queue_state: "open", priority: 1, assigned_to: null,
+    review_case_id: reviewCaseId, queue_state: "open", priority: 1, assigned_to: null,
     follow_up_at: null, sla_due_at: null, resolution: null, resolved_at: null,
     left_person_id: currentPersonId, left_person_name: "Current person", left_person_status: "active",
     right_person_id: "person-b", right_person_name: "Person B", right_person_status: "active",
-    match_decision: { match_decision_id: "decision-1", engine_type: "heuristic", decision: "review", confidence: 0.9 },
+    match_decision: { match_decision_id: `decision-${reviewCaseId}`, engine_type: "heuristic", decision: "review", confidence: 0.9 },
   };
 }
 
@@ -76,14 +80,14 @@ const emptyDetail: DetailData = {
   identifiers: [], sourceRecords: [], sales: [], audit: [], bankruptcyCases: [], sourceRecordFacets: [],
 };
 
-function matchesTab(personId = "person-a"): React.ReactElement {
+function matchesTab(personId = "person-a", onTotalLoaded: (count: number) => void = () => undefined): React.ReactElement {
   return (
     <MatchesTab
       personId={personId}
       currentPerson={person(personId)}
       currentIdentifiers={[] as PersonIdentifier[]}
       activeMatchesTab="candidates"
-      onTotalLoaded={() => undefined}
+      onTotalLoaded={onTotalLoaded}
       onMergeWith={() => undefined}
     />
   );
@@ -120,6 +124,47 @@ beforeEach(() => {
 afterEach(() => { cleanup(); vi.unstubAllGlobals(); });
 
 describe("person detail deferred lifecycle", () => {
+  it("retires an older list reload when modal close starts a replacement", async () => {
+    const initialList = deferred<{ data: ReviewCaseSummary[] }>();
+    const olderReload = deferred<{ data: ReviewCaseSummary[] }>();
+    const latestReload = deferred<{ data: ReviewCaseSummary[] }>();
+    const listPromises = [initialList, olderReload, latestReload];
+    const listSignals: AbortSignal[] = [];
+    const onTotalLoaded = vi.fn();
+    let listRequestCount = 0;
+    bffFetchEnvelope.mockImplementation((path: string, options?: { signal?: AbortSignal }) => {
+      if (!path.includes("/review-cases?")) return Promise.resolve({ data: [] });
+      const next = listPromises[listRequestCount++];
+      if (next === undefined) throw new Error("unexpected review-list request");
+      if (options?.signal !== undefined) listSignals.push(options.signal);
+      return next.promise;
+    });
+    bffFetch.mockImplementation((path: string) => {
+      if (path.includes("/review-cases/")) return new Promise(() => undefined);
+      if (path.includes("shared-identifiers")) return new Promise(() => undefined);
+      return Promise.resolve(person("person-b"));
+    });
+
+    const view = render(matchesTab("person-a", onTotalLoaded));
+    await act(async () => { initialList.resolve({ data: [reviewCase()] }); });
+    fireEvent.click(await screen.findByRole("button", { name: "Review" }));
+    expect(await screen.findByRole("button", { name: "Close review modal" })).toBeTruthy();
+
+    view.rerender(matchesTab("person-c", onTotalLoaded));
+    await waitFor(() => expect(listSignals).toHaveLength(2));
+    fireEvent.click(screen.getByRole("button", { name: "Close review modal" }));
+    await waitFor(() => expect(listSignals).toHaveLength(3));
+    expect(listSignals[1]?.aborted).toBe(true);
+    expect(listSignals[2]?.aborted).toBe(false);
+
+    await act(async () => {
+      latestReload.resolve({ data: [reviewCase("person-c", "case-2"), reviewCase("person-c", "case-3")] });
+    });
+    await waitFor(() => expect(onTotalLoaded).toHaveBeenLastCalledWith(2));
+    await act(async () => { olderReload.resolve({ data: [] }); });
+    expect(onTotalLoaded).toHaveBeenLastCalledWith(2);
+  });
+
   it("renders the current person's recommended-match error instead of keeping its loading shell", async () => {
     bffFetchEnvelope.mockImplementation((path: string) => {
       if (path.includes("/review-cases?")) return Promise.reject(new Error("offline"));
