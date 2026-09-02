@@ -138,59 +138,72 @@ def _dispatch_active_bitrix_successor(occurrence: str) -> str | None:
         return None
     generation_id, configuration_digest, manifest_json, control_instance_id = active
     admit_configured_bitrix_control(get_settings(), control_instance_id)
-    payload = TypeAdapter(dict[str, JsonValue]).validate_json(manifest_json)
-    manifest = _manifest_from_payload(payload)
-    categories = tuple(get_ingestion_config().bitrix_openlines.included_crm_category_ids)
-    executable = manifest.executable_entries
-    refresh_deals = any(
-        entry.stream_key == "crm_deals" and entry.replay_mode != "fixed_keyset"
-        for entry in executable
-    )
-    refresh_activities = any(
-        entry.stream_key == "crm_activities" and entry.replay_mode != "fixed_keyset"
-        for entry in executable
-    )
-    upper_deal_id = None
-    upper_activity_id = None
-    if refresh_deals or refresh_activities:
-        source = create_bitrix_known_owner_client()
-        try:
-            if refresh_deals:
-                upper_deal_id = freeze_deal_upper_id(source, categories)
-            if refresh_activities:
-                upper_activity_id = freeze_activity_upper_id(source)
-        finally:
-            source.close()
-    entries = []
-    windows: list[dict[str, JsonValue]] = []
-    for entry in executable:
-        window = dict(entry.source_window or {})
-        if entry.stream_key == "crm_deals" and refresh_deals:
-            assert upper_deal_id is not None
-            window["upper_deal_id"] = upper_deal_id
-            window["owner_artifact_id"] = None
-        elif entry.stream_key == "crm_activities" and refresh_activities:
-            assert upper_activity_id is not None
-            window["upper_activity_id"] = upper_activity_id
-            window["owner_artifact_id"] = None
-        entries.append(replace(entry, source_window=window))
-        windows.append(window)
-    encoded = json.dumps(
-        {"occurrence": occurrence, "windows": windows},
-        sort_keys=True,
-        separators=(",", ":"),
-    ).encode("utf-8")
-    boundary_digest = "sha256:" + hashlib.sha256(encoded).hexdigest()
-    return dispatch_generation_canvas(
-        generation_id=generation_id,
-        boundary_digest=boundary_digest,
-        configuration_digest=configuration_digest,
-        entries=tuple(entries),
-        task_kind="live",
-        occurrence=occurrence,
-        scheduled_dispatch=True,
-        control_instance_id=control_instance_id,
-    )
+    # A durable reservation closes the race before source-window probes. A
+    # repair-owned or ambiguous dispatch block rejects rather than being cleared.
+    from src.graph.crm_deal_identity_repair_control import CrmDealRepairControlRepository
+
+    reservation_graph = Neo4jClient(get_settings())
+    try:
+        reservation_repository = CrmDealRepairControlRepository(reservation_graph)
+        reservation = reservation_repository.prepare_publication(
+            control_instance_id,
+            f"{generation_id}:pending:{occurrence}",
+        )
+        payload = TypeAdapter(dict[str, JsonValue]).validate_json(manifest_json)
+        manifest = _manifest_from_payload(payload)
+        categories = tuple(get_ingestion_config().bitrix_openlines.included_crm_category_ids)
+        executable = manifest.executable_entries
+        refresh_deals = any(
+            entry.stream_key == "crm_deals" and entry.replay_mode != "fixed_keyset"
+            for entry in executable
+        )
+        refresh_activities = any(
+            entry.stream_key == "crm_activities" and entry.replay_mode != "fixed_keyset"
+            for entry in executable
+        )
+        upper_deal_id = None
+        upper_activity_id = None
+        if refresh_deals or refresh_activities:
+            source = create_bitrix_known_owner_client()
+            try:
+                if refresh_deals:
+                    upper_deal_id = freeze_deal_upper_id(source, categories)
+                if refresh_activities:
+                    upper_activity_id = freeze_activity_upper_id(source)
+            finally:
+                source.close()
+        entries = []
+        windows: list[dict[str, JsonValue]] = []
+        for entry in executable:
+            window = dict(entry.source_window or {})
+            if entry.stream_key == "crm_deals" and refresh_deals:
+                assert upper_deal_id is not None
+                window["upper_deal_id"] = upper_deal_id
+                window["owner_artifact_id"] = None
+            elif entry.stream_key == "crm_activities" and refresh_activities:
+                assert upper_activity_id is not None
+                window["upper_activity_id"] = upper_activity_id
+                window["owner_artifact_id"] = None
+            entries.append(replace(entry, source_window=window))
+            windows.append(window)
+        encoded = json.dumps(
+            {"occurrence": occurrence, "windows": windows}, sort_keys=True, separators=(",", ":")
+        ).encode("utf-8")
+        boundary_digest = "sha256:" + hashlib.sha256(encoded).hexdigest()
+        return dispatch_generation_canvas(
+            generation_id=generation_id,
+            boundary_digest=boundary_digest,
+            configuration_digest=configuration_digest,
+            entries=tuple(entries),
+            task_kind="live",
+            occurrence=occurrence,
+            scheduled_dispatch=True,
+            control_instance_id=control_instance_id,
+            publication_reservation=reservation,
+            publication_gate=reservation_repository,
+        )
+    finally:
+        reservation_graph.close()
 
 
 @celery_app.task(  # type: ignore[untyped-decorator]

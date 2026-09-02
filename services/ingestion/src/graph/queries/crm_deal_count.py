@@ -39,7 +39,8 @@ ORDER BY person_id
 RECOMPUTE_SOURCE_PERSON_CRM_DEAL_COUNTS = f"""
 UNWIND $source_record_pks AS source_record_pk
 MATCH (:SourceRecord {{source_record_pk: source_record_pk, record_type: 'crm_deal'}})
-      -[:LINKED_TO]->(person:Person)
+      -[link:LINKED_TO]->(person:Person)
+WHERE coalesce(link.is_active, true) = true
 WITH DISTINCT person
 ORDER BY person.person_id
 SET person.crm_deal_count_lock_version =

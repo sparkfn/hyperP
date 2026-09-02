@@ -136,18 +136,24 @@ def test_failure_is_fenced_and_releases_active_ownership() -> None:
     assert "DELETE active_relation" in FAIL_LOGICAL_RUN
 
 
-def test_existing_logical_run_can_resume_while_new_dispatch_is_blocked() -> None:
-    existing_match = CREATE_LOGICAL_RUN_AND_ATTEMPT.index(
-        "OPTIONAL MATCH (existing:IngestionLogicalRun"
+def test_repair_block_rejects_logical_run_reuse_and_resume_worker_admission() -> None:
+    assert "existing.status IN ['paused_with_checkpoint', 'failed']" not in (
+        CREATE_LOGICAL_RUN_AND_ATTEMPT
     )
-    gate = CREATE_LOGICAL_RUN_AND_ATTEMPT.index(
-        "existing.status IN ['paused_with_checkpoint', 'failed']"
+    assert "dispatch.block_reason = 'crm_deal_identity_repair_quiesce'" in (
+        CREATE_LOGICAL_RUN_AND_ATTEMPT
     )
-    merge = CREATE_LOGICAL_RUN_AND_ATTEMPT.index("MERGE (logical:IngestionLogicalRun")
-    assert existing_match < gate < merge
+    assert "dispatch.block_reason = 'crm_deal_identity_repair_quiesce'" in CLAIM_QUEUED_ATTEMPT
+    assert "dispatch.block_reason = 'crm_deal_identity_repair_quiesce'" in CREATE_RESUME_ATTEMPT
 
 
-def test_dispatch_block_does_not_admit_running_or_completed_logical_runs() -> None:
-    query = CREATE_LOGICAL_RUN_AND_ATTEMPT
-    assert "existing.status IN ['paused_with_checkpoint', 'failed']" in query
-    assert "existing IS NOT NULL OR" not in query
+def test_repair_block_keeps_only_stage_history_logical_runs_admissible() -> None:
+    for query in (
+        CREATE_LOGICAL_RUN_AND_ATTEMPT,
+        CLAIM_QUEUED_ATTEMPT,
+        CREATE_RESUME_ATTEMPT,
+    ):
+        assert "crm_stage_history" in query
+    assert "$initial_phase STARTS WITH 'crm_stage_history'" in CREATE_LOGICAL_RUN_AND_ATTEMPT
+    assert "logical.current_phase STARTS WITH 'crm_stage_history'" in CLAIM_QUEUED_ATTEMPT
+    assert "logical.current_phase STARTS WITH 'crm_stage_history'" in CREATE_RESUME_ATTEMPT

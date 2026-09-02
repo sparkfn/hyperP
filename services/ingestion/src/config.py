@@ -173,6 +173,18 @@ class Settings(BaseSettings):
     crm_deal_identity_repair_artifact_signing_key_secret: SecretStr = SecretStr("")
     crm_deal_identity_repair_repository_sha: str = ""
     crm_deal_identity_repair_image_digest: str = ""
+    # #310 consumes a separately sealed approval overlay. Its root/key are
+    # intentionally distinct from the #254 inventory artifact credentials.
+    crm_deal_identity_repair_approval_root: str = (
+        "/app/restricted/crm-deal-identity-repair-approval"
+    )
+    crm_deal_identity_repair_approval_key_id: str = ""
+    crm_deal_identity_repair_approval_key_secret: SecretStr = SecretStr("")
+    crm_deal_identity_repair_absence_proof_key_id: str = ""
+    crm_deal_identity_repair_absence_proof_key_secret: SecretStr = SecretStr("")
+    crm_deal_identity_repair_expected_worker_ids: list[str] = []
+    crm_deal_identity_repair_worker_timeout_seconds: int = Field(default=10, ge=1, le=60)
+    crm_deal_identity_repair_absence_max_age_seconds: int = Field(default=60, ge=1, le=300)
 
     # Restricted sales-prediction artifacts (issue #125 datasets/evaluation and
     # issue #126 model artifacts). Same trust model as stage history: persistent

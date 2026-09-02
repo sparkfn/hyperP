@@ -29,9 +29,11 @@ from src.connectors.bitrix_stage_history.artifact_runtime import (
 )
 from src.connectors.bitrix_stage_history.artifact_store import ArtifactStore
 from src.connectors.bitrix_stage_history.replay import qualify_artifacts
+from src.crm_deal_identity_repair.control_models import RepairPublicationReservation
 from src.graph.bitrix_backfill import BitrixBackfillRepository
 from src.graph.bitrix_source_instances import admit_configured_bitrix_control
 from src.graph.client import Neo4jClient
+from src.graph.crm_deal_identity_repair_control import CrmDealRepairControlRepository
 from src.graph.ingestion_control import LogicalRunControl
 from src.ingestion_config import (
     BitrixOpenLinesConfig,
@@ -204,12 +206,18 @@ class BitrixBackfillControl:
         elif state.status != "backfilling":
             raise RuntimeError("start requires an allocated or backfilling corrective generation")
         admit_configured_bitrix_control(get_settings(), state.control_instance_id)
+        reservation, gate = self._prepare_publication(
+            state.control_instance_id,
+            f"{generation_id}:corrective",
+        )
         return dispatch_generation_canvas(
             generation_id=generation_id,
             boundary_digest=state.boundary_digest,
             configuration_digest=state.configuration_digest,
             entries=manifest.executable_entries,
             control_instance_id=state.control_instance_id,
+            publication_reservation=reservation,
+            publication_gate=gate,
         )
 
     def request_stop(self, generation_id: str, *, actor: str, reason: str) -> int:
@@ -261,6 +269,11 @@ class BitrixBackfillControl:
             + 1
         )
         admit_configured_bitrix_control(get_settings(), state.control_instance_id)
+        publication_kind = "successor" if successor_resume else "corrective"
+        reservation, gate = self._prepare_publication(
+            state.control_instance_id,
+            f"{generation_id}:{publication_kind}:resume:{resume_generation}",
+        )
         return dispatch_generation_canvas(
             generation_id=generation_id,
             boundary_digest=state.boundary_digest,
@@ -270,6 +283,8 @@ class BitrixBackfillControl:
             task_kind="live" if successor_resume else "corrective",
             occurrence=occurrence,
             control_instance_id=state.control_instance_id,
+            publication_reservation=reservation,
+            publication_gate=gate,
         )
 
     def reconcile(self, generation_id: str, *, actor: str) -> str:
@@ -464,6 +479,10 @@ class BitrixBackfillControl:
             raise
         successor = self._repository.get_generation(successor_generation_id)
         admit_configured_bitrix_control(get_settings(), successor.control_instance_id)
+        reservation, gate = self._prepare_publication(
+            successor.control_instance_id,
+            f"{successor_generation_id}:successor:{occurrence}",
+        )
         canvas_id = dispatch_generation_canvas(
             generation_id=successor_generation_id,
             boundary_digest=successor.boundary_digest,
@@ -472,6 +491,8 @@ class BitrixBackfillControl:
             task_kind="live",
             occurrence=occurrence,
             control_instance_id=successor.control_instance_id,
+            publication_reservation=reservation,
+            publication_gate=gate,
         )
         try:
             self._repository.confirm_successor_publication(
@@ -575,6 +596,15 @@ class BitrixBackfillControl:
             "keep Bitrix dispatch blocked; execute reconciled compensation or "
             "tested backup restore",
         )
+
+    def _prepare_publication(
+        self,
+        control_instance_id: str,
+        publication_key: str,
+    ) -> tuple[RepairPublicationReservation, CrmDealRepairControlRepository]:
+        """Reserve before any canvas construction or successor source-window work."""
+        gate = CrmDealRepairControlRepository(self._client)
+        return gate.prepare_publication(control_instance_id, publication_key), gate
 
     def _manifest_for(self, generation_id: str) -> BackfillInventoryManifest:
         manifest_json, expected_digest = self._repository.get_inventory_json(generation_id)

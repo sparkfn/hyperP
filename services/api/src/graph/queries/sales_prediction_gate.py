@@ -62,6 +62,7 @@ MATCH (deal:SourceRecord {
   source_record_id: parent.source_record_id
 })-[:FROM_SOURCE]->(:SourceSystem {source_key: parent.source_system})
 OPTIONAL MATCH (deal)-[link:LINKED_TO]->(person:Person)
+WHERE coalesce(link.is_active, true) = true
 RETURN parent.source_system AS parent_source_system,
        parent.source_record_id AS parent_source_record_id,
        elementId(deal) AS version_key,

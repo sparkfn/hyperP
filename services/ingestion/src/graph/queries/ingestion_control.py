@@ -95,10 +95,20 @@ MATCH (logical:IngestionLogicalRun {
 MATCH (logical)-[:ACTIVE_ATTEMPT]->(attempt:IngestRun {
   ingest_run_id: $ingest_run_id, control_instance_id: $control_instance_id
 })
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {
+  source_key: $source_key, control_instance_id: $control_instance_id
+})
 WHERE logical.active_generation = $attempt_generation
   AND attempt.generation = $attempt_generation
   AND logical.status IN ['queued', 'running', 'stop_requested']
   AND attempt.status IN ['queued', 'started']
+  AND (
+    coalesce(dispatch.blocked, false) = false
+    OR (
+      dispatch.block_reason = 'crm_deal_identity_repair_quiesce'
+      AND $stream_key = 'crm_stage_history'
+    )
+  )
 MERGE (stream:BitrixIngestionStream {
   source_key: $source_key,
   control_instance_id: $control_instance_id,
@@ -194,8 +204,9 @@ OPTIONAL MATCH (existing:IngestionLogicalRun {
 WITH source, dispatch, existing
 WHERE coalesce(dispatch.blocked, false) = false
    OR (
-     existing IS NOT NULL
-     AND existing.status IN ['paused_with_checkpoint', 'failed']
+     dispatch.block_reason = 'crm_deal_identity_repair_quiesce'
+     AND $source_key = 'bitrix_chat'
+     AND $initial_phase STARTS WITH 'crm_stage_history'
    )
 MERGE (logical:IngestionLogicalRun {
   source_key: $source_key,
@@ -213,6 +224,10 @@ ON CREATE SET
   logical.checkpoint_schema_version = $checkpoint_schema_version,
   logical.status = 'queued',
   logical.current_phase = $initial_phase,
+  logical.execution_stream = CASE
+    WHEN $initial_phase STARTS WITH 'crm_stage_history' THEN 'crm_stage_history'
+    ELSE NULL
+  END,
   logical.active_generation = 1,
   logical.created_at = datetime(),
   logical.updated_at = datetime(),
@@ -296,11 +311,26 @@ MATCH (logical:IngestionLogicalRun {
 })-[:ACTIVE_ATTEMPT]->(attempt:IngestRun {
   ingest_run_id: $ingest_run_id, control_instance_id: $control_instance_id
 })
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {
+  source_key: logical.source_key, control_instance_id: $control_instance_id
+})
+WITH logical, attempt, dispatch
 WHERE logical.active_generation = $generation
   AND attempt.generation = $generation
   AND attempt.worker_task_id = $worker_task_id
   AND logical.status IN ['queued', 'running']
   AND attempt.status IN ['queued', 'started']
+  AND (
+    coalesce(dispatch.blocked, false) = false
+    OR (
+      dispatch.block_reason = 'crm_deal_identity_repair_quiesce'
+      AND logical.source_key = 'bitrix_chat'
+      AND (
+        logical.execution_stream = 'crm_stage_history'
+        OR logical.current_phase STARTS WITH 'crm_stage_history'
+      )
+    )
+  )
 SET logical.status = 'running',
     logical.updated_at = datetime(),
     attempt.status = 'started',
@@ -479,17 +509,20 @@ MATCH (logical:IngestionLogicalRun {
   logical_run_id: $logical_run_id, control_instance_id: $control_instance_id
 })
 MATCH (logical)-[:FOR_SOURCE]->(source:SourceSystem)
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {
+  source_key: logical.source_key, control_instance_id: $control_instance_id
+})
 OPTIONAL MATCH (logical)-[active_relation:ACTIVE_ATTEMPT]->(active_prior:IngestRun {
   control_instance_id: $control_instance_id
 })
 OPTIONAL MATCH (logical)-[:HAS_ATTEMPT]->(historical_prior:IngestRun {
   control_instance_id: $control_instance_id
 })
-WITH logical, source, active_relation, active_prior, historical_prior
+WITH logical, source, dispatch, active_relation, active_prior, historical_prior
 ORDER BY historical_prior.queued_at DESC
-WITH logical, source, active_relation, active_prior,
+WITH logical, source, dispatch, active_relation, active_prior,
      collect(historical_prior)[0] AS latest_prior
-WITH logical, source, active_relation,
+WITH logical, source, dispatch, active_relation,
      coalesce(active_prior, latest_prior) AS prior
 MATCH (checkpoint:IngestionCheckpoint {
   control_instance_id: $control_instance_id, logical_run_id: $logical_run_id
@@ -503,6 +536,17 @@ WHERE prior IS NOT NULL
   AND logical.checkpoint_schema_version = $checkpoint_schema_version
   AND checkpoint.connector_version = $checkpoint_connector_version
   AND checkpoint.schema_version = $checkpoint_schema_version
+  AND (
+    coalesce(dispatch.blocked, false) = false
+    OR (
+      dispatch.block_reason = 'crm_deal_identity_repair_quiesce'
+      AND logical.source_key = 'bitrix_chat'
+      AND (
+        logical.execution_stream = 'crm_stage_history'
+        OR logical.current_phase STARTS WITH 'crm_stage_history'
+      )
+    )
+  )
 WITH logical, source, active_relation, prior, checkpoint,
      logical.active_generation + 1 AS generation
 SET logical.active_generation = generation,

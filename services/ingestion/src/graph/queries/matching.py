@@ -11,7 +11,7 @@ MATCH (id:Identifier {
     normalized_value: $normalized_value
 })
 <-[rel:IDENTIFIED_BY]-(candidate:Person {status: 'active'})
-WHERE rel.is_active = true
+WHERE coalesce(rel.is_active, true) = true
   AND rel.quality_flag IN ['valid', 'partial_parse']
 RETURN DISTINCT candidate.person_id AS person_id
 """
@@ -25,12 +25,12 @@ OPTIONAL MATCH (id:Identifier {
 })
 CALL (id) {
   OPTIONAL MATCH (id)<-[fanout_rel:IDENTIFIED_BY]-(fanout_person:Person {status: 'active'})
-  WHERE fanout_rel.is_active = true
+  WHERE coalesce(fanout_rel.is_active, true) = true
   RETURN count(DISTINCT fanout_person) AS fanout
 }
 CALL (id) {
   OPTIONAL MATCH (id)<-[rel:IDENTIFIED_BY]-(candidate:Person {status: 'active'})
-  WHERE rel.is_active = true
+  WHERE coalesce(rel.is_active, true) = true
     AND rel.quality_flag IN ['valid', 'partial_parse']
   RETURN collect(DISTINCT candidate.person_id) AS person_ids
 }
@@ -51,7 +51,7 @@ MATCH (addr:Address {
     unit_number:   $unit_number
 })
 <-[rel:LIVES_AT]-(candidate:Person {status: 'active'})
-WHERE rel.is_active = true
+WHERE coalesce(rel.is_active, true) = true
   AND rel.quality_flag IN ['valid', 'partial_parse']
 RETURN DISTINCT candidate.person_id AS person_id
 """
@@ -66,7 +66,7 @@ OPTIONAL MATCH (addr:Address {
     unit_number: input.unit_number
 })
 OPTIONAL MATCH (addr)<-[rel:LIVES_AT]-(candidate:Person {status: 'active'})
-WHERE rel.is_active = true
+WHERE coalesce(rel.is_active, true) = true
   AND rel.quality_flag IN ['valid', 'partial_parse']
 RETURN input.input_index AS input_index,
        collect(DISTINCT candidate.person_id) AS person_ids
@@ -80,7 +80,7 @@ MATCH (id:Identifier {
     normalized_value: $normalized_value
 })
       <-[rel:IDENTIFIED_BY]-(p:Person {status: 'active'})
-WHERE rel.is_active = true
+WHERE coalesce(rel.is_active, true) = true
 RETURN count(DISTINCT p) AS fanout
 """
 

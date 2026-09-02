@@ -202,7 +202,7 @@ RETURN f.attribute_name AS attribute_name,
 
 FETCH_PERSON_IDENTIFIERS = """
 MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY]->(id:Identifier)
-WHERE rel.is_active = true
+WHERE coalesce(rel.is_active, true) = true
 OPTIONAL MATCH (src:SourceRecord {source_record_pk: rel.source_record_pk})
 RETURN id.identifier_type AS identifier_type,
        id.normalized_value AS normalized_value,
@@ -213,7 +213,7 @@ RETURN id.identifier_type AS identifier_type,
 
 FETCH_PERSON_ADDRESSES = """
 MATCH (p:Person {person_id: $person_id})-[rel:LIVES_AT]->(addr:Address)
-WHERE rel.is_active = true
+WHERE coalesce(rel.is_active, true) = true
 RETURN addr.address_id AS address_id,
        addr.normalized_full AS normalized_full,
        rel.is_verified AS is_verified,
@@ -224,7 +224,7 @@ RETURN addr.address_id AS address_id,
 # deliberately retains the full provenance-bearing queries above.
 FETCH_PERSON_MATCH_IDENTIFIERS = """
 MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY]->(id:Identifier)
-WHERE rel.is_active = true
+WHERE coalesce(rel.is_active, true) = true
   AND id.identifier_type IN ['phone', 'email']
 OPTIONAL MATCH (src:SourceRecord {source_record_pk: rel.source_record_pk})
 RETURN id.identifier_type AS identifier_type,
@@ -249,7 +249,7 @@ RETURN DISTINCT f.attribute_name AS attribute_name,
 
 FETCH_PERSON_MATCH_ADDRESSES = """
 MATCH (p:Person {person_id: $person_id})-[rel:LIVES_AT]->(addr:Address)
-WHERE rel.is_active = true
+WHERE coalesce(rel.is_active, true) = true
 RETURN DISTINCT addr.normalized_full AS normalized_full
 """
 
