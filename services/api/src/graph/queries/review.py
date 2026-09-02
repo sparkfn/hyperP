@@ -5,6 +5,11 @@ from __future__ import annotations
 from typing import LiteralString
 
 _REVIEW_MATCH = "MATCH (rc:ReviewCase)-[:FOR_DECISION]->(md:MatchDecision)\n"
+_REVIEW_PERSON_MATCH = """MATCH (person:Person {person_id: $person_id})
+MATCH (md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(person)
+WITH DISTINCT md
+MATCH (rc:ReviewCase)-[:FOR_DECISION]->(md)
+"""
 
 # Review actions are stored as a list of JSON strings (Neo4j cannot store maps
 # as properties). Legacy nodes hold the literal string '[]', so coerce any
@@ -87,9 +92,6 @@ _REVIEW_SEARCH_FILTER = """  AND (toLower(rc.review_case_id) CONTAINS toLower($q
 """
 
 # Appended only when filtering by person; matches either side of the decision.
-_REVIEW_PERSON_FILTER = """  AND (left.person_id = $person_id
-       OR right.person_id = $person_id)
-"""
 
 
 def _review_body(*, has_q: bool, has_person: bool, active_filters: frozenset[str]) -> str:
@@ -99,14 +101,12 @@ def _review_body(*, has_q: bool, has_person: bool, active_filters: frozenset[str
     either one pulls in the person joins. Without both, the query never touches
     the ABOUT_LEFT/ABOUT_RIGHT persons.
     """
-    parts: list[str] = [_REVIEW_MATCH]
+    parts: list[str] = [_REVIEW_PERSON_MATCH if has_person else _REVIEW_MATCH]
     if has_q or has_person:
         parts.append(_REVIEW_SEARCH_JOINS)
     parts.append(_review_filter_clause(active_filters))
     if has_q:
         parts.append(_REVIEW_SEARCH_FILTER)
-    if has_person:
-        parts.append(_REVIEW_PERSON_FILTER)
     return "".join(parts)
 
 

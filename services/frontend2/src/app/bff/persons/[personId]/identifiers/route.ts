@@ -14,6 +14,9 @@ export async function GET(request: Request, context: RouteContext): Promise<Next
   const { searchParams } = new URL(request.url);
   return proxyToApi<PersonIdentifier[]>(
     `/persons/${encodeURIComponent(personId)}/identifiers`,
-    { query: searchParamsToQuery(searchParams) },
+    {
+      query: searchParamsToQuery(searchParams),
+      signal: request.signal,
+    },
   );
 }

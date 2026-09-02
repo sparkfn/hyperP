@@ -9,7 +9,10 @@ interface RouteContext {
   params: Promise<{ personId: string }>;
 }
 
-export async function GET(_request: Request, context: RouteContext): Promise<NextResponse> {
+export async function GET(request: Request, context: RouteContext): Promise<NextResponse> {
   const { personId } = await context.params;
-  return proxyToApi<VehicleSummary[]>(`/persons/${encodeURIComponent(personId)}/vehicles`);
+  return proxyToApi<VehicleSummary[]>(
+    `/persons/${encodeURIComponent(personId)}/vehicles`,
+    { signal: request.signal },
+  );
 }
