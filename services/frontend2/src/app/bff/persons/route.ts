@@ -9,5 +9,8 @@ export async function GET(request: Request): Promise<NextResponse> {
   const { searchParams } = new URL(request.url);
   const query = searchParamsToQuery(searchParams);
   query.include_total = "false";
-  return proxyToApi<ListedPerson[]>("/persons", { query });
+  return proxyToApi<ListedPerson[]>("/persons", {
+    query,
+    signal: request.signal,
+  });
 }

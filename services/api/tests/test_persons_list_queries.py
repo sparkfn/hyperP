@@ -220,6 +220,22 @@ def test_person_summary_connections_ignore_retired_address_and_knows_assertions(
         assert "{is_active: true}" not in query
         assert "LIVES_AT" in query and "KNOWS" in query
 
+
+def test_detail_audit_and_matches_anchor_from_the_selected_person() -> None:
+    audit = person_queries.GET_PERSON_AUDIT
+    audit_count = person_queries.COUNT_PERSON_AUDIT
+    matches = person_queries.GET_PERSON_MATCHES
+    matches_count = person_queries.COUNT_PERSON_MATCHES
+
+    for query in (audit, audit_count):
+        assert "MATCH (p:Person {person_id: $person_id})" in query
+        assert "MATCH (event_person:Person)-[:MERGED_INTO*0..]->(p)" in query
+        assert "MATCH (me:MergeEvent)-[:ABSORBED|SURVIVOR]->(event_person)" in query
+    for query in (matches, matches_count):
+        assert "MATCH (p:Person {person_id: $person_id})" in query
+        assert "MATCH (md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)" in query
+        assert "WITH DISTINCT md" in query
+
     listing = build_list_persons_query("connection_count", "desc", has_q=False)
     assert "{is_active: true}" not in listing
     assert "LIVES_AT" in listing and "KNOWS" in listing

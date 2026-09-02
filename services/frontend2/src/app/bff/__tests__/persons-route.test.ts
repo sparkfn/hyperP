@@ -39,6 +39,7 @@ describe("persons BFF route", () => {
         include_total: "false",
         limit: "25",
       },
+      signal: request.signal,
     });
   });
 });

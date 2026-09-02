@@ -5,9 +5,12 @@ from __future__ import annotations
 import logging
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
+from time import monotonic
+from uuid import uuid4
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
+from starlette.middleware.base import RequestResponseEndpoint
 
 from src.auth.oauth_clients import ensure_oauth_client_constraints
 from src.auth.oauth_tokens import validate_oauth_runtime_config
@@ -25,6 +28,7 @@ from src.redis_client import close_redis
 from src.repositories.neo4j.bootstrap import (
     ensure_source_record_identity_lock_constraint,
 )
+from src.request_timing import begin_request, end_request, repository_duration_ms
 from src.route_catalog import ROOT_ROUTERS
 
 logger = logging.getLogger("profile_unifier_api")
@@ -104,6 +108,23 @@ def build_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    @app.middleware("http")
+    async def add_request_timing(request: Request, call_next: RequestResponseEndpoint) -> Response:
+        """Expose safe timing headers without changing the API response schema."""
+        trace_id = request.headers.get("x-request-id") or str(uuid4())
+        tokens = begin_request(trace_id)
+        started_at = monotonic()
+        try:
+            response = await call_next(request)
+            elapsed_ms = (monotonic() - started_at) * 1000
+            repository_ms = repository_duration_ms()
+            response.headers["X-Request-Id"] = trace_id
+            response.headers["X-Api-Duration-Ms"] = f"{elapsed_ms:.1f}"
+            response.headers["X-Repository-Duration-Ms"] = f"{repository_ms:.1f}"
+            return response
+        finally:
+            end_request(tokens)
 
     # The root app exposes only cross-cutting and unauthenticated surfaces.
     # Every authenticated business route is served exclusively through the

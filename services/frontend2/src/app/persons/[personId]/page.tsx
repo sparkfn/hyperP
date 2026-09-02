@@ -36,12 +36,12 @@ import { personDisplayName, sourceRecordReference } from "@/lib/ui-display";
 import ActionToast from "@/components/ActionToast";
 import CrmMetricsPanel from "@/components/CrmMetricsPanel";
 import MergeOverlay from "@/components/MergeOverlay";
-import PersonFocusedGraph from "@/components/PersonFocusedGraph";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
 import ProfileAnalysisPanel from "@/components/ProfileAnalysisPanel";
 import ReviewActionsPanel from "@/components/ReviewActionsPanel";
 import { ReviewCaseDetailModal } from "@/app/review/[reviewCaseId]/ReviewCaseDetailModal";
 import type { ReviewCaseDetail, ReviewCaseSummary } from "@/lib/api-types-ops";
+import { mergeIdentifierPage } from "./person-detail-data";
 import styles from "./person.module.css";
 
 type Tab = "sales" | "crm" | "connections" | "identifiers" | "decision-history" | "source-records" | "matches" | "timeline" | "graph";
@@ -64,6 +64,7 @@ interface BentoSectionProps {
   highlighted: boolean;
   action?: ReactElement;
   children: ReactElement;
+  lazy?: boolean;
 }
 
 
@@ -314,6 +315,10 @@ function PersonBreadcrumb({ personName, onShare, shareLoading }: { personName: s
 function PersonSidebar({ person, detailData, personId, onOverride, onGraphOpen }: { person: Person; detailData: DetailData; personId: string; onOverride: () => void; onGraphOpen: () => void }): ReactElement {
   const [detailOpen, setDetailOpen] = useState(false);
   const [nricRevealed, setNricRevealed] = useState(false);
+  const [timelineActivityCount, setTimelineActivityCount] = useState<number | null>(null);
+  const onTimelineActivityCountLoaded = useCallback((count: number): void => {
+    setTimelineActivityCount(count);
+  }, []);
   const completeness = Math.round(person.profile_completeness_score * 100);
   const statusClass =
     person.status === "active"
@@ -466,8 +471,12 @@ function PersonSidebar({ person, detailData, personId, onOverride, onGraphOpen }
 
       </section>
 
-      <BankruptcySidebarCard cases={detailData.bankruptcyCases} />
-      <LoyaltySidebarCard loyalty={person.loyalty} />
+      <SidebarSupplementalCards
+        personId={personId}
+        initialBankruptcyCases={detailData.bankruptcyCases}
+        initialLoyalty={person.loyalty ?? null}
+        initialVehicles={person.vehicles ?? null}
+      />
       <section className={styles.sidebarCard}>
         <div className={`${styles.sourceEntityHeader} ${styles.sidebarGraphHeader}`}>
           <span className={styles.bkSectionLabel}>Graph</span>
@@ -481,26 +490,107 @@ function PersonSidebar({ person, detailData, personId, onOverride, onGraphOpen }
           </button>
         </div>
         <div className={styles.sidebarGraphBody}>
-          <PersonFocusedGraph
-            initialPersonId={person.person_id}
-            initialTitle={person.preferred_full_name ?? person.person_id}
-            overlayMode
-            pureGraph
-            onMaximize={onGraphOpen}
-          />
+          <button
+            type="button"
+            className={styles.sidebarGraphExpand}
+            onClick={onGraphOpen}
+          >
+            Open graph
+          </button>
         </div>
       </section>
-      <VehiclesSidebarCard vehicles={person.vehicles} />
       <section className={styles.sidebarCard}>
         <div className={styles.sourceEntityHeader}>
           <span className={styles.bkSectionLabel}>Timeline</span>
-          <span className={styles.sourceEntityBadge}>{buildTimeline(detailData).length} activity</span>
+          <span className={styles.sourceEntityBadge}>
+            {timelineActivityCount ?? "…"} activity
+          </span>
         </div>
         <div className={styles.sidebarTimelineBody}>
-          <TimelineTab person={person} detailData={detailData} personId={personId} />
+          <TimelineTab
+            key={personId}
+            person={person}
+            detailData={detailData}
+            personId={personId}
+            onActivityCountLoaded={onTimelineActivityCountLoaded}
+          />
         </div>
       </section>
     </aside>
+  );
+}
+
+function SidebarSupplementalCards({
+  personId,
+  initialBankruptcyCases,
+  initialLoyalty,
+  initialVehicles,
+}: {
+  personId: string;
+  initialBankruptcyCases: PersonBankruptcyCase[];
+  initialLoyalty: LoyaltySummary[] | null;
+  initialVehicles: VehicleSummary[] | null;
+}): ReactElement {
+  const containerRef = useRef<HTMLDivElement | null>(null);
+  const [activated, setActivated] = useState(false);
+  const [bankruptcyCases, setBankruptcyCases] = useState(initialBankruptcyCases);
+  const [loyalty, setLoyalty] = useState(initialLoyalty);
+  const [vehicles, setVehicles] = useState(initialVehicles);
+  const [loaded, setLoaded] = useState(false);
+
+  useEffect(() => {
+    const container = containerRef.current;
+    if (container === null) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setActivated(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "320px 0px" },
+    );
+    observer.observe(container);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!activated) return;
+    const controller = new AbortController();
+    const encodedPersonId = encodeURIComponent(personId);
+    void Promise.allSettled([
+      bffFetch<PersonBankruptcyCase[]>(
+        `/bff/persons/${encodedPersonId}/bankruptcy-cases?limit=50`,
+        { signal: controller.signal },
+      ),
+      bffFetch<LoyaltySummary[]>(`/bff/persons/${encodedPersonId}/loyalty`, {
+        signal: controller.signal,
+      }),
+      bffFetch<VehicleSummary[]>(`/bff/persons/${encodedPersonId}/vehicles`, {
+        signal: controller.signal,
+      }),
+    ]).then(([bankruptcyResult, loyaltyResult, vehiclesResult]) => {
+      if (controller.signal.aborted) return;
+      if (bankruptcyResult.status === "fulfilled") setBankruptcyCases(bankruptcyResult.value);
+      if (loyaltyResult.status === "fulfilled") setLoyalty(loyaltyResult.value);
+      if (vehiclesResult.status === "fulfilled") setVehicles(vehiclesResult.value);
+      setLoaded(true);
+    });
+    return () => controller.abort();
+  }, [activated, personId]);
+
+  return (
+    <div ref={containerRef}>
+      {loaded ? (
+        <>
+          <BankruptcySidebarCard cases={bankruptcyCases} />
+          <LoyaltySidebarCard loyalty={loyalty} />
+          <VehiclesSidebarCard vehicles={vehicles} />
+        </>
+      ) : (
+        <SkeletonRows />
+      )}
+    </div>
   );
 }
 
@@ -962,11 +1052,90 @@ function buildTimeline(detailData: DetailData): TLEvent[] {
 
 type TimelineSubTab = "activity" | "audit";
 
-function TimelineTab({ person, detailData, personId }: { person: Person; detailData: DetailData; personId: string }): ReactElement {
+function TimelineTab({
+  person,
+  detailData,
+  personId,
+  onActivityCountLoaded,
+}: {
+  person: Person;
+  detailData: DetailData;
+  personId: string;
+  onActivityCountLoaded: (count: number) => void;
+}): ReactElement {
   const [subTab, setSubTab] = useState<TimelineSubTab>("activity");
+  const timelineRef = useRef<HTMLElement | null>(null);
+  const [activated, setActivated] = useState(false);
+  const [loaded, setLoaded] = useState(false);
+  const [timelineData, setTimelineData] = useState<Pick<DetailData, "sourceRecords" | "sales" | "audit">>({
+    sourceRecords: detailData.sourceRecords,
+    sales: detailData.sales,
+    audit: detailData.audit,
+  });
+
+  useEffect(() => {
+    const timeline = timelineRef.current;
+    if (timeline === null) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setActivated(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "320px 0px" },
+    );
+    observer.observe(timeline);
+    return () => observer.disconnect();
+  }, []);
+
+  useEffect(() => {
+    if (!activated) return;
+    const controller = new AbortController();
+    const encodedPersonId = encodeURIComponent(personId);
+    void Promise.allSettled([
+      bffFetchEnvelope<PersonSourceRecord[]>(
+        `/bff/persons/${encodedPersonId}/source-records?limit=20`,
+        { signal: controller.signal },
+      ),
+      bffFetchEnvelope<SalesOrder[]>(
+        `/bff/persons/${encodedPersonId}/sales?limit=20`,
+        { signal: controller.signal },
+      ),
+      bffFetchEnvelope<PersonAuditEvent[]>(
+        `/bff/persons/${encodedPersonId}/audit?limit=20`,
+        { signal: controller.signal },
+      ),
+    ]).then(([sourceRecordsResult, salesResult, auditResult]) => {
+      if (controller.signal.aborted) return;
+      const nextTimelineData = {
+        sourceRecords: sourceRecordsResult.status === "fulfilled"
+          ? sourceRecordsResult.value.data
+          : detailData.sourceRecords,
+        sales: salesResult.status === "fulfilled" ? salesResult.value.data : detailData.sales,
+        audit: auditResult.status === "fulfilled" ? auditResult.value.data : detailData.audit,
+      };
+      setTimelineData(nextTimelineData);
+      onActivityCountLoaded(buildTimeline({ ...EMPTY_DETAIL, ...nextTimelineData }).length);
+      setLoaded(true);
+    });
+    return () => controller.abort();
+  }, [
+    activated,
+    detailData.audit,
+    detailData.sales,
+    detailData.sourceRecords,
+    onActivityCountLoaded,
+    personId,
+  ]);
+
+  const combinedDetailData: DetailData = {
+    ...detailData,
+    ...timelineData,
+  };
 
   return (
-    <section className={styles.contentCard}>
+    <section ref={timelineRef} className={styles.contentCard}>
       <div className={styles.innerTabBar}>
         <button
           type="button"
@@ -980,14 +1149,14 @@ function TimelineTab({ person, detailData, personId }: { person: Person; detailD
         >Audit</button>
       </div>
       {subTab === "activity"
-        ? <TimelineActivity person={person} detailData={detailData} />
+        ? <TimelineActivity person={person} detailData={combinedDetailData} loading={!loaded} />
         : <AuditTab personId={personId} onTotalLoaded={() => { /* count shown inside */ }} />
       }
     </section>
   );
 }
 
-function TimelineActivity({ person, detailData }: { person: Person; detailData: DetailData }): ReactElement {
+function TimelineActivity({ person, detailData, loading }: { person: Person; detailData: DetailData; loading: boolean }): ReactElement {
   const events = useMemo(() => buildTimeline(detailData), [detailData]);
   const [collapsedDates, setCollapsedDates] = useState<Set<string>>(new Set());
 
@@ -1012,6 +1181,7 @@ function TimelineActivity({ person, detailData }: { person: Person; detailData: 
 
   return (
     <>
+      {loading && <SkeletonRows />}
       <div className={styles.tlGroups}>
         {grouped.map(({ day, evts }) => {
           const isCollapsed = collapsedDates.has(day);
@@ -1045,7 +1215,7 @@ function TimelineActivity({ person, detailData }: { person: Person; detailData: 
             </div>
           );
         })}
-        {events.length === 0 && <p className={styles.tlEmpty}>No events recorded.</p>}
+        {events.length === 0 && !loading && <p className={styles.tlEmpty}>No events recorded.</p>}
       </div>
       <div className={styles.tlFooter}>
         <span className={styles.tlFooterLabel}>Person created</span>
@@ -1066,11 +1236,28 @@ function DetailShell({ person, detailData, personId, salesTotal, children, secti
   );
 }
 
-function BentoSection({ section, className, highlighted, action, children }: BentoSectionProps): ReactElement {
+function BentoSection({ section, className, highlighted, action, children, lazy = false }: BentoSectionProps): ReactElement {
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const [activated, setActivated] = useState(!lazy);
+
+  useEffect(() => {
+    if (!lazy || activated || sectionRef.current === null) return;
+    const observer = new IntersectionObserver(
+      (entries) => {
+        if (entries.some((entry) => entry.isIntersecting)) {
+          setActivated(true);
+          observer.disconnect();
+        }
+      },
+      { rootMargin: "320px 0px" },
+    );
+    observer.observe(sectionRef.current);
+    return () => observer.disconnect();
+  }, [activated, lazy]);
   const sectionClassName = `${styles.collapsibleSection}${className ? ` ${className}` : ""}${highlighted ? ` ${styles.collapsibleSectionHighlight}` : ""}`;
 
   return (
-    <section id={section.id} className={sectionClassName}>
+    <section ref={sectionRef} id={section.id} className={sectionClassName}>
       <div className={styles.collapsibleHeader}>
         <span className={styles.collapsibleTitleWrap}>
           <span className={styles.collapsibleTitle}>{section.label}</span>
@@ -1079,7 +1266,7 @@ function BentoSection({ section, className, highlighted, action, children }: Ben
         {action}
       </div>
       <div className={styles.collapsibleBody}>
-        {children}
+        {activated ? children : <SkeletonRows />}
       </div>
     </section>
   );
@@ -2119,6 +2306,11 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
         reviewCase.match_decision.match_decision_id,
         reviewCase.review_case_id,
       ])));
+      if (!showResolvedReviewCases) {
+        setOpenReviewDecisionIds(
+          new Set(cases.map((reviewCase) => reviewCase.match_decision.match_decision_id)),
+        );
+      }
       onTotalLoaded(cases.length);
     }).catch((error: unknown) => {
       if (!ignore) setRecommendedReviewError(error instanceof BffError ? error.message : "Failed to load recommended matches.");
@@ -2139,17 +2331,20 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
       && match.right_person_id !== null,
   );
   useEffect(() => {
+    if (!showResolvedReviewCases) return;
     let ignore = false;
+    const controller = new AbortController();
     void bffFetchEnvelope<ReviewCaseSummary[]>(
       `/bff/review-cases?person_id=${encodeURIComponent(personId)}&resolved=false&limit=100`,
+      { signal: controller.signal },
     ).then((response) => {
       if (ignore) return;
       setOpenReviewDecisionIds(new Set(response.data.map((reviewCase) => reviewCase.match_decision.match_decision_id)));
     }).catch(() => {
       if (!ignore) setOpenReviewDecisionIds(new Set());
     });
-    return () => { ignore = true; };
-  }, [personId]);
+    return () => { ignore = true; controller.abort(); };
+  }, [personId, showResolvedReviewCases]);
 
   const recommendedPersonIds = recommendedReviewCases
     .map((reviewCase) => {
@@ -3374,13 +3569,34 @@ function SourceRecordsList({ basePath }: { basePath: string }): ReactElement {
 
 function SourceRecordsTab({ personId, facets, onTotalLoaded }: { personId: string; facets: SourceRecordEntityFacet[]; onTotalLoaded: (n: number) => void }): ReactElement {
   const [activeEntity, setActiveEntity] = useState<string | null>(null);
-  const facetTotal = facets.reduce((sum, f) => sum + f.count, 0);
+  const [loadedFacets, setLoadedFacets] = useState(facets);
+  const [facetsLoaded, setFacetsLoaded] = useState(facets.length > 0);
+  const facetTotal = loadedFacets.reduce((sum, f) => sum + f.count, 0);
   const sourceRecordParams = new URLSearchParams();
   if (activeEntity !== null) sourceRecordParams.set("entity_key", activeEntity);
   const queryString = sourceRecordParams.toString();
   const basePath = `/bff/persons/${encodeURIComponent(personId)}/source-records${queryString ? `?${queryString}` : ""}`;
 
-  useEffect(() => { onTotalLoaded(facetTotal); }, [facetTotal, onTotalLoaded]);
+  useEffect(() => {
+    if (facetsLoaded) return;
+    const controller = new AbortController();
+    void bffFetch<SourceRecordEntityFacet[]>(
+      `/bff/persons/${encodeURIComponent(personId)}/source-record-entities`,
+      { signal: controller.signal },
+    )
+      .then((result) => {
+        if (!controller.signal.aborted) setLoadedFacets(result);
+      })
+      .catch(() => undefined)
+      .finally(() => {
+        if (!controller.signal.aborted) setFacetsLoaded(true);
+      });
+    return () => controller.abort();
+  }, [facetsLoaded, personId]);
+
+  useEffect(() => {
+    onTotalLoaded(facetTotal);
+  }, [facetTotal, onTotalLoaded]);
 
   return (
     <section className={styles.contentCard}>
@@ -3390,14 +3606,14 @@ function SourceRecordsTab({ personId, facets, onTotalLoaded }: { personId: strin
         <span className={styles.connHeaderCount}>{facetTotal} {facetTotal === 1 ? "record" : "records"}</span>
       </div>
 
-      {facets.length > 0 && (
+      {!facetsLoaded ? <SkeletonRows /> : loadedFacets.length > 0 && (
         <div className={styles.srFilterGroup}>
           <span className={styles.srFilterLabel}>Source</span>
           <div className={styles.srFilter}>
             <button type="button" className={`${styles.srChip} ${activeEntity === null ? styles.srChipOn : ""}`} onClick={() => setActiveEntity(null)}>
               All · {facetTotal}
             </button>
-            {facets.map((f) => {
+            {loadedFacets.map((f) => {
               const key = f.entity_key ?? f.source_system;
               return (
                 <button
@@ -3417,12 +3633,24 @@ function SourceRecordsTab({ personId, facets, onTotalLoaded }: { personId: strin
       )}
 
       {/* key remounts the list when the filter changes, resetting pagination to page 1 */}
-      <SourceRecordsList key={activeEntity ?? "__all__"} basePath={basePath} />
+      {facetsLoaded && <SourceRecordsList key={activeEntity ?? "__all__"} basePath={basePath} />}
     </section>
   );
 }
 
-function IdentifiersTab({ identifiers }: { identifiers: PersonIdentifier[] }): ReactElement {
+function IdentifiersTab({
+  identifiers,
+  totalCount,
+  nextCursor,
+  loadingMore,
+  onLoadMore,
+}: {
+  identifiers: PersonIdentifier[];
+  totalCount: number | null;
+  nextCursor: string | null;
+  loadingMore: boolean;
+  onLoadMore: () => Promise<void>;
+}): ReactElement {
   const count = identifiers.length;
   const [revealedSet, setRevealedSet] = useState<Set<number>>(new Set());
   const [expandedSet, setExpandedSet] = useState<Set<number>>(new Set());
@@ -3449,7 +3677,10 @@ function IdentifiersTab({ identifiers }: { identifiers: PersonIdentifier[] }): R
       <div className={styles.connHeader}>
         <span className={styles.connHeaderTitle}>Identifiers</span>
         <span className={styles.connHeaderDot}>·</span>
-        <span className={styles.connHeaderCount}>{count} {count === 1 ? "identifier" : "identifiers"}</span>
+        <span className={styles.connHeaderCount}>
+          {totalCount !== null && totalCount !== count ? `${count} of ${totalCount}` : count}{" "}
+          {totalCount === 1 ? "identifier" : "identifiers"}
+        </span>
       </div>
       {count === 0 ? (
         <TabEmptyState message="No identifiers on record." />
@@ -3662,6 +3893,18 @@ function IdentifiersTab({ identifiers }: { identifiers: PersonIdentifier[] }): R
               </div>
             );
           })}
+        </div>
+      )}
+      {nextCursor !== null && (
+        <div className={styles.tabPagination}>
+          <button
+            type="button"
+            className={styles.tabPagBtn}
+            disabled={loadingMore}
+            onClick={() => { void onLoadMore(); }}
+          >
+            {loadingMore ? "Loading identifiers…" : "Load more identifiers"}
+          </button>
         </div>
       )}
     </section>
@@ -3970,19 +4213,16 @@ const EMPTY_DETAIL: DetailData = {
   sourceRecordFacets: [],
 };
 
-// Swallows 404 (optional data not present) but re-throws everything else
-// so 401/500 errors surface rather than silently showing zero counts.
-function catchNotFound(err: unknown): null {
-  if (err instanceof BffError && err.status === 404) return null;
-  throw err;
-}
-
 export default function PersonDetailPage({ params }: { params: Promise<{ personId: string }> }): ReactElement {
   const { personId } = use(params);
   const router = useRouter();
 
   const [person, setPerson] = useState<Person | null>(null);
   const [detailData, setDetailData] = useState<DetailData>(EMPTY_DETAIL);
+  const [identifiersNextCursor, setIdentifiersNextCursor] = useState<string | null>(null);
+  const [identifiersTotal, setIdentifiersTotal] = useState<number | null>(null);
+  const [identifiersLoadingMore, setIdentifiersLoadingMore] = useState(false);
+  const identifierLoadControllerRef = useRef<AbortController | null>(null);
   const [tabTotals, setTabTotals] = useState<Partial<Record<Tab, number>>>({});
   const [loading, setLoading] = useState(true);
   const pageLoadId = useId();
@@ -4010,17 +4250,26 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
 
   useEffect(() => {
     let cancelled = false;
+    const controller = new AbortController();
     setLoading(true);
     setLoadError(null);
     setNotFoundFlag(false);
+    setDetailData(EMPTY_DETAIL);
+    setIdentifiersNextCursor(null);
+    setIdentifiersTotal(null);
+    setIdentifiersLoadingMore(false);
+    identifierLoadControllerRef.current?.abort();
     setGlobalLoading(pageLoadId, true);
 
     async function loadPersonDetail(): Promise<void> {
       const encodedPersonId = encodeURIComponent(personId);
       try {
         const [personRes, identifiersRes] = await Promise.all([
-          bffFetch<Person>(`/bff/persons/${encodedPersonId}`),
-          bffFetchEnvelope<PersonIdentifier[]>(`/bff/persons/${encodedPersonId}/identifiers?limit=200`),
+          bffFetch<Person>(`/bff/persons/${encodedPersonId}`, { signal: controller.signal }),
+          bffFetchEnvelope<PersonIdentifier[]>(
+            `/bff/persons/${encodedPersonId}/identifiers?limit=50`,
+            { signal: controller.signal },
+          ),
         ]);
 
         if (cancelled) return;
@@ -4030,6 +4279,8 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         }
         setPerson(personRes);
         setDetailData((current) => ({ ...current, identifiers: identifiersRes.data }));
+        setIdentifiersNextCursor(identifiersRes.meta.next_cursor);
+        setIdentifiersTotal(identifiersRes.meta.total_count ?? null);
         setLoading(false);
       } catch (err) {
         if (cancelled) return;
@@ -4043,52 +4294,48 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
         return;
       }
 
-      try {
-        const [sourceRecordsRes, salesRes, auditRes, bankruptcyRes, sourceRecordFacetsRes, loyaltyRes, vehiclesRes] = await Promise.all([
-          bffFetchEnvelope<PersonSourceRecord[]>(`/bff/persons/${encodedPersonId}/source-records?limit=20`),
-          bffFetchEnvelope<SalesOrder[]>(`/bff/persons/${encodedPersonId}/sales?limit=20`).catch(catchNotFound),
-          bffFetchEnvelope<PersonAuditEvent[]>(`/bff/persons/${encodedPersonId}/audit?limit=20`).catch(catchNotFound),
-          bffFetchEnvelope<PersonBankruptcyCase[]>(`/bff/persons/${encodedPersonId}/bankruptcy-cases?limit=20`).catch(catchNotFound),
-          bffFetchEnvelope<SourceRecordEntityFacet[]>(`/bff/persons/${encodedPersonId}/source-record-entities`).catch(catchNotFound),
-          bffFetchEnvelope<LoyaltySummary[]>(`/bff/persons/${encodedPersonId}/loyalty`).catch(catchNotFound),
-          bffFetchEnvelope<VehicleSummary[]>(`/bff/persons/${encodedPersonId}/vehicles`).catch(catchNotFound),
-        ]);
-
-        if (cancelled) return;
-        setDetailData((current) => ({
-          ...current,
-          sourceRecords: sourceRecordsRes.data,
-          sales: salesRes?.data ?? [],
-          audit: auditRes?.data ?? [],
-          bankruptcyCases: bankruptcyRes?.data ?? [],
-          sourceRecordFacets: sourceRecordFacetsRes?.data ?? [],
-        }));
-        setPerson((prev) =>
-          prev
-            ? {
-                ...prev,
-                loyalty: loyaltyRes?.data ?? null,
-                vehicles: vehiclesRes?.data ?? null,
-              }
-            : prev,
-        );
-      } catch (err) {
-        if (cancelled) return;
-        setLoadError(err instanceof Error ? err.message : "Failed to load person detail.");
-      } finally {
-        if (!cancelled) {
-          setGlobalLoading(pageLoadId, false);
-        }
-      }
+      if (!cancelled) setGlobalLoading(pageLoadId, false);
     }
 
     void loadPersonDetail();
 
     return () => {
       cancelled = true;
+      controller.abort();
+      identifierLoadControllerRef.current?.abort();
       setGlobalLoading(pageLoadId, false);
     };
   }, [pageLoadId, personId, router, setGlobalLoading]);
+
+  const loadMoreIdentifiers = useCallback(async (): Promise<void> => {
+    if (identifiersNextCursor === null || identifiersLoadingMore) return;
+    identifierLoadControllerRef.current?.abort();
+    const controller = new AbortController();
+    identifierLoadControllerRef.current = controller;
+    setIdentifiersLoadingMore(true);
+    try {
+      const result = await bffFetchEnvelope<PersonIdentifier[]>(
+        `/bff/persons/${encodeURIComponent(personId)}/identifiers?limit=50&cursor=${encodeURIComponent(identifiersNextCursor)}`,
+        { signal: controller.signal },
+      );
+      if (controller.signal.aborted) return;
+      setDetailData((current) => ({
+        ...current,
+        identifiers: mergeIdentifierPage(current.identifiers, result.data),
+      }));
+      setIdentifiersNextCursor(result.meta.next_cursor);
+      setIdentifiersTotal(result.meta.total_count ?? null);
+    } catch (error: unknown) {
+      if (!controller.signal.aborted) {
+        setLoadError(error instanceof Error ? error.message : "Failed to load more identifiers.");
+      }
+    } finally {
+      if (identifierLoadControllerRef.current === controller) {
+        identifierLoadControllerRef.current = null;
+        setIdentifiersLoadingMore(false);
+      }
+    }
+  }, [identifiersLoadingMore, identifiersNextCursor, personId]);
 
   const [shareError, setShareError] = useState<string | null>(null);
 
@@ -4457,7 +4704,15 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
                   content = <ConnectionsTab personId={personId} onTotalLoaded={onConnectionsTotal} />;
                   break;
                 case "section-identifiers":
-                  content = <IdentifiersTab identifiers={detailData.identifiers} />;
+                  content = (
+                    <IdentifiersTab
+                      identifiers={detailData.identifiers}
+                      totalCount={identifiersTotal}
+                      nextCursor={identifiersNextCursor}
+                      loadingMore={identifiersLoadingMore}
+                      onLoadMore={loadMoreIdentifiers}
+                    />
+                  );
                   break;
                 case "section-decision-history":
                   content = <DecisionHistoryTab personId={personId} onTotalLoaded={onDecisionHistoryTotal} />;
@@ -4482,7 +4737,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
               ) : undefined;
 
               return (
-                <BentoSection key={section.id} section={section} className={bentoClass} highlighted={highlightedSectionId === section.id} action={sectionAction}>
+                <BentoSection key={section.id} section={section} className={bentoClass} highlighted={highlightedSectionId === section.id} action={sectionAction} lazy={section.id !== "section-identifiers"}>
                   {content}
                 </BentoSection>
               );

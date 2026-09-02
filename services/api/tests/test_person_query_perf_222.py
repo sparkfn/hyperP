@@ -12,6 +12,7 @@ from __future__ import annotations
 
 from src.graph.queries.persons import (
     COUNT_PERSON_IDENTIFIERS,
+    FIND_PERSON_BY_IDENTIFIER,
     GET_PERSON_BY_ID,
     GET_PERSON_IDENTIFIERS,
     GET_PERSON_LOYALTY,
@@ -79,6 +80,16 @@ def test_get_person_by_id_still_includes_connection_count_and_lifetime_value() -
     assert "connection_count" in GET_PERSON_BY_ID
     assert "lifetime_value" in GET_PERSON_BY_ID
     assert "PURCHASED" in GET_PERSON_BY_ID
+
+
+def test_person_summary_connection_queries_collect_each_path_before_the_next_match() -> None:
+    for query, person_name in ((GET_PERSON_BY_ID, "person"), (FIND_PERSON_BY_IDENTIFIER, "p")):
+        assert "identifier_conn" in query
+        assert "address_conn" in query
+        assert "knows_conn" in query
+        assert "identifier_conn + address_conn + knows_conn" in query
+        assert f"WITH {person_name}, collect(DISTINCT ci) AS identifier_conn" in query
+        assert "collect(DISTINCT ci) + collect(DISTINCT ca) + collect(DISTINCT ck)" not in query
 
 
 def test_get_person_by_id_still_resolves_merge_chain() -> None:

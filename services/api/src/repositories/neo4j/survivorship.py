@@ -8,7 +8,7 @@ from datetime import UTC, datetime
 
 from neo4j import AsyncManagedTransaction
 
-from src.graph.client import get_session
+from src.graph.client import TimedAsyncSession, get_session
 from src.graph.converters import to_optional_str, to_str
 from src.graph.golden_profile import (
     GOLDEN_FIELD_SPEC,
@@ -93,7 +93,7 @@ class Neo4jSurvivorshipRepository:
 
     async def get_field_options(self, person_id: str) -> FieldOptionsData | None:
         async with get_session() as session:
-            return await session.execute_read(_field_options_tx, person_id)
+            return await _field_options_tx(session, person_id)
 
     async def create_override(
         self,
@@ -148,8 +148,8 @@ class Neo4jSurvivorshipRepository:
             )
 
 
-async def _field_options_tx(tx: AsyncManagedTransaction, person_id: str) -> FieldOptionsData | None:
-    record = await (await tx.run(GET_FIELD_OPTIONS, person_id=person_id)).single()
+async def _field_options_tx(session: TimedAsyncSession, person_id: str) -> FieldOptionsData | None:
+    record = await (await session.run(GET_FIELD_OPTIONS, person_id=person_id)).single()
     if record is None:
         return None
 
@@ -207,7 +207,7 @@ async def _field_options_tx(tx: AsyncManagedTransaction, person_id: str) -> Fiel
             continue
         source_kind, key = GOLDEN_FIELD_SPEC.get(field_name, ("source_record_fact", None))
         metadata = await (
-            await tx.run(GET_OVERRIDE_SOURCE_METADATA, source_record_pk=source_record_pk)
+            await session.run(GET_OVERRIDE_SOURCE_METADATA, source_record_pk=source_record_pk)
         ).single()
         if metadata is None:
             continue

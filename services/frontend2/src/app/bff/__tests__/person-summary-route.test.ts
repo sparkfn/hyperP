@@ -15,10 +15,11 @@ describe("person summary BFF route", () => {
     const response = new Response("summary", { status: 200 });
     proxyToApi.mockResolvedValue(response);
 
-    const result = await GET();
+    const request = new Request("https://example.test/bff/persons/summary");
+    const result = await GET(request);
 
     expect(dynamic).toBe("force-dynamic");
-    expect(proxyToApi).toHaveBeenCalledWith("/persons/summary");
+    expect(proxyToApi).toHaveBeenCalledWith("/persons/summary", { signal: request.signal });
     expect(result).toBe(response);
   });
 });

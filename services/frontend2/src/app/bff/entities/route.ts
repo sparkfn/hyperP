@@ -5,6 +5,8 @@ import { proxyToApi } from "@/lib/proxy";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(): Promise<NextResponse> {
-  return proxyToApi<EntitySummary[]>("/entities");
+export async function GET(request: Request): Promise<NextResponse> {
+  return proxyToApi<EntitySummary[]>("/entities", {
+    signal: request.signal,
+  });
 }

@@ -9,10 +9,10 @@ from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import TypedDict
 
-from neo4j import AsyncManagedTransaction, AsyncSession, Record
+from neo4j import AsyncManagedTransaction, Record
 
 from src.celery_client import enqueue_match_recalculation
-from src.graph.client import get_session
+from src.graph.client import TimedAsyncSession, get_session
 from src.graph.converters import GraphRecord, to_int, to_optional_str, to_str
 from src.graph.crm_deal_count import recompute_person_crm_deal_counts
 from src.graph.golden_profile import recompute_golden_profile_tx
@@ -159,7 +159,7 @@ class Neo4jReviewRepository:
             return detail
 
     async def _fetch_evidence(
-        self, session: AsyncSession, detail: ReviewCaseDetail
+        self, session: TimedAsyncSession, detail: ReviewCaseDetail
     ) -> list[SharedIdentifierGroup]:
         left = detail.comparison_left
         right = detail.comparison_right
@@ -172,20 +172,20 @@ class Neo4jReviewRepository:
         )
         if candidate_person_id is None or candidate_person_id == left.person_id:
             return []
-        return await session.execute_read(
-            self._read_shared_identifier_groups,
+        return await self._read_shared_identifier_groups(
+            session,
             person_id=left.person_id,
             candidate_person_id=candidate_person_id,
         )
 
     async def _read_shared_identifier_groups(
         self,
-        tx: AsyncManagedTransaction,
+        session: TimedAsyncSession,
         *,
         person_id: str,
         candidate_person_id: str,
     ) -> list[SharedIdentifierGroup]:
-        result = await tx.run(
+        result = await session.run(
             GET_PERSON_POSSIBLE_MATCH_DETAIL,
             person_id=person_id,
             candidate_person_id=candidate_person_id,
