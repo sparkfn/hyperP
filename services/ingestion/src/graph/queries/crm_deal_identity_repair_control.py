@@ -531,9 +531,14 @@ READ_ALLOCATION_REPLAY = """
 MATCH (control:CrmDealRepairControl {run_id: $run_id, owner_id: $owner_id,
   token_digest: $token_digest})
 MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id,
-  request_action: 'allocate', request_expected_revision: $expected_revision,
-  request_digest: $request_digest, unit_set_digest: $unit_set_digest})
+  completion_id: $completion_id, boundary_digest: $boundary_digest,
+  overlay_digest: $overlay_digest, allocation_digest: $allocation_digest,
+  unit_count: $unit_count, request_action: 'allocate',
+  request_expected_revision: $expected_revision, request_digest: $request_digest,
+  unit_set_digest: $unit_set_digest})
 WHERE completion.unit_ids = $unit_ids
+  AND control.boundary_digest = $boundary_digest
+  AND control.proof_digest = $proof_digest
   AND control.state IN ['allocated', 'paused']
   AND (control.state = 'allocated' OR control.paused_from_state = 'allocated')
   AND completion.receipt_control_instance_id = control.control_instance_id

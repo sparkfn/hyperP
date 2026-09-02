@@ -969,6 +969,14 @@ def test_review_activation_scopes_knows_declarer_to_payload_source_system() -> N
 
 def test_review_activation_replaces_sourced_projection_lifecycles_atomically() -> None:
     query = ACTIVATE_PENDING_REVIEW_RECORD
+    assert "old_direct_link.is_active, true) = true" in query
+    assert "retired_by_review_case_id" in query
+    assert "MERGE (pending)-[pending_link:LINKED_TO {is_active: true}]->(approved)" in query
+    assert "pending_link.linked_at = coalesce(pending_link.linked_at, datetime())" in query
+    assert "MERGE (call)-[call_link:LINKED_TO {is_active: true}]->(approved)" in query
+    assert "call_link.linked_at = coalesce(call_link.linked_at, datetime())" in query
+    assert "DELETE old_call_link" not in query
+    assert "FOREACH (rel IN unsafe_links | DELETE rel)" not in query
     assert "old_knows.source_record_pk = old.source_record_pk" in query
     assert "old_knows.is_active = false" in query
     assert "old_knows.retired_at = datetime()" in query

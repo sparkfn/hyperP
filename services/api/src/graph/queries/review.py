@@ -941,6 +941,19 @@ FOREACH (old IN old_versions |
       old.superseded_at = datetime(), old.updated_at = datetime()
   MERGE (old)-[:PREVIOUS_VERSION_OF]->(pending)
 )
+CALL (old_versions) {
+  UNWIND old_versions AS old
+  OPTIONAL MATCH (old)-[old_direct_link:LINKED_TO]->(:Person)
+  FOREACH (link IN CASE
+    WHEN old_direct_link IS NOT NULL AND coalesce(old_direct_link.is_active, true) = true
+    THEN [old_direct_link] ELSE [] END |
+    SET link.is_active = false,
+        link.retired_at = coalesce(link.retired_at, datetime()),
+        link.retired_by_review_case_id = coalesce(link.retired_by_review_case_id, $review_case_id),
+        link.updated_at = datetime()
+  )
+  RETURN count(old_direct_link) AS retired_old_direct_link_count
+}
 SET pending.lifecycle_status = 'active', pending.is_latest = true,
     pending.activated_at = datetime(), pending.updated_at = datetime(),
     pending.link_status = 'linked'
@@ -949,11 +962,20 @@ OPTIONAL MATCH (pending)-[unsafe:LINKED_TO]->(provisional:Person)
 WITH pending, approved, source, old_versions,
      collect(DISTINCT provisional.person_id) AS prior_person_ids,
      collect(unsafe) AS unsafe_links
-FOREACH (rel IN unsafe_links | DELETE rel)
-MERGE (pending)-[pending_link:LINKED_TO {linked_at: datetime(), is_active: true}]->(approved)
-SET pending_link.is_active = true,
+FOREACH (rel IN unsafe_links |
+  FOREACH (active_link IN CASE WHEN coalesce(rel.is_active, true) = true THEN [rel] ELSE [] END |
+    SET active_link.is_active = false,
+        active_link.retired_at = coalesce(active_link.retired_at, datetime()),
+        active_link.retired_by_review_case_id =
+          coalesce(active_link.retired_by_review_case_id, $review_case_id),
+        active_link.updated_at = datetime()
+  )
+)
+MERGE (pending)-[pending_link:LINKED_TO {is_active: true}]->(approved)
+SET pending_link.linked_at = coalesce(pending_link.linked_at, datetime()),
     pending_link.activated_at = coalesce(pending_link.activated_at, datetime()),
-    pending_link.retired_at = null
+    pending_link.retired_at = null,
+    pending_link.updated_at = datetime()
 WITH pending, approved, source, old_versions, prior_person_ids
 CALL (pending, approved, source) {
   OPTIONAL MATCH (call:SourceRecord {record_type: 'call', lifecycle_status: 'pending_review'})
@@ -968,13 +990,24 @@ CALL (pending, approved, source) {
   CALL (calls) {
     UNWIND calls AS call
     OPTIONAL MATCH (call)-[old_call_link:LINKED_TO]->(:Person)
-    DELETE old_call_link
-    RETURN count(*) AS removed_call_link_count
+    FOREACH (link IN CASE
+      WHEN old_call_link IS NOT NULL AND coalesce(old_call_link.is_active, true) = true
+      THEN [old_call_link] ELSE [] END |
+      SET link.is_active = false,
+          link.retired_at = coalesce(link.retired_at, datetime()),
+          link.retired_by_review_case_id =
+            coalesce(link.retired_by_review_case_id, $review_case_id),
+          link.updated_at = datetime()
+    )
+    RETURN count(old_call_link) AS retired_call_link_count
   }
   FOREACH (call IN calls |
     SET call.lifecycle_status = 'active', call.link_status = 'linked',
         call.activated_at = datetime(), call.updated_at = datetime()
-    CREATE (call)-[:LINKED_TO {linked_at: datetime()}]->(approved)
+    MERGE (call)-[call_link:LINKED_TO {is_active: true}]->(approved)
+    SET call_link.linked_at = coalesce(call_link.linked_at, datetime()),
+        call_link.activated_at = coalesce(call_link.activated_at, datetime()),
+        call_link.retired_at = null, call_link.updated_at = datetime()
   )
   RETURN size(calls) AS activated_call_count
 }

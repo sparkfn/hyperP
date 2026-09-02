@@ -30,7 +30,7 @@ _OWNERSHIP_BOUNDARY_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"\b(?:WITH|RETURN|UNWIND)\b|\bCALL\s*(?:\{|\([^)]*\)\s*\{)",
     re.IGNORECASE,
 )
-_WRITE_TARGET_PATTERN: Final[re.Pattern[str]] = re.compile(r"\bCREATE\b", re.IGNORECASE)
+_CREATE_TOKEN_PATTERN: Final[re.Pattern[str]] = re.compile(r"\bCREATE\b", re.IGNORECASE)
 _RELATIONSHIP_BINDING_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"\[\s*(?:(?P<name>[A-Za-z_]\w*)\s*)?:\s*(?:" + _RELATIONSHIP_TYPES + r")\b"
 )
@@ -169,6 +169,7 @@ _AUTHORITATIVE_MUTATION_READERS: Final[frozenset[str]] = frozenset(
         "ingestion/graph/queries/crm_deal_count.py:RECOMPUTE_SOURCE_PERSON_CRM_DEAL_COUNTS",
         "ingestion/graph/queries/crm_history.py:ACTIVATE_PENDING_CALLS_FOR_DEAL",
         "ingestion/graph/queries/crm_history.py:CREATE_CALL_FROM_HISTORY",
+        "ingestion/graph/queries/crm_deal_identity_repair_mutation.py:STAGE_REPAIR_IDENTIFIERS",
         "ingestion/graph/queries/profile_analysis_dirty.py:MARK_PROFILE_ANALYSIS_DIRTY",
         "api/graph/queries/review.py:LINK_REVIEW_SALES_BOUGHT_VEHICLE",
         "api/graph/queries/review.py:ACTIVATE_PENDING_REVIEW_RECORD",
@@ -427,8 +428,10 @@ def _is_write_only_relationship(query: str, position: int) -> bool:
     ``CALL``, ``UNWIND``, or subquery delimiter resumes reader discovery.
     """
     boundary = _last_scope_boundary(query, position)
-    creates = tuple(_WRITE_TARGET_PATTERN.finditer(query, boundary, position))
-    return bool(creates)
+    return any(
+        not re.search(r"\bON\s*$", query[boundary : create.start()], re.IGNORECASE)
+        for create in _CREATE_TOKEN_PATTERN.finditer(query, boundary, position)
+    )
 
 
 def _generic_repairable_relationship_read(query: str) -> bool:
