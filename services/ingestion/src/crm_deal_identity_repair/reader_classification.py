@@ -23,11 +23,16 @@ _RELATIONSHIP_TYPES: Final[str] = (
 )
 _RELATIONSHIP_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b(?:" + _RELATIONSHIP_TYPES + r")\b")
 _READ_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"\b(?:OPTIONAL\s+)?MATCH\b|\b(?:count|COUNT|exists|EXISTS)\s*\{"
+    r"\b(?:OPTIONAL\s+)?MATCH\b|\b(?:count|exists)\s*\{|\[\s*\(",
+    re.IGNORECASE,
+)
+_CLAUSE_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:OPTIONAL\s+MATCH|MATCH|CREATE|MERGE)\b", re.IGNORECASE
 )
 _RELATIONSHIP_BINDING_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"\[\s*(?:(?P<name>[A-Za-z_]\w*)\s*)?:\s*(?:" + _RELATIONSHIP_TYPES + r")\b"
 )
+_GENERIC_RELATIONSHIP_PATTERN: Final[re.Pattern[str]] = re.compile(r"\[(?P<name>[A-Za-z_]\w*)\]")
 _WRITE_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b(?:CREATE|MERGE|SET|DELETE|REMOVE)\b")
 _ACTIVE_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"coalesce\s*\([^)]*\.is_active\s*,\s*true\s*\)\s*=\s*true"
@@ -157,38 +162,40 @@ ingestion/matching/deterministic.py:_PERSON_HAS_VALID_GOVT_ID""".splitlines()
 # exceptional: audit/history, repair, retirement, migration, or rewiring code
 # whose purpose requires observing inactive evidence.
 _AUTHORITATIVE_MUTATION_READERS: Final[frozenset[str]] = frozenset(
-    {"ingestion/graph/queries/profile_analysis_dirty.py:MARK_PROFILE_ANALYSIS_DIRTY"}
+    {
+        "api/graph/queries/crm_deal_count.py:RECOMPUTE_PERSON_CRM_DEAL_COUNTS",
+        "ingestion/graph/queries/crm_deal_count.py:RECOMPUTE_SOURCE_PERSON_CRM_DEAL_COUNTS",
+        "ingestion/graph/queries/crm_history.py:ACTIVATE_PENDING_CALLS_FOR_DEAL",
+        "ingestion/graph/queries/crm_history.py:CREATE_CALL_FROM_HISTORY",
+        "ingestion/graph/queries/profile_analysis_dirty.py:MARK_PROFILE_ANALYSIS_DIRTY",
+    }
 )
+
+# A current materializer may also deliberately read a retired relationship as
+# its *write target*. The per-binding exceptions below are narrowly limited to
+# those history/retirement operations; every other read binding stays active-only.
+_EXEMPT_MUTATION_READ_BINDINGS: Final[dict[str, frozenset[str]]] = {
+    "ingestion/graph/queries/crm_history.py:ACTIVATE_PENDING_CALLS_FOR_DEAL": frozenset(
+        {"old_link"}
+    ),
+}
 
 # Explicit exceptional mutation registry. This remains exhaustive so mixed
 # read/write Cypher cannot silently bypass reader-safety review.
 _MUTATION_READERS: Final[frozenset[str]] = frozenset(
-    """api/graph/queries/crm_deal_count.py:RECOMPUTE_PERSON_CRM_DEAL_COUNTS
-api/graph/queries/merge.py:EXECUTE_MANUAL_MERGE
+    """api/graph/queries/merge.py:EXECUTE_MANUAL_MERGE
 api/graph/queries/merge.py:REVERT_MERGE
-api/graph/queries/review.py:LINK_REVIEW_SALES_PURCHASED_ORDER
-api/graph/queries/review.py:LINK_REVIEW_SALES_BOUGHT_VEHICLE
 api/graph/queries/review.py:PROMOTE_STAGED_REVIEW_SALE
 api/graph/queries/review.py:ACTIVATE_PENDING_REVIEW_RECORD
 api/graph/queries/review.py:RESOLVE_PENDING_REVIEW_RECORD_NO_MATCH
 api/graph/queries/review.py:REJECT_PENDING_REVIEW_RECORD
 ingestion/graph/migrations.py:DEDUPLICATE_LEGACY_BITRIX_PROJECTIONS
 ingestion/graph/migrations.py:REWRITE_LEGACY_BITRIX_PROJECTION_KEYS
-ingestion/graph/migrations.py:REWRITE_DIRECT_BITRIX_PROJECTION_KEYS
 ingestion/graph/migrations.py:MIGRATE_PROJECTION_RELATIONSHIP_LIFECYCLE
 ingestion/graph/migrations.py:RECONCILE_PROJECTION_RELATIONSHIP_LIFECYCLE
-ingestion/graph/queries/crm_deal_count.py:RECOMPUTE_SOURCE_PERSON_CRM_DEAL_COUNTS
 ingestion/graph/queries/crm_deal_identity_repair_mutation.py:READ_LOCKED_REPAIR_AUTHORITY
 ingestion/graph/queries/crm_deal_identity_repair_mutation.py:LOCK_SUPPORT_SOURCE_RECORDS
 ingestion/graph/queries/crm_deal_identity_repair_mutation.py:RETIRE_EXACT_CONTAMINATION
-ingestion/graph/queries/crm_deal_identity_repair_mutation.py:STAGE_ACTIVE_REPAIR_LINK
-ingestion/graph/queries/crm_deal_identity_repair_mutation.py:STAGE_PROVISIONAL_REPAIR_LINK
-ingestion/graph/queries/crm_deal_identity_repair_mutation.py:STAGE_REPAIR_IDENTIFIERS
-ingestion/graph/queries/crm_deal_identity_repair_mutation.py:STAGE_REPAIR_FACTS
-ingestion/graph/queries/crm_history.py:CREATE_CALL_FROM_HISTORY
-ingestion/graph/queries/crm_history.py:LINK_CONVERSATION_TO_CRM_HISTORY
-ingestion/graph/queries/crm_history.py:LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS
-ingestion/graph/queries/crm_history.py:ACTIVATE_PENDING_CALLS_FOR_DEAL
 ingestion/graph/queries/identifier_scope_migrations.py:MIGRATE_CRM_IDENTIFIER_RELATIONSHIPS_BATCH
 ingestion/graph/queries/identifier_scope_migrations.py:CONSOLIDATE_SCOPED_IDENTIFIER_DUPLICATES_BATCH
 ingestion/graph/queries/knows.py:LINK_PERSON_KNOWS
@@ -199,11 +206,7 @@ ingestion/graph/queries/merge.py:REWIRE_LINKED_TO
 ingestion/graph/queries/merge.py:REWIRE_IDENTIFIED_BY
 ingestion/graph/queries/merge.py:REWIRE_LIVES_AT
 ingestion/graph/queries/merge.py:REWIRE_HAS_FACT
-ingestion/graph/queries/persons.py:LINK_PERSON_TO_IDENTIFIER
-ingestion/graph/queries/persons.py:LINK_PERSON_TO_ADDRESS
-ingestion/graph/queries/persons.py:CREATE_ATTRIBUTE_FACT
 ingestion/graph/queries/profile_analysis_dirty.py:RETIRE_SOURCE_EVIDENCE
-ingestion/graph/queries/sales.py:LINK_PERSON_PURCHASED_ORDER
 ingestion/graph/queries/sales.py:CLEAR_SUPERSEDED_SALES_LINKS
 ingestion/graph/queries/sales.py:REWIRE_PURCHASED
 ingestion/graph/queries/sales.py:REWIRE_BOUGHT_VEHICLE
@@ -212,12 +215,7 @@ ingestion/graph/queries/source_records.py:LOCK_AND_GET_SOURCE_STATE
 ingestion/graph/queries/source_records.py:SUPERSEDE_SOURCE_RECORD
 ingestion/graph/queries/source_records.py:RETIRE_IDENTITY_PROJECTIONS
 ingestion/graph/queries/source_records.py:RETIRE_IDENTITY_PROJECTIONS_FOR_PERSONS
-ingestion/graph/queries/source_records.py:LINK_SOURCE_RECORD_TO_PERSON
-ingestion/graph/queries/vehicle.py:LINK_CHAT_SOURCE_RECORD_MENTIONS_VEHICLE
 ingestion/graph/queries/vehicle.py:RETIRE_CONVERSATION_VEHICLE_MENTIONS
-ingestion/graph/queries/vehicle.py:LINK_PERSON_BOUGHT_VEHICLE
-ingestion/graph/queries/vehicle.py:LINK_SOURCE_RECORD_MENTIONS_VEHICLE
-ingestion/graph/queries/vehicle.py:LINK_PERSON_OWNS_VEHICLE
 ingestion/graph/queries/vehicle.py:FLAG_VEHICLE_OWNER_CONFLICTS""".splitlines()
 )
 
@@ -370,8 +368,48 @@ def _source_segment(source: str, node: ast.AST, file_path: Path) -> str:
 
 
 def _is_relationship_read(query: str) -> bool:
-    """Discover relationship reads even when the binding also mutates state."""
-    return bool(_RELATIONSHIP_PATTERN.search(query) and _READ_PATTERN.search(query))
+    """Discover every repairable relationship pattern that is not write-only."""
+    return bool(
+        _READ_PATTERN.search(query)
+        and (_relationship_read_bindings(query) or _generic_repairable_relationship_read(query))
+    )
+
+
+def _relationship_read_bindings(query: str) -> tuple[re.Match[str], ...]:
+    """Return repairable relationship bindings outside CREATE/MERGE clauses."""
+    return tuple(
+        match
+        for match in _RELATIONSHIP_BINDING_PATTERN.finditer(query)
+        if not _is_write_only_relationship(query, match.start())
+    )
+
+
+def _is_write_only_relationship(query: str, position: int) -> bool:
+    """Recognize a relationship pattern owned by the nearest Cypher clause.
+
+    Clause ownership is intentionally computed across whitespace and newlines:
+    a CREATE/MERGE target is write-only, while a later MATCH on the same line
+    resumes relationship-read enforcement.
+    """
+    clauses = tuple(_CLAUSE_PATTERN.finditer(query, 0, position))
+    if not clauses:
+        return False
+    return clauses[-1].group(0).upper() in {"CREATE", "MERGE"}
+
+
+def _generic_repairable_relationship_read(query: str) -> bool:
+    """Detect generic relationship variables constrained to a repairable type."""
+    for match in _GENERIC_RELATIONSHIP_PATTERN.finditer(query):
+        if _is_write_only_relationship(query, match.start()):
+            continue
+        name = match.group("name")
+        if re.search(
+            rf"type\s*\(\s*{re.escape(name)}\s*\)\s*=\s*['\"](?:{_RELATIONSHIP_TYPES})['\"]",
+            query,
+            re.IGNORECASE,
+        ):
+            return True
+    return False
 
 
 def _has_active_predicate(reader: RelationshipReader) -> bool:
@@ -382,12 +420,19 @@ def _has_active_predicate(reader: RelationshipReader) -> bool:
     fragments remain allowed because they are the repository's canonical
     per-binding active predicate.
     """
-    bindings = tuple(_RELATIONSHIP_BINDING_PATTERN.finditer(reader.query))
+    bindings = _relationship_read_bindings(reader.query)
     if not bindings:
         return False
+    if _generic_repairable_relationship_read(reader.query):
+        return False
+    exempt_bindings = _EXEMPT_MUTATION_READ_BINDINGS.get(reader.identifier, frozenset())
     for match in bindings:
         binding = match.group("name")
-        if binding is None or not _binding_has_active_predicate(binding, reader.query):
+        if binding is None:
+            return False
+        if binding in exempt_bindings:
+            continue
+        if not _binding_has_active_predicate(binding, reader.query):
             return False
     return True
 

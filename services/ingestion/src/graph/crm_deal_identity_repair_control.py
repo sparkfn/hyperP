@@ -367,6 +367,11 @@ class CrmDealRepairControlRepository:
                 actual_negative_control_count=inventory.negative_control_count,
                 request_digest=request_digest,
             ).single()
+            if record is None:
+                raise RuntimeError("repair allocation compare-and-set was rejected")
+            self._seal_current_boundary(
+                tx, request, _required_int(record["revision"], "allocation revision")
+            )
             return _lease(record)
 
         return self._client.execute_write(work)
