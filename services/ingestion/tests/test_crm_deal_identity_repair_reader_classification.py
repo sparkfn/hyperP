@@ -139,6 +139,131 @@ def test_active_predicate_must_cover_each_relationship_binding() -> None:
     assert not _has_active_predicate(reader)
 
 
+def test_clause_boundaries_discover_pattern_expressions_after_create(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = tmp_path / "services" / "api" / "src" / "graph" / "queries" / "boundaries.py"
+    module.parent.mkdir(parents=True)
+    expressions = {
+        "COMPREHENSION": "size([(p)-[r:PURCHASED]->() | r])",
+        "COUNT": "COUNT { MATCH (p)-[r:PURCHASED]->() }",
+        "EXISTS": "EXISTS { MATCH (p)-[r:PURCHASED]->() }",
+    }
+    boundary_prefixes = {
+        "WITH": "CREATE (seed:Person) WITH seed RETURN ",
+        "RETURN": "CREATE (seed:Person) RETURN ",
+        "UNWIND": "CREATE (seed:Person) UNWIND [seed] AS item RETURN ",
+        # The query binding's AST segment starts with a string literal before
+        # CALL, so detection must not depend on a line-start CALL token.
+        "CALL": "CREATE (seed:Person) CALL { RETURN ",
+    }
+    source_lines: list[str] = []
+    identifiers: set[str] = set()
+    for boundary, prefix in boundary_prefixes.items():
+        for expression_name, expression in expressions.items():
+            symbol = f"{boundary}_{expression_name}"
+            suffix = " AS value } RETURN value" if boundary == "CALL" else " AS value"
+            source_lines.append(f'{symbol} = """{prefix}{expression}{suffix}"""\n')
+            identifiers.add(f"api/graph/queries/boundaries.py:{symbol}")
+    module.write_text("".join(source_lines), encoding="utf-8")
+    expected = frozenset(identifiers)
+    monkeypatch.setattr(reader_classification, "_AUDIT_READERS", frozenset())
+    monkeypatch.setattr(reader_classification, "_MUTATION_READERS", frozenset())
+    monkeypatch.setattr(reader_classification, "_AUTHORITATIVE_MUTATION_READERS", frozenset())
+    monkeypatch.setattr(reader_classification, "_AUTHORITATIVE_READERS", expected)
+
+    readers = discover_relationship_readers(module)
+    assert {reader.identifier for reader in readers} == expected
+    with pytest.raises(
+        RuntimeError, match="authoritative relationship reader lacks active predicate"
+    ):
+        assert_reader_contract(module)
+
+
+def test_repeated_binding_name_requires_a_predicate_in_each_scope() -> None:
+    reader = RelationshipReader(
+        "ingestion/graph/queries/example.py",
+        "REPEATED_LINK_READ",
+        "authoritative",
+        """MATCH (first:SourceRecord)-[link:LINKED_TO]->(:Person)
+        WHERE coalesce(link.is_active, true) = true
+        WITH first
+        MATCH (second:SourceRecord)-[link:LINKED_TO]->(:Person)
+        RETURN second""",
+    )
+
+    assert not _has_active_predicate(reader)
+
+
+def test_all_repairable_merge_materializers_are_authoritative_and_active() -> None:
+    readers = {
+        reader.identifier: reader
+        for reader in assert_reader_contract(*approved_reader_sources(_REPO_ROOT))
+    }
+    expected = {
+        "api/graph/queries/review.py:LINK_REVIEW_SALES_BOUGHT_VEHICLE",
+        "api/graph/queries/review.py:LINK_REVIEW_SALES_PURCHASED_ORDER",
+        "ingestion/graph/queries/crm_history.py:LINK_CONVERSATION_TO_CRM_HISTORY",
+        "ingestion/graph/queries/crm_history.py:LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS",
+        "ingestion/graph/queries/knows.py:LINK_PERSON_KNOWS",
+        "ingestion/graph/queries/persons.py:LINK_PERSON_TO_ADDRESS",
+        "ingestion/graph/queries/persons.py:LINK_PERSON_TO_IDENTIFIER",
+        "ingestion/graph/queries/sales.py:LINK_PERSON_PURCHASED_ORDER",
+        "ingestion/graph/queries/vehicle.py:LINK_CHAT_SOURCE_RECORD_MENTIONS_VEHICLE",
+        "ingestion/graph/queries/vehicle.py:LINK_PERSON_BOUGHT_VEHICLE",
+        "ingestion/graph/queries/vehicle.py:LINK_PERSON_OWNS_VEHICLE",
+        "ingestion/graph/queries/vehicle.py:LINK_SOURCE_RECORD_MENTIONS_VEHICLE",
+    }
+    materializers = {
+        identifier
+        for identifier, reader in readers.items()
+        if reader.classification == "authoritative_mutation" and "MERGE" in reader.query.upper()
+    }
+    assert expected <= materializers
+    assert all(_has_active_predicate(readers[identifier]) for identifier in expected)
+
+
+def test_current_materializers_are_classified_and_preserve_retired_links() -> None:
+    readers = {
+        reader.identifier: reader
+        for reader in assert_reader_contract(*approved_reader_sources(_REPO_ROOT))
+    }
+    for identifier in (
+        "ingestion/graph/queries/sales.py:LINK_PERSON_PURCHASED_ORDER",
+        "api/graph/queries/review.py:LINK_REVIEW_SALES_PURCHASED_ORDER",
+        "ingestion/graph/queries/vehicle.py:LINK_PERSON_BOUGHT_VEHICLE",
+    ):
+        reader = readers[identifier]
+        assert reader.classification == "authoritative_mutation"
+        assert _has_active_predicate(reader)
+        assert "is_active" in reader.query
+
+
+def test_merge_active_predicate_requires_literal_true_or_documented_lifecycle_exception() -> None:
+    inactive_merge = RelationshipReader(
+        "ingestion/graph/queries/example.py",
+        "INACTIVE_MERGE",
+        "authoritative_mutation",
+        "MERGE (p)-[purchase:PURCHASED {is_active: false}]->(:Order)",
+    )
+    variable_merge = RelationshipReader(
+        "ingestion/graph/queries/example.py",
+        "VARIABLE_MERGE",
+        "authoritative_mutation",
+        "MERGE (p)-[purchase:PURCHASED {is_active: $is_active}]->(:Order)",
+    )
+    documented_lifecycle_merge = RelationshipReader(
+        "ingestion/graph/queries/vehicle.py",
+        "LINK_PERSON_BOUGHT_VEHICLE",
+        "authoritative_mutation",
+        "MERGE (p)-[rel:BOUGHT_VEHICLE {is_active: $is_active}]->(:Vehicle)",
+    )
+
+    assert not _has_active_predicate(inactive_merge)
+    assert not _has_active_predicate(variable_merge)
+    assert _has_active_predicate(documented_lifecycle_merge)
+
+
 def test_anonymous_pattern_expression_fails_active_predicate_validation() -> None:
     reader = RelationshipReader(
         "api/graph/queries/example.py",
@@ -160,7 +285,8 @@ def test_reader_discovery_fails_closed_for_valid_cypher_pattern_forms(
         'COMPREHENSION = """RETURN size([(person)-[purchase:PURCHASED]->() | purchase])"""\n'
         'EXISTS = """RETURN EXISTS { MATCH (person)-[purchase:PURCHASED]->(:Order) }"""\n'
         'PURE_CREATE = """CREATE\n(person)-[purchase:PURCHASED]->(:Order)"""\n'
-        'WRITE_THEN_MATCH = """CREATE (seed:Person) WITH seed MATCH (person)-[purchase:PURCHASED]->(:Order) RETURN person"""\n',
+        'WRITE_THEN_MATCH = """CREATE (seed:Person) WITH seed '
+        'MATCH (person)-[purchase:PURCHASED]->(:Order) RETURN person"""\n',
         encoding="utf-8",
     )
     identifiers = frozenset(

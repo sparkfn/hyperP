@@ -23,9 +23,22 @@ FOREACH (old_rel IN old_relationships |
       old_rel.retired_at = datetime(),
       old_rel.updated_at = datetime()
 )
+// Normalize a legacy current edge before matching the explicit active projection.
+OPTIONAL MATCH (declarer)-[legacy:KNOWS {
+    source_system_key: $source_system_key,
+    source_record_pk: $source_record_pk
+}]->(contact)
+WHERE coalesce(legacy.is_active, true) = true AND legacy.is_active IS NULL
+WITH declarer, contact, collect(legacy) AS legacy_relationships
+FOREACH (legacy_relationship IN legacy_relationships |
+  SET legacy_relationship.is_active = true,
+      legacy_relationship.activated_at = coalesce(legacy_relationship.activated_at, datetime()),
+      legacy_relationship.retired_at = null
+)
 MERGE (declarer)-[rel:KNOWS {
     source_system_key: $source_system_key,
-    source_record_pk:  $source_record_pk
+    source_record_pk:  $source_record_pk,
+    is_active: true
 }]->(contact)
 ON CREATE SET
     rel.knows_id              = randomUUID(),

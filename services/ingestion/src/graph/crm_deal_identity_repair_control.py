@@ -277,7 +277,11 @@ class CrmDealRepairControlRepository:
 
     @staticmethod
     def _seal_current_boundary(
-        tx: ManagedTransaction, request: RepairControlCommand, revision: int
+        tx: ManagedTransaction,
+        request: RepairControlCommand,
+        revision: int,
+        *,
+        completion_id: str | None = None,
     ) -> None:
         """Persist the complete snapshot that immediately follows an authorized transition."""
         qualification = tx.run(GET_REPAIR_RUN, repair_id=request.repair_id).single()
@@ -305,6 +309,7 @@ class CrmDealRepairControlRepository:
             sealed_inventory_row_count=snapshot.inventory_row_count,
             sealed_eligible_unit_count=snapshot.eligible_unit_count,
             sealed_negative_control_count=snapshot.negative_control_count,
+            completion_id=completion_id,
         ).single()
         if sealed is None:
             raise RuntimeError("repair lifecycle boundary sealing was rejected")
@@ -317,7 +322,14 @@ class CrmDealRepairControlRepository:
         proof_digest: str,
         plan: AllocationPlan,
     ) -> RepairDispatchLease:
-        units = [asdict(unit) for unit in plan.units]
+        units: list[dict[str, JsonValue]] = [
+            cast(dict[str, JsonValue], asdict(unit)) for unit in plan.units
+        ]
+        unit_ids = [unit.unit_id for unit in plan.units]
+        units_json: list[JsonValue] = [cast(JsonValue, unit) for unit in units]
+        unit_set_digest = object_digest(
+            b"crm-deal-identity-repair-allocation-unit-set-v1\x00", {"units": units_json}
+        )
         request_digest = object_digest(
             b"crm-deal-identity-repair-allocation-request-v1\x00",
             {
@@ -335,6 +347,9 @@ class CrmDealRepairControlRepository:
         )
 
         def work(tx: ManagedTransaction) -> RepairDispatchLease:
+            # A replay is usable only while the current lifecycle seal remains
+            # valid; the returned receipt itself stays immutable.
+            self._read_allocation_boundary(tx, request.repair_id)
             replay = tx.run(
                 READ_ALLOCATION_REPLAY,
                 run_id=request.run_id,
@@ -342,6 +357,9 @@ class CrmDealRepairControlRepository:
                 token_digest=request.token_digest,
                 expected_revision=request.expected_revision,
                 request_digest=request_digest,
+                unit_ids=unit_ids,
+                unit_set_digest=unit_set_digest,
+                units=units,
             ).single()
             if replay is not None:
                 return _lease(replay)
@@ -360,7 +378,8 @@ class CrmDealRepairControlRepository:
                 allocation_digest=plan.completion.allocation_digest,
                 unit_count=plan.completion.unit_count,
                 units=units,
-                unit_ids=[unit.unit_id for unit in plan.units],
+                unit_ids=unit_ids,
+                unit_set_digest=unit_set_digest,
                 actual_inventory_digest=inventory.inventory_digest,
                 actual_inventory_row_count=inventory.inventory_row_count,
                 actual_eligible_unit_count=inventory.eligible_unit_count,
@@ -370,7 +389,10 @@ class CrmDealRepairControlRepository:
             if record is None:
                 raise RuntimeError("repair allocation compare-and-set was rejected")
             self._seal_current_boundary(
-                tx, request, _required_int(record["revision"], "allocation revision")
+                tx,
+                request,
+                _required_int(record["revision"], "allocation revision"),
+                completion_id=plan.completion.completion_id,
             )
             return _lease(record)
 

@@ -137,7 +137,16 @@ RETURN collect(DISTINCT v.vehicle_id) AS vehicle_ids
 LINK_CHAT_SOURCE_RECORD_MENTIONS_VEHICLE = """
 MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})
 MATCH (v:Vehicle {vehicle_id: $vehicle_id})
-MERGE (sr)-[rel:MENTIONS_VEHICLE]->(v)
+// A missing is_active is a legacy current edge; normalize it before MERGE.
+OPTIONAL MATCH (sr)-[legacy:MENTIONS_VEHICLE]->(v)
+WHERE coalesce(legacy.is_active, true) = true AND legacy.is_active IS NULL
+WITH sr, v, collect(legacy) AS legacy_relationships
+FOREACH (legacy_relationship IN legacy_relationships |
+    SET legacy_relationship.is_active = true,
+        legacy_relationship.activated_at = coalesce(legacy_relationship.activated_at, datetime()),
+        legacy_relationship.retired_at = null
+)
+MERGE (sr)-[rel:MENTIONS_VEHICLE {is_active: true}]->(v)
 SET rel.source_system_key = $source_system_key,
     rel.source_record_pk = $source_record_pk,
     rel.source_record_id = $source_record_id,
@@ -177,15 +186,30 @@ SET rel.raw_context = $raw_context,
     rel.updated_at = datetime()
 """
 
-# Record that a Person bought a Vehicle on a given order. The MERGE key is
-# ``(source_system_key, source_order_id)`` so re-ingesting the same order is
-# idempotent; ``is_active`` toggles ownership currency without dropping history.
+# Record that a Person bought a Vehicle on a given order. Active and inactive
+# lifecycle projections have distinct MERGE identities, preserving a retired edge
+# when a current projection is materialized for the same business key.
 LINK_PERSON_BOUGHT_VEHICLE = """
 MATCH (p:Person {person_id: $person_id})
 MATCH (v:Vehicle {vehicle_id: $vehicle_id})
+// Normalize a legacy current edge only for a current active materialization.
+OPTIONAL MATCH (p)-[legacy:BOUGHT_VEHICLE {
+    source_system_key: $source_system_key,
+    source_order_id: $source_order_id
+}]->(v)
+WHERE $is_active = true
+  AND coalesce(legacy.is_active, true) = true
+  AND legacy.is_active IS NULL
+WITH p, v, collect(legacy) AS legacy_relationships
+FOREACH (legacy_relationship IN legacy_relationships |
+    SET legacy_relationship.is_active = true,
+        legacy_relationship.activated_at = coalesce(legacy_relationship.activated_at, datetime()),
+        legacy_relationship.retired_at = null
+)
 MERGE (p)-[rel:BOUGHT_VEHICLE {
     source_system_key: $source_system_key,
-    source_order_id:   $source_order_id
+    source_order_id:   $source_order_id,
+    is_active: $is_active
 }]->(v)
 ON CREATE SET rel.created_at = datetime(),
               rel.first_seen_at = datetime()
@@ -205,7 +229,16 @@ SET rel.source_record_pk = $source_record_pk,
 LINK_SOURCE_RECORD_MENTIONS_VEHICLE = """
 MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})
 MATCH (v:Vehicle {vehicle_id: $vehicle_id})
-MERGE (sr)-[rel:MENTIONS_VEHICLE]->(v)
+// A missing is_active is a legacy current edge; normalize it before MERGE.
+OPTIONAL MATCH (sr)-[legacy:MENTIONS_VEHICLE]->(v)
+WHERE coalesce(legacy.is_active, true) = true AND legacy.is_active IS NULL
+WITH sr, v, collect(legacy) AS legacy_relationships
+FOREACH (legacy_relationship IN legacy_relationships |
+    SET legacy_relationship.is_active = true,
+        legacy_relationship.activated_at = coalesce(legacy_relationship.activated_at, datetime()),
+        legacy_relationship.retired_at = null
+)
+MERGE (sr)-[rel:MENTIONS_VEHICLE {is_active: true}]->(v)
 SET rel.source_system_key = $source_system_key,
     rel.source_record_id = $source_record_id,
     rel.raw_context = $raw_context,
@@ -221,9 +254,22 @@ SET rel.source_system_key = $source_system_key,
 LINK_PERSON_OWNS_VEHICLE = """
 MATCH (p:Person {person_id: $person_id})
 MATCH (v:Vehicle {vehicle_id: $vehicle_id})
+// Normalize a legacy current edge before matching the explicit active projection.
+OPTIONAL MATCH (p)-[legacy:OWNS_VEHICLE {
+    source_system_key: $source_system_key,
+    source_record_pk: $source_record_pk
+}]->(v)
+WHERE coalesce(legacy.is_active, true) = true AND legacy.is_active IS NULL
+WITH p, v, collect(legacy) AS legacy_relationships
+FOREACH (legacy_relationship IN legacy_relationships |
+    SET legacy_relationship.is_active = true,
+        legacy_relationship.activated_at = coalesce(legacy_relationship.activated_at, datetime()),
+        legacy_relationship.retired_at = null
+)
 MERGE (p)-[rel:OWNS_VEHICLE {
     source_system_key: $source_system_key,
-    source_record_pk:  $source_record_pk
+    source_record_pk:  $source_record_pk,
+    is_active: true
 }]->(v)
 ON CREATE SET rel.created_at = datetime(),
               rel.first_seen_at = datetime(),

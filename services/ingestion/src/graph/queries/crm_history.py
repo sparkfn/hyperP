@@ -202,7 +202,16 @@ MATCH (history:SourceRecord {
 WHERE history.source_instance_id = $source_instance_id
   AND (history.history_family IS NULL OR history.history_family = 'activity'
    OR history.history_family = 'crm_activity')
-MERGE (history)-[:LINKED_TO]->(conversation)
+// Normalize a legacy current edge before matching the explicit active projection.
+OPTIONAL MATCH (history)-[legacy:LINKED_TO]->(conversation)
+WHERE coalesce(legacy.is_active, true) = true AND legacy.is_active IS NULL
+WITH conversation, crm_activity_id, history, collect(legacy) AS legacy_relationships
+FOREACH (legacy_relationship IN legacy_relationships |
+    SET legacy_relationship.is_active = true,
+        legacy_relationship.activated_at = coalesce(legacy_relationship.activated_at, datetime()),
+        legacy_relationship.retired_at = null
+)
+MERGE (history)-[link:LINKED_TO {is_active: true}]->(conversation)
 MERGE (conversation)-[:REPRESENTS_HISTORY_ITEM {
     crm_activity_id: crm_activity_id,
     link_method: 'crm_activity_id'
@@ -221,7 +230,16 @@ MATCH (conversation:SourceRecord {
 WHERE conversation.source_instance_id = $source_instance_id
   AND conversation.source_record_id STARTS WITH
       'bitrix-openlines-chat-' + toString($bitrix_chat_id) + '-'
-MERGE (history)-[:LINKED_TO]->(conversation)
+// Normalize a legacy current edge before matching the explicit active projection.
+OPTIONAL MATCH (history)-[legacy:LINKED_TO]->(conversation)
+WHERE coalesce(legacy.is_active, true) = true AND legacy.is_active IS NULL
+WITH history, conversation, collect(legacy) AS legacy_relationships
+FOREACH (legacy_relationship IN legacy_relationships |
+    SET legacy_relationship.is_active = true,
+        legacy_relationship.activated_at = coalesce(legacy_relationship.activated_at, datetime()),
+        legacy_relationship.retired_at = null
+)
+MERGE (history)-[link:LINKED_TO {is_active: true}]->(conversation)
 MERGE (conversation)-[:REPRESENTS_HISTORY_ITEM {
     crm_activity_id: $crm_activity_id,
     link_method: 'crm_activity_id'

@@ -26,9 +26,11 @@ _READ_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"\b(?:OPTIONAL\s+)?MATCH\b|\b(?:count|exists)\s*\{|\[\s*\(",
     re.IGNORECASE,
 )
-_CLAUSE_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"\b(?:OPTIONAL\s+MATCH|MATCH|CREATE|MERGE)\b", re.IGNORECASE
+_OWNERSHIP_BOUNDARY_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:WITH|RETURN|UNWIND)\b|\bCALL\s*(?:\{|\([^)]*\)\s*\{)",
+    re.IGNORECASE,
 )
+_WRITE_TARGET_PATTERN: Final[re.Pattern[str]] = re.compile(r"\bCREATE\b", re.IGNORECASE)
 _RELATIONSHIP_BINDING_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"\[\s*(?:(?P<name>[A-Za-z_]\w*)\s*)?:\s*(?:" + _RELATIONSHIP_TYPES + r")\b"
 )
@@ -168,6 +170,18 @@ _AUTHORITATIVE_MUTATION_READERS: Final[frozenset[str]] = frozenset(
         "ingestion/graph/queries/crm_history.py:ACTIVATE_PENDING_CALLS_FOR_DEAL",
         "ingestion/graph/queries/crm_history.py:CREATE_CALL_FROM_HISTORY",
         "ingestion/graph/queries/profile_analysis_dirty.py:MARK_PROFILE_ANALYSIS_DIRTY",
+        "api/graph/queries/review.py:LINK_REVIEW_SALES_BOUGHT_VEHICLE",
+        "api/graph/queries/review.py:LINK_REVIEW_SALES_PURCHASED_ORDER",
+        "ingestion/graph/queries/crm_history.py:LINK_CONVERSATION_TO_CRM_HISTORY",
+        "ingestion/graph/queries/crm_history.py:LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS",
+        "ingestion/graph/queries/persons.py:LINK_PERSON_TO_ADDRESS",
+        "ingestion/graph/queries/persons.py:LINK_PERSON_TO_IDENTIFIER",
+        "ingestion/graph/queries/sales.py:LINK_PERSON_PURCHASED_ORDER",
+        "ingestion/graph/queries/vehicle.py:LINK_CHAT_SOURCE_RECORD_MENTIONS_VEHICLE",
+        "ingestion/graph/queries/vehicle.py:LINK_PERSON_BOUGHT_VEHICLE",
+        "ingestion/graph/queries/vehicle.py:LINK_PERSON_OWNS_VEHICLE",
+        "ingestion/graph/queries/vehicle.py:LINK_SOURCE_RECORD_MENTIONS_VEHICLE",
+        "ingestion/graph/queries/knows.py:LINK_PERSON_KNOWS",
     }
 )
 
@@ -178,6 +192,14 @@ _EXEMPT_MUTATION_READ_BINDINGS: Final[dict[str, frozenset[str]]] = {
     "ingestion/graph/queries/crm_history.py:ACTIVATE_PENDING_CALLS_FOR_DEAL": frozenset(
         {"old_link"}
     ),
+    "ingestion/graph/queries/knows.py:LINK_PERSON_KNOWS": frozenset({"old_rel"}),
+}
+
+# LINK_PERSON_BOUGHT_VEHICLE intentionally materializes either an active or an
+# inactive lifecycle projection from its explicit $is_active command. This is
+# not authority reading: the exception is restricted to its MERGE binding only.
+_LIFECYCLE_MATERIALIZER_BINDINGS: Final[dict[str, frozenset[str]]] = {
+    "ingestion/graph/queries/vehicle.py:LINK_PERSON_BOUGHT_VEHICLE": frozenset({"rel"}),
 }
 
 # Explicit exceptional mutation registry. This remains exhaustive so mixed
@@ -185,8 +207,8 @@ _EXEMPT_MUTATION_READ_BINDINGS: Final[dict[str, frozenset[str]]] = {
 _MUTATION_READERS: Final[frozenset[str]] = frozenset(
     """api/graph/queries/merge.py:EXECUTE_MANUAL_MERGE
 api/graph/queries/merge.py:REVERT_MERGE
-api/graph/queries/review.py:PROMOTE_STAGED_REVIEW_SALE
 api/graph/queries/review.py:ACTIVATE_PENDING_REVIEW_RECORD
+api/graph/queries/review.py:PROMOTE_STAGED_REVIEW_SALE
 api/graph/queries/review.py:RESOLVE_PENDING_REVIEW_RECORD_NO_MATCH
 api/graph/queries/review.py:REJECT_PENDING_REVIEW_RECORD
 ingestion/graph/migrations.py:DEDUPLICATE_LEGACY_BITRIX_PROJECTIONS
@@ -198,7 +220,6 @@ ingestion/graph/queries/crm_deal_identity_repair_mutation.py:LOCK_SUPPORT_SOURCE
 ingestion/graph/queries/crm_deal_identity_repair_mutation.py:RETIRE_EXACT_CONTAMINATION
 ingestion/graph/queries/identifier_scope_migrations.py:MIGRATE_CRM_IDENTIFIER_RELATIONSHIPS_BATCH
 ingestion/graph/queries/identifier_scope_migrations.py:CONSOLIDATE_SCOPED_IDENTIFIER_DUPLICATES_BATCH
-ingestion/graph/queries/knows.py:LINK_PERSON_KNOWS
 ingestion/graph/queries/knows.py:REWIRE_KNOWS_OUT
 ingestion/graph/queries/knows.py:RETIRE_KNOWS_PROJECTION
 ingestion/graph/queries/knows.py:REWIRE_KNOWS_IN
@@ -385,16 +406,15 @@ def _relationship_read_bindings(query: str) -> tuple[re.Match[str], ...]:
 
 
 def _is_write_only_relationship(query: str, position: int) -> bool:
-    """Recognize a relationship pattern owned by the nearest Cypher clause.
+    """Return whether a pattern is a proven write-only ``CREATE`` target.
 
-    Clause ownership is intentionally computed across whitespace and newlines:
-    a CREATE/MERGE target is write-only, while a later MATCH on the same line
-    resumes relationship-read enforcement.
+    ``MERGE`` is read-modify-write and must be classified. A CREATE owns only
+    patterns before its next scope boundary; a following ``WITH``, ``RETURN``,
+    ``CALL``, ``UNWIND``, or subquery delimiter resumes reader discovery.
     """
-    clauses = tuple(_CLAUSE_PATTERN.finditer(query, 0, position))
-    if not clauses:
-        return False
-    return clauses[-1].group(0).upper() in {"CREATE", "MERGE"}
+    boundary = _last_scope_boundary(query, position)
+    creates = tuple(_WRITE_TARGET_PATTERN.finditer(query, boundary, position))
+    return bool(creates)
 
 
 def _generic_repairable_relationship_read(query: str) -> bool:
@@ -432,15 +452,51 @@ def _has_active_predicate(reader: RelationshipReader) -> bool:
             return False
         if binding in exempt_bindings:
             continue
-        if not _binding_has_active_predicate(binding, reader.query):
+        if not _binding_has_active_predicate(
+            binding,
+            reader.identifier,
+            reader.query,
+            match.start(),
+        ):
             return False
     return True
 
 
-def _binding_has_active_predicate(binding: str, query: str) -> bool:
-    """Recognize a literal or the canonical ``link`` policy fragment per binding."""
+def _binding_has_active_predicate(
+    binding: str,
+    identifier: str,
+    query: str,
+    occurrence: int,
+) -> bool:
+    """Recognize an active predicate in this binding occurrence's Cypher scope."""
+    scope = _relationship_scope(query, occurrence)
     literal = re.search(
         rf"coalesce\s*\(\s*{re.escape(binding)}\.is_active\s*,\s*true\s*\)\s*=\s*true",
-        query,
+        scope,
     )
-    return literal is not None or (binding == "link" and "_LINK_ACTIVE" in query)
+    active_merge = re.search(
+        rf"MERGE\s*\([^)]*\)-\[\s*{re.escape(binding)}\s*:[^]]*\bis_active\s*:\s*true\b",
+        scope,
+        re.IGNORECASE,
+    )
+    lifecycle_binding = binding in _LIFECYCLE_MATERIALIZER_BINDINGS.get(identifier, frozenset())
+    return (
+        literal is not None
+        or active_merge is not None
+        or lifecycle_binding
+        or (binding == "link" and "_LINK_ACTIVE" in scope)
+    )
+
+
+def _last_scope_boundary(query: str, position: int) -> int:
+    """Return the offset immediately after the enclosing Cypher scope boundary."""
+    boundaries = tuple(_OWNERSHIP_BOUNDARY_PATTERN.finditer(query, 0, position))
+    return boundaries[-1].end() if boundaries else 0
+
+
+def _relationship_scope(query: str, occurrence: int) -> str:
+    """Return the clause scope that owns one relationship pattern occurrence."""
+    start = _last_scope_boundary(query, occurrence)
+    boundary = _OWNERSHIP_BOUNDARY_PATTERN.search(query, occurrence)
+    end = boundary.start() if boundary is not None else len(query)
+    return query[start:end]

@@ -484,7 +484,10 @@ WHERE control.state IN ['quiesced', 'paused', 'allocated']
 MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', control_instance_id: control.control_instance_id,
   blocked: true, repair_run_id: $run_id, repair_owner_id: $owner_id, repair_token_digest: $token_digest,
   repair_revision: $revision})
-SET control.sealed_boundary_digest = $sealed_boundary_digest,
+OPTIONAL MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id,
+  completion_id: $completion_id})
+SET control.sealed_revision = $revision,
+    control.sealed_boundary_digest = $sealed_boundary_digest,
     control.sealed_source_records_digest = $sealed_source_records_digest,
     control.sealed_source_instance_digest = $sealed_source_instance_digest,
     control.sealed_stale_run_evidence_digest = $sealed_stale_run_evidence_digest,
@@ -494,6 +497,17 @@ SET control.sealed_boundary_digest = $sealed_boundary_digest,
     control.sealed_eligible_unit_count = $sealed_eligible_unit_count,
     control.sealed_negative_control_count = $sealed_negative_control_count,
     control.updated_at = datetime()
+FOREACH (_ IN CASE WHEN completion IS NULL THEN [] ELSE [1] END |
+  SET completion.receipt_control_instance_id = control.control_instance_id,
+      completion.receipt_run_id = control.run_id,
+      completion.receipt_owner_id = control.owner_id,
+      completion.receipt_token_digest = control.token_digest,
+      completion.receipt_revision = control.revision,
+      completion.receipt_state = control.state,
+      completion.receipt_boundary_digest = control.boundary_digest,
+      completion.receipt_sealed_boundary_digest = $sealed_boundary_digest,
+      completion.receipt_created_at = datetime()
+)
 RETURN control.run_id AS run_id
 """
 
@@ -517,15 +531,40 @@ MATCH (control:CrmDealRepairControl {run_id: $run_id, owner_id: $owner_id,
   token_digest: $token_digest})
 MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id,
   request_action: 'allocate', request_expected_revision: $expected_revision,
-  request_digest: $request_digest})
-MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat',
-  control_instance_id: control.control_instance_id, blocked: true, repair_run_id: $run_id,
-  repair_owner_id: $owner_id, repair_token_digest: $token_digest,
-  repair_revision: control.revision})
-WHERE control.state = 'allocated'
-RETURN control.control_instance_id AS control_instance_id, control.run_id AS run_id,
-       control.owner_id AS owner_id, control.token_digest AS token_digest, control.revision AS revision,
-       control.state AS state, control.boundary_digest AS boundary_digest
+  request_digest: $request_digest, unit_set_digest: $unit_set_digest})
+WHERE completion.unit_ids = $unit_ids
+  AND control.state IN ['allocated', 'paused']
+  AND (control.state = 'allocated' OR control.paused_from_state = 'allocated')
+  AND completion.receipt_control_instance_id IS NOT NULL
+  AND completion.receipt_state = 'allocated'
+  AND completion.receipt_sealed_boundary_digest IS NOT NULL
+  AND control.sealed_revision = control.revision
+  AND control.sealed_boundary_digest IS NOT NULL
+CALL (completion) {
+  WITH completion
+  OPTIONAL MATCH (stored:CrmDealRepairUnit {run_id: completion.run_id})
+  RETURN [unit IN collect(stored) WHERE unit IS NOT NULL] AS stored_units
+}
+WHERE size(stored_units) = completion.unit_count
+  AND all(unit_id IN completion.unit_ids WHERE unit_id IN [stored IN stored_units | stored.unit_id])
+  AND all(unit IN $units WHERE EXISTS {
+    MATCH (stored:CrmDealRepairUnit {run_id: $run_id, unit_id: unit.unit_id})
+    WHERE stored.generation = unit.generation
+      AND stored.sequence = unit.sequence
+      AND stored.attempt = unit.attempt
+      AND stored.boundary_digest = unit.boundary_digest
+      AND stored.inventory_fingerprint = unit.inventory_fingerprint
+      AND stored.state = unit.state
+      AND stored.inventory_key = unit.inventory_key
+      AND stored.source_record_pk = unit.source_record_pk
+      AND stored.inventory_graph_fingerprint = unit.inventory_graph_fingerprint
+      AND stored.inventory_stored_payload_fingerprint = unit.inventory_stored_payload_fingerprint
+      AND stored.inventory_binding_digest = unit.inventory_binding_digest
+  })
+RETURN completion.receipt_control_instance_id AS control_instance_id,
+       completion.receipt_run_id AS run_id, completion.receipt_owner_id AS owner_id,
+       completion.receipt_token_digest AS token_digest, completion.receipt_revision AS revision,
+       completion.receipt_state AS state, completion.receipt_boundary_digest AS boundary_digest
 """
 
 
@@ -563,18 +602,23 @@ WHERE size(prior_completions) = 0 OR (
   AND prior_completions[0].request_action = 'allocate'
   AND prior_completions[0].request_expected_revision = $expected_revision
   AND prior_completions[0].request_digest = $request_digest
+  AND prior_completions[0].unit_ids = $unit_ids
+  AND prior_completions[0].unit_set_digest = $unit_set_digest
 )
 MERGE (completion:CrmDealRepairAllocationCompletion {run_id: $run_id, completion_id: $completion_id})
 ON CREATE SET completion.boundary_digest = $boundary_digest, completion.overlay_digest = $overlay_digest,
   completion.allocation_digest = $allocation_digest, completion.unit_count = $unit_count,
   completion.request_action = 'allocate', completion.request_expected_revision = $expected_revision,
-  completion.request_digest = $request_digest, completion.created_at = datetime()
+  completion.request_digest = $request_digest, completion.unit_ids = $unit_ids,
+  completion.unit_set_digest = $unit_set_digest, completion.created_at = datetime()
 WITH control, dispatch, completion
 WHERE completion.boundary_digest = $boundary_digest AND completion.overlay_digest = $overlay_digest
   AND completion.allocation_digest = $allocation_digest AND completion.unit_count = $unit_count
   AND completion.request_action = 'allocate'
   AND completion.request_expected_revision = $expected_revision
   AND completion.request_digest = $request_digest
+  AND completion.unit_ids = $unit_ids
+  AND completion.unit_set_digest = $unit_set_digest
 CALL (control) {
   WITH control
   UNWIND $units AS unit

@@ -289,9 +289,23 @@ RETURN removed_contains, removed_product_links
 LINK_PERSON_PURCHASED_ORDER = """
 MATCH (person:Person {person_id: $person_id})
 MATCH (o:Order {source_system_key: $source_system_key, source_order_id: $source_order_id})
+// A missing is_active is a legacy current edge. Normalize it before the
+// active-key MERGE so it is reused rather than duplicated.
+OPTIONAL MATCH (person)-[legacy:PURCHASED {
+    source_system_key: $source_system_key,
+    source_order_id: $source_order_id
+}]->(o)
+WHERE coalesce(legacy.is_active, true) = true AND legacy.is_active IS NULL
+WITH person, o, collect(legacy) AS legacy_relationships
+FOREACH (legacy_relationship IN legacy_relationships |
+    SET legacy_relationship.is_active = true,
+        legacy_relationship.activated_at = coalesce(legacy_relationship.activated_at, datetime()),
+        legacy_relationship.retired_at = null
+)
 MERGE (person)-[rel:PURCHASED {
     source_system_key: $source_system_key,
-    source_order_id:   $source_order_id
+    source_order_id:   $source_order_id,
+    is_active: true
 }]->(o)
 ON CREATE SET
     rel.first_seen_at     = datetime(),
