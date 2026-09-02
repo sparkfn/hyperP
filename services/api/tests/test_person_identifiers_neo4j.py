@@ -219,15 +219,19 @@ def test_identifiers_query_executes_and_preserves_provenance_variants(
 
     assert total == 4
     assert [(item.identifier_type, item.normalized_value) for item in identifiers] == [
-        ("email", email_value),
         ("phone", phone_value),
+        ("email", email_value),
         ("phone", dangling_value),
         ("nric", legacy_value),
     ]
-    assert len(first_page) == 2
+    assert [item.is_verified for item in identifiers] == [True, False, False, False]
+    assert [(record["identifier_type"], record["normalized_value"]) for record in first_page] == [
+        ("phone", phone_value),
+        ("email", email_value),
+    ]
     assert empty_page == []
 
-    email_identifier, phone_identifier, dangling_identifier, legacy_identifier = identifiers
+    phone_identifier, email_identifier, dangling_identifier, legacy_identifier = identifiers
     assert email_identifier.entities[0].entity_key == source_entity_key
     assert email_identifier.entities[0].source_record_count == 1
     assert set(phone_identifier.source_record_pks) == {phone_one_pk, phone_two_pk}
