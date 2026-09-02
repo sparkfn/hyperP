@@ -187,15 +187,21 @@ def test_clause_boundaries_discover_pattern_expressions_after_create(
         assert_reader_contract(module)
 
 
-def test_on_create_set_does_not_hide_a_later_relationship_merge(
+def test_mixed_create_and_on_create_do_not_hide_a_later_relationship_merge(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """A node's ``ON CREATE`` action cannot make a later relationship MERGE write-only."""
+    """Only a relationship's immediate CREATE clause may make it write-only."""
     module = tmp_path / "services" / "api" / "src" / "graph" / "queries" / "activation.py"
     module.parent.mkdir(parents=True)
     module.write_text(
+        'PURE_CREATE = """\n'
+        "MATCH (person:Person {person_id: $person_id})\n"
+        "CREATE (person)-[created:PURCHASED]->(:Order)\n"
+        "RETURN person\n"
+        '"""\n'
         'ACTIVATE = """\n'
         "MATCH (approved:Person {person_id: $person_id})\n"
+        "CREATE (seed:Person)\n"
         "MERGE (identifier:Identifier {normalized_value: $value})\n"
         "ON CREATE SET identifier.identifier_id = randomUUID()\n"
         "MERGE (approved)-[rel:IDENTIFIED_BY]->(identifier)\n"

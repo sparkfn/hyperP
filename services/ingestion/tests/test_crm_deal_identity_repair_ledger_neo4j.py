@@ -51,6 +51,7 @@ from src.graph.crm_deal_identity_repair_ledger_migration import (
     ensure_crm_deal_repair_ledger_ready,
 )
 from src.graph.ingestion_control_instance_migration import migrate_ingestion_control_instances
+from src.graph.queries.crm_deal_identity_repair_mutation import STAGE_REPAIR_IDENTIFIERS
 
 T = TypeVar("T")
 
@@ -2434,6 +2435,164 @@ def test_310_exact_allocation_replay_rejects_correlated_public_receipt_corruptio
             proof_digest="proof",
             plan=plan,
         )
+
+
+def test_310_exact_allocation_replay_rejects_coherent_sealed_receipt_corruption(
+    neo4j_driver: Driver,
+) -> None:
+    """A recomputed receipt seal must equal the control's currently sealed boundary."""
+    _, control, run = _qualified_control_repository(
+        neo4j_driver, repair_id="repair-310-correlated-receipt-seal"
+    )
+    _seed_quiesced_allocation_control(neo4j_driver, run)
+    request = RepairControlRequest(
+        "repair-310-correlated-receipt-seal", run.run_id, "owner", "token", 1
+    )
+    plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 1)
+    control.allocate(
+        request,
+        boundary_digest=run.boundary_digest,
+        proof_digest="proof",
+        plan=plan,
+    )
+    tampered_seal = "coherently-tampered-seal"
+    tampered_receipt_digest = control_repository_module._allocation_receipt_digest(
+        control_instance_id=run.control_instance_id,
+        run_id=run.run_id,
+        owner_id="owner",
+        token_digest="token",
+        revision=2,
+        boundary_digest=run.boundary_digest,
+        sealed_boundary_digest=tampered_seal,
+    )
+    with neo4j_driver.session() as session:
+        session.run(
+            """
+            MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
+            SET completion.receipt_sealed_boundary_digest = $sealed_boundary_digest,
+                completion.receipt_digest = $receipt_digest
+            """,
+            run_id=run.run_id,
+            sealed_boundary_digest=tampered_seal,
+            receipt_digest=tampered_receipt_digest,
+        ).consume()
+    with pytest.raises(RuntimeError):
+        control.allocate(
+            request,
+            boundary_digest=run.boundary_digest,
+            proof_digest="proof",
+            plan=plan,
+        )
+
+
+def test_310_stage_repair_identifiers_preserves_retired_history_and_active_lifecycle(
+    neo4j_driver: Driver,
+) -> None:
+    """Staging creates one active projection without reviving a matching retired edge."""
+    person_id = "repair-test-stage-identifier-person"
+    normalized_value = "repair-test-stage-identifier"
+    source_record_pk = "repair-test-stage-identifier-record"
+    parameters = {
+        "person_id": person_id,
+        "source_record_pk": source_record_pk,
+        "identifiers": [
+            {
+                "identifier_type": "phone",
+                "identifier_scope": "crm_deal",
+                "normalized_value": normalized_value,
+                "source_instance_id": _TEST_SOURCE_INSTANCE_ID,
+                "is_verified": True,
+                "quality_flag": "valid",
+            }
+        ],
+        "mutation_id": "repair-test-stage-identifier-mutation",
+    }
+    try:
+        with neo4j_driver.session() as session:
+            session.run(
+                """
+                CREATE (person:Person {person_id: $person_id})
+                CREATE (identifier:Identifier {
+                  identifier_type: 'phone', identifier_scope: 'crm_deal',
+                  normalized_value: $normalized_value
+                })
+                CREATE (person)-[:IDENTIFIED_BY {
+                  source_system_key: 'bitrix_chat', source_record_pk: $source_record_pk,
+                  is_active: false, activated_at: datetime('2026-08-01T00:00:00Z'),
+                  retired_at: datetime('2026-08-02T00:00:00Z')
+                }]->(identifier)
+                """,
+                person_id=person_id,
+                normalized_value=normalized_value,
+                source_record_pk=source_record_pk,
+            ).consume()
+            inactive_before = session.run(
+                """
+                MATCH (:Person {person_id: $person_id})-[link:IDENTIFIED_BY {is_active: false}]->
+                      (:Identifier {normalized_value: $normalized_value})
+                RETURN toString(link.activated_at) AS activated_at,
+                       toString(link.retired_at) AS retired_at
+                """,
+                person_id=person_id,
+                normalized_value=normalized_value,
+            ).single(strict=True)
+            session.run(STAGE_REPAIR_IDENTIFIERS, **parameters).consume()
+            active_before = session.run(
+                """
+                MATCH (:Person {person_id: $person_id})-[link:IDENTIFIED_BY {is_active: true}]->
+                      (:Identifier {normalized_value: $normalized_value})
+                RETURN toString(link.activated_at) AS activated_at, link.retired_at AS retired_at
+                """,
+                person_id=person_id,
+                normalized_value=normalized_value,
+            ).single(strict=True)
+            session.run(STAGE_REPAIR_IDENTIFIERS, **parameters).consume()
+            links = [
+                dict(row)
+                for row in session.run(
+                    """
+                    MATCH (:Person {person_id: $person_id})-[link:IDENTIFIED_BY]->
+                          (:Identifier {normalized_value: $normalized_value})
+                    RETURN link.is_active AS is_active,
+                           toString(link.activated_at) AS activated_at,
+                           toString(link.retired_at) AS retired_at
+                    ORDER BY link.is_active
+                    """,
+                    person_id=person_id,
+                    normalized_value=normalized_value,
+                )
+            ]
+    finally:
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (person:Person {person_id: $person_id}) DETACH DELETE person",
+                person_id=person_id,
+            ).consume()
+            session.run(
+                """
+                MATCH (identifier:Identifier {
+                  identifier_type: 'phone', identifier_scope: 'crm_deal',
+                  normalized_value: $normalized_value
+                })
+                DETACH DELETE identifier
+                """,
+                normalized_value=normalized_value,
+            ).consume()
+
+    assert active_before["activated_at"] is not None
+    assert active_before["retired_at"] is None
+    assert links == [
+        {
+            "is_active": False,
+            "activated_at": inactive_before["activated_at"],
+            "retired_at": inactive_before["retired_at"],
+        },
+        {
+            "is_active": True,
+            "activated_at": active_before["activated_at"],
+            "retired_at": None,
+        },
+    ]
 
 
 @pytest.mark.parametrize(

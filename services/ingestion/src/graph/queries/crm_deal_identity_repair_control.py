@@ -548,7 +548,7 @@ WHERE completion.unit_ids = $unit_ids
   AND completion.receipt_revision = completion.request_expected_revision + 1
   AND completion.receipt_state = 'allocated'
   AND completion.receipt_boundary_digest = completion.boundary_digest
-  AND completion.receipt_sealed_boundary_digest IS NOT NULL
+  AND completion.receipt_sealed_boundary_digest = control.sealed_boundary_digest
   AND completion.receipt_digest IS NOT NULL
   AND control.sealed_revision = control.revision
   AND control.sealed_boundary_digest IS NOT NULL

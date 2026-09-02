@@ -90,6 +90,7 @@ def _created_object_specifications(
                         "first_seen_at": transaction_datetime,
                         "last_seen_at": transaction_datetime,
                         "last_confirmed_at": transaction_datetime,
+                        "activated_at": transaction_datetime,
                         "repair_mutation_id": request.mutation_id,
                     },
                     ordinal,

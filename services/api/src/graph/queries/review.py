@@ -941,6 +941,7 @@ FOREACH (old IN old_versions |
       old.superseded_at = datetime(), old.updated_at = datetime()
   MERGE (old)-[:PREVIOUS_VERSION_OF]->(pending)
 )
+WITH pending, approved, source, old_versions
 CALL (old_versions) {
   UNWIND old_versions AS old
   OPTIONAL MATCH (old)-[old_direct_link:LINKED_TO]->(:Person)
