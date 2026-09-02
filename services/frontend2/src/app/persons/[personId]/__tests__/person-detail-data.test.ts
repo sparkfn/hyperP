@@ -24,9 +24,16 @@ describe("identifier cursor pages", () => {
 
     const merged = mergeIdentifierPage(firstPage, secondPage);
 
-    expect(merged).toHaveLength(100);
+    expect(merged).toHaveLength(101);
     expect(merged.map((item) => item.normalized_value)).toEqual(
-      Array.from({ length: 100 }, (_, index) => identifier(index + 1).normalized_value),
+      [...firstPage, ...secondPage].map((item) => item.normalized_value),
     );
+  });
+
+  it("preserves rows sharing a type and normalized value when provenance differs", () => {
+    const first = identifier(1);
+    const second = { ...identifier(1), source_system_key: "crm" };
+
+    expect(mergeIdentifierPage([first], [second])).toEqual([first, second]);
   });
 });

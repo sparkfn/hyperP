@@ -11,11 +11,13 @@ import { appendQueryParams, type QueryParams } from "./query-params";
 export class UpstreamError extends Error {
   public readonly status: number;
   public readonly body: ApiError | null;
+  public readonly responseHeaders: Headers;
 
-  constructor(status: number, body: ApiError | null, message: string) {
+  constructor(status: number, body: ApiError | null, message: string, responseHeaders: Headers) {
     super(message);
     this.status = status;
     this.body = body;
+    this.responseHeaders = responseHeaders;
   }
 }
 
@@ -92,7 +94,12 @@ export async function apiFetchWithTiming<T>(
       parsed !== null && typeof parsed === "object" && "error" in (parsed as Record<string, unknown>)
         ? (parsed as ApiError)
         : null;
-    throw new UpstreamError(response.status, errBody, errBody?.error.message ?? response.statusText);
+    throw new UpstreamError(
+      response.status,
+      errBody,
+      errBody?.error.message ?? response.statusText,
+      response.headers,
+    );
   }
 
   // 204 No Content — return a null payload without requiring a body.
@@ -111,7 +118,12 @@ export async function apiFetchWithTiming<T>(
     };
   }
   if (typeof parsed !== "object") {
-    throw new UpstreamError(response.status, null, "Unexpected response shape from API.");
+    throw new UpstreamError(
+      response.status,
+      null,
+      "Unexpected response shape from API.",
+      response.headers,
+    );
   }
   // Auto-wrap bare object responses for endpoints that skip the envelope() wrapper.
   if (!("data" in parsed)) {

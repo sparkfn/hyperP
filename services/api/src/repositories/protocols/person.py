@@ -17,6 +17,8 @@ from src.types import (
     PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
+    PersonListCoreSummary,
+    PersonListCrmSummary,
     PersonListSummary,
     PersonSharedIdentifierCandidate,
     PersonTimelineGroup,
@@ -114,6 +116,14 @@ class PersonRepository(Protocol):
 
     async def get_list_summary(self) -> PersonListSummary:
         """Return the aggregate counts shown above the person listing."""
+        ...
+
+    async def get_list_core_summary(self) -> PersonListCoreSummary:
+        """Return the exact non-CRM counts shown above the person listing."""
+        ...
+
+    async def get_list_crm_summary(self) -> PersonListCrmSummary:
+        """Return the exact CRM deal counts shown above the person listing."""
         ...
 
     async def search_by_identifier(self, identifier_type: str, value: str) -> list[Person]: ...

@@ -654,6 +654,22 @@ class PersonListSummary(BaseModel):
     all_deals_count: int = 0
 
 
+class PersonListCoreSummary(BaseModel):
+    """Non-CRM counts displayed above the authenticated person listing."""
+
+    all_profiles_count: int = 0
+    high_risk_count: int = 0
+    high_value_count: int = 0
+    no_contact_count: int = 0
+
+
+class PersonListCrmSummary(BaseModel):
+    """Exact CRM deal counts displayed above the authenticated person listing."""
+
+    deals_this_month_count: int = 0
+    all_deals_count: int = 0
+
+
 class EntityPerson(Person):
     phone_confidence: float | None = None
 

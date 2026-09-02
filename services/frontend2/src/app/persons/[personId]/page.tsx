@@ -43,6 +43,7 @@ import { ReviewCaseDetailModal } from "@/app/review/[reviewCaseId]/ReviewCaseDet
 import type { ReviewCaseDetail, ReviewCaseSummary } from "@/lib/api-types-ops";
 import { mergeIdentifierPage } from "./person-detail-data";
 import styles from "./person.module.css";
+import { sidebarResourceState } from "./sidebar-resource-state";
 
 type Tab = "sales" | "crm" | "connections" | "identifiers" | "decision-history" | "source-records" | "matches" | "timeline" | "graph";
 
@@ -472,6 +473,7 @@ function PersonSidebar({ person, detailData, personId, onOverride, onGraphOpen }
       </section>
 
       <SidebarSupplementalCards
+        key={personId}
         personId={personId}
         initialBankruptcyCases={detailData.bankruptcyCases}
         initialLoyalty={person.loyalty ?? null}
@@ -536,7 +538,13 @@ function SidebarSupplementalCards({
   const [bankruptcyCases, setBankruptcyCases] = useState(initialBankruptcyCases);
   const [loyalty, setLoyalty] = useState(initialLoyalty);
   const [vehicles, setVehicles] = useState(initialVehicles);
-  const [loaded, setLoaded] = useState(false);
+  const [retryVersion, setRetryVersion] = useState(0);
+  const [bankruptcyLoaded, setBankruptcyLoaded] = useState(false);
+  const [loyaltyLoaded, setLoyaltyLoaded] = useState(false);
+  const [vehiclesLoaded, setVehiclesLoaded] = useState(false);
+  const [bankruptcyFailed, setBankruptcyFailed] = useState(false);
+  const [loyaltyFailed, setLoyaltyFailed] = useState(false);
+  const [vehiclesFailed, setVehiclesFailed] = useState(false);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -571,26 +579,44 @@ function SidebarSupplementalCards({
       }),
     ]).then(([bankruptcyResult, loyaltyResult, vehiclesResult]) => {
       if (controller.signal.aborted) return;
+      setBankruptcyLoaded(sidebarResourceState(bankruptcyResult) === "ready");
+      setLoyaltyLoaded(sidebarResourceState(loyaltyResult) === "ready");
+      setVehiclesLoaded(sidebarResourceState(vehiclesResult) === "ready");
+      setBankruptcyFailed(sidebarResourceState(bankruptcyResult) === "unavailable");
+      setLoyaltyFailed(sidebarResourceState(loyaltyResult) === "unavailable");
+      setVehiclesFailed(sidebarResourceState(vehiclesResult) === "unavailable");
       if (bankruptcyResult.status === "fulfilled") setBankruptcyCases(bankruptcyResult.value);
       if (loyaltyResult.status === "fulfilled") setLoyalty(loyaltyResult.value);
       if (vehiclesResult.status === "fulfilled") setVehicles(vehiclesResult.value);
-      setLoaded(true);
     });
     return () => controller.abort();
-  }, [activated, personId]);
+  }, [activated, personId, retryVersion]);
+
+  const retry = (): void => {
+    setBankruptcyLoaded(false);
+    setLoyaltyLoaded(false);
+    setVehiclesLoaded(false);
+    setBankruptcyFailed(false);
+    setLoyaltyFailed(false);
+    setVehiclesFailed(false);
+    setRetryVersion((version) => version + 1);
+  };
 
   return (
     <div ref={containerRef}>
-      {loaded ? (
-        <>
-          <BankruptcySidebarCard cases={bankruptcyCases} />
-          <LoyaltySidebarCard loyalty={loyalty} />
-          <VehiclesSidebarCard vehicles={vehicles} />
-        </>
-      ) : (
-        <SkeletonRows />
-      )}
+      {bankruptcyLoaded ? <BankruptcySidebarCard cases={bankruptcyCases} /> : bankruptcyFailed ? <SidebarUnavailable label="Bankruptcy" onRetry={retry} /> : <SkeletonRows />}
+      {loyaltyLoaded ? <LoyaltySidebarCard loyalty={loyalty} /> : loyaltyFailed ? <SidebarUnavailable label="Loyalty" onRetry={retry} /> : <SkeletonRows />}
+      {vehiclesLoaded ? <VehiclesSidebarCard vehicles={vehicles} /> : vehiclesFailed ? <SidebarUnavailable label="Vehicles" onRetry={retry} /> : <SkeletonRows />}
     </div>
+  );
+}
+
+function SidebarUnavailable({ label, onRetry }: { label: string; onRetry: () => void }): ReactElement {
+  return (
+    <section className={styles.sidebarCard}>
+      <div className={styles.bkHeader}><span className={styles.bkSectionLabel}>{label}</span></div>
+      <div className={styles.tabError}>Unavailable. <button type="button" className={styles.tabPagBtn} onClick={onRetry}>Retry</button></div>
+    </section>
   );
 }
 
@@ -2282,10 +2308,12 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
 
   const reloadRecommendedReviewCases = useCallback((): (() => void) => {
     let ignore = false;
+    const controller = new AbortController();
     setRecommendedReviewLoading(true);
     setRecommendedReviewError(null);
     bffFetchEnvelope<ReviewCaseSummary[]>(
       `/bff/review-cases?person_id=${encodeURIComponent(personId)}&resolved=${showResolvedReviewCases ? "true" : "false"}&sort_by=created_at&sort_order=DESC&limit=100`,
+      { signal: controller.signal },
     ).then((response) => {
       if (ignore) return;
       const filteredCases = response.data.filter(
@@ -2317,7 +2345,7 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
     }).finally(() => {
       if (!ignore) setRecommendedReviewLoading(false);
     });
-    return () => { ignore = true; };
+    return () => { ignore = true; controller.abort(); };
   }, [personId, onTotalLoaded, showResolvedReviewCases]);
 
   useEffect(() => {
@@ -2362,8 +2390,12 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
     const missingIds = recommendedPersonIds.filter((id) => recommendedPeople[id] === undefined);
     if (missingIds.length === 0) return;
     let ignore = false;
+    const controller = new AbortController();
     void Promise.all(
-      missingIds.map(async (id) => [id, await bffFetch<Person>(`/bff/persons/${encodeURIComponent(id)}`)] as const),
+      missingIds.map(async (id) => [
+        id,
+        await bffFetch<Person>(`/bff/persons/${encodeURIComponent(id)}`, { signal: controller.signal }),
+      ] as const),
     ).then((items) => {
       if (ignore) return;
       setRecommendedPeople((prev) => {
@@ -2372,17 +2404,21 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
         return next;
       });
     }).catch(() => undefined);
-    return () => { ignore = true; };
+    return () => { ignore = true; controller.abort(); };
   }, [recommendedPersonIdsKey, recommendedPeople, recommendedPersonIds]);
 
   useEffect(() => {
     const missingIds = recommendedPersonIds.filter((id) => recommendedIdentifiers[id] === undefined);
     if (missingIds.length === 0) return;
     let ignore = false;
+    const controller = new AbortController();
     void Promise.all(
       missingIds.map(async (id) => {
         try {
-          const result = await bffFetchEnvelope<PersonIdentifier[]>(`/bff/persons/${encodeURIComponent(id)}/identifiers`);
+          const result = await bffFetchEnvelope<PersonIdentifier[]>(
+            `/bff/persons/${encodeURIComponent(id)}/identifiers`,
+            { signal: controller.signal },
+          );
           return [id, result.data] as const;
         } catch {
           return [id, []] as const;
@@ -2392,7 +2428,7 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
       if (ignore) return;
       setRecommendedIdentifiers((prev) => ({ ...prev, ...Object.fromEntries(items) }));
     });
-    return () => { ignore = true; };
+    return () => { ignore = true; controller.abort(); };
   }, [recommendedPersonIdsKey, recommendedIdentifiers, recommendedPersonIds]);
 
   const loadCandidateDetail = useCallback(async (candidateId: string): Promise<PossibleMatchDetail | undefined> => {
@@ -2422,13 +2458,17 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
   }, [reviewCaseDetails]);
 
   useEffect(() => {
+    const controller = new AbortController();
     for (const reviewCase of recommendedReviewCases) {
       const rightId = reviewCase.right_person_id ?? null;
       const leftId = reviewCase.left_person_id ?? null;
       const candidateId = (rightId !== null && rightId !== personId) ? rightId : leftId;
       if (candidateId === null || recommendedDetails[reviewCase.review_case_id] !== undefined || recommendedErrors[reviewCase.review_case_id] !== undefined) continue;
       setRecommendedErrors((prev) => ({ ...prev, [reviewCase.review_case_id]: "" }));
-      void bffFetch<PossibleMatchDetail>(`/bff/persons/${encodeURIComponent(personId)}/shared-identifiers/${encodeURIComponent(candidateId)}/detail`)
+      void bffFetch<PossibleMatchDetail>(
+        `/bff/persons/${encodeURIComponent(personId)}/shared-identifiers/${encodeURIComponent(candidateId)}/detail`,
+        { signal: controller.signal },
+      )
         .then((detail) => {
           setRecommendedDetails((prev) => ({ ...prev, [reviewCase.review_case_id]: detail }));
         })
@@ -2436,6 +2476,7 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
           setRecommendedErrors((prev) => ({ ...prev, [reviewCase.review_case_id]: e instanceof Error ? e.message : "Failed to load match comparison." }));
         });
     }
+    return () => controller.abort();
   }, [personId, recommendedDetails, recommendedErrors, recommendedReviewCases]);
 
   useEffect(() => {
@@ -2443,11 +2484,15 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
       .map((rc) => rc.review_case_id)
       .filter((id) => reviewCaseDetails[id] === undefined);
     if (missingIds.length === 0) return;
+    const controller = new AbortController();
     for (const id of missingIds) {
-      void bffFetch<ReviewCaseDetail>(`/bff/review-cases/${encodeURIComponent(id)}`)
+      void bffFetch<ReviewCaseDetail>(`/bff/review-cases/${encodeURIComponent(id)}`, {
+        signal: controller.signal,
+      })
         .then((detail) => { setReviewCaseDetails((prev) => ({ ...prev, [id]: detail })); })
         .catch(() => undefined);
     }
+    return () => controller.abort();
   }, [recommendedReviewCases, reviewCaseDetails]);
 
   const toggleCandidate = useCallback((candidateId: string): void => {

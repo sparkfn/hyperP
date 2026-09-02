@@ -23,6 +23,8 @@ from src.types import (
     PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
+    PersonListCoreSummary,
+    PersonListCrmSummary,
     PersonListSummary,
     PersonSharedIdentifierCandidate,
     PersonTimelineGroup,
@@ -229,13 +231,43 @@ async def list_persons(
     )
 
 
-@router.get("/summary", response_model=ApiResponse[PersonListSummary])
+@router.get(
+    "/summary",
+    response_model=ApiResponse[PersonListSummary],
+    operation_id="get_person_list_summary",
+)
 async def get_person_list_summary(
     request: Request,
     repo: PersonRepository = Depends(get_person_repo),
 ) -> ApiResponse[PersonListSummary]:
     """Return the aggregate counts displayed above the person listing."""
     return envelope(await repo.get_list_summary(), request)
+
+
+@router.get(
+    "/summary/core",
+    response_model=ApiResponse[PersonListCoreSummary],
+    operation_id="get_person_list_core_summary",
+)
+async def get_person_list_core_summary(
+    request: Request,
+    repo: PersonRepository = Depends(get_person_repo),
+) -> ApiResponse[PersonListCoreSummary]:
+    """Return list counts that do not require CRM deal aggregation."""
+    return envelope(await repo.get_list_core_summary(), request)
+
+
+@router.get(
+    "/summary/crm",
+    response_model=ApiResponse[PersonListCrmSummary],
+    operation_id="get_person_list_crm_summary",
+)
+async def get_person_list_crm_summary(
+    request: Request,
+    repo: PersonRepository = Depends(get_person_repo),
+) -> ApiResponse[PersonListCrmSummary]:
+    """Return the exact CRM deal counts independently from the core summary."""
+    return envelope(await repo.get_list_crm_summary(), request)
 
 
 @router.get("/search", response_model=ApiResponse[list[Person]])

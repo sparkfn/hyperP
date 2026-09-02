@@ -46,13 +46,20 @@ class TimedAsyncSession:
     def __init__(self, session: AsyncSession, *, write: bool) -> None:
         self._session = session
         self._write = write
+        self._started_at: float | None = None
 
     async def __aenter__(self) -> TimedAsyncSession:
+        self._started_at = monotonic()
         await self._session.__aenter__()
         return self
 
     async def __aexit__(self, *args: object) -> None:
-        await self._session.__aexit__(*args)
+        try:
+            await self._session.__aexit__(*args)
+        finally:
+            if self._started_at is not None:
+                record_repository_duration(self._started_at)
+                self._started_at = None
 
     async def run(
         self,
@@ -60,17 +67,13 @@ class TimedAsyncSession:
         parameters: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> AsyncResult:
-        started_at = monotonic()
-        try:
-            if self._write or isinstance(query, Query) or current_request_id() is None:
-                return await self._session.run(query, parameters, **kwargs)
-            return await self._session.run(
-                Query(query, timeout=config.neo4j_web_read_transaction_timeout_seconds),
-                parameters,
-                **kwargs,
-            )
-        finally:
-            record_repository_duration(started_at)
+        if self._write or isinstance(query, Query) or current_request_id() is None:
+            return await self._session.run(query, parameters, **kwargs)
+        return await self._session.run(
+            Query(query, timeout=config.neo4j_web_read_transaction_timeout_seconds),
+            parameters,
+            **kwargs,
+        )
 
     async def execute_read(
         self,
