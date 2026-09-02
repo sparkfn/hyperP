@@ -10,6 +10,23 @@ export function claimDetailRequest(
   return token;
 }
 
+export interface AbortableDetailRequest {
+  token: DetailRequestToken;
+  controller: AbortController;
+}
+
+export function claimAbortableDetailRequest(
+  owners: Map<string, DetailRequestToken>,
+  controllers: Map<string, AbortController>,
+  detailId: string,
+  controller: AbortController,
+): AbortableDetailRequest | null {
+  const token = claimDetailRequest(owners, detailId);
+  if (token === null) return null;
+  controllers.set(detailId, controller);
+  return { token, controller };
+}
+
 export function needsDetail<T>(
   cachedDetails: Readonly<Record<string, T>>,
   owners: ReadonlyMap<string, DetailRequestToken>,
@@ -32,6 +49,25 @@ export function releaseDetailRequest(
   token: DetailRequestToken,
 ): void {
   if (ownsDetailRequest(owners, detailId, token)) owners.delete(detailId);
+}
+
+export function releaseAbortableDetailRequest(
+  owners: Map<string, DetailRequestToken>,
+  controllers: Map<string, AbortController>,
+  detailId: string,
+  request: AbortableDetailRequest,
+): void {
+  if (!ownsDetailRequest(owners, detailId, request.token)) return;
+  releaseDetailRequest(owners, detailId, request.token);
+  if (controllers.get(detailId) === request.controller) controllers.delete(detailId);
+}
+
+export function shouldShowDetailLoading<T>(
+  detail: T | undefined,
+  error: string | undefined,
+  loading: boolean | undefined,
+): boolean {
+  return detail === undefined && (loading === true || error === undefined);
 }
 
 export function releaseDetailGeneration(
