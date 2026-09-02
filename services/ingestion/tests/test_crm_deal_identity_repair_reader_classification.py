@@ -417,7 +417,19 @@ def test_unclassified_generic_relationship_readers_fail_closed(tmp_path: Path) -
         'DIRECTED = """MATCH (left)-->(right) RETURN right"""\n'
         'REVERSE = """MATCH (left)<--(right) RETURN right"""\n'
         'VARIABLE_LENGTH = """MATCH (left)-[*1..2]->(right) RETURN right"""\n'
-        'PURE_CREATE = """CREATE (left)-->(right) RETURN right"""\n',
+        'PROPERTY_DIRECTED = """MATCH (left)-[{is_active: true}]->(right) RETURN right"""\n'
+        'PROPERTY_UNDIRECTED = """MATCH (left)-[{source_record_pk: $pk}]-(right) '
+        'RETURN right"""\n'
+        'DYNAMIC_TYPE = """MATCH (left)-[:$(relationship_type)]->(right) RETURN right"""\n'
+        'INLINE_PREDICATE = """MATCH (left)-[{source_record_pk: $pk} WHERE true]->(right) '
+        'RETURN right"""\n'
+        'INLINE_ONLY = """MATCH (left)-[WHERE true]->(right) RETURN right"""\n'
+        'PURE_CREATE = """CREATE (left)-->(right) RETURN right"""\n'
+        'PURE_CREATE_PROPERTY = """CREATE (left)-[{is_active: true}]->(right) RETURN right"""\n'
+        'NODE_CREATE_THEN_READ = """CREATE (seed:Person) WITH seed '
+        'MATCH (left)-[{source_record_pk: $pk}]->(right) RETURN right"""\n'
+        'STATIC_NON_REPAIRABLE = """MATCH (left)-[:CHILD_OF {is_active: false}]->(right) '
+        'RETURN right"""\n',
         encoding="utf-8",
     )
 
@@ -429,6 +441,12 @@ def test_unclassified_generic_relationship_readers_fail_closed(tmp_path: Path) -
         "DIRECTED",
         "REVERSE",
         "VARIABLE_LENGTH",
+        "PROPERTY_DIRECTED",
+        "PROPERTY_UNDIRECTED",
+        "DYNAMIC_TYPE",
+        "INLINE_PREDICATE",
+        "INLINE_ONLY",
+        "NODE_CREATE_THEN_READ",
     }
     with pytest.raises(RuntimeError, match="unclassified relationship reader"):
         assert_reader_contract(module)

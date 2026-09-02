@@ -43,8 +43,9 @@ _GENERIC_RELATIONSHIP_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"(?:\*[^]]*)?(?:\{[^]]*\})?\s*\]\s*(?:->|-)"
 )
 _ANONYMOUS_RELATIONSHIP_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"(?:<-|-)\s*\[\s*(?:\*[^]]*)?\]\s*(?:->|-)"
-    r"|\)\s*(?:<--|-->|--)\s*\("
+    r"(?:<-|-)\s*\[(?P<filler>.*?)\]\s*(?:->|-)"
+    r"|\)\s*(?:<--|-->|--)\s*\(",
+    re.DOTALL,
 )
 _WRITE_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b(?:CREATE|MERGE|SET|DELETE|REMOVE)\b")
 _ACTIVE_PATTERN: Final[re.Pattern[str]] = re.compile(
@@ -469,9 +470,38 @@ def _generic_repairable_relationship_read(query: str) -> bool:
     """
     matches = (
         *_GENERIC_RELATIONSHIP_PATTERN.finditer(query),
-        *_ANONYMOUS_RELATIONSHIP_PATTERN.finditer(query),
+        *_anonymous_relationship_read_patterns(query),
     )
     return any(not _is_write_only_relationship(query, match.start()) for match in matches)
+
+
+def _anonymous_relationship_read_patterns(query: str) -> tuple[re.Match[str], ...]:
+    """Return anonymous patterns whose filler may select a repairable type."""
+    return tuple(
+        match
+        for match in _ANONYMOUS_RELATIONSHIP_PATTERN.finditer(query)
+        if _anonymous_filler_may_be_repairable(match.groupdict().get("filler"))
+    )
+
+
+def _anonymous_filler_may_be_repairable(filler: str | None) -> bool:
+    """Reject only fillers proven to name exclusively static non-repairable types."""
+    if filler is None:
+        return True
+    value = filler.strip()
+    if not value:
+        return True
+    # A leading variable is handled by the named generic/static binding scanners.
+    leading_name = re.match(r"[A-Za-z_]\w*", value)
+    if leading_name is not None and leading_name.group().upper() != "WHERE":
+        return False
+    if not value.startswith(":"):
+        return True
+    type_expression = re.split(r"\{|\bWHERE\b|\*", value, maxsplit=1, flags=re.IGNORECASE)[0]
+    if re.search(r":\s*\$\(", type_expression):
+        return True
+    static_types = re.findall(r"(?::|\|)\s*([A-Za-z_]\w*)", type_expression)
+    return not static_types or any(_RELATIONSHIP_PATTERN.fullmatch(item) for item in static_types)
 
 
 def _has_active_predicate(reader: RelationshipReader) -> bool:
@@ -490,7 +520,7 @@ def _has_active_predicate(reader: RelationshipReader) -> bool:
     )
     anonymous_bindings = tuple(
         match
-        for match in _ANONYMOUS_RELATIONSHIP_PATTERN.finditer(reader.query)
+        for match in _anonymous_relationship_read_patterns(reader.query)
         if not _is_write_only_relationship(reader.query, match.start())
     )
     if not bindings and not generic_bindings and not anonymous_bindings:
