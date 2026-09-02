@@ -1100,6 +1100,12 @@ type PersonOwnedReviewCases = {
   cases: ReviewCaseSummary[];
 };
 
+type RecommendedReviewListRequest = {
+  token: symbol;
+  personId: string;
+  controller: AbortController;
+};
+
 export function TimelineTab({
   person,
   detailData,
@@ -2331,6 +2337,7 @@ export function MatchesTab({ personId, currentPerson, currentIdentifiers, active
   const recommendedDetailInFlight = useRef<Map<string, symbol>>(new Map());
   const reviewCaseDetailInFlight = useRef<Map<string, symbol>>(new Map());
   const reviewCaseDetailControllers = useRef<Map<string, AbortController>>(new Map());
+  const recommendedReviewListRequest = useRef<RecommendedReviewListRequest | null>(null);
   const recommendedDetailsRef = useRef(recommendedDetails);
   const reviewCaseDetailsRef = useRef(reviewCaseDetails);
   const recommendedReviewCases = useMemo(
@@ -2371,16 +2378,23 @@ export function MatchesTab({ personId, currentPerson, currentIdentifiers, active
     5,
   );
 
-  const reloadRecommendedReviewCases = useCallback((): (() => void) => {
-    let ignore = false;
+  const reloadRecommendedReviewCases = useCallback((): void => {
+    recommendedReviewListRequest.current?.controller.abort();
     const controller = new AbortController();
+    const request: RecommendedReviewListRequest = {
+      token: Symbol(personId),
+      personId,
+      controller,
+    };
+    recommendedReviewListRequest.current = request;
+    const isCurrentRequest = (): boolean => recommendedReviewListRequest.current?.token === request.token;
     setRecommendedReviewLoading(true);
     setRecommendedReviewError(null);
-    bffFetchEnvelope<ReviewCaseSummary[]>(
+    void bffFetchEnvelope<ReviewCaseSummary[]>(
       `/bff/review-cases?person_id=${encodeURIComponent(personId)}&resolved=${showResolvedReviewCases ? "true" : "false"}&sort_by=created_at&sort_order=DESC&limit=100`,
       { signal: controller.signal },
     ).then((response) => {
-      if (ignore) return;
+      if (!isCurrentRequest()) return;
       const filteredCases = response.data.filter(
         (reviewCase) => reviewCase.left_person_id !== undefined && reviewCase.left_person_id !== null
           && reviewCase.right_person_id !== undefined && reviewCase.right_person_id !== null,
@@ -2406,21 +2420,28 @@ export function MatchesTab({ personId, currentPerson, currentIdentifiers, active
       }
       onTotalLoaded(cases.length);
     }).catch((error: unknown) => {
-      if (ignore) return;
+      if (!isCurrentRequest()) return;
       setRecommendedReviewCasesState({ personId, cases: [] });
       setRecommendedReviewError(
         error instanceof BffError ? error.message : "Failed to load recommended matches.",
       );
     }).finally(() => {
-      if (!ignore) setRecommendedReviewLoading(false);
+      if (!isCurrentRequest()) return;
+      recommendedReviewListRequest.current = null;
+      setRecommendedReviewLoading(false);
     });
-    return () => { ignore = true; controller.abort(); };
   }, [personId, onTotalLoaded, showResolvedReviewCases]);
 
   useEffect(() => {
-    const cleanup = reloadRecommendedReviewCases();
-    return cleanup;
+    reloadRecommendedReviewCases();
   }, [reloadRecommendedReviewCases]);
+
+  useEffect(() => () => {
+    const request = recommendedReviewListRequest.current;
+    if (request?.personId !== personId) return;
+    request.controller.abort();
+    recommendedReviewListRequest.current = null;
+  }, [personId]);
 
   const recommendedMatches = (recommendedResult.rows ?? []).filter(
     (match) => (match.decision === "merge" || match.decision === "review")
