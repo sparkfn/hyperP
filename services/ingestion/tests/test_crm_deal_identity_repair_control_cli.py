@@ -327,8 +327,17 @@ def _install_allocate_seams(
             return _DIGEST
 
         def allocate(
-            self, request: object, *, boundary_digest: str, proof_digest: str, plan: object
+            self,
+            request: object,
+            *,
+            boundary_digest: str,
+            proof_digest: str,
+            plan: object,
+            allocation_origin_key_id: str,
+            allocation_origin_secret: bytes,
         ) -> RepairDispatchLease:
+            assert allocation_origin_key_id == "approval-key-1"
+            assert allocation_origin_secret == b"approval-secret"
             allocations.append(("allocate", request, boundary_digest, proof_digest, plan))
             return RepairDispatchLease(
                 "legacy-default",

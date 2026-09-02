@@ -183,6 +183,8 @@ def _control(arguments: Namespace) -> int:
                 boundary_digest=run.boundary_digest,
                 proof_digest=repository.proof_digest(request),
                 plan=plan,
+                allocation_origin_key_id=key_id,
+                allocation_origin_secret=secret,
             )
     finally:
         client.close()

@@ -486,6 +486,28 @@ MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', control_instan
   repair_revision: $revision})
 OPTIONAL MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id,
   completion_id: $completion_id})
+WITH control, dispatch, completion
+WHERE completion IS NULL OR (
+  $allocation_origin_key_id IS NOT NULL
+  AND $allocation_origin_hmac IS NOT NULL
+  AND $receipt_digest IS NOT NULL
+  AND completion.allocation_control_instance_id IS NULL
+  AND completion.allocation_revision IS NULL
+  AND completion.allocation_state IS NULL
+  AND completion.allocation_sealed_boundary_digest IS NULL
+  AND completion.allocation_origin_key_id IS NULL
+  AND completion.allocation_origin_hmac IS NULL
+  AND completion.receipt_control_instance_id IS NULL
+  AND completion.receipt_run_id IS NULL
+  AND completion.receipt_owner_id IS NULL
+  AND completion.receipt_token_digest IS NULL
+  AND completion.receipt_revision IS NULL
+  AND completion.receipt_state IS NULL
+  AND completion.receipt_boundary_digest IS NULL
+  AND completion.receipt_sealed_boundary_digest IS NULL
+  AND completion.receipt_digest IS NULL
+  AND completion.receipt_created_at IS NULL
+)
 SET control.sealed_revision = $revision,
     control.sealed_boundary_digest = $sealed_boundary_digest,
     control.sealed_source_records_digest = $sealed_source_records_digest,
@@ -502,6 +524,8 @@ FOREACH (_ IN CASE WHEN completion IS NULL THEN [] ELSE [1] END |
       completion.allocation_revision = control.revision,
       completion.allocation_state = control.state,
       completion.allocation_sealed_boundary_digest = $sealed_boundary_digest,
+      completion.allocation_origin_key_id = $allocation_origin_key_id,
+      completion.allocation_origin_hmac = $allocation_origin_hmac,
       completion.receipt_control_instance_id = control.control_instance_id,
       completion.receipt_run_id = control.run_id,
       completion.receipt_owner_id = control.owner_id,
@@ -549,6 +573,8 @@ WHERE completion.unit_ids = $unit_ids
   AND completion.allocation_revision = completion.request_expected_revision + 1
   AND completion.allocation_state = 'allocated'
   AND completion.allocation_sealed_boundary_digest IS NOT NULL
+  AND completion.allocation_origin_key_id = $allocation_origin_key_id
+  AND completion.allocation_origin_hmac IS NOT NULL
   AND completion.receipt_control_instance_id = completion.allocation_control_instance_id
   AND completion.receipt_run_id = $run_id
   AND completion.receipt_owner_id = $owner_id
@@ -588,7 +614,15 @@ RETURN completion.receipt_control_instance_id AS control_instance_id,
        completion.receipt_token_digest AS token_digest, completion.receipt_revision AS revision,
        completion.receipt_state AS state, completion.receipt_boundary_digest AS boundary_digest,
        completion.receipt_sealed_boundary_digest AS sealed_boundary_digest,
-       completion.receipt_digest AS receipt_digest
+       completion.receipt_digest AS receipt_digest,
+       completion.completion_id AS completion_id,
+       completion.overlay_digest AS overlay_digest,
+       completion.allocation_digest AS allocation_digest,
+       completion.unit_count AS unit_count,
+       completion.unit_set_digest AS unit_set_digest,
+       completion.request_digest AS request_digest,
+       completion.allocation_origin_key_id AS allocation_origin_key_id,
+       completion.allocation_origin_hmac AS allocation_origin_hmac
 """
 
 

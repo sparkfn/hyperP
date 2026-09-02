@@ -12,7 +12,7 @@ from typing import cast
 
 import pytest
 from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json_bytes
-from src.crm_deal_identity_repair.allocation import plan_allocation
+from src.crm_deal_identity_repair.allocation import allocation_origin_hmac, plan_allocation
 from src.crm_deal_identity_repair.approval_overlay import (
     APPROVAL_OVERLAY_HMAC_DOMAIN,
     APPROVAL_OVERLAY_VERSION,
@@ -130,6 +130,32 @@ def test_control_request_requires_revision_and_allocation_is_deterministic() -> 
     )
     assert first.units == second.units
     assert first.completion == second.completion
+
+
+def test_allocation_origin_hmac_authenticates_the_allocation_time_boundary() -> None:
+    def seal(secret: bytes, sealed_boundary_digest: str) -> str:
+        return allocation_origin_hmac(
+            secret=secret,
+            key_id="key-1",
+            control_instance_id="control-1",
+            run_id="run-1",
+            owner_id="owner-1",
+            token_digest=TOKEN_DIGEST,
+            revision=2,
+            boundary_digest=DIGEST,
+            sealed_boundary_digest=sealed_boundary_digest,
+            completion_id="completion-1",
+            overlay_digest=DIGEST,
+            allocation_digest=DIGEST,
+            unit_count=0,
+            unit_set_digest=DIGEST,
+            request_digest=DIGEST,
+        )
+
+    allocation_seal = seal(b"secret", "sealed-1")
+    assert allocation_seal == seal(b"secret", "sealed-1")
+    assert allocation_seal != seal(b"secret", "sealed-2")
+    assert allocation_seal != seal(b"other-secret", "sealed-1")
 
 
 def test_zero_unit_requires_complete_nonempty_overlay() -> None:
