@@ -412,7 +412,12 @@ def test_unclassified_generic_relationship_readers_fail_closed(tmp_path: Path) -
         "WHERE type(relationship) IN ['LINKED_TO', 'HAS_FACT'] RETURN relationship"
         '"""\n'
         'DYNAMIC = """MATCH (left)-[relationship]->(right) '
-        'WHERE type(relationship) = item.relationship_type RETURN relationship"""\n',
+        'WHERE type(relationship) = item.relationship_type RETURN relationship"""\n'
+        'UNDIRECTED = """MATCH (left)--(right) RETURN right"""\n'
+        'DIRECTED = """MATCH (left)-->(right) RETURN right"""\n'
+        'REVERSE = """MATCH (left)<--(right) RETURN right"""\n'
+        'VARIABLE_LENGTH = """MATCH (left)-[*1..2]->(right) RETURN right"""\n'
+        'PURE_CREATE = """CREATE (left)-->(right) RETURN right"""\n',
         encoding="utf-8",
     )
 
@@ -420,9 +425,31 @@ def test_unclassified_generic_relationship_readers_fail_closed(tmp_path: Path) -
         "UNRESTRICTED",
         "TYPE_IN",
         "DYNAMIC",
+        "UNDIRECTED",
+        "DIRECTED",
+        "REVERSE",
+        "VARIABLE_LENGTH",
     }
     with pytest.raises(RuntimeError, match="unclassified relationship reader"):
         assert_reader_contract(module)
+
+
+def test_empty_identifier_migration_is_a_narrow_audit_mutation() -> None:
+    module = (
+        _REPO_ROOT
+        / "services"
+        / "ingestion"
+        / "src"
+        / "graph"
+        / "queries"
+        / "identifier_scope_migrations.py"
+    )
+    readers = {reader.symbol: reader for reader in discover_relationship_readers(module)}
+    cleanup = readers["DELETE_EMPTY_UNSCOPED_CRM_IDENTIFIERS_BATCH"]
+
+    assert cleanup.classification == "audit_mutation"
+    assert "NOT (legacy)--()" in cleanup.query
+    assert "DELETE legacy" in cleanup.query
 
 
 def test_unclassified_reader_fails_closed(tmp_path: Path) -> None:

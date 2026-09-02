@@ -46,6 +46,35 @@ def test_rollout_compatibility_excludes_only_explicitly_retired_relationships() 
     assert (False if False is not None else True) is False
 
 
+def test_graph_traversal_excludes_retired_repairable_relationships() -> None:
+    query = graph.get_graph_query(2)
+    repairable_types = (
+        "LINKED_TO",
+        "IDENTIFIED_BY",
+        "LIVES_AT",
+        "HAS_FACT",
+        "KNOWS",
+        "PURCHASED",
+        "BOUGHT_VEHICLE",
+        "OWNS_VEHICLE",
+        "MENTIONS_VEHICLE",
+    )
+
+    assert query.count("type(r) NOT IN") == 2
+    assert query.count("coalesce(r.is_active, true) = true") == 2
+    assert all(repr(relationship_type) in query for relationship_type in repairable_types)
+
+    def visible(relationship_type: str, is_active: bool | None) -> bool:
+        return relationship_type not in repairable_types or (
+            is_active if is_active is not None else True
+        )
+
+    assert visible("LINKED_TO", None)
+    assert visible("LINKED_TO", True)
+    assert not visible("LINKED_TO", False)
+    assert visible("CHILD_OF", False)
+
+
 def test_graph_traversal_does_not_fan_out_through_record_ownership() -> None:
     query = graph.get_graph_query(4)
 

@@ -47,6 +47,22 @@ def test_api_authoritative_reader_parity_excludes_retired_links() -> None:
         assert "coalesce(" in reader.query
 
 
+def test_graph_explorer_is_authoritative_and_filters_generic_relationship_scopes() -> None:
+    classifier = _load_classifier()
+    readers = {
+        reader.identifier: reader
+        for reader in classifier.assert_reader_contract(
+            *classifier.approved_reader_sources(_REPO_ROOT)
+        )
+    }
+    graph_reader = readers["api/graph/queries/graph.py:_QUERY_BODY"]
+
+    assert graph_reader.classification == "authoritative"
+    assert graph_reader.identifier not in classifier._AUDIT_READERS
+    assert classifier._has_active_predicate(graph_reader)
+    assert graph_reader.query.count("coalesce(r.is_active, true) = true") == 2
+
+
 def test_api_audit_reader_is_explicitly_allowlisted_and_observable() -> None:
     classifier = _load_classifier()
     readers = {
