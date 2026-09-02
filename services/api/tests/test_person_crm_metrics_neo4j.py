@@ -187,6 +187,19 @@ def test_review_activation_does_not_materialize_knows_from_retired_declarer_link
                 }
             ],
         ).single(strict=True)
+        # Activation MERGEs this lock outside the explicitly seeded test graph.
+        # Tag it immediately so the fixture's run-scoped cleanup removes every
+        # node this test caused to exist without touching concurrent test data.
+        session.run(
+            """
+            MATCH (lock:SourceRecordIdentityLock {
+              source_system: 'bitrix_chat', source_instance_id: 'bitrix-primary',
+              source_record_id: 'deal-declarer'
+            })
+            SET lock._crm_metrics_test_run = $test_run_id
+            """,
+            test_run_id=neo4j_driver.run_id,
+        ).consume()
         rows = list(
             session.run(
                 """
