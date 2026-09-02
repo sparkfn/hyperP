@@ -15,14 +15,19 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
 
-ReaderClass = Literal["authoritative", "audit", "mutation"]
+ReaderClass = Literal["authoritative", "authoritative_mutation", "audit", "audit_mutation"]
 
 _RELATIONSHIP_TYPES: Final[str] = (
     "LINKED_TO|IDENTIFIED_BY|LIVES_AT|HAS_FACT|KNOWS|PURCHASED|"
     "BOUGHT_VEHICLE|OWNS_VEHICLE|MENTIONS_VEHICLE"
 )
 _RELATIONSHIP_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b(?:" + _RELATIONSHIP_TYPES + r")\b")
-_READ_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b(?:OPTIONAL\s+)?MATCH\b")
+_READ_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"\b(?:OPTIONAL\s+)?MATCH\b|\b(?:count|COUNT|exists|EXISTS)\s*\{"
+)
+_RELATIONSHIP_BINDING_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"\[\s*(?:(?P<name>[A-Za-z_]\w*)\s*)?:\s*(?:" + _RELATIONSHIP_TYPES + r")\b"
+)
 _WRITE_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b(?:CREATE|MERGE|SET|DELETE|REMOVE)\b")
 _ACTIVE_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"coalesce\s*\([^)]*\.is_active\s*,\s*true\s*\)\s*=\s*true"
@@ -89,6 +94,9 @@ api/graph/queries/persons.py:SEARCH_PERSONS
 api/graph/queries/persons_list.py:GET_PERSON_LIST_SUMMARY
 api/graph/queries/persons_list.py:_CONNECTION_COUNT
 api/graph/queries/persons_list.py:_ENTITY_COUNT
+api/graph/queries/persons_list.py:_IDENTIFIER_COUNT
+api/graph/queries/persons_list.py:_ORDER_COUNT
+api/graph/queries/persons_list.py:_SOURCE_RECORD_COUNT
 api/graph/queries/persons_list.py:_ENTITY_ENRICHMENT
 api/graph/queries/persons_list.py:_PHONE_CONFIDENCE
 api/graph/queries/persons_list.py:_POSSIBLE_MATCH_COUNT
@@ -144,9 +152,16 @@ ingestion/matching/deterministic.py:_PERSON_HAS_VALID_GOVT_ID""".splitlines()
 )
 
 
-# Writes which inspect repairable relationships are separately classified. They
-# are not current-authority readers, but discovering them prevents a MATCH +
-# SET/MERGE/DELETE query from escaping the exhaustive contract.
+# Current-state materializers must uphold exactly the same active-link policy
+# as read-only authority queries. All remaining mutations below are explicitly
+# exceptional: audit/history, repair, retirement, migration, or rewiring code
+# whose purpose requires observing inactive evidence.
+_AUTHORITATIVE_MUTATION_READERS: Final[frozenset[str]] = frozenset(
+    {"ingestion/graph/queries/profile_analysis_dirty.py:MARK_PROFILE_ANALYSIS_DIRTY"}
+)
+
+# Explicit exceptional mutation registry. This remains exhaustive so mixed
+# read/write Cypher cannot silently bypass reader-safety review.
 _MUTATION_READERS: Final[frozenset[str]] = frozenset(
     """api/graph/queries/crm_deal_count.py:RECOMPUTE_PERSON_CRM_DEAL_COUNTS
 api/graph/queries/merge.py:EXECUTE_MANUAL_MERGE
@@ -187,7 +202,6 @@ ingestion/graph/queries/merge.py:REWIRE_HAS_FACT
 ingestion/graph/queries/persons.py:LINK_PERSON_TO_IDENTIFIER
 ingestion/graph/queries/persons.py:LINK_PERSON_TO_ADDRESS
 ingestion/graph/queries/persons.py:CREATE_ATTRIBUTE_FACT
-ingestion/graph/queries/profile_analysis_dirty.py:MARK_PROFILE_ANALYSIS_DIRTY
 ingestion/graph/queries/profile_analysis_dirty.py:RETIRE_SOURCE_EVIDENCE
 ingestion/graph/queries/sales.py:LINK_PERSON_PURCHASED_ORDER
 ingestion/graph/queries/sales.py:CLEAR_SUPERSEDED_SALES_LINKS
@@ -252,10 +266,14 @@ def discover_relationship_readers(*roots: Path) -> tuple[RelationshipReader, ...
             if not _is_relationship_read(query):
                 continue
             identifier = f"{module}:{symbol}"
-            if identifier in _MUTATION_READERS:
+            if identifier in _AUTHORITATIVE_MUTATION_READERS:
                 if not _WRITE_PATTERN.search(query):
-                    raise RuntimeError(f"mutation reader has no mutation: {identifier}")
-                classification: ReaderClass = "mutation"
+                    raise RuntimeError(f"authoritative mutation has no mutation: {identifier}")
+                classification: ReaderClass = "authoritative_mutation"
+            elif identifier in _MUTATION_READERS:
+                if not _WRITE_PATTERN.search(query):
+                    raise RuntimeError(f"exceptional mutation has no mutation: {identifier}")
+                classification = "audit_mutation"
             elif identifier in _AUDIT_READERS:
                 classification = "audit"
             elif identifier in _AUTHORITATIVE_READERS:
@@ -272,7 +290,12 @@ def assert_reader_contract(*roots: Path) -> tuple[RelationshipReader, ...]:
     """Fail closed on unknown readers or authoritative inactive-link reads."""
     readers = discover_relationship_readers(*roots)
     identifiers = {reader.identifier for reader in readers}
-    classified = _AUDIT_READERS | _AUTHORITATIVE_READERS | _MUTATION_READERS
+    classified = (
+        _AUDIT_READERS
+        | _AUTHORITATIVE_READERS
+        | _AUTHORITATIVE_MUTATION_READERS
+        | _MUTATION_READERS
+    )
     unclassified = identifiers - classified
     stale_classifications = classified - identifiers
     if unclassified:
@@ -282,7 +305,10 @@ def assert_reader_contract(*roots: Path) -> tuple[RelationshipReader, ...]:
             "reader classification no longer resolves: " + ", ".join(sorted(stale_classifications))
         )
     for reader in readers:
-        if reader.classification == "authoritative" and not _has_active_predicate(reader):
+        if reader.classification in {
+            "authoritative",
+            "authoritative_mutation",
+        } and not _has_active_predicate(reader):
             raise RuntimeError(
                 f"authoritative relationship reader lacks active predicate: {reader.identifier}"
             )
@@ -356,17 +382,14 @@ def _has_active_predicate(reader: RelationshipReader) -> bool:
     fragments remain allowed because they are the repository's canonical
     per-binding active predicate.
     """
-    bindings = tuple(
-        re.finditer(
-            r"\[(?P<name>[A-Za-z_]\w*)\s*:\s*(?:" + _RELATIONSHIP_TYPES + r")\b",
-            reader.query,
-        )
-    )
+    bindings = tuple(_RELATIONSHIP_BINDING_PATTERN.finditer(reader.query))
     if not bindings:
         return False
-    return all(
-        _binding_has_active_predicate(match.group("name"), reader.query) for match in bindings
-    )
+    for match in bindings:
+        binding = match.group("name")
+        if binding is None or not _binding_has_active_predicate(binding, reader.query):
+            return False
+    return True
 
 
 def _binding_has_active_predicate(binding: str, query: str) -> bool:

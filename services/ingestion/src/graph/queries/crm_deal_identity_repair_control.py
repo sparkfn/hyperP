@@ -443,7 +443,8 @@ WHERE (control.revision = $expected_revision AND control.state IN ['quiesced', '
 MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', control_instance_id: control.control_instance_id,
   blocked: true, repair_run_id: $run_id, repair_owner_id: $owner_id, repair_token_digest: $token_digest,
   repair_revision: control.revision})
-FOREACH (_ IN CASE WHEN control.revision = $expected_revision THEN [1] ELSE [] END |
+WITH control, dispatch, control.revision = $expected_revision AS transitioned
+FOREACH (_ IN CASE WHEN transitioned THEN [1] ELSE [] END |
   SET control.paused_from_state = control.state, control.state = 'paused',
       control.revision = control.revision + 1, control.last_transition = 'pause',
       control.last_transition_expected_revision = $expected_revision, control.updated_at = datetime(),
@@ -451,7 +452,7 @@ FOREACH (_ IN CASE WHEN control.revision = $expected_revision THEN [1] ELSE [] E
 )
 RETURN control.control_instance_id AS control_instance_id, control.run_id AS run_id,
        control.owner_id AS owner_id, control.token_digest AS token_digest, control.revision AS revision,
-       control.state AS state, control.boundary_digest AS boundary_digest
+       control.state AS state, control.boundary_digest AS boundary_digest, transitioned
 """
 
 RESUME_REPAIR_CONTROL = """
@@ -464,7 +465,8 @@ WHERE (control.revision = $expected_revision AND control.state = 'paused'
 MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', control_instance_id: control.control_instance_id,
   blocked: true, repair_run_id: $run_id, repair_owner_id: $owner_id, repair_token_digest: $token_digest,
   repair_revision: control.revision})
-FOREACH (_ IN CASE WHEN control.revision = $expected_revision THEN [1] ELSE [] END |
+WITH control, dispatch, control.revision = $expected_revision AS transitioned
+FOREACH (_ IN CASE WHEN transitioned THEN [1] ELSE [] END |
   SET control.state = control.paused_from_state, control.paused_from_state = NULL,
       control.revision = control.revision + 1, control.last_transition = 'resume',
       control.last_transition_expected_revision = $expected_revision, control.updated_at = datetime(),
@@ -472,12 +474,13 @@ FOREACH (_ IN CASE WHEN control.revision = $expected_revision THEN [1] ELSE [] E
 )
 RETURN control.control_instance_id AS control_instance_id, control.run_id AS run_id,
        control.owner_id AS owner_id, control.token_digest AS token_digest, control.revision AS revision,
-       control.state AS state, control.boundary_digest AS boundary_digest
+       control.state AS state, control.boundary_digest AS boundary_digest, transitioned
 """
 
 SEAL_QUIESCENCE_BOUNDARY = """
 MATCH (control:CrmDealRepairControl {run_id: $run_id, owner_id: $owner_id, token_digest: $token_digest,
-  state: 'quiesced', revision: $revision})
+  revision: $revision})
+WHERE control.state IN ['quiesced', 'paused']
 MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', control_instance_id: control.control_instance_id,
   blocked: true, repair_run_id: $run_id, repair_owner_id: $owner_id, repair_token_digest: $token_digest,
   repair_revision: $revision})

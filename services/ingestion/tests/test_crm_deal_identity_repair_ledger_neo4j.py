@@ -1310,7 +1310,7 @@ def test_310_zero_capture_quiescence_fails_closed(neo4j_driver: Driver) -> None:
         stale_run_id="e5deb1d6-7333-4660-be4f-c44fcf5af686",
     )
 
-    with pytest.raises(ValueError, match="topology identities must be non-empty"):
+    with pytest.raises(RuntimeError, match="task topology capture is incomplete"):
         _absence_evidence(
             control,
             run,
@@ -1338,12 +1338,18 @@ def test_310_unadmitted_logical_topology_is_not_silently_omitted(
             control_instance_id=run.control_instance_id,
         ).consume()
 
+    lease = control.claim(
+        RepairControlRequest("repair-310-unadmitted", run.run_id, "owner", "token", 0),
+        boundary_digest=run.boundary_digest,
+        control_instance_id=run.control_instance_id,
+    )
     topology_digest = control.request_stop_topology(
         control_instance_id=run.control_instance_id,
         run_id=run.run_id,
         owner_id="owner",
         stale_run_id="e5deb1d6-7333-4660-be4f-c44fcf5af686",
     )
+    assert lease.state == "quiescing"
 
     with pytest.raises(RuntimeError, match="task topology capture is incomplete"):
         control.captured_task_identities(
@@ -2065,6 +2071,33 @@ def test_310_pause_resume_exact_replay_rejects_conflicts_and_stale_revisions(
     with pytest.raises(RuntimeError, match="compare-and-set"):
         control.resume(
             RepairControlRequest("repair-310-pause-replay", run.run_id, "owner-a", "token-a", 1)
+        )
+    allocated = control.allocate(
+        RepairControlRequest("repair-310-pause-replay", run.run_id, "owner-a", "token-a", 3),
+        boundary_digest=run.boundary_digest,
+        proof_digest="proof",
+        plan=_allocation_plan_for_test(run.run_id, run.boundary_digest, 1),
+    )
+    assert (allocated.state, allocated.revision) == ("allocated", 4)
+
+
+def test_310_pause_rejects_unrelated_control_drift_before_resealing(
+    neo4j_driver: Driver,
+) -> None:
+    _, control, run = _qualified_control_repository(
+        neo4j_driver, repair_id="repair-310-pause-drift"
+    )
+    _seed_quiesced_allocation_control(neo4j_driver, run)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (dispatch:BitrixDispatchControl {control_instance_id: $control_instance_id}) "
+            "SET dispatch.unrelated_control_drift = true",
+            control_instance_id=run.control_instance_id,
+        ).consume()
+
+    with pytest.raises(RuntimeError, match="full boundary became stale"):
+        control.pause(
+            RepairControlRequest("repair-310-pause-drift", run.run_id, "owner", "token", 1)
         )
 
 
