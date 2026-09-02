@@ -15,12 +15,13 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Final, Literal
 
-ReaderClass = Literal["authoritative", "audit"]
+ReaderClass = Literal["authoritative", "audit", "mutation"]
 
-_RELATIONSHIP_PATTERN: Final[re.Pattern[str]] = re.compile(
-    r"\b(?:LINKED_TO|IDENTIFIED_BY|LIVES_AT|HAS_FACT|KNOWS|PURCHASED|"
-    r"BOUGHT_VEHICLE|OWNS_VEHICLE|MENTIONS_VEHICLE)\b"
+_RELATIONSHIP_TYPES: Final[str] = (
+    "LINKED_TO|IDENTIFIED_BY|LIVES_AT|HAS_FACT|KNOWS|PURCHASED|"
+    "BOUGHT_VEHICLE|OWNS_VEHICLE|MENTIONS_VEHICLE"
 )
+_RELATIONSHIP_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b(?:" + _RELATIONSHIP_TYPES + r")\b")
 _READ_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b(?:OPTIONAL\s+)?MATCH\b")
 _WRITE_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b(?:CREATE|MERGE|SET|DELETE|REMOVE)\b")
 _ACTIVE_PATTERN: Final[re.Pattern[str]] = re.compile(
@@ -143,6 +144,70 @@ ingestion/matching/deterministic.py:_PERSON_HAS_VALID_GOVT_ID""".splitlines()
 )
 
 
+# Writes which inspect repairable relationships are separately classified. They
+# are not current-authority readers, but discovering them prevents a MATCH +
+# SET/MERGE/DELETE query from escaping the exhaustive contract.
+_MUTATION_READERS: Final[frozenset[str]] = frozenset(
+    """api/graph/queries/crm_deal_count.py:RECOMPUTE_PERSON_CRM_DEAL_COUNTS
+api/graph/queries/merge.py:EXECUTE_MANUAL_MERGE
+api/graph/queries/merge.py:REVERT_MERGE
+api/graph/queries/review.py:LINK_REVIEW_SALES_PURCHASED_ORDER
+api/graph/queries/review.py:LINK_REVIEW_SALES_BOUGHT_VEHICLE
+api/graph/queries/review.py:PROMOTE_STAGED_REVIEW_SALE
+api/graph/queries/review.py:ACTIVATE_PENDING_REVIEW_RECORD
+api/graph/queries/review.py:RESOLVE_PENDING_REVIEW_RECORD_NO_MATCH
+api/graph/queries/review.py:REJECT_PENDING_REVIEW_RECORD
+ingestion/graph/migrations.py:DEDUPLICATE_LEGACY_BITRIX_PROJECTIONS
+ingestion/graph/migrations.py:REWRITE_LEGACY_BITRIX_PROJECTION_KEYS
+ingestion/graph/migrations.py:REWRITE_DIRECT_BITRIX_PROJECTION_KEYS
+ingestion/graph/migrations.py:MIGRATE_PROJECTION_RELATIONSHIP_LIFECYCLE
+ingestion/graph/migrations.py:RECONCILE_PROJECTION_RELATIONSHIP_LIFECYCLE
+ingestion/graph/queries/crm_deal_count.py:RECOMPUTE_SOURCE_PERSON_CRM_DEAL_COUNTS
+ingestion/graph/queries/crm_deal_identity_repair_mutation.py:READ_LOCKED_REPAIR_AUTHORITY
+ingestion/graph/queries/crm_deal_identity_repair_mutation.py:LOCK_SUPPORT_SOURCE_RECORDS
+ingestion/graph/queries/crm_deal_identity_repair_mutation.py:RETIRE_EXACT_CONTAMINATION
+ingestion/graph/queries/crm_deal_identity_repair_mutation.py:STAGE_ACTIVE_REPAIR_LINK
+ingestion/graph/queries/crm_deal_identity_repair_mutation.py:STAGE_PROVISIONAL_REPAIR_LINK
+ingestion/graph/queries/crm_deal_identity_repair_mutation.py:STAGE_REPAIR_IDENTIFIERS
+ingestion/graph/queries/crm_deal_identity_repair_mutation.py:STAGE_REPAIR_FACTS
+ingestion/graph/queries/crm_history.py:CREATE_CALL_FROM_HISTORY
+ingestion/graph/queries/crm_history.py:LINK_CONVERSATION_TO_CRM_HISTORY
+ingestion/graph/queries/crm_history.py:LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS
+ingestion/graph/queries/crm_history.py:ACTIVATE_PENDING_CALLS_FOR_DEAL
+ingestion/graph/queries/identifier_scope_migrations.py:MIGRATE_CRM_IDENTIFIER_RELATIONSHIPS_BATCH
+ingestion/graph/queries/identifier_scope_migrations.py:CONSOLIDATE_SCOPED_IDENTIFIER_DUPLICATES_BATCH
+ingestion/graph/queries/knows.py:LINK_PERSON_KNOWS
+ingestion/graph/queries/knows.py:REWIRE_KNOWS_OUT
+ingestion/graph/queries/knows.py:RETIRE_KNOWS_PROJECTION
+ingestion/graph/queries/knows.py:REWIRE_KNOWS_IN
+ingestion/graph/queries/merge.py:REWIRE_LINKED_TO
+ingestion/graph/queries/merge.py:REWIRE_IDENTIFIED_BY
+ingestion/graph/queries/merge.py:REWIRE_LIVES_AT
+ingestion/graph/queries/merge.py:REWIRE_HAS_FACT
+ingestion/graph/queries/persons.py:LINK_PERSON_TO_IDENTIFIER
+ingestion/graph/queries/persons.py:LINK_PERSON_TO_ADDRESS
+ingestion/graph/queries/persons.py:CREATE_ATTRIBUTE_FACT
+ingestion/graph/queries/profile_analysis_dirty.py:MARK_PROFILE_ANALYSIS_DIRTY
+ingestion/graph/queries/profile_analysis_dirty.py:RETIRE_SOURCE_EVIDENCE
+ingestion/graph/queries/sales.py:LINK_PERSON_PURCHASED_ORDER
+ingestion/graph/queries/sales.py:CLEAR_SUPERSEDED_SALES_LINKS
+ingestion/graph/queries/sales.py:REWIRE_PURCHASED
+ingestion/graph/queries/sales.py:REWIRE_BOUGHT_VEHICLE
+ingestion/graph/queries/sales.py:REWIRE_OWNS_VEHICLE
+ingestion/graph/queries/source_records.py:LOCK_AND_GET_SOURCE_STATE
+ingestion/graph/queries/source_records.py:SUPERSEDE_SOURCE_RECORD
+ingestion/graph/queries/source_records.py:RETIRE_IDENTITY_PROJECTIONS
+ingestion/graph/queries/source_records.py:RETIRE_IDENTITY_PROJECTIONS_FOR_PERSONS
+ingestion/graph/queries/source_records.py:LINK_SOURCE_RECORD_TO_PERSON
+ingestion/graph/queries/vehicle.py:LINK_CHAT_SOURCE_RECORD_MENTIONS_VEHICLE
+ingestion/graph/queries/vehicle.py:RETIRE_CONVERSATION_VEHICLE_MENTIONS
+ingestion/graph/queries/vehicle.py:LINK_PERSON_BOUGHT_VEHICLE
+ingestion/graph/queries/vehicle.py:LINK_SOURCE_RECORD_MENTIONS_VEHICLE
+ingestion/graph/queries/vehicle.py:LINK_PERSON_OWNS_VEHICLE
+ingestion/graph/queries/vehicle.py:FLAG_VEHICLE_OWNER_CONFLICTS""".splitlines()
+)
+
+
 def approved_reader_sources(repository_root: Path) -> tuple[Path, ...]:
     """Return every executable API/ingestion Python source, in stable order."""
     api = repository_root / "services" / "api" / "src"
@@ -187,8 +252,12 @@ def discover_relationship_readers(*roots: Path) -> tuple[RelationshipReader, ...
             if not _is_relationship_read(query):
                 continue
             identifier = f"{module}:{symbol}"
-            if identifier in _AUDIT_READERS:
-                classification: ReaderClass = "audit"
+            if identifier in _MUTATION_READERS:
+                if not _WRITE_PATTERN.search(query):
+                    raise RuntimeError(f"mutation reader has no mutation: {identifier}")
+                classification: ReaderClass = "mutation"
+            elif identifier in _AUDIT_READERS:
+                classification = "audit"
             elif identifier in _AUTHORITATIVE_READERS:
                 classification = "authoritative"
             else:
@@ -203,8 +272,9 @@ def assert_reader_contract(*roots: Path) -> tuple[RelationshipReader, ...]:
     """Fail closed on unknown readers or authoritative inactive-link reads."""
     readers = discover_relationship_readers(*roots)
     identifiers = {reader.identifier for reader in readers}
-    unclassified = identifiers - _AUDIT_READERS - _AUTHORITATIVE_READERS
-    stale_classifications = (_AUDIT_READERS | _AUTHORITATIVE_READERS) - identifiers
+    classified = _AUDIT_READERS | _AUTHORITATIVE_READERS | _MUTATION_READERS
+    unclassified = identifiers - classified
+    stale_classifications = classified - identifiers
     if unclassified:
         raise RuntimeError("unclassified relationship reader: " + ", ".join(sorted(unclassified)))
     if stale_classifications:
@@ -274,15 +344,35 @@ def _source_segment(source: str, node: ast.AST, file_path: Path) -> str:
 
 
 def _is_relationship_read(query: str) -> bool:
-    return bool(
-        _RELATIONSHIP_PATTERN.search(query)
-        and _READ_PATTERN.search(query)
-        and not _WRITE_PATTERN.search(query)
-    )
+    """Discover relationship reads even when the binding also mutates state."""
+    return bool(_RELATIONSHIP_PATTERN.search(query) and _READ_PATTERN.search(query))
 
 
 def _has_active_predicate(reader: RelationshipReader) -> bool:
-    """Allow literal predicates and named literal policy fragments."""
-    if _ACTIVE_PATTERN.search(reader.query):
-        return True
-    return "_LINK_ACTIVE" in reader.query
+    """Require every explicitly bound repairable link to be current-active.
+
+    A query with several relationship bindings cannot pass solely because an
+    unrelated binding has one active predicate. Named ``_LINK_ACTIVE`` policy
+    fragments remain allowed because they are the repository's canonical
+    per-binding active predicate.
+    """
+    bindings = tuple(
+        re.finditer(
+            r"\[(?P<name>[A-Za-z_]\w*)\s*:\s*(?:" + _RELATIONSHIP_TYPES + r")\b",
+            reader.query,
+        )
+    )
+    if not bindings:
+        return False
+    return all(
+        _binding_has_active_predicate(match.group("name"), reader.query) for match in bindings
+    )
+
+
+def _binding_has_active_predicate(binding: str, query: str) -> bool:
+    """Recognize a literal or the canonical ``link`` policy fragment per binding."""
+    literal = re.search(
+        rf"coalesce\s*\(\s*{re.escape(binding)}\.is_active\s*,\s*true\s*\)\s*=\s*true",
+        query,
+    )
+    return literal is not None or (binding == "link" and "_LINK_ACTIVE" in query)

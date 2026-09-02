@@ -6,13 +6,17 @@ import json
 from contextlib import nullcontext
 from dataclasses import asdict
 from pathlib import Path
-from types import SimpleNamespace
+from types import ModuleType, SimpleNamespace
 from typing import cast
 
 import pytest
 from src.crm_deal_identity_repair.allocation import AllocationPlan
 from src.crm_deal_identity_repair.approval_overlay import ApprovalOverlay, ApprovalRow
-from src.crm_deal_identity_repair.control_models import RepairControlStatus, RepairDispatchLease
+from src.crm_deal_identity_repair.control_models import (
+    RepairControlStatus,
+    RepairDispatchLease,
+    control_token_digest,
+)
 from src.crm_deal_identity_repair.execution_models import (
     RepairExecutionBoundaryManifest,
     RepairQualificationRun,
@@ -272,11 +276,16 @@ def _install_allocate_seams(
     tmp_path: Path,
     overlay: object,
 ) -> list[tuple[object, ...]]:
+    import sys
+
     import src.config as config_module
     import src.crm_deal_identity_repair.approval_overlay as overlay_module
-    import src.crm_deal_identity_repair.artifacts as artifacts_module
-    import src.crm_deal_identity_repair.qualification as qualification_module
     import src.graph.client as client_module
+
+    artifacts_module = ModuleType("src.crm_deal_identity_repair.artifacts")
+    qualification_module = ModuleType("src.crm_deal_identity_repair.qualification")
+    monkeypatch.setitem(sys.modules, artifacts_module.__name__, artifacts_module)
+    monkeypatch.setitem(sys.modules, qualification_module.__name__, qualification_module)
     import src.graph.crm_deal_identity_repair_control as control_repository_module
     import src.graph.crm_deal_identity_repair_ledger as ledger_module
     import src.graph.crm_deal_identity_repair_ledger_migration as migration_module
@@ -299,6 +308,7 @@ def _install_allocate_seams(
         crm_deal_identity_repair_approval_root=str(tmp_path / "approvals"),
     )
     allocations: list[tuple[object, ...]] = []
+    monkeypatch.setenv("CRM_DEAL_IDENTITY_REPAIR_CONTROL_TOKEN", "control-secret")
 
     class Ledger:
         def __init__(self, _client: object) -> None:
@@ -321,7 +331,13 @@ def _install_allocate_seams(
         ) -> RepairDispatchLease:
             allocations.append(("allocate", request, boundary_digest, proof_digest, plan))
             return RepairDispatchLease(
-                "legacy-default", "run-1", "owner-1", "token-1", 2, "allocated", _DIGEST
+                "legacy-default",
+                "run-1",
+                "owner-1",
+                control_token_digest("control-secret"),
+                2,
+                "allocated",
+                _DIGEST,
             )
 
     monkeypatch.setattr(config_module, "get_settings", lambda: settings)
@@ -335,11 +351,13 @@ def _install_allocate_seams(
         artifacts_module,
         "repair_artifact_store_from_settings",
         lambda _settings: nullcontext(object()),
+        raising=False,
     )
     monkeypatch.setattr(
         qualification_module,
         "verify_qualified_repair_artifact",
         lambda _store, *, run: verified if run == _run() else pytest.fail("wrong stored run"),
+        raising=False,
     )
 
     def verify(path: Path, *, secret: bytes) -> ApprovalOverlay:
@@ -359,8 +377,10 @@ def test_allocate_uses_only_stored_qualified_artifact_and_remains_non_executable
     allocations = _install_allocate_seams(monkeypatch, tmp_path, _overlay(run))
 
     assert main(_control_arguments()) == 0
-    payload = json.loads(capsys.readouterr().out)
+    output = capsys.readouterr().out
+    payload = json.loads(output)
 
+    assert "control-secret" not in output
     assert [entry[0] for entry in allocations] == ["proof", "allocate"]
     plan = cast(AllocationPlan, allocations[1][4])
     assert plan.completion.unit_count == 1
@@ -408,3 +428,19 @@ def test_allocate_rejects_each_changed_approval_overlay_or_key_binding(
         main(_control_arguments())
 
     assert allocations == []
+
+
+def test_control_command_rejects_missing_or_persisted_digest_secret(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    """Only a raw secret may enter the control command credential boundary."""
+    _install_allocate_seams(monkeypatch, tmp_path, _overlay(_run()))
+    monkeypatch.delenv("CRM_DEAL_IDENTITY_REPAIR_CONTROL_TOKEN")
+    with pytest.raises(RuntimeError, match="secret environment channel"):
+        main(_control_arguments())
+
+    monkeypatch.setenv(
+        "CRM_DEAL_IDENTITY_REPAIR_CONTROL_TOKEN", control_token_digest("control-secret")
+    )
+    with pytest.raises(ValueError, match="not an operator secret"):
+        main(_control_arguments())

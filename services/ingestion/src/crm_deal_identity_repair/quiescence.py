@@ -8,8 +8,9 @@ from typing import Protocol
 
 from src.crm_deal_identity_repair.control_models import (
     CapturedTaskTopologyIdentity,
-    RepairControlRequest,
+    RepairControlCommand,
     RepairDispatchLease,
+    _trusted_request_from_durable_digest,
 )
 from src.crm_deal_identity_repair.task_inspection import (
     BrokerInspector,
@@ -22,7 +23,7 @@ from src.crm_deal_identity_repair.task_inspection import (
 
 class QuiescenceRepository(Protocol):
     def claim(
-        self, request: RepairControlRequest, *, boundary_digest: str, control_instance_id: str
+        self, request: RepairControlCommand, *, boundary_digest: str, control_instance_id: str
     ) -> RepairDispatchLease: ...
     def request_stop_topology(
         self, *, control_instance_id: str, run_id: str, owner_id: str, stale_run_id: str
@@ -32,7 +33,7 @@ class QuiescenceRepository(Protocol):
     ) -> tuple[CapturedTaskTopologyIdentity, ...]: ...
     def complete_quiescence(
         self,
-        request: RepairControlRequest,
+        request: RepairControlCommand,
         *,
         boundary_digest: str,
         control_instance_id: str,
@@ -63,7 +64,7 @@ class RepairQuiescenceService:
     def quiesce(
         self,
         *,
-        request: RepairControlRequest,
+        request: RepairControlCommand,
         boundary_digest: str,
         control_instance_id: str,
         expected_workers: tuple[str, ...],
@@ -105,7 +106,7 @@ class RepairQuiescenceService:
         )
         if not verify_absence_evidence(evidence, secret=proof_secret, now=datetime.now(UTC)):
             raise RuntimeError("repair task absence evidence is not authentic and fresh")
-        final_request = RepairControlRequest(
+        final_request = _trusted_request_from_durable_digest(
             request.repair_id,
             request.run_id,
             request.owner_id,

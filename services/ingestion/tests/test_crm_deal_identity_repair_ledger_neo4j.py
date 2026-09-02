@@ -16,6 +16,7 @@ from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime
 from pathlib import Path
+from threading import Event
 from typing import TypeVar, cast
 from urllib.parse import urlparse
 
@@ -32,6 +33,7 @@ from src.crm_deal_identity_repair.execution_models import (
     RepairQualificationRun,
 )
 from src.crm_deal_identity_repair.task_inspection import BrokerInspection, TaskAbsenceEvidence
+from src.graph import crm_deal_identity_repair_control as control_repository_module
 from src.graph import crm_deal_identity_repair_ledger_migration as ledger_migration
 from src.graph.bitrix_source_instances import BitrixSourceInstanceRepository
 from src.graph.bootstrap import bootstrap_legacy_bitrix_source_instance
@@ -1084,6 +1086,59 @@ def test_310_same_owner_renewal_and_exact_replay_reject_foreign_expired_owner(
     }
 
 
+def test_310_completed_claim_replays_only_the_original_claim_identity(neo4j_driver: Driver) -> None:
+    _, control, run = _qualified_control_repository(
+        neo4j_driver, repair_id="repair-310-complete-claim"
+    )
+    _seed_quiesced_allocation_control(neo4j_driver, run)
+
+    with neo4j_driver.session() as session:
+        before = session.run(
+            "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+            "MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', "
+            "control_instance_id: $control_instance_id}) "
+            "RETURN properties(control) AS control, properties(dispatch) AS dispatch",
+            run_id=run.run_id,
+            control_instance_id=run.control_instance_id,
+        ).single(strict=True)
+    replay = control.claim(
+        RepairControlRequest("repair-310-complete-claim", run.run_id, "owner", "token", 0),
+        boundary_digest=run.boundary_digest,
+        control_instance_id=run.control_instance_id,
+    )
+    with neo4j_driver.session() as session:
+        after = session.run(
+            "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+            "MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', "
+            "control_instance_id: $control_instance_id}) "
+            "RETURN properties(control) AS control, properties(dispatch) AS dispatch",
+            run_id=run.run_id,
+            control_instance_id=run.control_instance_id,
+        ).single(strict=True)
+    assert dict(after) == dict(before)
+    assert (replay.state, replay.revision) == ("quiesced", 1)
+    with pytest.raises(RuntimeError, match="compare-and-set"):
+        control.claim(
+            RepairControlRequest("repair-310-complete-claim", run.run_id, "owner", "token", 1),
+            boundary_digest=run.boundary_digest,
+            control_instance_id=run.control_instance_id,
+        )
+    with pytest.raises(RuntimeError, match="compare-and-set"):
+        control.claim(
+            RepairControlRequest(
+                "repair-310-complete-claim", run.run_id, "other", "other-token", 0
+            ),
+            boundary_digest=run.boundary_digest,
+            control_instance_id=run.control_instance_id,
+        )
+    with pytest.raises(RuntimeError, match="compare-and-set"):
+        control.claim(
+            RepairControlRequest("repair-310-complete-claim", run.run_id, "owner", "token", 0),
+            boundary_digest="sha256:" + "f" * 64,
+            control_instance_id=run.control_instance_id,
+        )
+
+
 def test_310_unsettled_publication_blocks_claim_and_is_fail_closed(neo4j_driver: Driver) -> None:
     _, control, run = _qualified_control_repository(
         neo4j_driver, repair_id="repair-310-publication"
@@ -1204,7 +1259,7 @@ def _absence_evidence(
         captured_tasks=captured_tasks,
         boundary_digest=run.boundary_digest,
         owner_id=owner,
-        token_digest=token_digest,
+        token_digest=control_token_digest(token_digest),
         dispatch_revision=revision,
         topology_digest=topology_digest,
         expected_workers=("worker-a",),
@@ -1214,6 +1269,30 @@ def _absence_evidence(
         secret=b"secret",
         now=datetime.now(UTC),
     )
+
+
+def _seed_complete_task_topology(driver: Driver, control_instance_id: str) -> None:
+    """Seed one complete active logical/attempt/stream/fence capture for #310."""
+    with driver.session() as session:
+        session.run(
+            "CREATE (attempt:IngestRun {ingest_run_id: 'repair-attempt', "
+            "control_instance_id: $control_instance_id, generation: 1, status: 'running'}) "
+            "CREATE (logical:IngestionLogicalRun {source_key: 'bitrix_chat', "
+            "logical_run_id: 'repair-logical', control_instance_id: $control_instance_id, "
+            "status: 'running'})"
+            "-[:HAS_ATTEMPT]->(attempt) "
+            "CREATE (stream:BitrixIngestionStream {source_key: 'bitrix_chat', "
+            "control_instance_id: $control_instance_id, stream_key: 'crm_deals', "
+            "logical_run_id: 'repair-logical', ingest_run_id: 'repair-attempt', "
+            "attempt_generation: 1, stream_generation: 1, fencing_token: 'repair-fence', "
+            "status: 'active'}) "
+            "CREATE (generation:BitrixBackfillGeneration {control_instance_id: "
+            "$control_instance_id, generation_id: 'repair-generation'})"
+            "-[:HAS_STREAM {stream_generation: 1, "
+            "fencing_token: 'repair-fence'}]->(stream) "
+            "CREATE (generation)-[:HAS_LOGICAL_RUN {stream_key: 'crm_deals'}]->(logical)",
+            control_instance_id=control_instance_id,
+        ).consume()
 
 
 def test_310_zero_capture_quiescence_fails_closed(neo4j_driver: Driver) -> None:
@@ -1243,10 +1322,182 @@ def test_310_zero_capture_quiescence_fails_closed(neo4j_driver: Driver) -> None:
     assert _crm_domain_snapshot(neo4j_driver) == before
 
 
+def test_310_unadmitted_logical_topology_is_not_silently_omitted(
+    neo4j_driver: Driver,
+) -> None:
+    """A queued affected logical run without an attempt must fail the topology proof."""
+    _, control, run = _qualified_control_repository(neo4j_driver, repair_id="repair-310-unadmitted")
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE (logical:IngestionLogicalRun {source_key: 'bitrix_chat', "
+            "control_instance_id: $control_instance_id, logical_run_id: 'unadmitted-logical', "
+            "status: 'queued'}) "
+            "CREATE (:BitrixBackfillGeneration {control_instance_id: $control_instance_id, "
+            "generation_id: 'unadmitted-generation'})"
+            "-[:HAS_LOGICAL_RUN {stream_key: 'crm_deals'}]->(logical)",
+            control_instance_id=run.control_instance_id,
+        ).consume()
+
+    topology_digest = control.request_stop_topology(
+        control_instance_id=run.control_instance_id,
+        run_id=run.run_id,
+        owner_id="owner",
+        stale_run_id="e5deb1d6-7333-4660-be4f-c44fcf5af686",
+    )
+
+    with pytest.raises(RuntimeError, match="task topology capture is incomplete"):
+        control.captured_task_identities(
+            run_id=run.run_id,
+            control_instance_id=run.control_instance_id,
+            topology_digest=topology_digest,
+        )
+
+
+def test_310_duplicate_attempt_relationships_produce_one_capture(neo4j_driver: Driver) -> None:
+    _, control, run = _qualified_control_repository(
+        neo4j_driver, repair_id="repair-310-duplicate-attempt"
+    )
+    _seed_complete_task_topology(neo4j_driver, run.control_instance_id)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (logical:IngestionLogicalRun {logical_run_id: 'repair-logical'})"
+            "-[:HAS_ATTEMPT]->(attempt:IngestRun {ingest_run_id: 'repair-attempt'}) "
+            "CREATE (logical)-[:ACTIVE_ATTEMPT]->(attempt)"
+        ).consume()
+    lease = control.claim(
+        RepairControlRequest("repair-310-duplicate-attempt", run.run_id, "owner", "token", 0),
+        boundary_digest=run.boundary_digest,
+        control_instance_id=run.control_instance_id,
+    )
+    topology = control.request_stop_topology(
+        control_instance_id=run.control_instance_id,
+        run_id=run.run_id,
+        owner_id="owner",
+        stale_run_id="e5deb1d6-7333-4660-be4f-c44fcf5af686",
+    )
+    assert (
+        len(
+            control.captured_task_identities(
+                run_id=run.run_id,
+                control_instance_id=run.control_instance_id,
+                topology_digest=topology,
+            )
+        )
+        == 1
+    )
+    evidence = _absence_evidence(
+        control,
+        run,
+        owner="owner",
+        token_digest="token",
+        revision=lease.revision,
+        topology_digest=topology,
+    )
+    assert (
+        control.complete_quiescence(
+            RepairControlRequest(
+                "repair-310-duplicate-attempt", run.run_id, "owner", "token", lease.revision
+            ),
+            boundary_digest=run.boundary_digest,
+            control_instance_id=run.control_instance_id,
+            topology_digest=topology,
+            evidence=evidence,
+            proof_secret=b"secret",
+            stale_run_id="e5deb1d6-7333-4660-be4f-c44fcf5af686",
+        ).state
+        == "quiesced"
+    )
+
+
+def test_310_ambiguous_current_attempts_fail_closed(neo4j_driver: Driver) -> None:
+    _, control, run = _qualified_control_repository(
+        neo4j_driver, repair_id="repair-310-ambiguous-attempt"
+    )
+    _seed_complete_task_topology(neo4j_driver, run.control_instance_id)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (logical:IngestionLogicalRun {logical_run_id: 'repair-logical'}) "
+            "CREATE (other:IngestRun {ingest_run_id: 'repair-other-attempt', "
+            "control_instance_id: $control_instance_id, generation: 2, status: 'running'}) "
+            "CREATE (logical)-[:ACTIVE_ATTEMPT]->(other)",
+            control_instance_id=run.control_instance_id,
+        ).consume()
+    control.claim(
+        RepairControlRequest("repair-310-ambiguous-attempt", run.run_id, "owner", "token", 0),
+        boundary_digest=run.boundary_digest,
+        control_instance_id=run.control_instance_id,
+    )
+    topology = control.request_stop_topology(
+        control_instance_id=run.control_instance_id,
+        run_id=run.run_id,
+        owner_id="owner",
+        stale_run_id="e5deb1d6-7333-4660-be4f-c44fcf5af686",
+    )
+    with pytest.raises(RuntimeError, match="task topology capture is incomplete"):
+        control.captured_task_identities(
+            run_id=run.run_id,
+            control_instance_id=run.control_instance_id,
+            topology_digest=topology,
+        )
+
+
+def test_310_paused_checkpoint_unit_is_stopped_and_quiesced_without_losing_checkpoint(
+    neo4j_driver: Driver,
+) -> None:
+    _, control, run = _qualified_control_repository(neo4j_driver, repair_id="repair-310-paused")
+    _seed_complete_task_topology(neo4j_driver, run.control_instance_id)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (logical:IngestionLogicalRun {logical_run_id: 'repair-logical'}) "
+            "SET logical.status = 'paused_with_checkpoint' "
+            "CREATE (:IngestionCheckpoint {control_instance_id: $control_instance_id, "
+            "logical_run_id: 'repair-logical', checkpoint_id: 'paused-checkpoint'})",
+            control_instance_id=run.control_instance_id,
+        ).consume()
+    lease = control.claim(
+        RepairControlRequest("repair-310-paused", run.run_id, "owner", "token", 0),
+        boundary_digest=run.boundary_digest,
+        control_instance_id=run.control_instance_id,
+    )
+    topology = control.request_stop_topology(
+        control_instance_id=run.control_instance_id,
+        run_id=run.run_id,
+        owner_id="owner",
+        stale_run_id="e5deb1d6-7333-4660-be4f-c44fcf5af686",
+    )
+    evidence = _absence_evidence(
+        control,
+        run,
+        owner="owner",
+        token_digest="token",
+        revision=lease.revision,
+        topology_digest=topology,
+    )
+    completed = control.complete_quiescence(
+        RepairControlRequest("repair-310-paused", run.run_id, "owner", "token", lease.revision),
+        boundary_digest=run.boundary_digest,
+        control_instance_id=run.control_instance_id,
+        topology_digest=topology,
+        evidence=evidence,
+        proof_secret=b"secret",
+        stale_run_id="e5deb1d6-7333-4660-be4f-c44fcf5af686",
+    )
+    assert completed.state == "quiesced"
+    with neo4j_driver.session() as session:
+        checkpoint_count = session.run(
+            "MATCH (:IngestionCheckpoint {control_instance_id: $control_instance_id, "
+            "logical_run_id: 'repair-logical', checkpoint_id: 'paused-checkpoint'}) "
+            "RETURN count(*) AS count",
+            control_instance_id=run.control_instance_id,
+        ).single(strict=True)["count"]
+    assert checkpoint_count == 1
+
+
 def test_310_final_commit_rejects_boundary_drift_and_preserves_crm_domain(
     neo4j_driver: Driver,
 ) -> None:
     _, control, run = _qualified_control_repository(neo4j_driver, repair_id="repair-310-boundary")
+    _seed_complete_task_topology(neo4j_driver, run.control_instance_id)
     before = _crm_domain_snapshot(neo4j_driver)
     lease = control.claim(
         RepairControlRequest("repair-310-boundary", run.run_id, "owner", "token", 0),
@@ -1300,6 +1551,7 @@ def test_310_final_commit_rejects_valid_evidence_for_a_different_topology(
     _, control, run = _qualified_control_repository(
         neo4j_driver, repair_id="repair-310-proof-topology"
     )
+    _seed_complete_task_topology(neo4j_driver, run.control_instance_id)
     lease = control.claim(
         RepairControlRequest("repair-310-proof-topology", run.run_id, "owner", "token", 0),
         boundary_digest=run.boundary_digest,
@@ -1345,6 +1597,7 @@ def test_310_final_commit_rejects_valid_evidence_for_a_different_topology(
 
 def test_310_stale_orphan_and_cross_control_ambiguity_are_exact(neo4j_driver: Driver) -> None:
     _, control, run = _qualified_control_repository(neo4j_driver, repair_id="repair-310-stale")
+    _seed_complete_task_topology(neo4j_driver, run.control_instance_id)
     lease = control.claim(
         RepairControlRequest("repair-310-stale", run.run_id, "owner", "token", 0),
         boundary_digest=run.boundary_digest,
@@ -1421,6 +1674,7 @@ def test_310_stale_owned_topology_is_terminalized_only_when_exact(neo4j_driver: 
     snapshot = _snapshot(ledger)
     run = ledger.qualify(_manifest(snapshot, repair_id="repair-310-stale-owned"), snapshot)
     control = CrmDealRepairControlRepository(cast(Neo4jClient, _client(neo4j_driver)))
+    _seed_complete_task_topology(neo4j_driver, run.control_instance_id)
     lease = control.claim(
         RepairControlRequest("repair-310-stale-owned", run.run_id, "owner", "token", 0),
         boundary_digest=run.boundary_digest,
@@ -1466,8 +1720,13 @@ def test_310_stale_owned_topology_is_terminalized_only_when_exact(neo4j_driver: 
     }
 
 
-def test_310_worker_fence_race_rejects_final_quiescence(neo4j_driver: Driver) -> None:
+def test_310_worker_fence_race_rejects_final_quiescence(
+    neo4j_driver: Driver,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Finalization must not sample a boundary before it has every worker fence lock."""
     _, control, run = _qualified_control_repository(neo4j_driver, repair_id="repair-310-fence-race")
+    _seed_complete_task_topology(neo4j_driver, run.control_instance_id)
     lease = control.claim(
         RepairControlRequest("repair-310-fence-race", run.run_id, "owner", "token", 0),
         boundary_digest=run.boundary_digest,
@@ -1479,16 +1738,52 @@ def test_310_worker_fence_race_rejects_final_quiescence(neo4j_driver: Driver) ->
         owner_id="owner",
         stale_run_id="e5deb1d6-7333-4660-be4f-c44fcf5af686",
     )
-    with neo4j_driver.session() as session:
-        session.run(
-            "CREATE (:BitrixIngestionStream {source_key: 'bitrix_chat', "
-            "control_instance_id: $control_instance_id, stream_key: 'crm_deals', "
-            "logical_run_id: 'racing-logical', ingest_run_id: 'racing-attempt', "
-            "attempt_generation: 1, stream_generation: 1, fencing_token: 'racing-fence', "
-            "status: 'active'})",
-            control_instance_id=run.control_instance_id,
-        ).consume()
-    with pytest.raises(RuntimeError):
+    evidence = _absence_evidence(
+        control,
+        run,
+        owner="owner",
+        token_digest="token",
+        revision=lease.revision,
+        topology_digest=topology,
+    )
+    worker_locked = Event()
+    mutate_worker = Event()
+    finalizer_started = Event()
+    boundary_read = Event()
+    original_snapshot_from_transaction = control_repository_module._snapshot_from_transaction
+
+    def observe_post_lock_snapshot(*args: object, **kwargs: object) -> RepairBoundarySnapshot:
+        boundary_read.set()
+        return original_snapshot_from_transaction(*args, **kwargs)
+
+    monkeypatch.setattr(
+        control_repository_module,
+        "_snapshot_from_transaction",
+        observe_post_lock_snapshot,
+    )
+
+    def mutate_while_holding_fence() -> None:
+        with neo4j_driver.session() as session:
+            transaction = session.begin_transaction()
+            try:
+                transaction.run(
+                    "MATCH (stream:BitrixIngestionStream {logical_run_id: 'repair-logical'}) "
+                    "SET stream.worker_fence_race_lock = 1"
+                ).consume()
+                worker_locked.set()
+                assert mutate_worker.wait(timeout=10)
+                transaction.run(
+                    "MATCH (record:SourceRecord {source_record_pk: $pk}) "
+                    "SET record.record_hash = 'sha256:worker-boundary-drift'",
+                    pk=_TEST_SOURCE_RECORD_PK,
+                ).consume()
+                transaction.commit()
+            except BaseException:
+                transaction.rollback()
+                raise
+
+    def finalize() -> None:
+        finalizer_started.set()
         control.complete_quiescence(
             RepairControlRequest(
                 "repair-310-fence-race", run.run_id, "owner", "token", lease.revision
@@ -1496,20 +1791,28 @@ def test_310_worker_fence_race_rejects_final_quiescence(neo4j_driver: Driver) ->
             boundary_digest=run.boundary_digest,
             control_instance_id=run.control_instance_id,
             topology_digest=topology,
-            evidence=_absence_evidence(
-                control,
-                run,
-                owner="owner",
-                token_digest="token",
-                revision=lease.revision,
-                topology_digest=topology,
-            ),
+            evidence=evidence,
             proof_secret=b"secret",
             stale_run_id="e5deb1d6-7333-4660-be4f-c44fcf5af686",
         )
+
+    with ThreadPoolExecutor(max_workers=2) as executor:
+        worker = executor.submit(mutate_while_holding_fence)
+        assert worker_locked.wait(timeout=10)
+        finalizer = executor.submit(finalize)
+        assert finalizer_started.wait(timeout=10)
+        # The finalizer must be blocked at LOCK_REPAIR_TOPOLOGY, not invoking
+        # the actual post-lock full-boundary reread while the worker owns it.
+        assert not boundary_read.wait(timeout=0.25)
+        mutate_worker.set()
+        worker.result(timeout=10)
+        with pytest.raises(RuntimeError, match="boundary"):
+            finalizer.result(timeout=10)
+
+    assert boundary_read.is_set()
     with neo4j_driver.session() as session:
         status = session.run(
-            "MATCH (stream:BitrixIngestionStream {logical_run_id: 'racing-logical'}) "
+            "MATCH (stream:BitrixIngestionStream {logical_run_id: 'repair-logical'}) "
             "RETURN stream.status AS status"
         ).single(strict=True)["status"]
     assert status == "active"
@@ -1524,8 +1827,9 @@ def test_310_topology_capture_supersedes_only_exact_target_and_retains_controls(
         session.run(
             "CREATE (attempt:IngestRun {ingest_run_id: 'target-attempt', "
             "control_instance_id: $control_instance_id, generation: 7, status: 'running'}) "
-            "CREATE (logical:IngestionLogicalRun {logical_run_id: 'target-logical', "
-            "control_instance_id: $control_instance_id, status: 'running'})"
+            "CREATE (logical:IngestionLogicalRun {source_key: 'bitrix_chat', "
+            "logical_run_id: 'target-logical', control_instance_id: $control_instance_id, "
+            "status: 'running'})"
             "-[:HAS_ATTEMPT]->(attempt) "
             "CREATE (stream:BitrixIngestionStream {source_key: 'bitrix_chat', "
             "control_instance_id: $control_instance_id, stream_key: 'crm_deals', "
@@ -1540,6 +1844,7 @@ def test_310_topology_capture_supersedes_only_exact_target_and_retains_controls(
             "control_instance_id: $control_instance_id, "
             "generation_id: 'target-generation'})-[:HAS_STREAM {stream_generation: 11, "
             "fencing_token: 'target-fence'}]->(stream) "
+            "CREATE (generation)-[:HAS_LOGICAL_RUN {stream_key: 'crm_deals'}]->(logical) "
             "CREATE (:StageHistoryUnit {control_instance_id: $control_instance_id, "
             "unit_id: 'retained-history', state: 'complete'}) "
             "CREATE (other_attempt:IngestRun {ingest_run_id: 'other-attempt', "
@@ -1610,6 +1915,40 @@ def test_310_topology_capture_supersedes_only_exact_target_and_retains_controls(
     assert dict(rows) == {"target": "superseded", "other": "active", "history": "complete"}
 
 
+def test_310_real_neo4j_authoritative_reader_excludes_retired_link_and_audit_retains_it(
+    neo4j_driver: Driver,
+) -> None:
+    """Exercise real Cypher reader behavior, not only source classification."""
+    from src.graph.queries.crm_deal_identity_repair_verification import (
+        READ_RETIRED_RELATIONSHIP_SNAPSHOTS,
+    )
+    from src.graph.queries.sales import RESOLVE_SALES_CUSTOMER
+
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE (sales:SourceRecord {source_record_pk: 'reader-sales'})"
+            "-[:FOR_CUSTOMER_RECORD]->(identity:SourceRecord {source_record_pk: 'reader-identity', "
+            "lifecycle_status: 'active'}) "
+            "CREATE (person:Person {person_id: 'reader-person', status: 'active'}) "
+            "CREATE (identity)-[:LINKED_TO {is_active: false, retired_at: datetime(), "
+            "retired_by_repair_id: 'repair-310-reader'}]->(person)"
+        ).consume()
+        authoritative = session.run(
+            RESOLVE_SALES_CUSTOMER, sales_source_record_pk="reader-sales"
+        ).single()
+        audit = list(
+            session.run(
+                READ_RETIRED_RELATIONSHIP_SNAPSHOTS,
+                retired_source_record_pks=["reader-identity"],
+            )
+        )
+    assert authoritative is None
+    assert len(audit) == 1
+    properties = audit[0]["relationship_properties"]
+    assert properties["is_active"] is False
+    assert properties["retired_by_repair_id"] == "repair-310-reader"
+
+
 def _allocation_plan_for_test(run_id: str, boundary_digest: str, unit_count: int) -> AllocationPlan:
     from src.crm_deal_identity_repair.control_models import RepairAllocationCompletion
     from src.crm_deal_identity_repair.execution_records import RepairUnit
@@ -1653,12 +1992,13 @@ def _seed_quiesced_allocation_control(
     owner: str = "owner",
     token_digest: str = "token",
 ) -> None:
+    durable_token_digest = control_token_digest(token_digest)
     with driver.session() as session:
         session.run(
-            "CREATE (:CrmDealRepairControl {run_id: $run_id, "
-            "control_instance_id: $control_instance_id, "
-            "owner_id: $owner, token_digest: $token_digest, revision: 1, state: 'quiesced', "
-            "boundary_digest: $boundary_digest, proof_digest: 'proof', "
+            "CREATE (:CrmDealRepairControl {repair_id: $repair_id, run_id: $run_id, "
+            "control_instance_id: $control_instance_id, owner_id: $owner, "
+            "token_digest: $token_digest, revision: 1, claim_expected_revision: 0, "
+            "state: 'quiesced', boundary_digest: $boundary_digest, proof_digest: 'proof', "
             "proof_expires_at: datetime() + duration('PT5M')}) "
             "WITH 1 AS ignored "
             "MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', "
@@ -1666,11 +2006,36 @@ def _seed_quiesced_allocation_control(
             "SET dispatch.blocked = true, dispatch.repair_run_id = $run_id, "
             "dispatch.repair_owner_id = $owner, dispatch.repair_token_digest = $token_digest, "
             "dispatch.repair_revision = 1",
+            repair_id=run.repair_id,
             run_id=run.run_id,
             control_instance_id=run.control_instance_id,
             owner=owner,
-            token_digest=control_token_digest(token_digest),
+            token_digest=durable_token_digest,
             boundary_digest=run.boundary_digest,
+        ).consume()
+    sealed = _snapshot(_repository(driver))
+    with driver.session() as session:
+        session.run(
+            "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+            "SET control.sealed_boundary_digest = $sealed_boundary_digest, "
+            "control.sealed_source_records_digest = $sealed_source_records_digest, "
+            "control.sealed_source_instance_digest = $sealed_source_instance_digest, "
+            "control.sealed_stale_run_evidence_digest = $sealed_stale_run_evidence_digest, "
+            "control.sealed_control_digest = $sealed_control_digest, "
+            "control.sealed_inventory_digest = $sealed_inventory_digest, "
+            "control.sealed_inventory_row_count = $sealed_inventory_row_count, "
+            "control.sealed_eligible_unit_count = $sealed_eligible_unit_count, "
+            "control.sealed_negative_control_count = $sealed_negative_control_count",
+            run_id=run.run_id,
+            sealed_boundary_digest=sealed.boundary_digest,
+            sealed_source_records_digest=sealed.source_records_digest,
+            sealed_source_instance_digest=sealed.source_instance_digest,
+            sealed_stale_run_evidence_digest=sealed.stale_run_evidence_digest,
+            sealed_control_digest=sealed.control_digest,
+            sealed_inventory_digest=sealed.inventory_digest,
+            sealed_inventory_row_count=sealed.inventory_row_count,
+            sealed_eligible_unit_count=sealed.eligible_unit_count,
+            sealed_negative_control_count=sealed.negative_control_count,
         ).consume()
 
 
@@ -1716,9 +2081,7 @@ def test_310_allocation_persists_exact_multi_unit_set_and_replay_conflicts(
         plan=plan,
     )
     assert allocated.state == "allocated"
-    replay_request = RepairControlRequest(
-        "repair-310-allocation", run.run_id, "owner", "token", allocated.revision
-    )
+    replay_request = RepairControlRequest("repair-310-allocation", run.run_id, "owner", "token", 1)
     replay = control.allocate(
         replay_request,
         boundary_digest=run.boundary_digest,
@@ -1749,6 +2112,56 @@ def test_310_allocation_persists_exact_multi_unit_set_and_replay_conflicts(
         control.proof_digest(replay_request)
 
 
+@pytest.mark.parametrize(
+    ("mutation_query", "mutation_params"),
+    (
+        (
+            "MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', "
+            "control_instance_id: $control_instance_id}) "
+            "SET dispatch.unrelated_control_drift = 'changed'",
+            ("control_instance_id",),
+        ),
+        (
+            "MERGE (stale:IngestRun {ingest_run_id: $stale_run_id}) "
+            "SET stale.unrelated_stale_drift = 'changed'",
+            ("stale_run_id",),
+        ),
+    ),
+)
+def test_310_allocation_rejects_any_post_quiescence_control_or_stale_drift(
+    neo4j_driver: Driver,
+    mutation_query: str,
+    mutation_params: tuple[str, ...],
+) -> None:
+    _, control, run = _qualified_control_repository(
+        neo4j_driver, repair_id="repair-310-full-boundary"
+    )
+    _seed_quiesced_allocation_control(neo4j_driver, run)
+    parameters = {
+        "control_instance_id": run.control_instance_id,
+        "stale_run_id": "e5deb1d6-7333-4660-be4f-c44fcf5af686",
+    }
+    with neo4j_driver.session() as session:
+        session.run(
+            mutation_query,
+            **{key: parameters[key] for key in mutation_params},
+        ).consume()
+
+    with pytest.raises(RuntimeError, match="full boundary became stale"):
+        control.allocate(
+            RepairControlRequest("repair-310-full-boundary", run.run_id, "owner", "token", 1),
+            boundary_digest=run.boundary_digest,
+            proof_digest="proof",
+            plan=_allocation_plan_for_test(run.run_id, run.boundary_digest, 1),
+        )
+    with neo4j_driver.session() as session:
+        count = session.run(
+            "MATCH (:CrmDealRepairAllocationCompletion {run_id: $run_id}) RETURN count(*) AS count",
+            run_id=run.run_id,
+        ).single(strict=True)["count"]
+    assert count == 0
+
+
 def test_310_allocation_persists_zero_unit_completion_without_a_unit(neo4j_driver: Driver) -> None:
     _, control, run = _qualified_control_repository(
         neo4j_driver, repair_id="repair-310-zero-allocation"
@@ -1764,7 +2177,7 @@ def test_310_allocation_persists_zero_unit_completion_without_a_unit(neo4j_drive
     assert allocated.state == "allocated"
     assert (
         control.allocate(
-            RepairControlRequest("repair-310-zero-allocation", run.run_id, "owner", "token", 2),
+            RepairControlRequest("repair-310-zero-allocation", run.run_id, "owner", "token", 1),
             boundary_digest=run.boundary_digest,
             proof_digest="proof",
             plan=plan,

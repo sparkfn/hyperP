@@ -13,7 +13,7 @@ from neo4j import ManagedTransaction
 from src.crm_deal_identity_repair.allocation import AllocationPlan
 from src.crm_deal_identity_repair.control_models import (
     CapturedTaskTopologyIdentity,
-    RepairControlRequest,
+    RepairControlCommand,
     RepairControlState,
     RepairControlStatus,
     RepairDispatchLease,
@@ -27,11 +27,9 @@ from src.crm_deal_identity_repair.task_inspection import (
 )
 from src.graph.client import Neo4jClient
 from src.graph.crm_deal_identity_repair_ledger import (
-    _control_row,
     _current_inventory_boundary,
     _CurrentInventoryBoundary,
     _snapshot_from_transaction,
-    _source_rows,
 )
 from src.graph.crm_deal_identity_repair_ledger_records import stored_qualification_from_record
 from src.graph.queries.crm_deal_identity_repair_control import (
@@ -39,15 +37,20 @@ from src.graph.queries.crm_deal_identity_repair_control import (
     CLAIM_REPAIR_DISPATCH,
     COMPLETE_QUIESCENCE,
     CONFIRM_REPAIR_AWARE_PUBLICATION,
+    LOCK_REPAIR_TOPOLOGY,
     MARK_REPAIR_AWARE_PUBLISHING,
     PAUSE_REPAIR_CONTROL,
     PREPARE_REPAIR_AWARE_PUBLICATION,
+    READ_ALLOCATION_REPLAY,
+    READ_ALLOCATION_SEALED_BOUNDARY,
+    READ_COMPLETED_CLAIM_REPLAY,
     READ_REPAIR_CONTROL_PROOF,
     READ_REPAIR_CONTROL_STATUS,
     READ_REPAIR_TOPOLOGY_CAPTURE,
     READ_REPAIR_TOPOLOGY_SNAPSHOT,
     REQUEST_REPAIR_TOPOLOGY_STOP,
     RESUME_REPAIR_CONTROL,
+    SEAL_QUIESCENCE_BOUNDARY,
     STORE_REPAIR_TOPOLOGY_CAPTURE,
     SUPERSEDE_REPAIR_TOPOLOGY,
 )
@@ -62,15 +65,40 @@ class CrmDealRepairControlRepository:
         self._client = client
 
     def claim(
-        self, request: RepairControlRequest, *, boundary_digest: str, control_instance_id: str
+        self, request: RepairControlCommand, *, boundary_digest: str, control_instance_id: str
     ) -> RepairDispatchLease:
+        replay = self._read_completed_claim_replay(request, boundary_digest, control_instance_id)
+        if replay is not None:
+            return replay
         return self._write_lease(
             CLAIM_REPAIR_DISPATCH, request, boundary_digest, control_instance_id
         )
 
+    def _read_completed_claim_replay(
+        self,
+        request: RepairControlCommand,
+        boundary_digest: str,
+        control_instance_id: str,
+    ) -> RepairDispatchLease | None:
+        def work(tx: ManagedTransaction) -> RepairDispatchLease | None:
+            return _lease_or_none(
+                tx.run(
+                    READ_COMPLETED_CLAIM_REPLAY,
+                    repair_id=request.repair_id,
+                    run_id=request.run_id,
+                    owner_id=request.owner_id,
+                    token_digest=request.token_digest,
+                    expected_revision=request.expected_revision,
+                    boundary_digest=boundary_digest,
+                    control_instance_id=control_instance_id,
+                ).single()
+            )
+
+        return self._client.execute_read(work)
+
     def complete_quiescence(
         self,
-        request: RepairControlRequest,
+        request: RepairControlCommand,
         *,
         boundary_digest: str,
         control_instance_id: str,
@@ -81,8 +109,18 @@ class CrmDealRepairControlRepository:
     ) -> RepairDispatchLease:
         from datetime import UTC, datetime
 
-        if not verify_absence_evidence(evidence, secret=proof_secret, now=datetime.now(UTC)):
+        now = datetime.now(UTC)
+        if not verify_absence_evidence(evidence, secret=proof_secret, now=now):
             raise RuntimeError("repair task absence evidence failed final authentication")
+        if not evidence.is_fresh_for(
+            run_id=request.run_id,
+            boundary_digest=boundary_digest,
+            owner_id=request.owner_id,
+            token_digest=request.token_digest,
+            revision=request.expected_revision,
+            now=now,
+        ):
+            raise RuntimeError("repair task absence evidence does not bind the final request")
         if evidence.topology_digest != topology_digest:
             raise RuntimeError(
                 "repair task absence evidence topology does not match final quiescence"
@@ -107,13 +145,40 @@ class CrmDealRepairControlRepository:
             stale_snapshot = decoded.get("stale")
             if not isinstance(publications, list) or not isinstance(stale_snapshot, dict):
                 raise RuntimeError("repair topology capture is incomplete")
-            captured_boundary = self._read_actual_boundary(tx, request.repair_id)
+            identities = _captured_task_identities(control_instance_id, captures)
+            if tuple(identity.selector() for identity in identities) != evidence.selectors:
+                raise RuntimeError("repair task absence evidence does not bind captured topology")
+            locked = tx.run(
+                LOCK_REPAIR_TOPOLOGY,
+                control_instance_id=control_instance_id,
+                captures=captures,
+            ).single()
+            if (
+                locked is None
+                or _required_int(locked["locked_stream_count"], "locked stream count")
+                != len(captures)
+                or _required_int(locked["locked_fence_count"], "locked fence count")
+                != sum(len(capture["fences"]) for capture in captures if isinstance(capture, dict))
+            ):
+                raise RuntimeError("repair topology changed before final worker lock")
+            # The same transaction retains these locks while it recomputes the
+            # full #300 boundary and performs the final supersession CAS.
+            qualification = tx.run(GET_REPAIR_RUN, repair_id=request.repair_id).single()
+            if qualification is None:
+                raise RuntimeError("repair qualification boundary is missing")
+            stored = stored_qualification_from_record(request.repair_id, qualification)
+            sealed_snapshot = _snapshot_from_transaction(
+                tx,
+                stored.run.source_instance_id,
+                stored.run.control_instance_id,
+                stored.source_record_pks,
+            )
             stored_boundary = decoded.get("boundary_digest")
-            if not isinstance(stored_boundary, str) or stored_boundary != captured_boundary:
+            if (
+                not isinstance(stored_boundary, str)
+                or stored_boundary != sealed_snapshot.boundary_digest
+            ):
                 raise RuntimeError("repair topology boundary is stale or malformed")
-            current_boundary = self._read_actual_boundary(tx, request.repair_id)
-            if current_boundary != captured_boundary:
-                raise RuntimeError("repair boundary changed during final revalidation")
             record = tx.run(
                 COMPLETE_QUIESCENCE,
                 repair_id=request.repair_id,
@@ -136,6 +201,31 @@ class CrmDealRepairControlRepository:
             ).single()
             if record is None:
                 raise RuntimeError("repair quiescence final compare-and-set was rejected")
+            completed_revision = _required_int(record["revision"], "completed quiescence revision")
+            post_quiescence_snapshot = _snapshot_from_transaction(
+                tx,
+                stored.run.source_instance_id,
+                stored.run.control_instance_id,
+                stored.source_record_pks,
+            )
+            sealed = tx.run(
+                SEAL_QUIESCENCE_BOUNDARY,
+                run_id=request.run_id,
+                owner_id=request.owner_id,
+                token_digest=request.token_digest,
+                revision=completed_revision,
+                sealed_boundary_digest=post_quiescence_snapshot.boundary_digest,
+                sealed_source_records_digest=post_quiescence_snapshot.source_records_digest,
+                sealed_source_instance_digest=post_quiescence_snapshot.source_instance_digest,
+                sealed_stale_run_evidence_digest=post_quiescence_snapshot.stale_run_evidence_digest,
+                sealed_control_digest=post_quiescence_snapshot.control_digest,
+                sealed_inventory_digest=post_quiescence_snapshot.inventory_digest,
+                sealed_inventory_row_count=post_quiescence_snapshot.inventory_row_count,
+                sealed_eligible_unit_count=post_quiescence_snapshot.eligible_unit_count,
+                sealed_negative_control_count=post_quiescence_snapshot.negative_control_count,
+            ).single()
+            if sealed is None:
+                raise RuntimeError("repair quiescence boundary sealing was rejected")
             if (
                 record["proof_payload_json"],
                 record["proof_digest"],
@@ -147,23 +237,48 @@ class CrmDealRepairControlRepository:
 
         return self._client.execute_write(work)
 
-    def pause(self, request: RepairControlRequest) -> RepairDispatchLease:
+    def pause(self, request: RepairControlCommand) -> RepairDispatchLease:
         return self._lease_only(PAUSE_REPAIR_CONTROL, request)
 
-    def resume(self, request: RepairControlRequest) -> RepairDispatchLease:
+    def resume(self, request: RepairControlCommand) -> RepairDispatchLease:
         return self._lease_only(RESUME_REPAIR_CONTROL, request)
 
     def allocate(
         self,
-        request: RepairControlRequest,
+        request: RepairControlCommand,
         *,
         boundary_digest: str,
         proof_digest: str,
         plan: AllocationPlan,
     ) -> RepairDispatchLease:
         units = [asdict(unit) for unit in plan.units]
+        request_digest = object_digest(
+            b"crm-deal-identity-repair-allocation-request-v1\x00",
+            {
+                "action": "allocate",
+                "run_id": request.run_id,
+                "owner_id": request.owner_id,
+                "token_digest": request.token_digest,
+                "expected_revision": request.expected_revision,
+                "boundary_digest": boundary_digest,
+                "proof_digest": proof_digest,
+                "completion_id": plan.completion.completion_id,
+                "overlay_digest": plan.completion.overlay_digest,
+                "allocation_digest": plan.completion.allocation_digest,
+            },
+        )
 
         def work(tx: ManagedTransaction) -> RepairDispatchLease:
+            replay = tx.run(
+                READ_ALLOCATION_REPLAY,
+                run_id=request.run_id,
+                owner_id=request.owner_id,
+                token_digest=request.token_digest,
+                expected_revision=request.expected_revision,
+                request_digest=request_digest,
+            ).single()
+            if replay is not None:
+                return _lease(replay)
             inventory = self._read_allocation_boundary(tx, request.repair_id)
             record = tx.run(
                 ALLOCATE_REPAIR_UNITS,
@@ -184,6 +299,7 @@ class CrmDealRepairControlRepository:
                 actual_inventory_row_count=inventory.inventory_row_count,
                 actual_eligible_unit_count=inventory.eligible_unit_count,
                 actual_negative_control_count=inventory.negative_control_count,
+                request_digest=request_digest,
             ).single()
             return _lease(record)
 
@@ -197,22 +313,40 @@ class CrmDealRepairControlRepository:
         if record is None:
             raise RuntimeError("repair qualification boundary is missing")
         stored = stored_qualification_from_record(repair_id, record)
-        inventory = _current_inventory_boundary(tx, stored.source_record_pks)
-        _source_rows(tx, stored.source_record_pks, stored.run.source_instance_id)
-        _control_row(tx, stored.run.source_instance_id, stored.run.control_instance_id)
-        if (
-            inventory.inventory_digest,
-            inventory.inventory_row_count,
-            inventory.eligible_unit_count,
-            inventory.negative_control_count,
-        ) != (
-            stored.run.inventory_digest,
-            stored.run.inventory_row_count,
-            stored.run.eligible_unit_count,
-            stored.run.negative_control_count,
-        ):
-            raise RuntimeError("repair allocation inventory boundary became stale")
-        return inventory
+        sealed = tx.run(READ_ALLOCATION_SEALED_BOUNDARY, run_id=stored.run.run_id).single()
+        if sealed is None:
+            raise RuntimeError("repair allocation sealed boundary is missing")
+        snapshot = _snapshot_from_transaction(
+            tx,
+            stored.run.source_instance_id,
+            stored.run.control_instance_id,
+            stored.source_record_pks,
+        )
+        expected = (
+            sealed["boundary_digest"],
+            sealed["source_records_digest"],
+            sealed["source_instance_digest"],
+            sealed["stale_run_evidence_digest"],
+            sealed["control_digest"],
+            sealed["inventory_digest"],
+            sealed["inventory_row_count"],
+            sealed["eligible_unit_count"],
+            sealed["negative_control_count"],
+        )
+        observed = (
+            snapshot.boundary_digest,
+            snapshot.source_records_digest,
+            snapshot.source_instance_digest,
+            snapshot.stale_run_evidence_digest,
+            snapshot.control_digest,
+            snapshot.inventory_digest,
+            snapshot.inventory_row_count,
+            snapshot.eligible_unit_count,
+            snapshot.negative_control_count,
+        )
+        if observed != expected:
+            raise RuntimeError("repair allocation full boundary became stale")
+        return _current_inventory_boundary(tx, stored.source_record_pks)
 
     def status(self, repair_id: str) -> RepairControlStatus:
         def work(tx: ManagedTransaction) -> RepairControlStatus:
@@ -237,7 +371,7 @@ class CrmDealRepairControlRepository:
 
         return self._client.execute_read(work)
 
-    def proof_digest(self, request: RepairControlRequest) -> str:
+    def proof_digest(self, request: RepairControlCommand) -> str:
         def work(tx: ManagedTransaction) -> str:
             record = tx.run(
                 READ_REPAIR_CONTROL_PROOF,
@@ -324,30 +458,7 @@ class CrmDealRepairControlRepository:
             captures = decoded.get("captures") if isinstance(decoded, dict) else None
             if not isinstance(captures, list):
                 raise RuntimeError("repair topology capture is malformed")
-            identities: set[CapturedTaskTopologyIdentity] = set()
-            for capture in captures:
-                if not isinstance(capture, dict):
-                    raise RuntimeError("repair topology capture is malformed")
-                logical_run_id = capture.get("logical_run_id")
-                attempt_generation = capture.get("attempt_generation")
-                fences = capture.get("fences")
-                if (
-                    not isinstance(logical_run_id, str)
-                    or not isinstance(attempt_generation, int)
-                    or isinstance(attempt_generation, bool)
-                    or not isinstance(fences, list)
-                ):
-                    raise RuntimeError("repair task topology capture is malformed")
-                for fence in fences:
-                    generation_id = fence.get("generation_id") if isinstance(fence, dict) else None
-                    if not isinstance(generation_id, str):
-                        raise RuntimeError("repair task generation capture is malformed")
-                    identities.add(
-                        CapturedTaskTopologyIdentity(
-                            control_instance_id, generation_id, logical_run_id, attempt_generation
-                        )
-                    )
-            return tuple(sorted(identities, key=lambda identity: identity.selector()))
+            return _captured_task_identities(control_instance_id, captures)
 
         return self._client.execute_read(work)
 
@@ -474,7 +585,7 @@ class CrmDealRepairControlRepository:
     def _write_lease(
         self,
         query: str,
-        request: RepairControlRequest,
+        request: RepairControlCommand,
         boundary_digest: str,
         control_instance_id: str,
     ) -> RepairDispatchLease:
@@ -494,7 +605,7 @@ class CrmDealRepairControlRepository:
 
         return self._client.execute_write(work)
 
-    def _lease_only(self, query: str, request: RepairControlRequest) -> RepairDispatchLease:
+    def _lease_only(self, query: str, request: RepairControlCommand) -> RepairDispatchLease:
         def work(tx: ManagedTransaction) -> RepairDispatchLease:
             return _lease(
                 tx.run(
@@ -507,6 +618,43 @@ class CrmDealRepairControlRepository:
             )
 
         return self._client.execute_write(work)
+
+
+def _captured_task_identities(
+    control_instance_id: str, captures: list[object]
+) -> tuple[CapturedTaskTopologyIdentity, ...]:
+    """Require every captured logical unit to have an exact task/fence identity."""
+    identities: set[CapturedTaskTopologyIdentity] = set()
+    for capture in captures:
+        if not isinstance(capture, dict):
+            raise RuntimeError("repair topology capture is malformed")
+        logical_run_id = capture.get("logical_run_id")
+        attempt_generation = capture.get("attempt_generation")
+        fences = capture.get("fences")
+        if (
+            not isinstance(logical_run_id, str)
+            or not isinstance(attempt_generation, int)
+            or isinstance(attempt_generation, bool)
+            or not isinstance(fences, list)
+            or not fences
+        ):
+            raise RuntimeError("repair task topology capture is incomplete")
+        for fence in fences:
+            generation_id = fence.get("generation_id") if isinstance(fence, dict) else None
+            if not isinstance(generation_id, str):
+                raise RuntimeError("repair task generation capture is malformed")
+            identities.add(
+                CapturedTaskTopologyIdentity(
+                    control_instance_id, generation_id, logical_run_id, attempt_generation
+                )
+            )
+    if not identities:
+        raise RuntimeError("repair task topology capture is incomplete")
+    return tuple(sorted(identities, key=lambda identity: identity.selector()))
+
+
+def _lease_or_none(record: object) -> RepairDispatchLease | None:
+    return None if record is None else _lease(record)
 
 
 def _lease(record: object) -> RepairDispatchLease:

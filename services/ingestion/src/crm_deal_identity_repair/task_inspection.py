@@ -14,7 +14,7 @@ from typing import Protocol, cast
 from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json_bytes
 from src.crm_deal_identity_repair.control_models import (
     CapturedTaskTopologyIdentity,
-    control_token_digest,
+    durable_control_token_digest,
 )
 from src.crm_deal_identity_repair.digests import object_digest
 from src.models import JsonValue
@@ -72,7 +72,7 @@ class TaskAbsenceEvidence:
     hmac_hex: str
 
     def __post_init__(self) -> None:
-        object.__setattr__(self, "token_digest", control_token_digest(self.token_digest))
+        object.__setattr__(self, "token_digest", durable_control_token_digest(self.token_digest))
 
     def is_fresh_for(
         self,
@@ -146,7 +146,7 @@ def collect_absence_evidence(
         raise RuntimeError("repair expected worker IDs must be a non-empty canonical set")
     if timeout_seconds < 1 or timeout_seconds > 60 or max_age_seconds < 1 or max_age_seconds > 300:
         raise ValueError("repair task inspection bounds are invalid")
-    token_digest = control_token_digest(token_digest)
+    token_digest = durable_control_token_digest(token_digest)
     instant = now or datetime.now(UTC)
     selectors = _selectors(captured_tasks)
     observations = _canonical_observations(worker.inspect(timeout_seconds))

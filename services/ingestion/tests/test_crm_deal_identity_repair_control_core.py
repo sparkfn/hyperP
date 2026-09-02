@@ -24,6 +24,7 @@ from src.crm_deal_identity_repair.control_models import (
     CapturedTaskTopologyIdentity,
     RepairControlRequest,
     RepairDispatchLease,
+    control_token_digest,
 )
 from src.crm_deal_identity_repair.models import RepairInventoryItem
 from src.crm_deal_identity_repair.task_inspection import (
@@ -36,6 +37,7 @@ from src.crm_deal_identity_repair.task_inspection import (
 )
 
 DIGEST = "sha256:" + "a" * 64
+TOKEN_DIGEST = control_token_digest("token-1")
 
 
 def _captured_tasks() -> tuple[CapturedTaskTopologyIdentity, ...]:
@@ -146,8 +148,10 @@ def test_control_request_and_task_evidence_never_retain_plaintext_token() -> Non
     request = RepairControlRequest("repair-1", "run-1", "owner-1", "plaintext-secret", 1)
     assert request.token_digest != "plaintext-secret"
     assert request.token_digest.startswith("sha256:")
-    replay = RepairControlRequest("repair-1", "run-1", "owner-1", request.token_digest, 2)
-    assert replay.token_digest == request.token_digest
+    with pytest.raises(ValueError, match="not an operator secret"):
+        RepairControlRequest("repair-1", "run-1", "owner-1", request.token_digest, 2)
+    assert not hasattr(RepairControlRequest, "from_durable_token_digest")
+    assert request.operator_secret == ""
 
 
 def test_absence_evidence_is_signed_fresh_and_bound() -> None:
@@ -158,7 +162,7 @@ def test_absence_evidence_is_signed_fresh_and_bound() -> None:
         captured_tasks=_captured_tasks(),
         boundary_digest=DIGEST,
         owner_id="owner-1",
-        token_digest="token-1",
+        token_digest=TOKEN_DIGEST,
         dispatch_revision=1,
         topology_digest=DIGEST,
         expected_workers=("worker-a",),
@@ -169,7 +173,7 @@ def test_absence_evidence_is_signed_fresh_and_bound() -> None:
         now=datetime.now(UTC),
     )
     assert evidence.token_digest.startswith("sha256:")
-    assert evidence.token_digest != "token-1"
+    assert evidence.token_digest == TOKEN_DIGEST
     assert "token-1" not in json.dumps(evidence.payload(), sort_keys=True)
     assert verify_absence_evidence(evidence, secret=b"secret", now=datetime.now(UTC))
     assert not verify_absence_evidence(evidence, secret=b"changed", now=datetime.now(UTC))
@@ -183,7 +187,7 @@ def test_broker_topology_is_signed_and_tampering_fails_authentication() -> None:
         captured_tasks=_captured_tasks(),
         boundary_digest=DIGEST,
         owner_id="owner-1",
-        token_digest="token-1",
+        token_digest=TOKEN_DIGEST,
         dispatch_revision=1,
         topology_digest=DIGEST,
         expected_workers=("worker-a",),
@@ -287,7 +291,7 @@ def test_broker_affected_delivery_blocks_absence(inventory: str) -> None:
             captured_tasks=_captured_tasks(),
             boundary_digest=DIGEST,
             owner_id="owner-1",
-            token_digest="token-1",
+            token_digest=TOKEN_DIGEST,
             dispatch_revision=1,
             topology_digest=DIGEST,
             expected_workers=("worker-a",),
@@ -312,7 +316,7 @@ def test_broker_malformed_or_unbound_affected_delivery_fails_closed() -> None:
             captured_tasks=_captured_tasks(),
             boundary_digest=DIGEST,
             owner_id="owner-1",
-            token_digest="token-1",
+            token_digest=TOKEN_DIGEST,
             dispatch_revision=1,
             topology_digest=DIGEST,
             expected_workers=("worker-a",),
@@ -448,7 +452,7 @@ class _EmptyTopologyRepository:
         from src.crm_deal_identity_repair.control_models import RepairDispatchLease
 
         self._lease = RepairDispatchLease(
-            "control-1", "run-1", "owner-1", "token-1", 1, "quiescing", DIGEST
+            "control-1", "run-1", "owner-1", TOKEN_DIGEST, 1, "quiescing", DIGEST
         )
         self.stale_run_id: str | None = None
 
@@ -497,7 +501,7 @@ class _EmptyTopologyRepository:
         assert stale_run_id == self.stale_run_id
         assert evidence is not None
         return RepairDispatchLease(
-            "control-1", "run-1", "owner-1", "token-1", 2, "quiesced", DIGEST
+            "control-1", "run-1", "owner-1", TOKEN_DIGEST, 2, "quiesced", DIGEST
         )
 
 
@@ -597,7 +601,7 @@ def test_every_task_inventory_blocks_the_exact_captured_topology(inventory: str)
             captured_tasks=_captured_tasks(),
             boundary_digest=DIGEST,
             owner_id="owner-1",
-            token_digest="token-1",
+            token_digest=TOKEN_DIGEST,
             dispatch_revision=1,
             topology_digest=DIGEST,
             expected_workers=("worker-a",),
@@ -625,7 +629,7 @@ def test_legacy_delivery_without_control_id_is_precise_or_fails_closed() -> None
             captured_tasks=legacy_topology,
             boundary_digest=DIGEST,
             owner_id="owner-1",
-            token_digest="token-1",
+            token_digest=TOKEN_DIGEST,
             dispatch_revision=1,
             topology_digest=DIGEST,
             expected_workers=("worker-a",),
@@ -643,7 +647,7 @@ def test_legacy_delivery_without_control_id_is_precise_or_fails_closed() -> None
             captured_tasks=_captured_tasks(),
             boundary_digest=DIGEST,
             owner_id="owner-1",
-            token_digest="token-1",
+            token_digest=TOKEN_DIGEST,
             dispatch_revision=1,
             topology_digest=DIGEST,
             expected_workers=("worker-a",),
@@ -673,7 +677,7 @@ def test_worker_unrelated_and_malformed_nested_tasks_are_distinguished() -> None
         captured_tasks=_captured_tasks(),
         boundary_digest=DIGEST,
         owner_id="owner-1",
-        token_digest="token-1",
+        token_digest=TOKEN_DIGEST,
         dispatch_revision=1,
         topology_digest=DIGEST,
         expected_workers=("worker-a",),
@@ -694,7 +698,7 @@ def test_worker_unrelated_and_malformed_nested_tasks_are_distinguished() -> None
             captured_tasks=_captured_tasks(),
             boundary_digest=DIGEST,
             owner_id="owner-1",
-            token_digest="token-1",
+            token_digest=TOKEN_DIGEST,
             dispatch_revision=1,
             topology_digest=DIGEST,
             expected_workers=("worker-a",),

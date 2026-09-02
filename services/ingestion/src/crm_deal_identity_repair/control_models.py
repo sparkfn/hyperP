@@ -8,7 +8,7 @@ data or dispatch a task.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
 
 from src.crm_deal_identity_repair.digests import object_digest
@@ -56,7 +56,28 @@ class CapturedTaskTopologyIdentity:
 
 @dataclass(frozen=True)
 class RepairControlRequest:
-    """One compare-and-set command identity supplied by an operator."""
+    """Untrusted operator command identity; the constructor accepts only a raw secret."""
+
+    repair_id: str
+    run_id: str
+    owner_id: str
+    operator_secret: str
+    expected_revision: int
+    token_digest: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        for value, label in ((self.repair_id, "repair ID"), (self.run_id, "run ID")):
+            _identity(value, label)
+        _identity(self.owner_id, "control owner")
+        _nonnegative(self.expected_revision, "control expected revision")
+        object.__setattr__(self, "token_digest", control_token_digest(self.operator_secret))
+        # The raw bearer secret must not survive in a durable command object.
+        object.__setattr__(self, "operator_secret", "")
+
+
+@dataclass(frozen=True)
+class _DurableRepairControlRequest:
+    """Trusted in-process reconstruction from a durable graph/proof digest only."""
 
     repair_id: str
     run_id: str
@@ -68,16 +89,51 @@ class RepairControlRequest:
         for value, label in ((self.repair_id, "repair ID"), (self.run_id, "run ID")):
             _identity(value, label)
         _identity(self.owner_id, "control owner")
-        _identity(self.token_digest, "control token", maximum=256)
-        object.__setattr__(self, "token_digest", control_token_digest(self.token_digest))
+        object.__setattr__(self, "token_digest", durable_control_token_digest(self.token_digest))
         _nonnegative(self.expected_revision, "control expected revision")
 
 
-def control_token_digest(token: str) -> str:
-    """Return the domain-separated durable representation of an operator secret."""
-    if _CONTROL_TOKEN_DIGEST.fullmatch(token):
-        return token
-    return object_digest(b"crm-deal-identity-repair-control-token-v1\x00", {"token": token})
+RepairControlCommand = RepairControlRequest | _DurableRepairControlRequest
+
+
+def _trusted_request_from_durable_digest(
+    repair_id: str,
+    run_id: str,
+    owner_id: str,
+    token_digest: str,
+    expected_revision: int,
+) -> _DurableRepairControlRequest:
+    """Build the internal trusted request used only after a successful claim readback."""
+    return _DurableRepairControlRequest(
+        repair_id, run_id, owner_id, durable_control_token_digest(token_digest), expected_revision
+    )
+
+
+def control_token_digest(operator_secret: str) -> str:
+    """Hash one raw operator secret at the untrusted command boundary.
+
+    A stored ``sha256:`` value deliberately cannot be supplied here. It is
+    proof material, not a credential: accepting it would make a leaked graph
+    property sufficient to operate the control plane.
+    """
+    _identity(operator_secret, "control token", maximum=256)
+    if _CONTROL_TOKEN_DIGEST.fullmatch(operator_secret):
+        raise ValueError("a persisted repair control token digest is not an operator secret")
+    return object_digest(
+        b"crm-deal-identity-repair-control-token-v1\x00", {"token": operator_secret}
+    )
+
+
+def durable_control_token_digest(value: str) -> str:
+    """Validate a durable digest reconstructed from trusted graph/proof state.
+
+    This is intentionally distinct from :func:`control_token_digest`: callers
+    that read durable records must opt into this trusted readback path and do
+    not re-hash the value.
+    """
+    if not _CONTROL_TOKEN_DIGEST.fullmatch(value):
+        raise ValueError("persisted repair control token digest is malformed")
+    return value
 
 
 @dataclass(frozen=True)
@@ -99,8 +155,7 @@ class RepairDispatchLease:
             (self.owner_id, "control owner"),
         ):
             _identity(value, label)
-        _identity(self.token_digest, "control token", maximum=256)
-        object.__setattr__(self, "token_digest", control_token_digest(self.token_digest))
+        object.__setattr__(self, "token_digest", durable_control_token_digest(self.token_digest))
         _nonnegative(self.revision, "dispatch revision")
         _digest(self.boundary_digest, "dispatch boundary digest")
         if self.state not in {"qualified", "quiescing", "quiesced", "allocated", "paused", "lost"}:
