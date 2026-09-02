@@ -1,0 +1,68 @@
+"""Coverage for the API-only bounded Neo4j read session facade."""
+
+from __future__ import annotations
+
+from typing import cast
+
+import pytest
+from neo4j import AsyncSession, Query
+from src.graph.client import TimedAsyncSession
+from src.request_timing import begin_request, end_request
+
+
+class _Session:
+    def __init__(self) -> None:
+        self.query: str | Query | None = None
+
+    async def run(self, query: str | Query, *args: object, **kwargs: object) -> object:
+        self.query = query
+        return object()
+
+    async def __aenter__(self) -> _Session:
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        return None
+
+    async def execute_read(self, *args: object, **kwargs: object) -> object:
+        return object()
+
+    async def execute_write(self, *args: object, **kwargs: object) -> object:
+        return object()
+
+
+@pytest.mark.anyio
+async def test_read_session_wraps_cypher_with_configured_transaction_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.graph.client as graph_client
+
+    monkeypatch.setattr(graph_client.config, "neo4j_web_read_transaction_timeout_seconds", 12.5)
+    session = _Session()
+    tokens = begin_request("request-read")
+    try:
+        await TimedAsyncSession(cast(AsyncSession, session), write=False).run("RETURN 1")
+    finally:
+        end_request(tokens)
+
+    assert isinstance(session.query, Query)
+    assert session.query.text == "RETURN 1"
+    assert session.query.timeout == 12.5
+
+
+@pytest.mark.anyio
+async def test_background_read_session_does_not_apply_the_web_read_timeout() -> None:
+    session = _Session()
+
+    await TimedAsyncSession(cast(AsyncSession, session), write=False).run("RETURN 1")
+
+    assert session.query == "RETURN 1"
+
+
+@pytest.mark.anyio
+async def test_write_session_does_not_apply_the_web_read_timeout() -> None:
+    session = _Session()
+
+    await TimedAsyncSession(cast(AsyncSession, session), write=True).run("CREATE ()")
+
+    assert session.query == "CREATE ()"

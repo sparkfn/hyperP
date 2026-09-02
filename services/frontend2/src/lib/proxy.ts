@@ -1,10 +1,10 @@
 import "server-only";
 
 import { NextResponse } from "next/server";
+import { randomUUID } from "node:crypto";
 
 import { auth } from "@/auth";
-import { UpstreamError, apiFetch, type RequestOptions } from "./api-server";
-import type { ApiResponse } from "./api-types";
+import { UpstreamError, apiFetchWithTiming, type RequestOptions } from "./api-server";
 
 /**
  * Forward a browser request to the FastAPI backend and translate
@@ -16,6 +16,7 @@ import type { ApiResponse } from "./api-types";
  * components calling apiFetch directly) keep the explicit value.
  */
 export async function proxyToApi<T>(path: string, options: RequestOptions = {}): Promise<NextResponse> {
+  const startedAt = performance.now();
   try {
     let authToken: string | null | undefined = options.authToken;
     if (authToken === undefined) {
@@ -28,8 +29,20 @@ export async function proxyToApi<T>(path: string, options: RequestOptions = {}):
         { status: 401 },
       );
     }
-    const result: ApiResponse<T> = await apiFetch<T>(path, { ...options, authToken });
-    return NextResponse.json(result);
+    const requestId = options.requestId ?? randomUUID();
+    const { payload, responseHeaders } = await apiFetchWithTiming<T>(path, {
+      ...options,
+      authToken,
+      requestId,
+    });
+    const headers = new Headers();
+    headers.set("X-Request-Id", responseHeaders.get("x-request-id") ?? payload.meta.request_id ?? requestId);
+    headers.set("X-Bff-Upstream-Duration-Ms", `${(performance.now() - startedAt).toFixed(1)}`);
+    for (const header of ["x-api-duration-ms", "x-repository-duration-ms"]) {
+      const value = responseHeaders.get(header);
+      if (value !== null) headers.set(header, value);
+    }
+    return NextResponse.json(payload, { headers });
   } catch (err: unknown) {
     if (err instanceof UpstreamError) {
       return NextResponse.json(

@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
@@ -9,7 +10,7 @@ from src.graph.converters import GraphRecord, GraphValue
 from src.graph.mappers_entities import map_entity_filter_option
 from src.graph.queries.entities import LIST_ENTITY_FILTER_OPTIONS
 from src.repositories.neo4j.entity import Neo4jEntityRepository
-from src.types import EntityFilterOption
+from src.types import EntityFilterOption, EntitySummary
 
 
 class _Record:
@@ -91,3 +92,35 @@ async def test_repository_executes_lightweight_filter_options_query(
         EntityFilterOption(entity_key="legacy", display_name=None),
     ]
     assert session.calls == [LIST_ENTITY_FILTER_OPTIONS]
+
+
+@pytest.mark.anyio
+async def test_entity_summary_cache_coalesces_exact_aggregate_loads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.repositories.neo4j.entity as entity_module
+
+    monkeypatch.setattr(entity_module.config, "entity_summary_cache_ttl_seconds", 30)
+
+    class _BlockingRepository(Neo4jEntityRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+
+        async def _load_all(self) -> list[EntitySummary]:
+            self.calls += 1
+            self.started.set()
+            await self.release.wait()
+            return [EntitySummary(entity_key="eko", person_count=2, source_record_count=3)]
+
+    repo = _BlockingRepository()
+    first = asyncio.create_task(repo.get_all())
+    await repo.started.wait()
+    second = asyncio.create_task(repo.get_all())
+    repo.release.set()
+
+    first_items, second_items = await asyncio.gather(first, second)
+    assert first_items == second_items
+    assert repo.calls == 1

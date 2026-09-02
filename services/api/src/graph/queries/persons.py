@@ -21,15 +21,18 @@ CALL {
     WHERE coalesce(p_identifier.is_active, true) = true
       AND coalesce(ci_identifier.is_active, true) = true
       AND ci.person_id <> p.person_id AND ci.status <> 'merged'
+  WITH p, collect(DISTINCT ci) AS identifier_conn
   OPTIONAL MATCH (p)-[p_address:LIVES_AT]->(:Address)
     <-[ca_address:LIVES_AT]-(ca:Person)
     WHERE coalesce(p_address.is_active, true) = true
       AND coalesce(ca_address.is_active, true) = true
       AND ca.person_id <> p.person_id AND ca.status <> 'merged'
+  WITH p, identifier_conn, collect(DISTINCT ca) AS address_conn
   OPTIONAL MATCH (p)-[p_knows:KNOWS]-(ck:Person)
     WHERE coalesce(p_knows.is_active, true) = true
       AND ck.person_id <> p.person_id AND ck.status <> 'merged'
-  WITH collect(DISTINCT ci) + collect(DISTINCT ca) + collect(DISTINCT ck) AS all_conn
+  WITH identifier_conn, address_conn, collect(DISTINCT ck) AS knows_conn
+  WITH identifier_conn + address_conn + knows_conn AS all_conn
   UNWIND all_conn AS c
   RETURN count(DISTINCT c) AS connection_count
 }
@@ -68,15 +71,18 @@ CALL {
     WHERE coalesce(person_identifier.is_active, true) = true
       AND coalesce(ci_identifier.is_active, true) = true
       AND ci.person_id <> person.person_id AND ci.status <> 'merged'
+  WITH person, collect(DISTINCT ci) AS identifier_conn
   OPTIONAL MATCH (person)-[person_address:LIVES_AT]->(:Address)
     <-[ca_address:LIVES_AT]-(ca:Person)
     WHERE coalesce(person_address.is_active, true) = true
       AND coalesce(ca_address.is_active, true) = true
       AND ca.person_id <> person.person_id AND ca.status <> 'merged'
+  WITH person, identifier_conn, collect(DISTINCT ca) AS address_conn
   OPTIONAL MATCH (person)-[person_knows:KNOWS]-(ck:Person)
     WHERE coalesce(person_knows.is_active, true) = true
       AND ck.person_id <> person.person_id AND ck.status <> 'merged'
-  WITH collect(DISTINCT ci) + collect(DISTINCT ca) + collect(DISTINCT ck) AS all_conn
+  WITH identifier_conn, address_conn, collect(DISTINCT ck) AS knows_conn
+  WITH identifier_conn + address_conn + knows_conn AS all_conn
   UNWIND all_conn AS c
   RETURN count(DISTINCT c) AS connection_count
 }
@@ -464,8 +470,8 @@ SKIP $skip LIMIT $limit
 
 GET_PERSON_AUDIT = """
 MATCH (p:Person {person_id: $person_id})
-MATCH (me:MergeEvent)-[:ABSORBED|SURVIVOR]->(event_person:Person)
-WHERE event_person = p OR (event_person)-[:MERGED_INTO*1..]->(p)
+MATCH (event_person:Person)-[:MERGED_INTO*0..]->(p)
+MATCH (me:MergeEvent)-[:ABSORBED|SURVIVOR]->(event_person)
 WITH DISTINCT me
 OPTIONAL MATCH (me)-[:ABSORBED]->(absorbed:Person)
 OPTIONAL MATCH (me)-[:SURVIVOR]->(survivor:Person)
@@ -646,8 +652,8 @@ RETURN count(DISTINCT other) AS total
 
 COUNT_PERSON_AUDIT = """
 MATCH (p:Person {person_id: $person_id})
-MATCH (me:MergeEvent)-[:ABSORBED|SURVIVOR]->(event_person:Person)
-WHERE event_person = p OR (event_person)-[:MERGED_INTO*1..]->(p)
+MATCH (event_person:Person)-[:MERGED_INTO*0..]->(p)
+MATCH (me:MergeEvent)-[:ABSORBED|SURVIVOR]->(event_person)
 RETURN count(DISTINCT me) AS total
 """
 
@@ -761,17 +767,17 @@ ORDER BY id.identifier_type, id.normalized_value
 
 
 COUNT_PERSON_MATCHES = """
-MATCH (md:MatchDecision)
-WHERE (md)-[:ABOUT_LEFT]->(:Person {person_id: $person_id})
-   OR (md)-[:ABOUT_RIGHT]->(:Person {person_id: $person_id})
+MATCH (p:Person {person_id: $person_id})
+MATCH (md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
+WITH DISTINCT md
 RETURN count(md) AS total
 """
 
 
 GET_PERSON_MATCHES = """
-MATCH (md:MatchDecision)
-WHERE (md)-[:ABOUT_LEFT]->(:Person {person_id: $person_id})
-   OR (md)-[:ABOUT_RIGHT]->(:Person {person_id: $person_id})
+MATCH (p:Person {person_id: $person_id})
+MATCH (md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(p)
+WITH DISTINCT md
 OPTIONAL MATCH (md)-[:ABOUT_LEFT]->(left)
 OPTIONAL MATCH (md)-[:ABOUT_RIGHT]->(right)
 OPTIONAL MATCH (rc:ReviewCase)-[:FOR_DECISION]->(md)

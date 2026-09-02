@@ -82,9 +82,12 @@ def test_person_filter_path_includes_joins_without_search_predicate() -> None:
     list_q = build_list_review_cases_query(None, None, has_q=False, has_person=True)
     count_q = build_count_review_cases_query(has_q=False, has_person=True)
     for query in (list_q, count_q):
+        assert "MATCH (person:Person {person_id: $person_id})" in query
+        assert "MATCH (md:MatchDecision)-[:ABOUT_LEFT|ABOUT_RIGHT]->(person)" in query
+        assert "WITH DISTINCT md" in query
         assert "OPTIONAL MATCH (md)-[:ABOUT_LEFT]->(left:Person)" in query
-        assert "left.person_id = $person_id" in query
-        assert "right.person_id = $person_id" in query
+        assert "left.person_id = $person_id" not in query
+        assert "right.person_id = $person_id" not in query
         assert "toLower($q)" not in query
 
 
@@ -96,7 +99,7 @@ def test_no_person_filter_path_skips_person_predicate() -> None:
 def test_person_filter_combines_with_search() -> None:
     query = build_list_review_cases_query(None, None, has_q=True, has_person=True)
     assert "toLower($q)" in query
-    assert "left.person_id = $person_id" in query
+    assert "MATCH (person:Person {person_id: $person_id})" in query
     # Joins must appear exactly once even when both flags are set.
     assert query.count("OPTIONAL MATCH (md)-[:ABOUT_LEFT]->(left:Person)") == 1
 
@@ -151,8 +154,8 @@ def test_filter_clause_covers_all_new_filters() -> None:
         "$created_before",
         "$sla_due_after",
         "$sla_due_before",
-            "$resolved",
-        ):
+        "$resolved",
+    ):
         assert param in query, f"missing filter param {param}"
     assert "rc.sla_due_at < datetime()" in query
     assert "toLower(rc.review_case_id) CONTAINS toLower($q)" in query
