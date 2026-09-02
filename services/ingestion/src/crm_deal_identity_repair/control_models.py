@@ -7,12 +7,16 @@ data or dispatch a task.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Literal
 
+from src.crm_deal_identity_repair.digests import object_digest
 from src.crm_deal_identity_repair.execution_records import _digest, _identity, _nonnegative
 
 RepairControlState = Literal["qualified", "quiescing", "quiesced", "allocated", "paused", "lost"]
+
+_CONTROL_TOKEN_DIGEST = re.compile(r"sha256:[0-9a-f]{64}")
 RepairPublicationState = Literal["preparing", "publishing", "confirmed"]
 
 
@@ -65,7 +69,15 @@ class RepairControlRequest:
             _identity(value, label)
         _identity(self.owner_id, "control owner")
         _identity(self.token, "control token", maximum=256)
+        object.__setattr__(self, "token", control_token_digest(self.token))
         _nonnegative(self.expected_revision, "control expected revision")
+
+
+def control_token_digest(token: str) -> str:
+    """Return the domain-separated durable representation of an operator secret."""
+    if _CONTROL_TOKEN_DIGEST.fullmatch(token):
+        return token
+    return object_digest(b"crm-deal-identity-repair-control-token-v1\x00", {"token": token})
 
 
 @dataclass(frozen=True)

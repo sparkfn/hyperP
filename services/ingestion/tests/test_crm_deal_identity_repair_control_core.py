@@ -27,6 +27,7 @@ from src.crm_deal_identity_repair.control_models import (
 )
 from src.crm_deal_identity_repair.models import RepairInventoryItem
 from src.crm_deal_identity_repair.task_inspection import (
+    BrokerInspection,
     BrokerInspector,
     TaskAbsenceEvidence,
     WorkerInspector,
@@ -47,9 +48,20 @@ class _Workers:
         return {"worker-a": {"active": (), "reserved": (), "scheduled": ()}}
 
 
+def _broker_topology() -> dict[str, object]:
+    from src.crm_deal_identity_repair.task_inspection import _redis_priority_queue_names
+
+    return {
+        "ready_priority_keys": list(_redis_priority_queue_names("ingestion")),
+        "unacked_hash": "unacked",
+        "unacked_index": "unacked_index",
+        "unacked_wrapper": "kombu-redis-json-v1",
+    }
+
+
 class _Broker:
-    def inspect(self, selectors: tuple[str, ...]) -> dict[str, tuple[dict[str, object], ...]]:
-        return {"ready": (), "unacked": ()}
+    def inspect(self, selectors: tuple[str, ...]) -> BrokerInspection:
+        return BrokerInspection(_broker_topology(), {"ready": (), "unacked": ()})
 
 
 class _BrokerWithDelivery:
@@ -57,12 +69,15 @@ class _BrokerWithDelivery:
         self._delivery = delivery
         self._inventory = inventory
 
-    def inspect(self, selectors: tuple[str, ...]) -> dict[str, tuple[dict[str, object], ...]]:
+    def inspect(self, selectors: tuple[str, ...]) -> BrokerInspection:
         assert selectors
-        return {
-            "ready": (self._delivery,) if self._inventory == "ready" else (),
-            "unacked": (self._delivery,) if self._inventory == "unacked" else (),
-        }
+        return BrokerInspection(
+            _broker_topology(),
+            {
+                "ready": (self._delivery,) if self._inventory == "ready" else (),
+                "unacked": (self._delivery,) if self._inventory == "unacked" else (),
+            },
+        )
 
 
 def _item(partition: str = "ownership_repair") -> RepairInventoryItem:
@@ -127,6 +142,14 @@ def test_zero_unit_requires_complete_nonempty_overlay() -> None:
         )
 
 
+def test_control_request_and_task_evidence_never_retain_plaintext_token() -> None:
+    request = RepairControlRequest("repair-1", "run-1", "owner-1", "plaintext-secret", 1)
+    assert request.token != "plaintext-secret"
+    assert request.token.startswith("sha256:")
+    replay = RepairControlRequest("repair-1", "run-1", "owner-1", request.token, 2)
+    assert replay.token == request.token
+
+
 def test_absence_evidence_is_signed_fresh_and_bound() -> None:
     evidence = collect_absence_evidence(
         worker=_Workers(),
@@ -147,6 +170,31 @@ def test_absence_evidence_is_signed_fresh_and_bound() -> None:
     )
     assert verify_absence_evidence(evidence, secret=b"secret", now=datetime.now(UTC))
     assert not verify_absence_evidence(evidence, secret=b"changed", now=datetime.now(UTC))
+
+
+def test_broker_topology_is_signed_and_tampering_fails_authentication() -> None:
+    evidence = collect_absence_evidence(
+        worker=_Workers(),
+        broker=_Broker(),
+        run_id="run-1",
+        captured_tasks=_captured_tasks(),
+        boundary_digest=DIGEST,
+        owner_id="owner-1",
+        token="token-1",
+        dispatch_revision=1,
+        topology_digest=DIGEST,
+        expected_workers=("worker-a",),
+        timeout_seconds=10,
+        max_age_seconds=60,
+        key_id="key-1",
+        secret=b"secret",
+        now=datetime.now(UTC),
+    )
+    assert verify_absence_evidence(evidence, secret=b"secret", now=datetime.now(UTC))
+    object.__setattr__(
+        evidence, "broker_topology", {**evidence.broker_topology, "unacked_index": "other"}
+    )
+    assert not verify_absence_evidence(evidence, secret=b"secret", now=datetime.now(UTC))
 
 
 def _overlay_transport(*, hmac_value: str | None = None) -> dict[str, object]:
@@ -273,6 +321,84 @@ def test_broker_malformed_or_unbound_affected_delivery_fails_closed() -> None:
         )
 
 
+def test_redis_unacked_wrapper_and_index_mismatch_fail_closed() -> None:
+    from src.crm_deal_identity_repair.task_inspection import (
+        _decode_unacked_delivery,
+        _redis_unacked_inventory,
+    )
+
+    envelope = {
+        "headers": {"task": "src.tasks.run_ingestion_task"},
+        "body": base64.b64encode(json.dumps([[], _task_identity_payload(), {}]).encode()).decode(),
+    }
+    wrapped = json.dumps([json.dumps(envelope), "", "ingestion"])
+
+    class Inventory:
+        def lrange(self, name: str, start: int, end: int) -> list[object]:
+            return []
+
+        def hgetall(self, name: str) -> dict[object, object]:
+            assert name == "unacked"
+            return {"delivery-9": wrapped}
+
+        def zrange(self, name: str, start: int, end: int) -> list[object]:
+            assert name == "unacked_index"
+            return ["delivery-9"]
+
+    assert _decode_unacked_delivery(wrapped)["kwargs"]["attempt_generation"] == 7
+    assert _redis_unacked_inventory(Inventory(), "unacked", "unacked_index")
+
+    class MismatchedInventory(Inventory):
+        def zrange(self, name: str, start: int, end: int) -> list[object]:
+            return ["other"]
+
+    with pytest.raises(RuntimeError, match="index/hash"):
+        _redis_unacked_inventory(MismatchedInventory(), "unacked", "unacked_index")
+
+
+def test_redis_inspector_reads_nonzero_priority_ready_delivery(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import sys
+    from types import SimpleNamespace
+
+    from src.crm_deal_identity_repair.task_inspection import RedisCeleryBrokerInspector
+
+    envelope = {
+        "headers": {"task": "src.tasks.run_ingestion_task"},
+        "body": base64.b64encode(json.dumps([[], _task_identity_payload(), {}]).encode()).decode(),
+    }
+
+    class Inventory:
+        def __init__(self) -> None:
+            self.keys: list[str] = []
+
+        def lrange(self, name: str, start: int, end: int) -> list[object]:
+            self.keys.append(name)
+            return [json.dumps(envelope)] if name.endswith("9") else []
+
+        def hgetall(self, name: str) -> dict[object, object]:
+            return {}
+
+        def zrange(self, name: str, start: int, end: int) -> list[object]:
+            return []
+
+    inventory = Inventory()
+    monkeypatch.setitem(
+        sys.modules,
+        "redis",
+        SimpleNamespace(Redis=SimpleNamespace(from_url=lambda *_args, **_kwargs: inventory)),
+    )
+    inspection = RedisCeleryBrokerInspector("redis://broker").inspect(("selector",))
+    assert inspection.observations["ready"][0]["kwargs"]["logical_run_id"] == "logical-1"
+    assert "ingestion\x06\x169" in inventory.keys
+
+
+def test_nonzero_priority_key_is_part_of_canonical_broker_topology() -> None:
+    topology = _broker_topology()
+    assert "ingestion\x06\x169" in topology["ready_priority_keys"]
+
+
 def test_redis_celery_envelope_decoder_rejects_malformed_payload() -> None:
     from src.crm_deal_identity_repair.task_inspection import _decode_broker_delivery
 
@@ -372,27 +498,26 @@ class _EmptyTopologyRepository:
         )
 
 
-def test_quiescence_service_can_commit_a_zero_capture_boundary() -> None:
+def test_quiescence_service_rejects_a_zero_capture_boundary() -> None:
     from src.crm_deal_identity_repair.quiescence import RepairQuiescenceService
     from src.crm_deal_identity_repair.task_inspection import BrokerInspector, WorkerInspector
 
     repository = _EmptyTopologyRepository()
-    result = RepairQuiescenceService(
-        repository, cast(WorkerInspector, _Workers()), cast(BrokerInspector, _Broker())
-    ).quiesce(
-        request=RepairControlRequest("repair-1", "run-1", "owner-1", "token-1", 0),
-        boundary_digest=DIGEST,
-        control_instance_id="control-1",
-        expected_workers=("worker-a",),
-        timeout_seconds=10,
-        max_age_seconds=60,
-        proof_key_id="key-1",
-        proof_secret=b"secret",
-        stale_run_id="sealed-stale-run",
-    )
+    with pytest.raises(ValueError, match="non-empty"):
+        RepairQuiescenceService(
+            repository, cast(WorkerInspector, _Workers()), cast(BrokerInspector, _Broker())
+        ).quiesce(
+            request=RepairControlRequest("repair-1", "run-1", "owner-1", "token-1", 0),
+            boundary_digest=DIGEST,
+            control_instance_id="control-1",
+            expected_workers=("worker-a",),
+            timeout_seconds=10,
+            max_age_seconds=60,
+            proof_key_id="key-1",
+            proof_secret=b"secret",
+            stale_run_id="sealed-stale-run",
+        )
     assert repository.stale_run_id == "sealed-stale-run"
-    assert result.lease.state == "quiesced"
-    assert result.execution_allowed is False
 
 
 class _WorkersWithTask:

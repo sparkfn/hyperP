@@ -22,7 +22,10 @@ from urllib.parse import urlparse
 import pytest
 from neo4j import Driver, GraphDatabase, ManagedTransaction, Session
 from src.crm_deal_identity_repair.allocation import AllocationPlan
-from src.crm_deal_identity_repair.control_models import RepairControlRequest
+from src.crm_deal_identity_repair.control_models import (
+    RepairControlRequest,
+    control_token_digest,
+)
 from src.crm_deal_identity_repair.execution_models import (
     RepairBoundarySnapshot,
     RepairExecutionBoundaryManifest,
@@ -1070,11 +1073,15 @@ def test_310_same_owner_renewal_and_exact_replay_reject_foreign_expired_owner(
         owner = session.run(
             "MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', "
             "control_instance_id: $control_instance_id}) "
-            "RETURN dispatch.repair_owner_id AS owner, dispatch.repair_token AS token, "
-            "dispatch.repair_revision AS revision",
+            "RETURN dispatch.repair_owner_id AS owner, "
+            "dispatch.repair_token_digest AS token_digest, dispatch.repair_revision AS revision",
             control_instance_id=run.control_instance_id,
         ).single(strict=True)
-    assert dict(owner) == {"owner": "owner-a", "token": "token-a", "revision": 2}
+    assert dict(owner) == {
+        "owner": "owner-a",
+        "token_digest": control_token_digest("token-a"),
+        "revision": 2,
+    }
 
 
 def test_310_unsettled_publication_blocks_claim_and_is_fail_closed(neo4j_driver: Driver) -> None:
@@ -1619,7 +1626,7 @@ def _seed_quiesced_allocation_control(
             "MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', "
             "control_instance_id: $control_instance_id}) "
             "SET dispatch.blocked = true, dispatch.repair_run_id = $run_id, "
-            "dispatch.repair_owner_id = $owner, dispatch.repair_token = $token, "
+            "dispatch.repair_owner_id = $owner, dispatch.repair_token_digest = $token, "
             "dispatch.repair_revision = 1",
             run_id=run.run_id,
             control_instance_id=run.control_instance_id,

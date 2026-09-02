@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 from argparse import Namespace
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
@@ -73,11 +74,16 @@ def _control(arguments: Namespace) -> int:
 
     settings = get_settings()
     _validate_runtime_gate(settings, require_enabled=True)
+    control_token = os.environ.get("CRM_DEAL_IDENTITY_REPAIR_CONTROL_TOKEN")
+    if not control_token:
+        raise RuntimeError(
+            "repair control token must be supplied through its secret environment channel"
+        )
     request = RepairControlRequest(
         arguments.repair_id,
         arguments.run_id,
         arguments.owner_id,
-        arguments.control_token,
+        control_token,
         arguments.expected_revision,
     )
     client = Neo4jClient(settings)

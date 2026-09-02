@@ -7,7 +7,7 @@ import json
 import logging
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import TypedDict
+from typing import TYPE_CHECKING, TypedDict
 
 import redis
 from celery import Task, chain
@@ -24,6 +24,10 @@ from src.ingestion_config import get_ingestion_config
 from src.models import JsonValue
 from src.scheduled_ingestion_groups import scheduled_ingestion_group
 from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID
+
+if TYPE_CHECKING:
+    from src.crm_deal_identity_repair.control_models import RepairPublicationReservation
+    from src.graph.crm_deal_identity_repair_control import CrmDealRepairControlRepository
 
 logger = logging.getLogger(__name__)
 
@@ -247,24 +251,48 @@ def dispatch_ingestion_group_task(
             else None
         )
         if split_workflow_id is None:
+            publication_graph: Neo4jClient | None = None
+            publication_repository: CrmDealRepairControlRepository | None = None
+            reservation: RepairPublicationReservation | None = None
             if group.key == "bitrix_chat":
                 admit_configured_bitrix_control(
                     get_settings(),
                     LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
                 )
-            workflow = chain(
-                *(
-                    _signature(
-                        spec.source_key,
-                        spec.entity_key,
-                        incremental and spec.supports_incremental,
-                        f"{marker_key}:step:{index}",
-                    )
-                    for index, spec in enumerate(group.tasks)
+                # Legacy publication has no successor canvas to carry its own
+                # reservation. Reserve before constructing the canvas so a
+                # repair claim and publication are serialized on dispatch.
+                from src.graph.crm_deal_identity_repair_control import (
+                    CrmDealRepairControlRepository,
                 )
-            )
-            result = workflow.apply_async(queue=INGESTION_QUEUE)
-            workflow_task_id = str(result.id)
+
+                publication_graph = Neo4jClient(get_settings())
+                publication_repository = CrmDealRepairControlRepository(publication_graph)
+                reservation = publication_repository.prepare_publication(
+                    LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+                    f"legacy:{marker_key}",
+                )
+            try:
+                workflow = chain(
+                    *(
+                        _signature(
+                            spec.source_key,
+                            spec.entity_key,
+                            incremental and spec.supports_incremental,
+                            f"{marker_key}:step:{index}",
+                        )
+                        for index, spec in enumerate(group.tasks)
+                    )
+                )
+                if publication_repository is not None and reservation is not None:
+                    reservation = publication_repository.mark_publishing(reservation)
+                result = workflow.apply_async(queue=INGESTION_QUEUE)
+                workflow_task_id = str(result.id)
+                if publication_repository is not None and reservation is not None:
+                    publication_repository.confirm_publication(reservation, workflow_task_id)
+            finally:
+                if publication_graph is not None:
+                    publication_graph.close()
         else:
             workflow_task_id = split_workflow_id
     except Exception:
