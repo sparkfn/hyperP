@@ -2,36 +2,55 @@
 
 from __future__ import annotations
 
-from contextvars import ContextVar, Token
+import asyncio
+from collections.abc import Coroutine
+from contextvars import Context, ContextVar, Token
+from dataclasses import dataclass
 from time import monotonic
 
-_request_id: ContextVar[str | None] = ContextVar("request_id", default=None)
-_repository_duration_ms: ContextVar[float] = ContextVar("repository_duration_ms", default=0.0)
+
+@dataclass
+class RequestTiming:
+    """Mutable timing state shared by tasks created for one HTTP request."""
+
+    request_id: str
+    repository_duration_ms: float = 0.0
 
 
-def begin_request(request_id: str) -> tuple[Token[str | None], Token[float]]:
+_request_timing: ContextVar[RequestTiming | None] = ContextVar("request_timing", default=None)
+
+
+def begin_request(request_id: str) -> Token[RequestTiming | None]:
     """Initialize request-local values and return reset tokens."""
-    return _request_id.set(request_id), _repository_duration_ms.set(0.0)
+    return _request_timing.set(RequestTiming(request_id=request_id))
 
 
-def end_request(tokens: tuple[Token[str | None], Token[float]]) -> None:
+def end_request(token: Token[RequestTiming | None]) -> None:
     """Reset request-local values after the response is complete."""
-    request_token, repository_token = tokens
-    _request_id.reset(request_token)
-    _repository_duration_ms.reset(repository_token)
+    _request_timing.reset(token)
 
 
 def current_request_id() -> str | None:
     """Return the trusted request ID assigned by middleware, if any."""
-    return _request_id.get()
+    timing = _request_timing.get()
+    return timing.request_id if timing is not None else None
 
 
 def record_repository_duration(started_at: float) -> None:
     """Accumulate a completed repository query duration without query data."""
     elapsed_ms = (monotonic() - started_at) * 1000
-    _repository_duration_ms.set(_repository_duration_ms.get() + elapsed_ms)
+    timing = _request_timing.get()
+    if timing is not None:
+        timing.repository_duration_ms += elapsed_ms
 
 
 def repository_duration_ms() -> float:
     """Return aggregate repository execution time for the current request."""
-    return _repository_duration_ms.get()
+    timing = _request_timing.get()
+    return timing.repository_duration_ms if timing is not None else 0.0
+
+
+def create_detached_task[T](coro: Coroutine[object, object, T]) -> asyncio.Task[T]:
+    """Create a background task without inheriting completed request context."""
+    clean_context = Context()
+    return clean_context.run(asyncio.create_task, coro)

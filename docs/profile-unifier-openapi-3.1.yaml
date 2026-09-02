@@ -423,6 +423,48 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /v1/persons/summary/core:
+    get:
+      tags: [Persons]
+      summary: Get non-CRM person-listing summary counts
+      operationId: getPersonListCoreSummary
+      description: Returns exact profile, risk, value, and contact counts without CRM deal aggregation.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Non-CRM person-listing summary counts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonListCoreSummaryEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/persons/summary/crm:
+    get:
+      tags: [Persons]
+      summary: Get exact CRM person-listing summary counts
+      operationId: getPersonListCrmSummary
+      description: Returns exact CRM deal counts independently from the non-CRM listing summary.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: CRM person-listing summary counts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonListCrmSummaryEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /v1/persons/{person_id}:
     get:
       tags: [Persons]
@@ -2311,13 +2353,65 @@ components:
         no_contact_count:
           type: integer
           minimum: 0
-      required: [all_profiles_count, high_risk_count, high_value_count, no_contact_count]
+        deals_this_month_count:
+          type: integer
+          minimum: 0
+        all_deals_count:
+          type: integer
+          minimum: 0
+      required: [all_profiles_count, high_risk_count, high_value_count, no_contact_count, deals_this_month_count, all_deals_count]
       additionalProperties: false
     PersonListSummaryEnvelope:
       type: object
       properties:
         data:
           $ref: '#/components/schemas/PersonListSummary'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    PersonListCoreSummary:
+      type: object
+      properties:
+        all_profiles_count:
+          type: integer
+          minimum: 0
+        high_risk_count:
+          type: integer
+          minimum: 0
+        high_value_count:
+          type: integer
+          minimum: 0
+        no_contact_count:
+          type: integer
+          minimum: 0
+      required: [all_profiles_count, high_risk_count, high_value_count, no_contact_count]
+      additionalProperties: false
+    PersonListCoreSummaryEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/PersonListCoreSummary'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    PersonListCrmSummary:
+      type: object
+      properties:
+        deals_this_month_count:
+          type: integer
+          minimum: 0
+        all_deals_count:
+          type: integer
+          minimum: 0
+      required: [deals_this_month_count, all_deals_count]
+      additionalProperties: false
+    PersonListCrmSummaryEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/PersonListCrmSummary'
         meta:
           $ref: '#/components/schemas/Meta'
       required: [data, meta]

@@ -10,6 +10,7 @@ from src.graph.converters import GraphRecord, GraphValue
 from src.graph.mappers_entities import map_entity_filter_option
 from src.graph.queries.entities import LIST_ENTITY_FILTER_OPTIONS
 from src.repositories.neo4j.entity import Neo4jEntityRepository
+from src.request_timing import begin_request, current_request_id, end_request
 from src.types import EntityFilterOption, EntitySummary
 
 
@@ -124,3 +125,46 @@ async def test_entity_summary_cache_coalesces_exact_aggregate_loads(
     first_items, second_items = await asyncio.gather(first, second)
     assert first_items == second_items
     assert repo.calls == 1
+
+
+@pytest.mark.anyio
+async def test_entity_summary_expiry_returns_stale_value_and_refreshes_detached(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(entity_module.config, "entity_summary_cache_ttl_seconds", 30)
+    now = [100.0]
+    monkeypatch.setattr(entity_module, "monotonic", lambda: now[0])
+
+    class _RefreshingRepository(Neo4jEntityRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.values = [1, 2]
+            self.started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.request_ids: list[str | None] = []
+
+        async def _load_all(self) -> list[EntitySummary]:
+            value = self.values.pop(0)
+            self.request_ids.append(current_request_id())
+            if value == 2:
+                self.started.set()
+                await self.release.wait()
+            return [EntitySummary(entity_key="eko", person_count=value, source_record_count=value)]
+
+    repo = _RefreshingRepository()
+    token = begin_request("request-entity")
+    try:
+        assert (await repo.get_all())[0].person_count == 1
+        now[0] = 131.0
+        assert (await repo.get_all())[0].person_count == 1
+        await repo.started.wait()
+        assert repo.request_ids == ["request-entity", None]
+    finally:
+        end_request(token)
+
+    refresh = repo._summary_refresh_task
+    assert refresh is not None
+    repo.release.set()
+    await refresh
+    await asyncio.sleep(0)
+    assert (await repo.get_all())[0].person_count == 2

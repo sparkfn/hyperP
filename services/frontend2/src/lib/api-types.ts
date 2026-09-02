@@ -308,6 +308,18 @@ export interface PersonListSummary {
   all_deals_count: number;
 }
 
+export interface PersonListCoreSummary {
+  all_profiles_count: number;
+  high_risk_count: number;
+  high_value_count: number;
+  no_contact_count: number;
+}
+
+export interface PersonListCrmSummary {
+  deals_this_month_count: number;
+  all_deals_count: number;
+}
+
 export interface SourceSystemSummary {
   source_key: string;
   display_name: string | null;

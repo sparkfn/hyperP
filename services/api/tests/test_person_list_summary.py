@@ -17,8 +17,9 @@ from src.graph.queries.persons_list import (
 )
 from src.repositories.deps import get_person_repo
 from src.repositories.neo4j.person import Neo4jPersonRepository
+from src.request_timing import begin_request, current_request_id, end_request
 from src.routes.persons import router
-from src.types import PersonListSummary
+from src.types import PersonListCoreSummary, PersonListCrmSummary, PersonListSummary
 
 
 class _Record:
@@ -321,6 +322,50 @@ async def test_failed_crm_stale_refresh_retains_prior_exact_value(
 
 
 @pytest.mark.anyio
+async def test_crm_stale_refresh_does_not_inherit_request_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(person_module.config, "person_list_summary_cache_ttl_seconds", 30)
+    now = [100.0]
+    monkeypatch.setattr(person_module, "monotonic", lambda: now[0])
+
+    class _ContextRepository(Neo4jPersonRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.crm_calls = 0
+            self.refresh_started = asyncio.Event()
+            self.release = asyncio.Event()
+            self.request_ids: list[str | None] = []
+
+        async def _load_core_summary(self) -> PersonListSummary:
+            return PersonListSummary(all_profiles_count=42)
+
+        async def _load_crm_summary(self) -> tuple[int, int]:
+            self.crm_calls += 1
+            self.request_ids.append(current_request_id())
+            if self.crm_calls == 2:
+                self.refresh_started.set()
+                await self.release.wait()
+            return self.crm_calls, self.crm_calls
+
+    repo = _ContextRepository()
+    token = begin_request("request-crm")
+    try:
+        assert (await repo.get_list_summary()).all_deals_count == 1
+        now[0] = 131.0
+        assert (await repo.get_list_summary()).all_deals_count == 1
+        await repo.refresh_started.wait()
+        assert repo.request_ids == ["request-crm", None]
+    finally:
+        end_request(token)
+
+    refresh = repo._crm_summary_task
+    assert refresh is not None
+    repo.release.set()
+    await refresh
+
+
+@pytest.mark.anyio
 async def test_concurrent_summary_cache_misses_are_coalesced(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
@@ -427,6 +472,17 @@ class _SummaryRepo:
             no_contact_count=3,
         )
 
+    async def get_list_core_summary(self) -> PersonListCoreSummary:
+        return PersonListCoreSummary(
+            all_profiles_count=42,
+            high_risk_count=7,
+            high_value_count=5,
+            no_contact_count=3,
+        )
+
+    async def get_list_crm_summary(self) -> PersonListCrmSummary:
+        return PersonListCrmSummary(deals_this_month_count=9, all_deals_count=24)
+
 
 async def _summary_user() -> AuthUser:
     return AuthUser(
@@ -467,3 +523,27 @@ async def test_summary_route_returns_single_aggregate_payload() -> None:
         },
         "display_items": None,
     }
+
+
+@pytest.mark.anyio
+async def test_summary_subroutes_keep_core_available_when_crm_is_independent() -> None:
+    app = FastAPI()
+    app.include_router(router)
+    app.dependency_overrides[get_person_repo] = lambda: _SummaryRepo()
+    app.dependency_overrides[require_active_user] = _summary_user
+    app.dependency_overrides[get_current_user_or_oauth_client] = _summary_user
+    transport = ASGITransport(app=app)
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        core = await client.get("/v1/persons/summary/core")
+        crm = await client.get("/v1/persons/summary/crm")
+
+    assert core.status_code == 200
+    assert core.json()["data"] == {
+        "all_profiles_count": 42,
+        "high_risk_count": 7,
+        "high_value_count": 5,
+        "no_contact_count": 3,
+    }
+    assert crm.status_code == 200
+    assert crm.json()["data"] == {"deals_this_month_count": 9, "all_deals_count": 24}
