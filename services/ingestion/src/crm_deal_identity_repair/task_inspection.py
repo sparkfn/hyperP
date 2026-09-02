@@ -206,9 +206,9 @@ def verify_absence_evidence(evidence: TaskAbsenceEvidence, *, secret: bytes, now
     ):
         return False
     captured_tasks = _captured_tasks_from_selectors(evidence.selectors)
-    return not _has_affected_task(
-        evidence.observations, captured_tasks
-    ) and not _has_affected_task(evidence.broker_observations, captured_tasks)
+    return not _has_affected_task(evidence.observations, captured_tasks) and not _has_affected_task(
+        evidence.broker_observations, captured_tasks
+    )
 
 
 class CeleryWorkerInspector:
