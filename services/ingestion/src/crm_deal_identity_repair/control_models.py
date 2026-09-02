@@ -61,15 +61,15 @@ class RepairControlRequest:
     repair_id: str
     run_id: str
     owner_id: str
-    token: str
+    token_digest: str
     expected_revision: int
 
     def __post_init__(self) -> None:
         for value, label in ((self.repair_id, "repair ID"), (self.run_id, "run ID")):
             _identity(value, label)
         _identity(self.owner_id, "control owner")
-        _identity(self.token, "control token", maximum=256)
-        object.__setattr__(self, "token", control_token_digest(self.token))
+        _identity(self.token_digest, "control token", maximum=256)
+        object.__setattr__(self, "token_digest", control_token_digest(self.token_digest))
         _nonnegative(self.expected_revision, "control expected revision")
 
 
@@ -87,7 +87,7 @@ class RepairDispatchLease:
     control_instance_id: str
     run_id: str
     owner_id: str
-    token: str
+    token_digest: str
     revision: int
     state: RepairControlState
     boundary_digest: str
@@ -99,7 +99,8 @@ class RepairDispatchLease:
             (self.owner_id, "control owner"),
         ):
             _identity(value, label)
-        _identity(self.token, "control token", maximum=256)
+        _identity(self.token_digest, "control token", maximum=256)
+        object.__setattr__(self, "token_digest", control_token_digest(self.token_digest))
         _nonnegative(self.revision, "dispatch revision")
         _digest(self.boundary_digest, "dispatch boundary digest")
         if self.state not in {"qualified", "quiescing", "quiesced", "allocated", "paused", "lost"}:
