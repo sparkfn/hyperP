@@ -1955,6 +1955,115 @@ def test_310_real_neo4j_authoritative_reader_excludes_retired_link_and_audit_ret
     assert properties["retired_by_repair_id"] == "repair-310-reader"
 
 
+def test_310_real_neo4j_sales_materializers_preserve_retired_active_projections(
+    neo4j_driver: Driver,
+) -> None:
+    """Current sales writers create one active edge without reviving retired history."""
+    from src.graph.queries.sales import LINK_PERSON_PURCHASED_ORDER
+    from src.graph.queries.vehicle import LINK_PERSON_BOUGHT_VEHICLE
+
+    parameters = {
+        "person_id": "repair-test-materializer-person",
+        "source_system_key": "repair-test-materializer-source",
+        "source_order_id": "repair-test-materializer-order",
+        "source_record_pk": "repair-test-materializer-record",
+        "vehicle_id": "repair-test-materializer-vehicle",
+        "raw_context": "repair-test",
+        "observed_at": "2026-09-02T00:00:00Z",
+        "confidence": 1.0,
+        "quality_flag": "verified",
+        "is_active": True,
+    }
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE (person:Person {person_id: $person_id}) "
+            "CREATE (sale_order:Order {source_system_key: $source_system_key, "
+            "source_order_id: $source_order_id}) "
+            "CREATE (vehicle:Vehicle {vehicle_id: $vehicle_id}) "
+            "CREATE (person)-[:PURCHASED {source_system_key: $source_system_key, "
+            "source_order_id: $source_order_id, is_active: false, "
+            "retired_at: datetime()}]->(sale_order) "
+            "CREATE (person)-[:BOUGHT_VEHICLE {source_system_key: $source_system_key, "
+            "source_order_id: $source_order_id, is_active: false, "
+            "retired_at: datetime()}]->(vehicle)",
+            **parameters,
+        ).consume()
+        for _ in range(2):
+            session.run(LINK_PERSON_PURCHASED_ORDER, **parameters).consume()
+            session.run(LINK_PERSON_BOUGHT_VEHICLE, **parameters).consume()
+        purchase_counts = session.run(
+            "MATCH (:Person {person_id: $person_id})-[rel:PURCHASED]->"
+            "(:Order {source_system_key: $source_system_key, source_order_id: $source_order_id}) "
+            "RETURN count(rel) AS total, "
+            "count(CASE WHEN rel.is_active = true THEN rel END) AS active, "
+            "count(CASE WHEN rel.is_active = false THEN rel END) AS retired",
+            **parameters,
+        ).single(strict=True)
+        vehicle_counts = session.run(
+            "MATCH (:Person {person_id: $person_id})-[rel:BOUGHT_VEHICLE]->"
+            "(:Vehicle {vehicle_id: $vehicle_id}) "
+            "RETURN count(rel) AS total, "
+            "count(CASE WHEN rel.is_active = true THEN rel END) AS active, "
+            "count(CASE WHEN rel.is_active = false THEN rel END) AS retired",
+            **parameters,
+        ).single(strict=True)
+    assert dict(purchase_counts) == {"total": 2, "active": 1, "retired": 1}
+    assert dict(vehicle_counts) == {"total": 2, "active": 1, "retired": 1}
+
+
+def test_310_real_neo4j_sales_materializers_normalize_legacy_active_edges(
+    neo4j_driver: Driver,
+) -> None:
+    """Adding is_active to a MERGE key cannot duplicate an old current relationship."""
+    from src.graph.queries.sales import LINK_PERSON_PURCHASED_ORDER
+    from src.graph.queries.vehicle import LINK_PERSON_BOUGHT_VEHICLE
+
+    parameters = {
+        "person_id": "repair-test-legacy-materializer-person",
+        "source_system_key": "repair-test-legacy-materializer-source",
+        "source_order_id": "repair-test-legacy-materializer-order",
+        "source_record_pk": "repair-test-legacy-materializer-record",
+        "vehicle_id": "repair-test-legacy-materializer-vehicle",
+        "raw_context": "repair-test",
+        "observed_at": "2026-09-02T00:00:00Z",
+        "confidence": 1.0,
+        "quality_flag": "verified",
+        "is_active": True,
+    }
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE (person:Person {person_id: $person_id}) "
+            "CREATE (sale_order:Order {source_system_key: $source_system_key, "
+            "source_order_id: $source_order_id}) "
+            "CREATE (vehicle:Vehicle {vehicle_id: $vehicle_id}) "
+            "CREATE (person)-[:PURCHASED {source_system_key: $source_system_key, "
+            "source_order_id: $source_order_id}]->(sale_order) "
+            "CREATE (person)-[:BOUGHT_VEHICLE {source_system_key: $source_system_key, "
+            "source_order_id: $source_order_id}]->(vehicle)",
+            **parameters,
+        ).consume()
+        for _ in range(2):
+            session.run(LINK_PERSON_PURCHASED_ORDER, **parameters).consume()
+            session.run(LINK_PERSON_BOUGHT_VEHICLE, **parameters).consume()
+        purchase_counts = session.run(
+            "MATCH (:Person {person_id: $person_id})-[rel:PURCHASED]->"
+            "(:Order {source_system_key: $source_system_key, "
+            "source_order_id: $source_order_id}) "
+            "RETURN count(rel) AS total, "
+            "count(CASE WHEN rel.is_active = true THEN rel END) AS active",
+            **parameters,
+        ).single(strict=True)
+        vehicle_counts = session.run(
+            "MATCH (:Person {person_id: $person_id})-[rel:BOUGHT_VEHICLE]->"
+            "(:Vehicle {vehicle_id: $vehicle_id}) "
+            "RETURN count(rel) AS total, "
+            "count(CASE WHEN rel.is_active = true THEN rel END) AS active",
+            **parameters,
+        ).single(strict=True)
+    assert dict(purchase_counts) == {"total": 1, "active": 1}
+    assert dict(vehicle_counts) == {"total": 1, "active": 1}
+
+
 def _allocation_plan_for_test(run_id: str, boundary_digest: str, unit_count: int) -> AllocationPlan:
     from src.crm_deal_identity_repair.control_models import RepairAllocationCompletion
     from src.crm_deal_identity_repair.execution_records import RepairUnit
@@ -2137,7 +2246,7 @@ def test_310_allocated_pause_resume_reseals_and_allocation_replay_is_exact(
         proof_digest="proof",
         plan=plan,
     )
-    assert replay == resumed
+    assert replay == allocated
 
 
 def test_310_allocation_persists_exact_multi_unit_set_and_replay_conflicts(
@@ -2169,9 +2278,9 @@ def test_310_allocation_persists_exact_multi_unit_set_and_replay_conflicts(
         ).consume()
     with pytest.raises(RuntimeError):
         control.allocate(
-            RepairControlRequest("repair-310-allocation", run.run_id, "owner", "token", 2),
+            replay_request,
             boundary_digest=run.boundary_digest,
-            proof_digest="proof",
+            proof_digest=control.proof_digest(replay_request),
             plan=plan,
         )
     with neo4j_driver.session() as session:
@@ -2182,6 +2291,37 @@ def test_310_allocation_persists_exact_multi_unit_set_and_replay_conflicts(
         ).consume()
     with pytest.raises(RuntimeError, match="absent or stale"):
         control.proof_digest(replay_request)
+
+
+def test_310_exact_allocation_replay_rejects_a_corrupted_current_seal(
+    neo4j_driver: Driver,
+) -> None:
+    """An immutable receipt is unusable when its current lifecycle seal is corrupt."""
+    _, control, run = _qualified_control_repository(
+        neo4j_driver, repair_id="repair-310-seal-replay"
+    )
+    _seed_quiesced_allocation_control(neo4j_driver, run)
+    request = RepairControlRequest("repair-310-seal-replay", run.run_id, "owner", "token", 1)
+    plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 1)
+    control.allocate(
+        request,
+        boundary_digest=run.boundary_digest,
+        proof_digest="proof",
+        plan=plan,
+    )
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+            "SET control.sealed_boundary_digest = 'tampered-seal'",
+            run_id=run.run_id,
+        ).consume()
+    with pytest.raises(RuntimeError):
+        control.allocate(
+            request,
+            boundary_digest=run.boundary_digest,
+            proof_digest=control.proof_digest(request),
+            plan=plan,
+        )
 
 
 @pytest.mark.parametrize(

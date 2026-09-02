@@ -101,9 +101,22 @@ MATCH (id:Identifier {
     identifier_scope: $identifier_scope,
     normalized_value: $normalized_value
 })
-MERGE (p)-[rel:IDENTIFIED_BY {
+// Normalize a legacy current edge before matching the explicit active projection.
+OPTIONAL MATCH (p)-[legacy:IDENTIFIED_BY {
     source_system_key: $source_system_key,
     source_record_pk: $source_record_pk
+}]->(id)
+WHERE coalesce(legacy.is_active, true) = true AND legacy.is_active IS NULL
+WITH p, id, collect(legacy) AS legacy_relationships
+FOREACH (legacy_relationship IN legacy_relationships |
+    SET legacy_relationship.is_active = true,
+        legacy_relationship.activated_at = coalesce(legacy_relationship.activated_at, datetime()),
+        legacy_relationship.retired_at = null
+)
+MERGE (p)-[rel:IDENTIFIED_BY {
+    source_system_key: $source_system_key,
+    source_record_pk: $source_record_pk,
+    is_active: true
 }]->(id)
 ON CREATE SET
     rel.is_verified = $is_verified,
@@ -131,9 +144,22 @@ MATCH (addr:Address {
     street_number: $street_number,
     unit_number:   $unit_number
 })
-MERGE (p)-[rel:LIVES_AT {
+// Normalize a legacy current edge before matching the explicit active projection.
+OPTIONAL MATCH (p)-[legacy:LIVES_AT {
     source_system_key: $source_system_key,
     source_record_pk: $source_record_pk
+}]->(addr)
+WHERE coalesce(legacy.is_active, true) = true AND legacy.is_active IS NULL
+WITH p, addr, collect(legacy) AS legacy_relationships
+FOREACH (legacy_relationship IN legacy_relationships |
+    SET legacy_relationship.is_active = true,
+        legacy_relationship.activated_at = coalesce(legacy_relationship.activated_at, datetime()),
+        legacy_relationship.retired_at = null
+)
+MERGE (p)-[rel:LIVES_AT {
+    source_system_key: $source_system_key,
+    source_record_pk: $source_record_pk,
+    is_active: true
 }]->(addr)
 ON CREATE SET
     rel.is_active = true,

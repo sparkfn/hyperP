@@ -399,9 +399,22 @@ MATCH (md)-[:ABOUT_RIGHT]->(p:Person {status: 'active'})
 WITH sr, p
 MATCH (o:Order)-[:INVOLVES_VEHICLE {source_record_pk: sr.source_record_pk}]->(:Vehicle)
 WITH DISTINCT sr, p, o
+// Normalize a legacy current edge before matching the explicit active projection.
+OPTIONAL MATCH (p)-[legacy:PURCHASED {
+    source_system_key: o.source_system_key,
+    source_order_id: o.source_order_id
+}]->(o)
+WHERE coalesce(legacy.is_active, true) = true AND legacy.is_active IS NULL
+WITH sr, p, o, collect(legacy) AS legacy_relationships
+FOREACH (legacy_relationship IN legacy_relationships |
+    SET legacy_relationship.is_active = true,
+        legacy_relationship.activated_at = coalesce(legacy_relationship.activated_at, datetime()),
+        legacy_relationship.retired_at = null
+)
 MERGE (p)-[rel:PURCHASED {
     source_system_key: o.source_system_key,
-    source_order_id:   o.source_order_id
+    source_order_id:   o.source_order_id,
+    is_active: true
 }]->(o)
 ON CREATE SET rel.first_seen_at = datetime(), rel.created_at = datetime()
 SET rel.source_record_pk  = sr.source_record_pk,
@@ -414,9 +427,22 @@ MATCH (rc:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->(md:Mat
 MATCH (md)-[:ABOUT_LEFT]->(sr:SourceRecord {record_type: 'sales'})
 MATCH (md)-[:ABOUT_RIGHT]->(p:Person {status: 'active'})
 MATCH (o:Order)-[:INVOLVES_VEHICLE {source_record_pk: sr.source_record_pk}]->(v:Vehicle)
+// Normalize a legacy current edge before matching the explicit active projection.
+OPTIONAL MATCH (p)-[legacy:BOUGHT_VEHICLE {
+    source_system_key: o.source_system_key,
+    source_order_id: o.source_order_id
+}]->(v)
+WHERE coalesce(legacy.is_active, true) = true AND legacy.is_active IS NULL
+WITH sr, p, o, v, collect(legacy) AS legacy_relationships
+FOREACH (legacy_relationship IN legacy_relationships |
+    SET legacy_relationship.is_active = true,
+        legacy_relationship.activated_at = coalesce(legacy_relationship.activated_at, datetime()),
+        legacy_relationship.retired_at = null
+)
 MERGE (p)-[rel:BOUGHT_VEHICLE {
     source_system_key: o.source_system_key,
-    source_order_id:   o.source_order_id
+    source_order_id:   o.source_order_id,
+    is_active: true
 }]->(v)
 ON CREATE SET rel.created_at = datetime(), rel.first_seen_at = datetime()
 SET rel.source_record_pk  = sr.source_record_pk,
@@ -695,7 +721,8 @@ CALL (source, sr, person, stage, order, observations) {
       involves.quality_flag = observation.quality_flag
   MERGE (person)-[bought:BOUGHT_VEHICLE {source_system_key: source.source_key,
     source_order_id: stage.source_order_id,
-    observation_index: observation.observation_index}]->(vehicle)
+    observation_index: observation.observation_index,
+    is_active: true}]->(vehicle)
   SET bought.source_record_pk = sr.source_record_pk, bought.is_active = true,
       bought.raw_context = observation.raw_context,
       bought.observed_at = observation.observed_at,
@@ -704,7 +731,7 @@ CALL (source, sr, person, stage, order, observations) {
   RETURN count(observation) AS promoted_observation_count
 }
 MERGE (person)-[purchase:PURCHASED {source_system_key: source.source_key,
-  source_order_id: stage.source_order_id}]->(order)
+  source_order_id: stage.source_order_id, is_active: true}]->(order)
 SET purchase.source_record_pk = sr.source_record_pk, purchase.is_active = true,
     purchase.updated_at = datetime(),
     person.analysis_input_revision = coalesce(person.analysis_input_revision, 0) + 1,
@@ -888,7 +915,7 @@ WITH pending, approved, source, old_versions,
      collect(DISTINCT provisional.person_id) AS prior_person_ids,
      collect(unsafe) AS unsafe_links
 FOREACH (rel IN unsafe_links | DELETE rel)
-MERGE (pending)-[:LINKED_TO {linked_at: datetime()}]->(approved)
+MERGE (pending)-[:LINKED_TO {linked_at: datetime(), is_active: true}]->(approved)
 WITH pending, approved, source, old_versions, prior_person_ids
 CALL (pending, approved, source) {
   OPTIONAL MATCH (call:SourceRecord {record_type: 'call', lifecycle_status: 'pending_review'})
@@ -966,7 +993,7 @@ CALL (pending, approved, source) {
                         normalized_value: ident.normalized_value})
   ON CREATE SET id.identifier_id = randomUUID(), id.created_at = datetime()
   MERGE (approved)-[rel:IDENTIFIED_BY {
-    source_system_key: source.source_key, source_record_pk: pending.source_record_pk
+    source_system_key: source.source_key, source_record_pk: pending.source_record_pk, is_active: true
   }]->(id)
   SET rel.is_active = true, rel.is_verified = ident.is_verified,
       rel.quality_flag = ident.quality_flag, rel.source_system_key = source.source_key,
@@ -982,7 +1009,7 @@ CALL (pending, approved, source) {
   ON CREATE SET addr.address_id = randomUUID(), addr.normalized_full = address.normalized_full,
                 addr.created_at = datetime()
   MERGE (approved)-[rel:LIVES_AT {
-    source_system_key: source.source_key, source_record_pk: pending.source_record_pk
+    source_system_key: source.source_key, source_record_pk: pending.source_record_pk, is_active: true
   }]->(addr)
   SET rel.is_active = true, rel.is_verified = false, rel.quality_flag = address.quality_flag,
       rel.source_system_key = source.source_key, rel.source_record_pk = pending.source_record_pk,
@@ -1040,7 +1067,7 @@ CALL (pending) {
   WITH pending, item, collect(DISTINCT vehicle) AS vehicles
   WHERE size(vehicles) = 1
   WITH pending, item, vehicles[0] AS vehicle
-  MERGE (pending)-[rel:MENTIONS_VEHICLE]->(vehicle)
+  MERGE (pending)-[rel:MENTIONS_VEHICLE {is_active: true}]->(vehicle)
   SET rel.source_system_key = item.source_system_key,
       rel.source_record_id = item.source_record_id, rel.raw_context = item.raw_context,
       rel.source_record_pk = pending.source_record_pk,
@@ -1062,7 +1089,8 @@ CALL (pending, approved) {
   FOREACH (_ IN CASE WHEN declarer <> approved THEN [1] ELSE [] END |
     MERGE (declarer)-[new_knows:KNOWS {
       source_system_key: item.source_system_key,
-      source_record_pk: pending.source_record_pk
+      source_record_pk: pending.source_record_pk,
+      is_active: true
     }]->(approved)
     ON CREATE SET new_knows.knows_id = randomUUID(),
                   new_knows.first_seen_at = datetime(),
