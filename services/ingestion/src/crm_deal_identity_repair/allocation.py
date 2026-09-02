@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import hashlib
+import hmac
 import uuid
 from dataclasses import dataclass
 
+from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json_bytes
 from src.crm_deal_identity_repair.approval_overlay import ApprovalOverlay
 from src.crm_deal_identity_repair.control_models import RepairAllocationCompletion
 from src.crm_deal_identity_repair.digests import object_digest
@@ -13,12 +16,57 @@ from src.crm_deal_identity_repair.models import RepairInventoryItem
 from src.models import JsonValue
 
 _ALLOCATION_DOMAIN = b"crm-deal-identity-repair-allocation-v1\x00"
+_ALLOCATION_ORIGIN_HMAC_DOMAIN = b"crm-deal-identity-repair-allocation-origin-v1\x00"
 
 
 @dataclass(frozen=True)
 class AllocationPlan:
     units: tuple[RepairUnit, ...]
     completion: RepairAllocationCompletion
+
+
+def allocation_origin_hmac(
+    *,
+    secret: bytes,
+    key_id: str,
+    control_instance_id: str,
+    run_id: str,
+    owner_id: str,
+    token_digest: str,
+    revision: int,
+    boundary_digest: str,
+    sealed_boundary_digest: str,
+    completion_id: str,
+    overlay_digest: str,
+    allocation_digest: str,
+    unit_count: int,
+    unit_set_digest: str,
+    request_digest: str,
+) -> str:
+    """Authenticate immutable allocation-origin evidence with the approval key."""
+    if not secret or not key_id:
+        raise ValueError("allocation origin signing configuration is missing")
+    payload: dict[str, JsonValue] = {
+        "key_id": key_id,
+        "control_instance_id": control_instance_id,
+        "run_id": run_id,
+        "owner_id": owner_id,
+        "token_digest": token_digest,
+        "revision": revision,
+        "boundary_digest": boundary_digest,
+        "sealed_boundary_digest": sealed_boundary_digest,
+        "completion_id": completion_id,
+        "overlay_digest": overlay_digest,
+        "allocation_digest": allocation_digest,
+        "unit_count": unit_count,
+        "unit_set_digest": unit_set_digest,
+        "request_digest": request_digest,
+    }
+    return hmac.new(
+        secret,
+        _ALLOCATION_ORIGIN_HMAC_DOMAIN + canonical_json_bytes(payload),
+        hashlib.sha256,
+    ).hexdigest()
 
 
 def plan_allocation(

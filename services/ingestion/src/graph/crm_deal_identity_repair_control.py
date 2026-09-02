@@ -2,15 +2,19 @@
 
 from __future__ import annotations
 
+import hmac
 import json
 import uuid
 from collections.abc import Mapping
-from dataclasses import asdict
+from dataclasses import asdict, dataclass
 from typing import Literal, cast
 
 from neo4j import ManagedTransaction
 
-from src.crm_deal_identity_repair.allocation import AllocationPlan
+from src.crm_deal_identity_repair.allocation import (
+    AllocationPlan,
+    allocation_origin_hmac,
+)
 from src.crm_deal_identity_repair.control_models import (
     CapturedTaskTopologyIdentity,
     RepairControlCommand,
@@ -56,6 +60,15 @@ from src.graph.queries.crm_deal_identity_repair_control import (
 )
 from src.graph.queries.crm_deal_identity_repair_ledger import GET_REPAIR_RUN
 from src.models import JsonValue
+
+
+@dataclass(frozen=True)
+class _AllocationOrigin:
+    key_id: str
+    secret: bytes
+    plan: AllocationPlan
+    unit_set_digest: str
+    request_digest: str
 
 
 class CrmDealRepairControlRepository:
@@ -225,6 +238,8 @@ class CrmDealRepairControlRepository:
                 sealed_negative_control_count=post_quiescence_snapshot.negative_control_count,
                 completion_id=None,
                 receipt_digest=None,
+                allocation_origin_key_id=None,
+                allocation_origin_hmac=None,
             ).single()
             if sealed is None:
                 raise RuntimeError("repair quiescence boundary sealing was rejected")
@@ -283,7 +298,7 @@ class CrmDealRepairControlRepository:
         request: RepairControlCommand,
         revision: int,
         *,
-        completion_id: str | None = None,
+        allocation_origin: _AllocationOrigin | None = None,
     ) -> None:
         """Persist the complete snapshot that immediately follows an authorized transition."""
         qualification = tx.run(GET_REPAIR_RUN, repair_id=request.repair_id).single()
@@ -296,6 +311,7 @@ class CrmDealRepairControlRepository:
             stored.run.control_instance_id,
             stored.source_record_pks,
         )
+        completion = allocation_origin.plan.completion if allocation_origin is not None else None
         receipt_digest = (
             _allocation_receipt_digest(
                 control_instance_id=stored.run.control_instance_id,
@@ -306,7 +322,28 @@ class CrmDealRepairControlRepository:
                 boundary_digest=stored.run.boundary_digest,
                 sealed_boundary_digest=snapshot.boundary_digest,
             )
-            if completion_id is not None
+            if completion is not None
+            else None
+        )
+        origin_hmac = (
+            allocation_origin_hmac(
+                secret=allocation_origin.secret,
+                key_id=allocation_origin.key_id,
+                control_instance_id=stored.run.control_instance_id,
+                run_id=stored.run.run_id,
+                owner_id=request.owner_id,
+                token_digest=request.token_digest,
+                revision=revision,
+                boundary_digest=stored.run.boundary_digest,
+                sealed_boundary_digest=snapshot.boundary_digest,
+                completion_id=completion.completion_id,
+                overlay_digest=completion.overlay_digest,
+                allocation_digest=completion.allocation_digest,
+                unit_count=completion.unit_count,
+                unit_set_digest=allocation_origin.unit_set_digest,
+                request_digest=allocation_origin.request_digest,
+            )
+            if allocation_origin is not None and completion is not None
             else None
         )
         sealed = tx.run(
@@ -324,8 +361,12 @@ class CrmDealRepairControlRepository:
             sealed_inventory_row_count=snapshot.inventory_row_count,
             sealed_eligible_unit_count=snapshot.eligible_unit_count,
             sealed_negative_control_count=snapshot.negative_control_count,
-            completion_id=completion_id,
+            completion_id=completion.completion_id if completion is not None else None,
             receipt_digest=receipt_digest,
+            allocation_origin_key_id=(
+                allocation_origin.key_id if allocation_origin is not None else None
+            ),
+            allocation_origin_hmac=origin_hmac,
         ).single()
         if sealed is None:
             raise RuntimeError("repair lifecycle boundary sealing was rejected")
@@ -337,7 +378,11 @@ class CrmDealRepairControlRepository:
         boundary_digest: str,
         proof_digest: str,
         plan: AllocationPlan,
+        allocation_origin_key_id: str,
+        allocation_origin_secret: bytes,
     ) -> RepairDispatchLease:
+        if not allocation_origin_key_id or not allocation_origin_secret:
+            raise ValueError("allocation origin signing configuration is missing")
         units: list[JsonValue] = [cast(JsonValue, asdict(unit)) for unit in plan.units]
         unit_ids = [unit.unit_id for unit in plan.units]
         unit_set_digest = object_digest(
@@ -379,9 +424,14 @@ class CrmDealRepairControlRepository:
                 unit_ids=unit_ids,
                 unit_set_digest=unit_set_digest,
                 units=units,
+                allocation_origin_key_id=allocation_origin_key_id,
             ).single()
             if replay is not None:
-                _validate_allocation_receipt(replay)
+                _validate_allocation_receipt(
+                    replay,
+                    origin_key_id=allocation_origin_key_id,
+                    origin_secret=allocation_origin_secret,
+                )
                 return _lease(replay)
             inventory = self._read_allocation_boundary(tx, request.repair_id)
             record = tx.run(
@@ -412,7 +462,13 @@ class CrmDealRepairControlRepository:
                 tx,
                 request,
                 _required_int(record["revision"], "allocation revision"),
-                completion_id=plan.completion.completion_id,
+                allocation_origin=_AllocationOrigin(
+                    allocation_origin_key_id,
+                    allocation_origin_secret,
+                    plan,
+                    unit_set_digest,
+                    request_digest,
+                ),
             )
             return _lease(record)
 
@@ -792,7 +848,9 @@ def _allocation_receipt_digest(
     )
 
 
-def _validate_allocation_receipt(record: object) -> None:
+def _validate_allocation_receipt(
+    record: object, *, origin_key_id: str, origin_secret: bytes
+) -> None:
     """Fail closed if a persisted exact-replay receipt has been altered."""
     value = cast(Mapping[str, object], record)
     required_strings = (
@@ -803,6 +861,13 @@ def _validate_allocation_receipt(record: object) -> None:
         "boundary_digest",
         "sealed_boundary_digest",
         "receipt_digest",
+        "completion_id",
+        "overlay_digest",
+        "allocation_digest",
+        "unit_set_digest",
+        "request_digest",
+        "allocation_origin_key_id",
+        "allocation_origin_hmac",
     )
     strings: dict[str, str] = {}
     for key in required_strings:
@@ -813,17 +878,40 @@ def _validate_allocation_receipt(record: object) -> None:
     state = value.get("state")
     if state != "allocated":
         raise RuntimeError("allocation replay receipt state is invalid")
+    if strings["allocation_origin_key_id"] != origin_key_id:
+        raise RuntimeError("allocation replay origin key is invalid")
+    revision = _required_int(value.get("revision"), "allocation receipt revision")
+    unit_count = _required_int(value.get("unit_count"), "allocation receipt unit count")
     expected_digest = _allocation_receipt_digest(
         control_instance_id=strings["control_instance_id"],
         run_id=strings["run_id"],
         owner_id=strings["owner_id"],
         token_digest=strings["token_digest"],
-        revision=_required_int(value.get("revision"), "allocation receipt revision"),
+        revision=revision,
         boundary_digest=strings["boundary_digest"],
         sealed_boundary_digest=strings["sealed_boundary_digest"],
     )
-    if strings["receipt_digest"] != expected_digest:
+    if not hmac.compare_digest(strings["receipt_digest"], expected_digest):
         raise RuntimeError("allocation replay receipt integrity check failed")
+    expected_origin_hmac = allocation_origin_hmac(
+        secret=origin_secret,
+        key_id=origin_key_id,
+        control_instance_id=strings["control_instance_id"],
+        run_id=strings["run_id"],
+        owner_id=strings["owner_id"],
+        token_digest=strings["token_digest"],
+        revision=revision,
+        boundary_digest=strings["boundary_digest"],
+        sealed_boundary_digest=strings["sealed_boundary_digest"],
+        completion_id=strings["completion_id"],
+        overlay_digest=strings["overlay_digest"],
+        allocation_digest=strings["allocation_digest"],
+        unit_count=unit_count,
+        unit_set_digest=strings["unit_set_digest"],
+        request_digest=strings["request_digest"],
+    )
+    if not hmac.compare_digest(strings["allocation_origin_hmac"], expected_origin_hmac):
+        raise RuntimeError("allocation replay origin integrity check failed")
 
 
 def _lease_or_none(record: object) -> RepairDispatchLease | None:

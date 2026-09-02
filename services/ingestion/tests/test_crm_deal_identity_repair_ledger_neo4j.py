@@ -25,6 +25,7 @@ from neo4j import Driver, GraphDatabase, ManagedTransaction, Session
 from src.crm_deal_identity_repair.allocation import AllocationPlan
 from src.crm_deal_identity_repair.control_models import (
     RepairControlRequest,
+    RepairDispatchLease,
     control_token_digest,
 )
 from src.crm_deal_identity_repair.execution_models import (
@@ -67,6 +68,8 @@ _REGISTRY_CONSTRAINT = (
 _TEST_SOURCE_INSTANCE_ID = "repair-test-source"
 _TEST_CONTROL_INSTANCE_ID = "repair-test-control"
 _TEST_SOURCE_RECORD_PK = "repair-test-crm-deal-001"
+_TEST_ALLOCATION_ORIGIN_KEY_ID = "repair-test-approval-key"
+_TEST_ALLOCATION_ORIGIN_SECRET = b"repair-test-approval-secret"
 _REPAIR_RANGE_INDEX_INVENTORY = (
     "SHOW INDEXES YIELD name, type, owningConstraint "
     "WHERE name STARTS WITH 'crm_deal_repair_' AND type = 'RANGE' "
@@ -2111,6 +2114,24 @@ def _allocation_plan_for_test(run_id: str, boundary_digest: str, unit_count: int
     )
 
 
+def _allocate(
+    control: CrmDealRepairControlRepository,
+    request: RepairControlRequest,
+    *,
+    boundary_digest: str,
+    proof_digest: str,
+    plan: AllocationPlan,
+) -> RepairDispatchLease:
+    return control.allocate(
+        request,
+        boundary_digest=boundary_digest,
+        proof_digest=proof_digest,
+        plan=plan,
+        allocation_origin_key_id=_TEST_ALLOCATION_ORIGIN_KEY_ID,
+        allocation_origin_secret=_TEST_ALLOCATION_ORIGIN_SECRET,
+    )
+
+
 def _seed_quiesced_allocation_control(
     driver: Driver,
     run: RepairQualificationRun,
@@ -2192,7 +2213,8 @@ def test_310_pause_resume_exact_replay_rejects_conflicts_and_stale_revisions(
         control.resume(
             RepairControlRequest("repair-310-pause-replay", run.run_id, "owner-a", "token-a", 1)
         )
-    allocated = control.allocate(
+    allocated = _allocate(
+        control,
         RepairControlRequest("repair-310-pause-replay", run.run_id, "owner-a", "token-a", 3),
         boundary_digest=run.boundary_digest,
         proof_digest="proof",
@@ -2232,13 +2254,22 @@ def test_310_allocated_pause_resume_reseals_and_allocation_replay_is_exact(
         "repair-310-allocated-pause", run.run_id, "owner", "token", 1
     )
     plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 1)
-    allocated = control.allocate(
+    allocated = _allocate(
+        control,
         allocation_request,
         boundary_digest=run.boundary_digest,
         proof_digest="proof",
         plan=plan,
     )
     assert (allocated.state, allocated.revision) == ("allocated", 2)
+    with neo4j_driver.session() as session:
+        allocation_origin_hmac = session.run(
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "RETURN completion.allocation_origin_hmac AS origin_hmac",
+            run_id=run.run_id,
+        ).single(strict=True)["origin_hmac"]
+    assert isinstance(allocation_origin_hmac, str)
+    assert allocation_origin_hmac
     pause = RepairControlRequest("repair-310-allocated-pause", run.run_id, "owner", "token", 2)
     paused = control.pause(pause)
     assert (paused.state, paused.revision) == ("paused", 3)
@@ -2248,7 +2279,8 @@ def test_310_allocated_pause_resume_reseals_and_allocation_replay_is_exact(
             RepairControlRequest("repair-310-allocated-pause", run.run_id, "other", "token", 2)
         )
     assert (
-        control.allocate(
+        _allocate(
+            control,
             allocation_request,
             boundary_digest=run.boundary_digest,
             proof_digest="proof",
@@ -2269,7 +2301,8 @@ def test_310_allocated_pause_resume_reseals_and_allocation_replay_is_exact(
                    control.sealed_boundary_digest AS current_seal,
                    completion.allocation_revision AS allocation_revision,
                    completion.allocation_sealed_boundary_digest AS allocation_seal,
-                   completion.receipt_sealed_boundary_digest AS receipt_seal
+                   completion.receipt_sealed_boundary_digest AS receipt_seal,
+                   completion.allocation_origin_hmac AS origin_hmac
             """,
             run_id=run.run_id,
         ).single(strict=True)
@@ -2277,7 +2310,9 @@ def test_310_allocated_pause_resume_reseals_and_allocation_replay_is_exact(
     assert seals["allocation_revision"] == 2
     assert seals["receipt_seal"] == seals["allocation_seal"]
     assert seals["current_seal"] != seals["allocation_seal"]
-    replay = control.allocate(
+    assert seals["origin_hmac"] == allocation_origin_hmac
+    replay = _allocate(
+        control,
         allocation_request,
         boundary_digest=run.boundary_digest,
         proof_digest="proof",
@@ -2294,7 +2329,8 @@ def test_310_allocated_pause_resume_reseals_and_allocation_replay_is_exact(
     # it must reject corrupt persisted allocation evidence, not fall through to
     # a fresh CAS at the resumed revision.
     with pytest.raises(RuntimeError):
-        control.allocate(
+        _allocate(
+            control,
             allocation_request,
             boundary_digest=run.boundary_digest,
             proof_digest="proof",
@@ -2308,7 +2344,8 @@ def test_310_allocation_persists_exact_multi_unit_set_and_replay_conflicts(
     _, control, run = _qualified_control_repository(neo4j_driver, repair_id="repair-310-allocation")
     _seed_quiesced_allocation_control(neo4j_driver, run)
     plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 2)
-    allocated = control.allocate(
+    allocated = _allocate(
+        control,
         RepairControlRequest("repair-310-allocation", run.run_id, "owner", "token", 1),
         boundary_digest=run.boundary_digest,
         proof_digest="proof",
@@ -2316,7 +2353,8 @@ def test_310_allocation_persists_exact_multi_unit_set_and_replay_conflicts(
     )
     assert allocated.state == "allocated"
     replay_request = RepairControlRequest("repair-310-allocation", run.run_id, "owner", "token", 1)
-    replay = control.allocate(
+    replay = _allocate(
+        control,
         replay_request,
         boundary_digest=run.boundary_digest,
         proof_digest=control.proof_digest(replay_request),
@@ -2330,7 +2368,8 @@ def test_310_allocation_persists_exact_multi_unit_set_and_replay_conflicts(
             run_id=run.run_id,
         ).consume()
     with pytest.raises(RuntimeError):
-        control.allocate(
+        _allocate(
+            control,
             replay_request,
             boundary_digest=run.boundary_digest,
             proof_digest=control.proof_digest(replay_request),
@@ -2356,7 +2395,8 @@ def test_310_exact_allocation_replay_rejects_a_corrupted_current_seal(
     _seed_quiesced_allocation_control(neo4j_driver, run)
     request = RepairControlRequest("repair-310-seal-replay", run.run_id, "owner", "token", 1)
     plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 1)
-    control.allocate(
+    _allocate(
+        control,
         request,
         boundary_digest=run.boundary_digest,
         proof_digest="proof",
@@ -2369,7 +2409,8 @@ def test_310_exact_allocation_replay_rejects_a_corrupted_current_seal(
             run_id=run.run_id,
         ).consume()
     with pytest.raises(RuntimeError):
-        control.allocate(
+        _allocate(
+            control,
             request,
             boundary_digest=run.boundary_digest,
             proof_digest=control.proof_digest(request),
@@ -2402,7 +2443,9 @@ def test_310_exact_allocation_replay_rejects_tampered_immutable_receipt(
         f"repair-310-receipt-{property_name}", run.run_id, "owner", "token", 1
     )
     plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 1)
-    control.allocate(request, boundary_digest=run.boundary_digest, proof_digest="proof", plan=plan)
+    _allocate(
+        control, request, boundary_digest=run.boundary_digest, proof_digest="proof", plan=plan
+    )
     with neo4j_driver.session() as session:
         session.run(
             f"MATCH (completion:CrmDealRepairAllocationCompletion {{run_id: $run_id}}) "
@@ -2411,8 +2454,8 @@ def test_310_exact_allocation_replay_rejects_tampered_immutable_receipt(
             value=value,
         ).consume()
     with pytest.raises(RuntimeError):
-        control.allocate(
-            request, boundary_digest=run.boundary_digest, proof_digest="proof", plan=plan
+        _allocate(
+            control, request, boundary_digest=run.boundary_digest, proof_digest="proof", plan=plan
         )
 
 
@@ -2426,7 +2469,8 @@ def test_310_exact_allocation_replay_rejects_correlated_public_receipt_corruptio
     _seed_quiesced_allocation_control(neo4j_driver, run)
     request = RepairControlRequest("repair-310-correlated-receipt", run.run_id, "owner", "token", 1)
     plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 1)
-    control.allocate(
+    _allocate(
+        control,
         request,
         boundary_digest=run.boundary_digest,
         proof_digest="proof",
@@ -2455,7 +2499,8 @@ def test_310_exact_allocation_replay_rejects_correlated_public_receipt_corruptio
             receipt_digest=tampered_receipt_digest,
         ).consume()
     with pytest.raises(RuntimeError):
-        control.allocate(
+        _allocate(
+            control,
             request,
             boundary_digest=run.boundary_digest,
             proof_digest="proof",
@@ -2466,7 +2511,7 @@ def test_310_exact_allocation_replay_rejects_correlated_public_receipt_corruptio
 def test_310_exact_allocation_replay_rejects_coherent_sealed_receipt_corruption(
     neo4j_driver: Driver,
 ) -> None:
-    """A recomputed receipt seal must equal immutable allocation-time evidence."""
+    """A public receipt cannot forge the independently keyed allocation-origin seal."""
     _, control, run = _qualified_control_repository(
         neo4j_driver, repair_id="repair-310-correlated-receipt-seal"
     )
@@ -2475,7 +2520,8 @@ def test_310_exact_allocation_replay_rejects_coherent_sealed_receipt_corruption(
         "repair-310-correlated-receipt-seal", run.run_id, "owner", "token", 1
     )
     plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 1)
-    control.allocate(
+    _allocate(
+        control,
         request,
         boundary_digest=run.boundary_digest,
         proof_digest="proof",
@@ -2495,24 +2541,29 @@ def test_310_exact_allocation_replay_rejects_coherent_sealed_receipt_corruption(
         allocation_seal = session.run(
             """
             MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
-            RETURN completion.allocation_sealed_boundary_digest AS allocation_seal
+            RETURN completion.allocation_sealed_boundary_digest AS allocation_seal,
+                   completion.allocation_origin_hmac AS origin_hmac
             """,
             run_id=run.run_id,
-        ).single(strict=True)["allocation_seal"]
+        ).single(strict=True)
         session.run(
             """
             MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
-            SET completion.receipt_sealed_boundary_digest = $sealed_boundary_digest,
+            SET completion.allocation_sealed_boundary_digest = $sealed_boundary_digest,
+                completion.receipt_sealed_boundary_digest = $sealed_boundary_digest,
                 completion.receipt_digest = $receipt_digest
             """,
             run_id=run.run_id,
             sealed_boundary_digest=tampered_seal,
             receipt_digest=tampered_receipt_digest,
         ).consume()
-    assert isinstance(allocation_seal, str)
-    assert allocation_seal != tampered_seal
+    assert isinstance(allocation_seal["allocation_seal"], str)
+    assert allocation_seal["allocation_seal"] != tampered_seal
+    assert isinstance(allocation_seal["origin_hmac"], str)
+    assert allocation_seal["origin_hmac"]
     with pytest.raises(RuntimeError):
-        control.allocate(
+        _allocate(
+            control,
             request,
             boundary_digest=run.boundary_digest,
             proof_digest="proof",
@@ -2666,7 +2717,8 @@ def test_310_allocation_rejects_any_post_quiescence_control_or_stale_drift(
         ).consume()
 
     with pytest.raises(RuntimeError, match="full boundary became stale"):
-        control.allocate(
+        _allocate(
+            control,
             RepairControlRequest("repair-310-full-boundary", run.run_id, "owner", "token", 1),
             boundary_digest=run.boundary_digest,
             proof_digest="proof",
@@ -2686,7 +2738,8 @@ def test_310_allocation_persists_zero_unit_completion_without_a_unit(neo4j_drive
     )
     _seed_quiesced_allocation_control(neo4j_driver, run)
     plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 0)
-    allocated = control.allocate(
+    allocated = _allocate(
+        control,
         RepairControlRequest("repair-310-zero-allocation", run.run_id, "owner", "token", 1),
         boundary_digest=run.boundary_digest,
         proof_digest="proof",
@@ -2694,7 +2747,8 @@ def test_310_allocation_persists_zero_unit_completion_without_a_unit(neo4j_drive
     )
     assert allocated.state == "allocated"
     assert (
-        control.allocate(
+        _allocate(
+            control,
             RepairControlRequest("repair-310-zero-allocation", run.run_id, "owner", "token", 1),
             boundary_digest=run.boundary_digest,
             proof_digest="proof",
@@ -2703,7 +2757,8 @@ def test_310_allocation_persists_zero_unit_completion_without_a_unit(neo4j_drive
         == allocated
     )
     with pytest.raises(RuntimeError):
-        control.allocate(
+        _allocate(
+            control,
             RepairControlRequest("repair-310-zero-allocation", run.run_id, "owner", "token", 2),
             boundary_digest=run.boundary_digest,
             proof_digest="proof",
@@ -2718,7 +2773,8 @@ def test_310_allocation_persists_zero_unit_completion_without_a_unit(neo4j_drive
                    completion.allocation_revision AS allocation_revision,
                    completion.allocation_state AS allocation_state,
                    completion.allocation_sealed_boundary_digest AS allocation_seal,
-                   completion.receipt_sealed_boundary_digest AS receipt_seal
+                   completion.receipt_sealed_boundary_digest AS receipt_seal,
+                   completion.allocation_origin_hmac AS origin_hmac
             """,
             run_id=run.run_id,
         ).single(strict=True)
@@ -2727,6 +2783,8 @@ def test_310_allocation_persists_zero_unit_completion_without_a_unit(neo4j_drive
     assert row["allocation_state"] == "allocated"
     assert isinstance(row["allocation_seal"], str)
     assert row["receipt_seal"] == row["allocation_seal"]
+    assert isinstance(row["origin_hmac"], str)
+    assert row["origin_hmac"]
 
 
 def test_310_allocation_conflict_rolls_back_multi_unit_completion(neo4j_driver: Driver) -> None:
@@ -2747,7 +2805,8 @@ def test_310_allocation_conflict_rolls_back_multi_unit_completion(neo4j_driver: 
             digest="sha256:" + "a" * 64,
         ).consume()
     with pytest.raises(RuntimeError):
-        control.allocate(
+        _allocate(
+            control,
             RepairControlRequest("repair-310-allocation-rollback", run.run_id, "owner", "token", 1),
             boundary_digest=run.boundary_digest,
             proof_digest="proof",
@@ -2775,7 +2834,8 @@ def test_310_allocation_concurrent_replay_persists_one_complete_unit_set(
 
     def allocate() -> bool:
         try:
-            control.allocate(
+            _allocate(
+                control,
                 RepairControlRequest(
                     "repair-310-allocation-concurrent", run.run_id, "owner", "token", 1
                 ),
