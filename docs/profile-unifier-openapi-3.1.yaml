@@ -3617,8 +3617,7 @@ components:
         person_count: {type: integer, minimum: 0}
         source_record_count: {type: integer, minimum: 0}
         last_ingested_at: {type: [string, 'null']}
-        active_review_cases: {type: integer, minimum: 0}
-      required: [entity_key, person_count, source_record_count, last_ingested_at, active_review_cases]
+      required: [entity_key, person_count, source_record_count, last_ingested_at]
       additionalProperties: false
     EntityMetadataListEnvelope:
       type: object

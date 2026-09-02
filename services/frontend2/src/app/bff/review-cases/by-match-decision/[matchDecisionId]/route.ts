@@ -9,9 +9,10 @@ interface RouteContext {
   params: Promise<{ matchDecisionId: string }>;
 }
 
-export async function GET(_request: Request, context: RouteContext): Promise<NextResponse> {
+export async function GET(request: Request, context: RouteContext): Promise<NextResponse> {
   const { matchDecisionId } = await context.params;
   return proxyToApi<ReviewCaseDetail>(
     `/review-cases/by-match-decision/${encodeURIComponent(matchDecisionId)}`,
+    { signal: request.signal },
   );
 }

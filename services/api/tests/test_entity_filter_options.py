@@ -11,7 +11,7 @@ from src.graph.mappers_entities import map_entity_filter_option
 from src.graph.queries.entities import LIST_ENTITY_FILTER_OPTIONS
 from src.repositories.neo4j.entity import Neo4jEntityRepository
 from src.request_timing import begin_request, current_request_id, end_request
-from src.types import EntityFilterOption, EntitySummary
+from src.types import EntityFilterOption, EntityMetrics, EntitySummary
 
 
 class _Record:
@@ -168,6 +168,150 @@ async def test_entity_summary_expiry_returns_stale_value_and_refreshes_detached(
     await refresh
     await asyncio.sleep(0)
     assert (await repo.get_all())[0].person_count == 2
+
+
+@pytest.mark.anyio
+async def test_entity_summary_stale_refresh_failure_is_bounded_and_clears_task(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(entity_module.config, "entity_summary_cache_ttl_seconds", 30)
+    monkeypatch.setattr(entity_module.config, "entity_summary_cache_max_stale_seconds", 30)
+    now = [100.0]
+    monkeypatch.setattr(entity_module, "monotonic", lambda: now[0])
+
+    class _FailingRefreshRepository(Neo4jEntityRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+
+        async def _load_all(self) -> list[EntitySummary]:
+            self.calls += 1
+            if self.calls == 1:
+                return [EntitySummary(entity_key="eko", person_count=2, source_record_count=3)]
+            raise RuntimeError("neo4j unavailable")
+
+    repo = _FailingRefreshRepository()
+    assert (await repo.get_all())[0].person_count == 2
+    now[0] = 131.0
+    assert (await repo.get_all())[0].person_count == 2
+    refresh = repo._summary_refresh_task
+    assert refresh is not None
+    with pytest.raises(RuntimeError, match="neo4j unavailable"):
+        await refresh
+    await asyncio.sleep(0)
+    assert repo._summary_refresh_task is None
+
+    now[0] = 161.0
+    with pytest.raises(RuntimeError, match="neo4j unavailable"):
+        await repo.get_all()
+    assert repo.calls == 3
+
+
+@pytest.mark.anyio
+async def test_entity_summary_cutoff_awaits_active_refresh_without_duplicate_load(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(entity_module.config, "entity_summary_cache_ttl_seconds", 30)
+    monkeypatch.setattr(entity_module.config, "entity_summary_cache_max_stale_seconds", 30)
+    now = [100.0]
+    monkeypatch.setattr(entity_module, "monotonic", lambda: now[0])
+
+    class _SlowRefreshRepository(Neo4jEntityRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+            self.refresh_started = asyncio.Event()
+            self.release_refresh = asyncio.Event()
+
+        async def _load_all(self) -> list[EntitySummary]:
+            self.calls += 1
+            if self.calls == 2:
+                self.refresh_started.set()
+                await self.release_refresh.wait()
+            return [
+                EntitySummary(
+                    entity_key="eko",
+                    person_count=self.calls,
+                    source_record_count=self.calls,
+                )
+            ]
+
+    repo = _SlowRefreshRepository()
+    assert (await repo.get_all())[0].person_count == 1
+    now[0] = 131.0
+    assert (await repo.get_all())[0].person_count == 1
+    await asyncio.wait_for(repo.refresh_started.wait(), timeout=1)
+
+    now[0] = 161.0
+    cutoff_request = asyncio.create_task(repo.get_all())
+    await asyncio.sleep(0)
+    assert repo.calls == 2
+    repo.release_refresh.set()
+
+    assert (await asyncio.wait_for(cutoff_request, timeout=1))[0].person_count == 2
+    assert repo.calls == 2
+
+
+@pytest.mark.anyio
+async def test_entity_summary_cutoff_propagates_active_refresh_error(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(entity_module.config, "entity_summary_cache_ttl_seconds", 30)
+    monkeypatch.setattr(entity_module.config, "entity_summary_cache_max_stale_seconds", 30)
+    now = [100.0]
+    monkeypatch.setattr(entity_module, "monotonic", lambda: now[0])
+
+    class _FailingSlowRefreshRepository(Neo4jEntityRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.calls = 0
+            self.refresh_started = asyncio.Event()
+            self.release_refresh = asyncio.Event()
+
+        async def _load_all(self) -> list[EntitySummary]:
+            self.calls += 1
+            if self.calls == 1:
+                return [EntitySummary(entity_key="eko", person_count=1, source_record_count=1)]
+            self.refresh_started.set()
+            await self.release_refresh.wait()
+            raise RuntimeError("neo4j unavailable")
+
+    repo = _FailingSlowRefreshRepository()
+    await repo.get_all()
+    now[0] = 131.0
+    await repo.get_all()
+    await asyncio.wait_for(repo.refresh_started.wait(), timeout=1)
+
+    now[0] = 161.0
+    cutoff_request = asyncio.create_task(repo.get_all())
+    await asyncio.sleep(0)
+    assert repo.calls == 2
+    repo.release_refresh.set()
+
+    with pytest.raises(RuntimeError, match="neo4j unavailable"):
+        await asyncio.wait_for(cutoff_request, timeout=1)
+    assert repo.calls == 2
+    await asyncio.sleep(0)
+    assert repo._summary_refresh_task is None
+
+
+@pytest.mark.anyio
+async def test_entity_metrics_omit_uncomputed_review_case_count() -> None:
+    class _MetricsRepository(Neo4jEntityRepository):
+        async def get_all(self) -> list[EntitySummary]:
+            return [
+                EntitySummary(
+                    entity_key="eko",
+                    person_count=2,
+                    source_record_count=3,
+                    active_review_cases=9,
+                )
+            ]
+
+    metrics = await _MetricsRepository().get_metrics()
+
+    assert metrics == [EntityMetrics(entity_key="eko", person_count=2, source_record_count=3)]
+    assert "active_review_cases" not in metrics[0].model_dump()
 
 
 @pytest.mark.anyio

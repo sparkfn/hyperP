@@ -1689,7 +1689,6 @@ export interface components {
             person_count: number;
             source_record_count: number;
             last_ingested_at: string | null;
-            active_review_cases: number;
         };
         EntityMetadataListEnvelope: {
             data: components["schemas"]["EntityMetadata"][];
