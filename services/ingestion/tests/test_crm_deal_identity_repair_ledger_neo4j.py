@@ -2247,10 +2247,36 @@ def test_310_allocated_pause_resume_reseals_and_allocation_replay_is_exact(
         control.pause(
             RepairControlRequest("repair-310-allocated-pause", run.run_id, "other", "token", 2)
         )
+    assert (
+        control.allocate(
+            allocation_request,
+            boundary_digest=run.boundary_digest,
+            proof_digest="proof",
+            plan=plan,
+        )
+        == allocated
+    )
     resume = RepairControlRequest("repair-310-allocated-pause", run.run_id, "owner", "token", 3)
     resumed = control.resume(resume)
     assert (resumed.state, resumed.revision) == ("allocated", 4)
     assert control.resume(resume) == resumed
+    with neo4j_driver.session() as session:
+        seals = session.run(
+            """
+            MATCH (control:CrmDealRepairControl {run_id: $run_id})
+            MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
+            RETURN control.sealed_revision AS current_revision,
+                   control.sealed_boundary_digest AS current_seal,
+                   completion.allocation_revision AS allocation_revision,
+                   completion.allocation_sealed_boundary_digest AS allocation_seal,
+                   completion.receipt_sealed_boundary_digest AS receipt_seal
+            """,
+            run_id=run.run_id,
+        ).single(strict=True)
+    assert seals["current_revision"] == 4
+    assert seals["allocation_revision"] == 2
+    assert seals["receipt_seal"] == seals["allocation_seal"]
+    assert seals["current_seal"] != seals["allocation_seal"]
     replay = control.allocate(
         allocation_request,
         boundary_digest=run.boundary_digest,
@@ -2440,7 +2466,7 @@ def test_310_exact_allocation_replay_rejects_correlated_public_receipt_corruptio
 def test_310_exact_allocation_replay_rejects_coherent_sealed_receipt_corruption(
     neo4j_driver: Driver,
 ) -> None:
-    """A recomputed receipt seal must equal the control's currently sealed boundary."""
+    """A recomputed receipt seal must equal immutable allocation-time evidence."""
     _, control, run = _qualified_control_repository(
         neo4j_driver, repair_id="repair-310-correlated-receipt-seal"
     )
@@ -2466,6 +2492,13 @@ def test_310_exact_allocation_replay_rejects_coherent_sealed_receipt_corruption(
         sealed_boundary_digest=tampered_seal,
     )
     with neo4j_driver.session() as session:
+        allocation_seal = session.run(
+            """
+            MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
+            RETURN completion.allocation_sealed_boundary_digest AS allocation_seal
+            """,
+            run_id=run.run_id,
+        ).single(strict=True)["allocation_seal"]
         session.run(
             """
             MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
@@ -2476,6 +2509,8 @@ def test_310_exact_allocation_replay_rejects_coherent_sealed_receipt_corruption(
             sealed_boundary_digest=tampered_seal,
             receipt_digest=tampered_receipt_digest,
         ).consume()
+    assert isinstance(allocation_seal, str)
+    assert allocation_seal != tampered_seal
     with pytest.raises(RuntimeError):
         control.allocate(
             request,
@@ -2675,13 +2710,23 @@ def test_310_allocation_persists_zero_unit_completion_without_a_unit(neo4j_drive
             plan=_allocation_plan_for_test(run.run_id, run.boundary_digest, 1),
         )
     with neo4j_driver.session() as session:
-        assert (
-            session.run(
-                "MATCH (:CrmDealRepairUnit {run_id: $run_id}) RETURN count(*) AS count",
-                run_id=run.run_id,
-            ).single(strict=True)["count"]
-            == 0
-        )
+        row = session.run(
+            """
+            MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
+            OPTIONAL MATCH (unit:CrmDealRepairUnit {run_id: $run_id})
+            RETURN count(unit) AS unit_count,
+                   completion.allocation_revision AS allocation_revision,
+                   completion.allocation_state AS allocation_state,
+                   completion.allocation_sealed_boundary_digest AS allocation_seal,
+                   completion.receipt_sealed_boundary_digest AS receipt_seal
+            """,
+            run_id=run.run_id,
+        ).single(strict=True)
+    assert row["unit_count"] == 0
+    assert row["allocation_revision"] == 2
+    assert row["allocation_state"] == "allocated"
+    assert isinstance(row["allocation_seal"], str)
+    assert row["receipt_seal"] == row["allocation_seal"]
 
 
 def test_310_allocation_conflict_rolls_back_multi_unit_completion(neo4j_driver: Driver) -> None:
