@@ -853,6 +853,29 @@ def test_missing_binding_and_control_evidence_are_typed_read_only_drift(
         "missing_binding",
         False,
     )
+
+
+def test_legacy_qualified_manifest_without_materialized_rollback_authority_replays(
+    neo4j_driver: Driver,
+) -> None:
+    repository = _repository(neo4j_driver)
+    _persist_evidence(neo4j_driver)
+    snapshot = _snapshot(repository)
+    manifest = _manifest(snapshot, repair_id="repair-legacy-rollback-authority")
+    initial = repository.qualify(manifest, snapshot)
+    with neo4j_driver.session() as session:
+        session.run(
+            """
+            MATCH (run:CrmDealRepairRun {run_id: $run_id})-[qualification:QUALIFIED_WITH]->
+              (boundary:RepairExecutionBoundary)
+            REMOVE run.rollback_authority_reference, run.rollback_authority_policy,
+              boundary.rollback_authority_reference, boundary.rollback_authority_policy
+            """,
+            run_id=initial.run_id,
+        ).consume()
+
+    replay = repository.qualify(manifest, snapshot)
+    assert replay == initial
     instances = BitrixSourceInstanceRepository(cast(Neo4jClient, _client(neo4j_driver)))
     instances.admit(
         source_instance_id=_TEST_SOURCE_INSTANCE_ID,

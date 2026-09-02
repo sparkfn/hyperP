@@ -14,6 +14,11 @@ MUTATION_ROLLBACK_DIGEST_DOMAIN = b"crm-deal-identity-repair-rollback-v1\x00"
 MUTATION_REPAIRED_STATE_DIGEST_DOMAIN = b"crm-deal-identity-repair-repaired-state-v1\x00"
 MUTATION_RESULT_DIGEST_DOMAIN = b"crm-deal-identity-repair-result-v1\x00"
 MUTATION_OUTBOX_DIGEST_DOMAIN = b"crm-deal-identity-repair-outbox-v1\x00"
+ROLLBACK_REQUEST_DIGEST_DOMAIN = b"crm-deal-identity-repair-rollback-request-v1\x00"
+ROLLBACK_AUTHORITY_DIGEST_DOMAIN = b"crm-deal-identity-repair-rollback-authority-v1\x00"
+ROLLBACK_RESULT_DIGEST_DOMAIN = b"crm-deal-identity-repair-rollback-result-v1\x00"
+ROLLBACK_STATUS_DIGEST_DOMAIN = b"crm-deal-identity-repair-rollback-status-v1\x00"
+ROLLBACK_DRIFT_DIGEST_DOMAIN = b"crm-deal-identity-repair-rollback-drift-v1\x00"
 VERIFICATION_REQUEST_DIGEST_DOMAIN = b"crm-deal-identity-repair-verification-request-v1\x00"
 VERIFICATION_RESULT_DIGEST_DOMAIN = b"crm-deal-identity-repair-verification-result-v1\x00"
 VERIFICATION_SUBJECT_DIGEST_DOMAIN = b"crm-deal-identity-repair-verification-subject-v1\x00"
@@ -100,6 +105,31 @@ def mutation_result_digest(value: dict[str, JsonValue]) -> str:
 def outbox_event_digest(value: dict[str, JsonValue]) -> str:
     """Digest the bounded, non-sensitive pending outbox stub."""
     return object_digest(MUTATION_OUTBOX_DIGEST_DOMAIN, value)
+
+
+def rollback_request_digest(value: dict[str, JsonValue]) -> str:
+    """Digest one immutable rollback transition request."""
+    return object_digest(ROLLBACK_REQUEST_DIGEST_DOMAIN, value)
+
+
+def rollback_authority_digest(value: dict[str, JsonValue]) -> str:
+    """Digest the run/unit/fence authorization consumed by rollback."""
+    return object_digest(ROLLBACK_AUTHORITY_DIGEST_DOMAIN, value)
+
+
+def rollback_result_digest(value: dict[str, JsonValue]) -> str:
+    """Digest one terminal rollback disposition and state transition."""
+    return object_digest(ROLLBACK_RESULT_DIGEST_DOMAIN, value)
+
+
+def rollback_status_digest(value: dict[str, JsonValue]) -> str:
+    """Digest a read-only, validated rollback status projection."""
+    return object_digest(ROLLBACK_STATUS_DIGEST_DOMAIN, value)
+
+
+def rollback_drift_digest(value: dict[str, JsonValue]) -> str:
+    """Digest the complete canonical CAS mismatch set without exposing values."""
+    return object_digest(ROLLBACK_DRIFT_DIGEST_DOMAIN, value)
 
 
 def verification_request_digest(value: dict[str, JsonValue]) -> str:

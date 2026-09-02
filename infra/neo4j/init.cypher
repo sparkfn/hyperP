@@ -372,6 +372,9 @@ CREATE CONSTRAINT crm_deal_repair_mutation_unique IF NOT EXISTS
 FOR (result:CrmDealRepairMutationResult) REQUIRE (result.run_id, result.mutation_id) IS UNIQUE;
 CREATE CONSTRAINT crm_deal_repair_rollback_unique IF NOT EXISTS
 FOR (image:CrmDealRepairRollbackImage) REQUIRE (image.run_id, image.rollback_image_id) IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_rollback_authorization_unique IF NOT EXISTS
+FOR (authorization:CrmDealRepairRollbackAuthorization)
+REQUIRE (authorization.run_id, authorization.authorization_transition_id) IS UNIQUE;
 CREATE CONSTRAINT crm_deal_repair_secondary_unique IF NOT EXISTS
 FOR (disposition:CrmDealRepairSecondaryDisposition) REQUIRE (disposition.run_id, disposition.disposition_id) IS UNIQUE;
 CREATE CONSTRAINT crm_deal_repair_verification_unique IF NOT EXISTS

@@ -227,6 +227,10 @@ def test_protocols_are_granular_and_schema_matches_record_identities() -> None:
     )
     assert REQUIRED_CONSTRAINTS["crm_deal_repair_fence_unique"][1] == ("run_id", "fence_id")
     assert REQUIRED_CONSTRAINTS["crm_deal_repair_mutation_unique"][1] == ("run_id", "mutation_id")
+    assert REQUIRED_CONSTRAINTS["crm_deal_repair_rollback_authorization_unique"] == (
+        "CrmDealRepairRollbackAuthorization",
+        ("run_id", "authorization_transition_id"),
+    )
     assert REQUIRED_CONSTRAINTS["crm_deal_repair_quiescence_unique"][1] == (
         "run_id",
         "quiescence_id",
