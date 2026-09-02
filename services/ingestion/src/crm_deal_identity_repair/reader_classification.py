@@ -38,7 +38,10 @@ _CLAUSE_PATTERN: Final[re.Pattern[str]] = re.compile(
 _RELATIONSHIP_BINDING_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"\[\s*(?:(?P<name>[A-Za-z_]\w*)\s*)?:\s*(?:" + _RELATIONSHIP_TYPES + r")\b"
 )
-_GENERIC_RELATIONSHIP_PATTERN: Final[re.Pattern[str]] = re.compile(r"\[(?P<name>[A-Za-z_]\w*)\]")
+_GENERIC_RELATIONSHIP_PATTERN: Final[re.Pattern[str]] = re.compile(
+    r"(?:<-|-)\s*\[\s*(?P<name>[A-Za-z_]\w*)\s*"
+    r"(?:\*[^]]*)?(?:\{[^]]*\})?\s*\]\s*(?:->|-)"
+)
 _WRITE_PATTERN: Final[re.Pattern[str]] = re.compile(r"\b(?:CREATE|MERGE|SET|DELETE|REMOVE)\b")
 _ACTIVE_PATTERN: Final[re.Pattern[str]] = re.compile(
     r"coalesce\s*\([^)]*\.is_active\s*,\s*true\s*\)\s*=\s*true"
@@ -48,10 +51,17 @@ _ACTIVE_PATTERN: Final[re.Pattern[str]] = re.compile(
 # that reads a repairable relationship must update this contract and its tests.
 _AUDIT_READERS: Final[frozenset[str]] = frozenset(
     {
+        "api/graph/queries/graph.py:_QUERY_BODY",
         "api/graph/queries/review.py:GET_PENDING_REVIEW_RECORD",
+        "ingestion/graph/fundbox_source_migration.py:CHECK_LEGACY_SOURCE_LINKS",
         "ingestion/graph/queries/crm_deal_identity_repair.py:INVENTORY_ACTIVE_CRM_DEALS",
         "ingestion/graph/queries/crm_deal_identity_repair.py:INVENTORY_CRM_DEAL_PROJECTIONS",
+        "ingestion/graph/queries/crm_deal_identity_repair_ledger.py:READ_CONTROL_RELATIONSHIPS",
+        "ingestion/graph/queries/crm_deal_identity_repair_mutation.py:READ_MUTATION_GRAPH_SNAPSHOT",
         "ingestion/graph/queries/crm_deal_identity_repair_mutation.py:READ_REPAIRED_OWNER_IDS",
+        "ingestion/graph/queries/crm_deal_identity_repair_mutation.py:VERIFY_REPAIRED_MUTATION_POSTCONDITIONS",
+        "ingestion/graph/queries/crm_deal_identity_repair_rollback.py:READ_RESTORED_ROLLBACK_STATE",
+        "ingestion/graph/queries/crm_deal_identity_repair_rollback.py:READ_ROLLBACK_POSTCONDITION",
         "ingestion/graph/queries/crm_deal_identity_repair_verification.py:READ_AFFECTED_PERSON_IDS",
         "ingestion/graph/queries/crm_deal_identity_repair_verification.py:READ_APPLIED_REPLACEMENT_OWNER",
         "ingestion/graph/queries/crm_deal_identity_repair_verification.py:READ_EXPECTED_AFFECTED_CRM_DEAL_COUNTS",
@@ -62,6 +72,8 @@ _AUDIT_READERS: Final[frozenset[str]] = frozenset(
         "ingestion/graph/queries/crm_deal_identity_repair_verification.py:READ_RETIRED_RELATIONSHIP_SNAPSHOTS",
         "ingestion/graph/queries/crm_deal_identity_repair_verification.py:READ_RUN_GRAPH_TOTALS",
         "ingestion/graph/queries/crm_deal_identity_repair_verification.py:READ_SECONDARY_CONTEXT",
+        "ingestion/graph/queries/crm_tenant_mapping.py:READ_TOPOLOGY_VIOLATIONS",
+        "ingestion/graph/queries/crm_tenant_projection_mapping_guard.py:VALIDATE_MAPPING_PROOF_GUARD",
         "ingestion/graph/queries/merge.py:GET_AFFECTED_SOURCE_RECORDS",
         # Identifier detail intentionally presents retired projections as
         # evidence, including their is_active state and provenance.
@@ -230,6 +242,8 @@ api/graph/queries/merge.py:REVERT_MERGE
 api/graph/queries/review.py:PROMOTE_STAGED_REVIEW_SALE
 api/graph/queries/review.py:RESOLVE_PENDING_REVIEW_RECORD_NO_MATCH
 api/graph/queries/review.py:REJECT_PENDING_REVIEW_RECORD
+ingestion/graph/fundbox_source_migration.py:REWRITE_SOURCE_PROVENANCE
+ingestion/graph/fundbox_source_migration.py:REWRITE_SOURCE_RECORD_REFERENCES
 ingestion/graph/migrations.py:DEDUPLICATE_LEGACY_BITRIX_PROJECTIONS
 ingestion/graph/migrations.py:REWRITE_LEGACY_BITRIX_PROJECTION_KEYS
 ingestion/graph/migrations.py:MIGRATE_PROJECTION_RELATIONSHIP_LIFECYCLE
@@ -237,6 +251,9 @@ ingestion/graph/migrations.py:RECONCILE_PROJECTION_RELATIONSHIP_LIFECYCLE
 ingestion/graph/queries/crm_deal_identity_repair_mutation.py:READ_LOCKED_REPAIR_AUTHORITY
 ingestion/graph/queries/crm_deal_identity_repair_mutation.py:LOCK_SUPPORT_SOURCE_RECORDS
 ingestion/graph/queries/crm_deal_identity_repair_mutation.py:RETIRE_EXACT_CONTAMINATION
+ingestion/graph/queries/crm_deal_identity_repair_rollback.py:READ_ROLLBACK_CURRENT_STATE
+ingestion/graph/queries/crm_deal_identity_repair_rollback.py:RESTORE_PREEXISTING_RELATIONSHIPS
+ingestion/graph/queries/crm_deal_identity_repair_rollback.py:MAKE_MUTATION_EVIDENCE_HISTORICAL
 ingestion/graph/queries/identifier_scope_migrations.py:MIGRATE_CRM_IDENTIFIER_RELATIONSHIPS_BATCH
 ingestion/graph/queries/identifier_scope_migrations.py:CONSOLIDATE_SCOPED_IDENTIFIER_DUPLICATES_BATCH
 ingestion/graph/queries/knows.py:REWIRE_KNOWS_OUT
@@ -439,18 +456,16 @@ def _is_write_only_relationship(query: str, position: int) -> bool:
 
 
 def _generic_repairable_relationship_read(query: str) -> bool:
-    """Detect generic relationship variables constrained to a repairable type."""
-    for match in _GENERIC_RELATIONSHIP_PATTERN.finditer(query):
-        if _is_write_only_relationship(query, match.start()):
-            continue
-        name = match.group("name")
-        if re.search(
-            rf"type\s*\(\s*{re.escape(name)}\s*\)\s*=\s*['\"](?:{_RELATIONSHIP_TYPES})['\"]",
-            query,
-            re.IGNORECASE,
-        ):
-            return True
-    return False
+    """Detect untyped relationship reads that may traverse repairable links.
+
+    An untyped binding remains in scope whether it is unrestricted, narrowed by
+    ``type(...) IN [...]``, or compared with a dynamic type value. Such runtime
+    constraints cannot prove that repairable relationship types are excluded.
+    """
+    return any(
+        not _is_write_only_relationship(query, match.start())
+        for match in _GENERIC_RELATIONSHIP_PATTERN.finditer(query)
+    )
 
 
 def _has_active_predicate(reader: RelationshipReader) -> bool:
