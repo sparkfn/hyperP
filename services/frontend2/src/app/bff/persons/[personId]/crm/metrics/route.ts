@@ -10,11 +10,12 @@ interface RouteContext {
 }
 
 export async function GET(
-  _request: Request,
+  request: Request,
   context: RouteContext,
 ): Promise<NextResponse> {
   const { personId } = await context.params;
   return proxyToApi<PersonCrmMetrics>(
     `/persons/${encodeURIComponent(personId)}/crm/metrics`,
+    { signal: request.signal },
   );
 }

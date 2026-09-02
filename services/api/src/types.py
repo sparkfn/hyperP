@@ -616,6 +616,22 @@ class EntitySummary(BaseModel):
     active_review_cases: int = 0
 
 
+class EntityMetadata(BaseModel):
+    entity_key: str
+    display_name: str | None = None
+    entity_type: str | None = None
+    country_code: str | None = None
+    is_active: bool = True
+
+
+class EntityMetrics(BaseModel):
+    entity_key: str
+    person_count: int = 0
+    source_record_count: int = 0
+    last_ingested_at: str | None = None
+    active_review_cases: int = 0
+
+
 class EntityFilterOption(BaseModel):
     """Minimal entity metadata used by the person-list filter."""
 

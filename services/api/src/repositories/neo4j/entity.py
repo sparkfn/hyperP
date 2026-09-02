@@ -9,6 +9,7 @@ from src.config import config
 from src.graph.client import get_session
 from src.graph.mappers_entities import (
     map_entity_filter_option,
+    map_entity_metadata,
     map_entity_person,
     map_entity_summary,
     map_source_system_summary,
@@ -16,11 +17,19 @@ from src.graph.mappers_entities import (
 from src.graph.queries import (
     LIST_ENTITIES,
     LIST_ENTITY_FILTER_OPTIONS,
+    LIST_ENTITY_METADATA,
     LIST_FILTER_SOURCE_SYSTEMS,
     get_entity_persons_query,
 )
 from src.request_timing import create_detached_task
-from src.types import EntityFilterOption, EntityPerson, EntitySummary, SourceSystemSummary
+from src.types import (
+    EntityFilterOption,
+    EntityMetadata,
+    EntityMetrics,
+    EntityPerson,
+    EntitySummary,
+    SourceSystemSummary,
+)
 
 from ._utils import record_to_dict
 
@@ -42,6 +51,25 @@ class Neo4jEntityRepository:
             result = await session.run(LIST_ENTITIES)
             records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
         return [map_entity_summary(rec) for rec in records]
+
+    async def get_metadata(self) -> list[EntityMetadata]:
+        async with get_session() as session:
+            result = await session.run(LIST_ENTITY_METADATA)
+            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
+        return [map_entity_metadata(record) for record in records]
+
+    async def get_metrics(self) -> list[EntityMetrics]:
+        summaries = await self.get_all()
+        return [
+            EntityMetrics(
+                entity_key=item.entity_key,
+                person_count=item.person_count,
+                source_record_count=item.source_record_count,
+                last_ingested_at=item.last_ingested_at,
+                active_review_cases=item.active_review_cases,
+            )
+            for item in summaries
+        ]
 
     async def get_all(self) -> list[EntitySummary]:
         ttl = config.entity_summary_cache_ttl_seconds
@@ -65,7 +93,7 @@ class Neo4jEntityRepository:
     def _start_summary_refresh(self, ttl: int) -> None:
         if self._summary_refresh_task is not None and not self._summary_refresh_task.done():
             return
-        task = create_detached_task(self._load_all())
+        task = create_detached_task(self._load_all(), background_read=True)
         self._summary_refresh_task = task
 
         def store_result(completed: asyncio.Task[list[EntitySummary]]) -> None:

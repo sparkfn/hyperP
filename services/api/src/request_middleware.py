@@ -34,7 +34,9 @@ class RequestTimingMiddleware:
         request_id = self._request_id(scope)
         token = begin_request(request_id)
         started_at = monotonic()
-        messages: asyncio.Queue[Message] = asyncio.Queue()
+        # One queued message preserves body backpressure; the pump cannot drain
+        # an arbitrary upload ahead of the downstream application.
+        messages: asyncio.Queue[Message] = asyncio.Queue(maxsize=1)
         app_task: asyncio.Future[None] | None = None
         response_started = False
 
@@ -53,10 +55,10 @@ class RequestTimingMiddleware:
         async def pump_disconnect() -> None:
             while True:
                 message = await receive()
-                await messages.put(message)
                 if message["type"] == "http.disconnect" and app_task is not None:
                     app_task.cancel()
                     return
+                await messages.put(message)
 
         try:
             app_task = asyncio.ensure_future(self.app(scope, queued_receive, send_with_timing))

@@ -9,10 +9,11 @@ interface RouteContext {
   params: Promise<{ personId: string }>;
 }
 
-export async function GET(_request: Request, context: RouteContext): Promise<NextResponse> {
+export async function GET(request: Request, context: RouteContext): Promise<NextResponse> {
   const { personId } = await context.params;
   return proxyToApi<PersonProfileAnalyses>(
     `/persons/${encodeURIComponent(personId)}/profile-analyses`,
+    { signal: request.signal },
   );
 }
 
@@ -21,6 +22,6 @@ export async function POST(request: Request, context: RouteContext): Promise<Nex
   const body: unknown = await request.json();
   return proxyToApi<ProfileAnalysisRequestResult>(
     `/persons/${encodeURIComponent(personId)}/profile-analyses/requests`,
-    { method: "POST", body },
+    { method: "POST", body, signal: request.signal },
   );
 }

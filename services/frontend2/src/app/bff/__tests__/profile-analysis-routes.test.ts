@@ -25,13 +25,16 @@ describe("profile analysis BFF routes", () => {
     const response = new Response("current", { status: 200 });
     proxyToApi.mockResolvedValue(response);
 
+    const request = new Request("https://example.test/bff/persons/person%2Fone/profile-analyses");
     const result = await getCurrent(
-      new Request("https://example.test/bff/persons/person%2Fone/profile-analyses"),
+      request,
       { params: Promise.resolve({ personId: "person/one" }) },
     );
 
     expect(currentDynamic).toBe("force-dynamic");
-    expect(proxyToApi).toHaveBeenCalledWith("/persons/person%2Fone/profile-analyses");
+    expect(proxyToApi).toHaveBeenCalledWith("/persons/person%2Fone/profile-analyses", {
+      signal: request.signal,
+    });
     expect(result).toBe(response);
   });
 
@@ -57,6 +60,7 @@ describe("profile analysis BFF routes", () => {
           cursor: "Mg==",
           limit: "20",
         },
+        signal: request.signal,
       },
     );
     expect(result).toBe(response);
@@ -79,17 +83,18 @@ describe("profile analysis BFF routes", () => {
     const response = new Response("queued", { status: 202 });
     proxyToApi.mockResolvedValue(response);
 
-    const result = await postRequest(
-      new Request("https://example.test/bff/persons/person%2Fone/profile-analyses", {
+    const request = new Request("https://example.test/bff/persons/person%2Fone/profile-analyses", {
         method: "POST",
         body: JSON.stringify({ analysis_type: "sales", force: false }),
-      }),
+      });
+    const result = await postRequest(
+      request,
       { params: Promise.resolve({ personId: "person/one" }) },
     );
 
     expect(proxyToApi).toHaveBeenCalledWith(
       "/persons/person%2Fone/profile-analyses/requests",
-      { method: "POST", body: { analysis_type: "sales", force: false } },
+      { method: "POST", body: { analysis_type: "sales", force: false }, signal: request.signal },
     );
     expect(result).toBe(response);
   });

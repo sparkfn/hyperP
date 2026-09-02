@@ -11,6 +11,8 @@ from src.repositories.protocols.entity import EntityRepository
 from src.types import (
     ApiResponse,
     EntityFilterOption,
+    EntityMetadata,
+    EntityMetrics,
     EntityPerson,
     EntitySummary,
     SourceSystemSummary,
@@ -31,6 +33,32 @@ async def list_entities(
     """Return all entities with person counts."""
     entities = await repo.get_all()
     return envelope(entities, request)
+
+
+@router.get(
+    "/metadata",
+    response_model=ApiResponse[list[EntityMetadata]],
+    dependencies=[Depends(require_scope("persons:read"))],
+    operation_id="list_entity_metadata",
+)
+async def list_entity_metadata(
+    request: Request,
+    repo: EntityRepository = Depends(get_entity_repo),
+) -> ApiResponse[list[EntityMetadata]]:
+    return envelope(await repo.get_metadata(), request)
+
+
+@router.get(
+    "/metrics",
+    response_model=ApiResponse[list[EntityMetrics]],
+    dependencies=[Depends(require_scope("persons:read"))],
+    operation_id="list_entity_metrics",
+)
+async def list_entity_metrics(
+    request: Request,
+    repo: EntityRepository = Depends(get_entity_repo),
+) -> ApiResponse[list[EntityMetrics]]:
+    return envelope(await repo.get_metrics(), request)
 
 
 @router.get(

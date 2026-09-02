@@ -9,7 +9,9 @@ interface RouteContext {
   params: Promise<{ reviewCaseId: string }>;
 }
 
-export async function GET(_request: Request, context: RouteContext): Promise<NextResponse> {
+export async function GET(request: Request, context: RouteContext): Promise<NextResponse> {
   const { reviewCaseId } = await context.params;
-  return proxyToApi<ReviewCaseDetail>(`/review-cases/${encodeURIComponent(reviewCaseId)}`);
+  return proxyToApi<ReviewCaseDetail>(`/review-cases/${encodeURIComponent(reviewCaseId)}`, {
+    signal: request.signal,
+  });
 }

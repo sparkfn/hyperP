@@ -16,7 +16,7 @@ from neo4j import (
 )
 
 from src.config import config
-from src.request_timing import current_request_id, record_repository_duration
+from src.request_timing import current_request_id, is_background_read, record_repository_duration
 
 _driver: AsyncDriver | None = None
 _T = TypeVar("_T")
@@ -67,10 +67,19 @@ class TimedAsyncSession:
         parameters: dict[str, Any] | None = None,
         **kwargs: Any,
     ) -> AsyncResult:
-        if self._write or isinstance(query, Query) or current_request_id() is None:
+        if self._write or isinstance(query, Query):
+            return await self._session.run(query, parameters, **kwargs)
+        timeout = (
+            config.neo4j_web_read_transaction_timeout_seconds
+            if current_request_id() is not None
+            else config.neo4j_background_read_transaction_timeout_seconds
+            if is_background_read()
+            else None
+        )
+        if timeout is None:
             return await self._session.run(query, parameters, **kwargs)
         return await self._session.run(
-            Query(query, timeout=config.neo4j_web_read_transaction_timeout_seconds),
+            Query(query, timeout=timeout),
             parameters,
             **kwargs,
         )
