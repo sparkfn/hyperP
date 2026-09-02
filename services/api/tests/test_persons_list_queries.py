@@ -897,8 +897,8 @@ def test_identifier_pagination_has_complete_deterministic_provenance_tiebreakers
     order = GET_PERSON_IDENTIFIERS.split("SKIP $skip", maxsplit=1)[0]
     assert "coalesce(source_system_key, '')" in order
     assert "coalesce(last_confirmed_at" in order
-    assert "coalesce(toString(source_record_pks), '')" in order
+    assert "source_record_pks" in order
     final_order = GET_PERSON_IDENTIFIERS.rsplit("ORDER BY", maxsplit=1)[1]
     assert "coalesce(item.source_system_key, '')" in final_order
     assert "coalesce(item.last_confirmed_at" in final_order
-    assert "coalesce(toString(item.source_record_pks), '')" in final_order
+    assert "item.source_record_pks" in final_order
