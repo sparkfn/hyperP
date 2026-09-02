@@ -2101,6 +2101,45 @@ def test_310_pause_rejects_unrelated_control_drift_before_resealing(
         )
 
 
+def test_310_allocated_pause_resume_reseals_and_allocation_replay_is_exact(
+    neo4j_driver: Driver,
+) -> None:
+    _, control, run = _qualified_control_repository(
+        neo4j_driver, repair_id="repair-310-allocated-pause"
+    )
+    _seed_quiesced_allocation_control(neo4j_driver, run)
+    allocation_request = RepairControlRequest(
+        "repair-310-allocated-pause", run.run_id, "owner", "token", 1
+    )
+    plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 1)
+    allocated = control.allocate(
+        allocation_request,
+        boundary_digest=run.boundary_digest,
+        proof_digest="proof",
+        plan=plan,
+    )
+    assert (allocated.state, allocated.revision) == ("allocated", 2)
+    pause = RepairControlRequest("repair-310-allocated-pause", run.run_id, "owner", "token", 2)
+    paused = control.pause(pause)
+    assert (paused.state, paused.revision) == ("paused", 3)
+    assert control.pause(pause) == paused
+    with pytest.raises(RuntimeError, match="compare-and-set"):
+        control.pause(
+            RepairControlRequest("repair-310-allocated-pause", run.run_id, "other", "token", 2)
+        )
+    resume = RepairControlRequest("repair-310-allocated-pause", run.run_id, "owner", "token", 3)
+    resumed = control.resume(resume)
+    assert (resumed.state, resumed.revision) == ("allocated", 4)
+    assert control.resume(resume) == resumed
+    replay = control.allocate(
+        allocation_request,
+        boundary_digest=run.boundary_digest,
+        proof_digest="proof",
+        plan=plan,
+    )
+    assert replay == resumed
+
+
 def test_310_allocation_persists_exact_multi_unit_set_and_replay_conflicts(
     neo4j_driver: Driver,
 ) -> None:

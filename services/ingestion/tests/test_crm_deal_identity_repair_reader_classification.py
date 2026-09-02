@@ -87,13 +87,42 @@ def test_new_authority_readers_remain_active_filtered() -> None:
         reader.identifier: reader
         for reader in assert_reader_contract(*approved_reader_sources(_REPO_ROOT))
     }
-    for identifier in (
-        "ingestion/graph/queries/pair_audit_recalc.py:READ_PAIR_AUDIT_BRIDGE",
-        "ingestion/graph/queries/persons.py:FETCH_ACTIVE_PERSON_AUTHORITY_WITH_OVERRIDES",
+    for identifier, classification in (
+        ("ingestion/graph/queries/pair_audit_recalc.py:READ_PAIR_AUDIT_BRIDGE", "authoritative"),
+        (
+            "ingestion/graph/queries/persons.py:FETCH_ACTIVE_PERSON_AUTHORITY_WITH_OVERRIDES",
+            "authoritative",
+        ),
+        (
+            "api/graph/queries/crm_deal_count.py:RECOMPUTE_PERSON_CRM_DEAL_COUNTS",
+            "authoritative_mutation",
+        ),
+        (
+            "ingestion/graph/queries/crm_deal_count.py:RECOMPUTE_SOURCE_PERSON_CRM_DEAL_COUNTS",
+            "authoritative_mutation",
+        ),
+        (
+            "ingestion/graph/queries/crm_history.py:CREATE_CALL_FROM_HISTORY",
+            "authoritative_mutation",
+        ),
+        (
+            "ingestion/graph/queries/crm_history.py:ACTIVATE_PENDING_CALLS_FOR_DEAL",
+            "authoritative_mutation",
+        ),
     ):
         reader = readers[identifier]
-        assert reader.classification == "authoritative"
+        assert reader.classification == classification
         assert _has_active_predicate(reader)
+        if classification == "authoritative_mutation":
+            inactive = RelationshipReader(
+                reader.module,
+                reader.symbol,
+                reader.classification,
+                reader.query.replace("coalesce(deal_link.is_active, true) = true", "true").replace(
+                    "coalesce(link.is_active, true) = true", "true"
+                ),
+            )
+            assert not _has_active_predicate(inactive)
 
 
 def test_active_predicate_must_cover_each_relationship_binding() -> None:
@@ -119,6 +148,40 @@ def test_anonymous_pattern_expression_fails_active_predicate_validation() -> Non
     )
 
     assert not _has_active_predicate(reader)
+
+
+def test_reader_discovery_fails_closed_for_valid_cypher_pattern_forms(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    module = tmp_path / "services" / "api" / "src" / "graph" / "queries" / "patterns.py"
+    module.parent.mkdir(parents=True)
+    module.write_text(
+        'NAMED_PATH = """match path = (person)-[purchase:PURCHASED]->(:Order) return path"""\n'
+        'COMPREHENSION = """RETURN size([(person)-[purchase:PURCHASED]->() | purchase])"""\n'
+        'EXISTS = """RETURN EXISTS { MATCH (person)-[purchase:PURCHASED]->(:Order) }"""\n'
+        'PURE_CREATE = """CREATE\n(person)-[purchase:PURCHASED]->(:Order)"""\n'
+        'WRITE_THEN_MATCH = """CREATE (seed:Person) WITH seed MATCH (person)-[purchase:PURCHASED]->(:Order) RETURN person"""\n',
+        encoding="utf-8",
+    )
+    identifiers = frozenset(
+        {
+            "api/graph/queries/patterns.py:NAMED_PATH",
+            "api/graph/queries/patterns.py:COMPREHENSION",
+            "api/graph/queries/patterns.py:EXISTS",
+            "api/graph/queries/patterns.py:WRITE_THEN_MATCH",
+        }
+    )
+    monkeypatch.setattr(reader_classification, "_AUDIT_READERS", frozenset())
+    monkeypatch.setattr(reader_classification, "_MUTATION_READERS", frozenset())
+    monkeypatch.setattr(reader_classification, "_AUTHORITATIVE_MUTATION_READERS", frozenset())
+    monkeypatch.setattr(reader_classification, "_AUTHORITATIVE_READERS", identifiers)
+
+    readers = reader_classification.discover_relationship_readers(module)
+    assert {reader.identifier for reader in readers} == identifiers
+    with pytest.raises(
+        RuntimeError, match="authoritative relationship reader lacks active predicate"
+    ):
+        assert_reader_contract(module)
 
 
 def test_authoritative_mutation_without_active_filter_fails_closed(

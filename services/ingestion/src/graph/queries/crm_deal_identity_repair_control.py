@@ -480,7 +480,7 @@ RETURN control.control_instance_id AS control_instance_id, control.run_id AS run
 SEAL_QUIESCENCE_BOUNDARY = """
 MATCH (control:CrmDealRepairControl {run_id: $run_id, owner_id: $owner_id, token_digest: $token_digest,
   revision: $revision})
-WHERE control.state IN ['quiesced', 'paused']
+WHERE control.state IN ['quiesced', 'paused', 'allocated']
 MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', control_instance_id: control.control_instance_id,
   blocked: true, repair_run_id: $run_id, repair_owner_id: $owner_id, repair_token_digest: $token_digest,
   repair_revision: $revision})
