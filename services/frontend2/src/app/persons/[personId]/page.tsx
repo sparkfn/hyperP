@@ -1,6 +1,6 @@
 "use client";
 
-import { Fragment, use, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement } from "react";
+import React, { Fragment, use, useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement } from "react";
 import Link from "next/link";
 import { notFound, useRouter } from "next/navigation";
 import type { Person, PersonConnection, SalesOrder, LoyaltySummary, VehicleSummary } from "@/lib/api-types";
@@ -64,7 +64,7 @@ import { sidebarResourceState } from "./sidebar-resource-state";
 
 type Tab = "sales" | "crm" | "connections" | "identifiers" | "decision-history" | "source-records" | "matches" | "timeline" | "graph";
 
-type DetailData = {
+export type DetailData = {
   identifiers: PersonIdentifier[];
   sourceRecords: PersonSourceRecord[];
   sales: SalesOrder[];
@@ -1095,7 +1095,12 @@ function buildTimeline(detailData: DetailData): TLEvent[] {
 
 type TimelineSubTab = "activity" | "audit";
 
-function TimelineTab({
+type PersonOwnedReviewCases = {
+  personId: string;
+  cases: ReviewCaseSummary[];
+};
+
+export function TimelineTab({
   person,
   detailData,
   personId,
@@ -1910,6 +1915,7 @@ function RecommendedMatchDetailPanel({
   candidateIdentifiers: PersonIdentifier[] | undefined;
 }): ReactElement {
   if (isLoading) return <div className={styles.candidateDetailStatus}>Loading match comparison…</div>;
+  if (error !== undefined) return <div className={styles.candidateDetailError}>{error}</div>;
   const hasNameSignal = match.reasons.some((reason) => reason.toLowerCase().includes("name"));
   const currentNameSource = detail?.shared_identifier_groups.flatMap((group) => group.current_person_source_records)[0];
   const candidateNameSource = detail?.shared_identifier_groups.flatMap((group) => group.candidate_source_records)[0];
@@ -2278,7 +2284,7 @@ function CandidateRow({
   );
 }
 
-function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatchesTab, onTotalLoaded, onMergeWith }: { personId: string; currentPerson: Person | undefined; currentIdentifiers: PersonIdentifier[]; activeMatchesTab: "candidates" | "resolved-cases" | "merge-history"; onTotalLoaded: (n: number) => void; onMergeWith: (candidate: PersonSharedIdentifierCandidate, detail: PossibleMatchDetail | undefined) => void }): ReactElement {
+export function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatchesTab, onTotalLoaded, onMergeWith }: { personId: string; currentPerson: Person | undefined; currentIdentifiers: PersonIdentifier[]; activeMatchesTab: "candidates" | "resolved-cases" | "merge-history"; onTotalLoaded: (n: number) => void; onMergeWith: (candidate: PersonSharedIdentifierCandidate, detail: PossibleMatchDetail | undefined) => void }): ReactElement {
   const [expandedCandidate, setExpandedCandidate] = useState<string | null>(null);
   const [expandedRecommendedMatch, setExpandedRecommendedMatch] = useState<string | null>(null);
   const [recommendedPeople, setRecommendedPeople] = useState<Record<string, Person>>({});
@@ -2286,7 +2292,10 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
   const [recommendedDetails, setRecommendedDetails] = useState<Record<string, PossibleMatchDetail>>({});
   const [recommendedErrors, setRecommendedErrors] = useState<Record<string, string>>({});
   const [recommendedDetailLoading, setRecommendedDetailLoading] = useState<Record<string, boolean>>({});
-  const [recommendedReviewCases, setRecommendedReviewCases] = useState<ReviewCaseSummary[]>([]);
+  const [recommendedReviewCasesState, setRecommendedReviewCasesState] = useState<PersonOwnedReviewCases>({
+    personId: "",
+    cases: [],
+  });
   const [recommendedReviewLoading, setRecommendedReviewLoading] = useState<boolean>(true);
   const [recommendedReviewError, setRecommendedReviewError] = useState<string | null>(null);
   const [recommendedActionError, setRecommendedActionError] = useState<string | null>(null);
@@ -2324,6 +2333,13 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
   const reviewCaseDetailControllers = useRef<Map<string, AbortController>>(new Map());
   const recommendedDetailsRef = useRef(recommendedDetails);
   const reviewCaseDetailsRef = useRef(reviewCaseDetails);
+  const recommendedReviewCases = useMemo(
+    () => recommendedReviewCasesState.personId === personId
+      ? recommendedReviewCasesState.cases
+      : [],
+    [personId, recommendedReviewCasesState],
+  );
+  const hasCurrentRecommendedReviewCases = recommendedReviewCasesState.personId === personId;
 
   useEffect(() => {
     recommendedDetailsRef.current = recommendedDetails;
@@ -2332,6 +2348,19 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
   useEffect(() => {
     reviewCaseDetailsRef.current = reviewCaseDetails;
   }, [reviewCaseDetails]);
+
+  useEffect(() => {
+    recommendedDetailsRef.current = {};
+    reviewCaseDetailsRef.current = {};
+    setExpandedRecommendedMatch(null);
+    setRecommendedPeople({});
+    setRecommendedIdentifiers({});
+    setRecommendedDetails({});
+    setRecommendedErrors({});
+    setRecommendedDetailLoading({});
+    setReviewCaseDetails({});
+    setOpenReviewDecisionIds(new Set());
+  }, [personId]);
 
   const recommendedResult = usePaginatedFetch<PersonMatchDecision>(
     `/bff/persons/${encodeURIComponent(personId)}/matches`,
@@ -2365,7 +2394,7 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
           seenDecisionIds.add(decisionId);
           return true;
         });
-      setRecommendedReviewCases(cases);
+      setRecommendedReviewCasesState({ personId, cases });
       setReviewCaseIdsByDecision(Object.fromEntries(cases.map((reviewCase) => [
         reviewCase.match_decision.match_decision_id,
         reviewCase.review_case_id,
@@ -2377,7 +2406,11 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
       }
       onTotalLoaded(cases.length);
     }).catch((error: unknown) => {
-      if (!ignore) setRecommendedReviewError(error instanceof BffError ? error.message : "Failed to load recommended matches.");
+      if (ignore) return;
+      setRecommendedReviewCasesState({ personId, cases: [] });
+      setRecommendedReviewError(
+        error instanceof BffError ? error.message : "Failed to load recommended matches.",
+      );
     }).finally(() => {
       if (!ignore) setRecommendedReviewLoading(false);
     });
@@ -2773,7 +2806,7 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
 
   let tabContent: ReactElement;
   if (activeMatchesTab === "candidates" || activeMatchesTab === "resolved-cases") {
-    if (recommendedReviewLoading) {
+    if (!hasCurrentRecommendedReviewCases || recommendedReviewLoading) {
       tabContent = <TabSkelShell title="Recommended matches"><SkeletonMatches /></TabSkelShell>;
     } else if (recommendedReviewError !== null) {
       tabContent = <section className={styles.contentCard}><div className={styles.tabError}>{recommendedReviewError}</div></section>;
