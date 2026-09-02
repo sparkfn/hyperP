@@ -433,8 +433,7 @@ def _is_write_only_relationship(query: str, position: int) -> bool:
     """
     boundary = _last_scope_boundary(query, position)
     clauses = tuple(
-        clause.group().upper()
-        for clause in _CLAUSE_PATTERN.finditer(query, boundary, position)
+        clause.group().upper() for clause in _CLAUSE_PATTERN.finditer(query, boundary, position)
     )
     return bool(clauses) and clauses[-1] == "CREATE"
 

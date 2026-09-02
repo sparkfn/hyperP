@@ -498,7 +498,11 @@ SET control.sealed_revision = $revision,
     control.sealed_negative_control_count = $sealed_negative_control_count,
     control.updated_at = datetime()
 FOREACH (_ IN CASE WHEN completion IS NULL THEN [] ELSE [1] END |
-  SET completion.receipt_control_instance_id = control.control_instance_id,
+  SET completion.allocation_control_instance_id = control.control_instance_id,
+      completion.allocation_revision = control.revision,
+      completion.allocation_state = control.state,
+      completion.allocation_sealed_boundary_digest = $sealed_boundary_digest,
+      completion.receipt_control_instance_id = control.control_instance_id,
       completion.receipt_run_id = control.run_id,
       completion.receipt_owner_id = control.owner_id,
       completion.receipt_token_digest = control.token_digest,
@@ -541,14 +545,19 @@ WHERE completion.unit_ids = $unit_ids
   AND control.proof_digest = $proof_digest
   AND control.state IN ['allocated', 'paused']
   AND (control.state = 'allocated' OR control.paused_from_state = 'allocated')
-  AND completion.receipt_control_instance_id = control.control_instance_id
+  AND completion.allocation_control_instance_id = control.control_instance_id
+  AND completion.allocation_revision = completion.request_expected_revision + 1
+  AND completion.allocation_state = 'allocated'
+  AND completion.allocation_sealed_boundary_digest IS NOT NULL
+  AND completion.receipt_control_instance_id = completion.allocation_control_instance_id
   AND completion.receipt_run_id = $run_id
   AND completion.receipt_owner_id = $owner_id
   AND completion.receipt_token_digest = $token_digest
-  AND completion.receipt_revision = completion.request_expected_revision + 1
-  AND completion.receipt_state = 'allocated'
+  AND completion.receipt_revision = completion.allocation_revision
+  AND completion.receipt_state = completion.allocation_state
   AND completion.receipt_boundary_digest = completion.boundary_digest
-  AND completion.receipt_sealed_boundary_digest = control.sealed_boundary_digest
+  AND completion.receipt_sealed_boundary_digest =
+      completion.allocation_sealed_boundary_digest
   AND completion.receipt_digest IS NOT NULL
   AND control.sealed_revision = control.revision
   AND control.sealed_boundary_digest IS NOT NULL
