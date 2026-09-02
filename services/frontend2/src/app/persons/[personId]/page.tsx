@@ -43,14 +43,22 @@ import { ReviewCaseDetailModal } from "@/app/review/[reviewCaseId]/ReviewCaseDet
 import type { ReviewCaseDetail, ReviewCaseSummary } from "@/lib/api-types-ops";
 import { mergeIdentifierPage } from "./person-detail-data";
 import {
+  claimAbortableDetailRequest,
   claimDetailRequest,
   isAbortError,
   needsDetail,
   ownsDetailRequest,
+  releaseAbortableDetailRequest,
   releaseDetailGeneration,
   releaseDetailRequest,
+  shouldShowDetailLoading,
 } from "./match-detail-in-flight";
-import { retainOnFailure, timelineLoadState, type TimelineLoadState } from "./timeline-load-state";
+import {
+  retainOnFailure,
+  shouldShowEmptyTimeline,
+  timelineLoadState,
+  type TimelineLoadState,
+} from "./timeline-load-state";
 import styles from "./person.module.css";
 import { sidebarResourceState } from "./sidebar-resource-state";
 
@@ -1188,7 +1196,7 @@ function TimelineTab({
         >Audit</button>
       </div>
       {subTab === "activity"
-        ? <><TimelineActivity person={person} detailData={combinedDetailData} loading={!loaded} />
+        ? <><TimelineActivity person={person} detailData={combinedDetailData} loading={!loaded} loadState={loadState} />
           {loadState === "incomplete" && <div className={styles.tabError}>Timeline incomplete. <button type="button" className={styles.tabPagBtn} onClick={() => { setLoaded(false); setLoadState("loading"); setRetryVersion((value) => value + 1); }}>Retry</button></div>}</>
         : <AuditTab personId={personId} onTotalLoaded={() => { /* count shown inside */ }} />
       }
@@ -1196,7 +1204,7 @@ function TimelineTab({
   );
 }
 
-function TimelineActivity({ person, detailData, loading }: { person: Person; detailData: DetailData; loading: boolean }): ReactElement {
+function TimelineActivity({ person, detailData, loading, loadState }: { person: Person; detailData: DetailData; loading: boolean; loadState: TimelineLoadState }): ReactElement {
   const events = useMemo(() => buildTimeline(detailData), [detailData]);
   const [collapsedDates, setCollapsedDates] = useState<Set<string>>(new Set());
 
@@ -1255,7 +1263,7 @@ function TimelineActivity({ person, detailData, loading }: { person: Person; det
             </div>
           );
         })}
-        {events.length === 0 && !loading && <p className={styles.tlEmpty}>No events recorded.</p>}
+        {shouldShowEmptyTimeline(events.length, loading, loadState) && <p className={styles.tlEmpty}>No events recorded.</p>}
       </div>
       <div className={styles.tlFooter}>
         <span className={styles.tlFooterLabel}>Person created</span>
@@ -2277,6 +2285,7 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
   const [recommendedIdentifiers, setRecommendedIdentifiers] = useState<Record<string, PersonIdentifier[]>>({});
   const [recommendedDetails, setRecommendedDetails] = useState<Record<string, PossibleMatchDetail>>({});
   const [recommendedErrors, setRecommendedErrors] = useState<Record<string, string>>({});
+  const [recommendedDetailLoading, setRecommendedDetailLoading] = useState<Record<string, boolean>>({});
   const [recommendedReviewCases, setRecommendedReviewCases] = useState<ReviewCaseSummary[]>([]);
   const [recommendedReviewLoading, setRecommendedReviewLoading] = useState<boolean>(true);
   const [recommendedReviewError, setRecommendedReviewError] = useState<string | null>(null);
@@ -2312,6 +2321,7 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
   const [viewingReviewCaseId, setViewingReviewCaseId] = useState<string | null>(null);
   const recommendedDetailInFlight = useRef<Map<string, symbol>>(new Map());
   const reviewCaseDetailInFlight = useRef<Map<string, symbol>>(new Map());
+  const reviewCaseDetailControllers = useRef<Map<string, AbortController>>(new Map());
   const recommendedDetailsRef = useRef(recommendedDetails);
   const reviewCaseDetailsRef = useRef(reviewCaseDetails);
 
@@ -2473,15 +2483,47 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
     }
   }, [candidateDetails, personId]);
 
-  const loadReviewCaseDetail = useCallback(async (reviewCaseId: string): Promise<void> => {
-    if (reviewCaseDetails[reviewCaseId] !== undefined) return;
-    try {
-      const detail = await bffFetch<ReviewCaseDetail>(`/bff/review-cases/${encodeURIComponent(reviewCaseId)}`);
-      setReviewCaseDetails((prev) => ({ ...prev, [reviewCaseId]: detail }));
-    } catch {
-      // silently ignore — fall back to empty reasons/conflicts
-    }
-  }, [reviewCaseDetails]);
+  const loadReviewCaseDetail = useCallback((reviewCaseId: string, controller?: AbortController): symbol | null => {
+    const inFlight = reviewCaseDetailInFlight.current;
+    const controllers = reviewCaseDetailControllers.current;
+    if (!needsDetail(reviewCaseDetailsRef.current, inFlight, reviewCaseId)) return null;
+    const request = claimAbortableDetailRequest(
+      inFlight,
+      controllers,
+      reviewCaseId,
+      controller ?? new AbortController(),
+    );
+    if (request === null) return null;
+    void bffFetch<ReviewCaseDetail>(`/bff/review-cases/${encodeURIComponent(reviewCaseId)}`, {
+      signal: request.controller.signal,
+    })
+      .then((detail) => {
+        if (!ownsDetailRequest(inFlight, reviewCaseId, request.token)) return;
+        setReviewCaseDetails((previous) => {
+          const next = { ...previous, [reviewCaseId]: detail };
+          reviewCaseDetailsRef.current = next;
+          return next;
+        });
+      })
+      .catch((error: unknown) => {
+        if (isAbortError(error) || !ownsDetailRequest(inFlight, reviewCaseId, request.token)) return;
+        // Optional review detail retains the existing summary fallback on failure.
+      })
+      .finally(() => {
+        releaseAbortableDetailRequest(inFlight, controllers, reviewCaseId, request);
+      });
+    return request.token;
+  }, []);
+
+  useEffect(() => {
+    const inFlight = reviewCaseDetailInFlight.current;
+    const controllers = reviewCaseDetailControllers.current;
+    return () => {
+      for (const controller of controllers.values()) controller.abort();
+      controllers.clear();
+      inFlight.clear();
+    };
+  }, [personId]);
 
   const recommendedCaseKey = useMemo(
     () => recommendedReviewCases.map((item) => item.review_case_id).join("|"),
@@ -2503,6 +2545,8 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
       const requestToken = claimDetailRequest(inFlight, reviewCaseId);
       if (requestToken === null) continue;
       claims.set(reviewCaseId, requestToken);
+      setRecommendedErrors((previous) => ({ ...previous, [reviewCaseId]: "" }));
+      setRecommendedDetailLoading((previous) => ({ ...previous, [reviewCaseId]: true }));
       void bffFetch<PossibleMatchDetail>(
         `/bff/persons/${encodeURIComponent(personId)}/shared-identifiers/${encodeURIComponent(candidateId)}/detail`,
         { signal: controller.signal },
@@ -2514,6 +2558,8 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
             recommendedDetailsRef.current = next;
             return next;
           });
+          setRecommendedErrors((previous) => ({ ...previous, [reviewCaseId]: "" }));
+          setRecommendedDetailLoading((previous) => ({ ...previous, [reviewCaseId]: false }));
         })
         .catch((e: unknown) => {
           if (isAbortError(e) || !ownsDetailRequest(inFlight, reviewCaseId, requestToken)) {
@@ -2523,6 +2569,7 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
             ...prev,
             [reviewCaseId]: e instanceof Error ? e.message : "Failed to load match comparison.",
           }));
+          setRecommendedDetailLoading((previous) => ({ ...previous, [reviewCaseId]: false }));
         }).finally(() => {
           releaseDetailRequest(inFlight, reviewCaseId, requestToken);
         });
@@ -2535,6 +2582,7 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
 
   useEffect(() => {
     const inFlight = reviewCaseDetailInFlight.current;
+    const controllers = reviewCaseDetailControllers.current;
     const missingIds = recommendedReviewCases
       .map((rc) => rc.review_case_id)
       .filter((id) => needsDetail(reviewCaseDetailsRef.current, inFlight, id));
@@ -2542,33 +2590,17 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
     const controller = new AbortController();
     const claims = new Map<string, symbol>();
     for (const id of missingIds) {
-      const requestToken = claimDetailRequest(inFlight, id);
-      if (requestToken === null) continue;
-      claims.set(id, requestToken);
-      void bffFetch<ReviewCaseDetail>(`/bff/review-cases/${encodeURIComponent(id)}`, {
-        signal: controller.signal,
-      })
-        .then((detail) => {
-          if (!ownsDetailRequest(inFlight, id, requestToken)) return;
-          setReviewCaseDetails((previous) => {
-            const next = { ...previous, [id]: detail };
-            reviewCaseDetailsRef.current = next;
-            return next;
-          });
-        })
-        .catch((error: unknown) => {
-          if (isAbortError(error)) return;
-          // Optional review detail retains the existing summary fallback on failure.
-        })
-        .finally(() => {
-          releaseDetailRequest(inFlight, id, requestToken);
-        });
+      const requestToken = loadReviewCaseDetail(id, controller);
+      if (requestToken !== null) claims.set(id, requestToken);
     }
     return () => {
       releaseDetailGeneration(inFlight, claims);
+      for (const id of claims.keys()) {
+        if (controllers.get(id) === controller) controllers.delete(id);
+      }
       controller.abort();
     };
-  }, [personId, recommendedCaseKey, recommendedReviewCases]);
+  }, [loadReviewCaseDetail, personId, recommendedCaseKey, recommendedReviewCases]);
 
   const toggleCandidate = useCallback((candidateId: string): void => {
     if (expandedCandidate === candidateId) {
@@ -2778,7 +2810,11 @@ function MatchesTab({ personId, currentPerson, currentIdentifiers, activeMatches
                       detail={recommendedDetails[reviewCase.review_case_id]}
                       reviewCaseDetail={reviewCaseDetails[reviewCase.review_case_id]}
                       error={recommendedErrors[reviewCase.review_case_id] || undefined}
-                      isLoading={recommendedDetails[reviewCase.review_case_id] === undefined && recommendedErrors[reviewCase.review_case_id] === ""}
+                      isLoading={shouldShowDetailLoading(
+                        recommendedDetails[reviewCase.review_case_id],
+                        recommendedErrors[reviewCase.review_case_id],
+                        recommendedDetailLoading[reviewCase.review_case_id],
+                      )}
                       isOpen={expandedRecommendedMatch === reviewCase.review_case_id}
                       onToggle={() => {
                         const isOpening = expandedRecommendedMatch !== reviewCase.review_case_id;

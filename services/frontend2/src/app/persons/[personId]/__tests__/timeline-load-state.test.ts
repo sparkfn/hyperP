@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { retainOnFailure, timelineLoadState } from "../timeline-load-state";
+import {
+  retainOnFailure,
+  shouldShowEmptyTimeline,
+  timelineLoadState,
+} from "../timeline-load-state";
 
 describe("timeline deferred load state", () => {
   it("marks partial and rejected resource results incomplete", () => {
@@ -13,5 +17,11 @@ describe("timeline deferred load state", () => {
       .toEqual(["earlier"]);
     expect(retainOnFailure(["earlier"], { status: "fulfilled", value: { data: ["new"] } }))
       .toEqual(["new"]);
+  });
+  it("only renders an authoritative empty timeline after a complete empty load", () => {
+    expect(shouldShowEmptyTimeline(0, false, "complete")).toBe(true);
+    expect(shouldShowEmptyTimeline(0, false, "incomplete")).toBe(false);
+    expect(shouldShowEmptyTimeline(1, false, "incomplete")).toBe(false);
+    expect(shouldShowEmptyTimeline(0, true, "complete")).toBe(false);
   });
 });
