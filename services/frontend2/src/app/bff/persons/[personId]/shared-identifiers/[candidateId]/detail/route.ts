@@ -9,9 +9,10 @@ interface RouteContext {
   params: Promise<{ personId: string; candidateId: string }>;
 }
 
-export async function GET(_request: Request, context: RouteContext): Promise<NextResponse> {
+export async function GET(request: Request, context: RouteContext): Promise<NextResponse> {
   const { personId, candidateId } = await context.params;
   return proxyToApi<PossibleMatchDetail>(
     `/persons/${encodeURIComponent(personId)}/shared-identifiers/${encodeURIComponent(candidateId)}/detail`,
+    { signal: request.signal },
   );
 }

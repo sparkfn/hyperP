@@ -7,7 +7,12 @@ from typing import cast
 import pytest
 from neo4j import AsyncSession, Query
 from src.graph.client import TimedAsyncSession
-from src.request_timing import begin_request, end_request, repository_duration_ms
+from src.request_timing import (
+    begin_request,
+    create_detached_task,
+    end_request,
+    repository_duration_ms,
+)
 
 
 class _Session:
@@ -57,6 +62,23 @@ async def test_background_read_session_does_not_apply_the_web_read_timeout() -> 
     await TimedAsyncSession(cast(AsyncSession, session), write=False).run("RETURN 1")
 
     assert session.query == "RETURN 1"
+
+
+@pytest.mark.anyio
+async def test_opted_in_detached_read_uses_background_timeout_without_request_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src.config import config
+
+    monkeypatch.setattr(config, "neo4j_background_read_transaction_timeout_seconds", 11.0)
+    session = _Session()
+
+    async def run() -> None:
+        await TimedAsyncSession(cast(AsyncSession, session), write=False).run("RETURN 1")
+
+    await create_detached_task(run(), background_read=True)
+    assert isinstance(session.query, Query)
+    assert session.query.timeout == 11.0
 
 
 @pytest.mark.anyio

@@ -168,3 +168,28 @@ async def test_entity_summary_expiry_returns_stale_value_and_refreshes_detached(
     await refresh
     await asyncio.sleep(0)
     assert (await repo.get_all())[0].person_count == 2
+
+
+@pytest.mark.anyio
+async def test_metadata_uses_only_lightweight_query_without_exact_aggregate(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _MetadataSession:
+        def __init__(self) -> None:
+            self.calls: list[str] = []
+
+        async def run(self, query: str) -> _Result:
+            self.calls.append(query)
+            return _Result([_Record({"entity": {"entity_key": "eko", "display_name": "Eko"}})])
+
+    session = _MetadataSession()
+
+    @asynccontextmanager
+    async def fake_get_session() -> AsyncIterator[_MetadataSession]:
+        yield session
+
+    monkeypatch.setattr(entity_module, "get_session", fake_get_session)
+    metadata = await Neo4jEntityRepository().get_metadata()
+
+    assert [item.entity_key for item in metadata] == ["eko"]
+    assert session.calls == [entity_module.LIST_ENTITY_METADATA]

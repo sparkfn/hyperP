@@ -18,6 +18,7 @@ class RequestTiming:
 
 
 _request_timing: ContextVar[RequestTiming | None] = ContextVar("request_timing", default=None)
+_background_read: ContextVar[bool] = ContextVar("background_read", default=False)
 
 
 def begin_request(request_id: str) -> Token[RequestTiming | None]:
@@ -50,7 +51,16 @@ def repository_duration_ms() -> float:
     return timing.repository_duration_ms if timing is not None else 0.0
 
 
-def create_detached_task[T](coro: Coroutine[object, object, T]) -> asyncio.Task[T]:
-    """Create a background task without inheriting completed request context."""
+def is_background_read() -> bool:
+    """Return whether the current task explicitly opts into bounded background reads."""
+    return _background_read.get()
+
+
+def create_detached_task[T](
+    coro: Coroutine[object, object, T], *, background_read: bool = False
+) -> asyncio.Task[T]:
+    """Create a detached task, optionally opting its reads into the bounded policy."""
     clean_context = Context()
+    if background_read:
+        clean_context.run(_background_read.set, True)
     return clean_context.run(asyncio.create_task, coro)

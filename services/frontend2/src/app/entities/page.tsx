@@ -1,11 +1,12 @@
 "use client";
 
-import { type ReactElement } from "react";
+import { useMemo, type ReactElement } from "react";
 import Link from "next/link";
 
-import type { EntitySummary } from "@/lib/api-types";
+import type { EntityMetadata, EntityMetrics } from "@/lib/api-types";
 import { entityColor, getInitials, relativeTime } from "@/lib/display";
 import { useBffList } from "@/lib/useBffList";
+import { metricsByEntity } from "./entity-metrics-state";
 import styles from "./entities.module.css";
 function entityTypeLabel(t: string | null): string | null {
   if (!t) return null;
@@ -36,7 +37,15 @@ function SkeletonCard(): ReactElement {
 }
 
 export default function EntitiesPage(): ReactElement {
-  const { data: entities, loading, error } = useBffList<EntitySummary>("/bff/entities", "Failed to load entities.");
+  const { data: entities, loading, error } = useBffList<EntityMetadata>(
+    "/bff/entities/metadata",
+    "Failed to load entities.",
+  );
+  const metrics = useBffList<EntityMetrics>("/bff/entities/metrics", "Failed to load entity metrics.");
+  const metricsByKey = useMemo(
+    () => metricsByEntity(metrics.data),
+    [metrics.data],
+  );
 
   return (
     <div className={styles.page}>
@@ -46,6 +55,7 @@ export default function EntitiesPage(): ReactElement {
       </div>
 
       {error && <p className={styles.errorMsg}>{error}</p>}
+      {metrics.error && <button type="button" onClick={metrics.refresh}>Metrics unavailable — Retry</button>}
 
       <div className={styles.grid}>
         {loading && [0,1,2,3,4,5].map((i) => <SkeletonCard key={i} />)}
@@ -58,6 +68,7 @@ export default function EntitiesPage(): ReactElement {
           const color = entityColor(e.entity_key);
           const init = getInitials(e.display_name, e.entity_key);
           const typeLabel = entityTypeLabel(e.entity_type);
+          const metric = metricsByKey.get(e.entity_key);
           return (
             <Link key={e.entity_key} href={`/persons?entity_key=${encodeURIComponent(e.entity_key)}`} className={styles.card}>
               {/* Logo + name */}
@@ -83,21 +94,23 @@ export default function EntitiesPage(): ReactElement {
               {/* Stats */}
               <div className={styles.cardStats}>
                 <div className={styles.stat}>
-                  <span className={styles.statValue}>{e.person_count.toLocaleString()}</span>
+                  <span className={styles.statValue}>{metric?.person_count.toLocaleString() ?? "…"}</span>
                   <span className={styles.statLabel}>Persons</span>
                 </div>
                 <div className={styles.stat}>
-                  <span className={styles.statValue}>{e.source_record_count.toLocaleString()}</span>
+                  <span className={styles.statValue}>{metric?.source_record_count.toLocaleString() ?? "…"}</span>
                   <span className={styles.statLabel}>Records</span>
                 </div>
                 <div className={styles.stat}>
-                  {e.active_review_cases > 0
-                    ? <span className={styles.warnValue}>{e.active_review_cases}</span>
+                  {metric === undefined
+                    ? <span className={styles.statValue}>…</span>
+                    : metric.active_review_cases > 0
+                    ? <span className={styles.warnValue}>{metric.active_review_cases}</span>
                     : <span className={styles.statValue}>—</span>}
                   <span className={styles.statLabel}>Review</span>
                 </div>
                 <div className={styles.stat}>
-                  <span className={styles.statValue} style={{ fontSize: 11 }}>{relativeTime(e.last_ingested_at)}</span>
+                  <span className={styles.statValue} style={{ fontSize: 11 }}>{metric === undefined ? "…" : relativeTime(metric.last_ingested_at)}</span>
                   <span className={styles.statLabel}>Last sync</span>
                 </div>
               </div>

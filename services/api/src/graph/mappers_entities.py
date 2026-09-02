@@ -15,6 +15,7 @@ from src.graph.converters import (
 from src.graph.mappers import _as_dict, map_person, map_person_entity_dict
 from src.types import (
     EntityFilterOption,
+    EntityMetadata,
     EntityPerson,
     EntitySummary,
     ListedPerson,
@@ -36,6 +37,17 @@ def map_entity_summary(record: GraphRecord) -> EntitySummary:
         source_record_count=to_int(record.get("source_record_count")),
         last_ingested_at=to_iso_or_none(record.get("last_ingested_at")),
         active_review_cases=to_int(record.get("active_review_cases")),
+    )
+
+
+def map_entity_metadata(record: GraphRecord) -> EntityMetadata:
+    e = _as_dict(record.get("entity"))
+    return EntityMetadata(
+        entity_key=to_str(e.get("entity_key")),
+        display_name=to_optional_str(e.get("display_name")),
+        entity_type=to_optional_str(e.get("entity_type")),
+        country_code=to_optional_str(e.get("country_code")),
+        is_active=bool(e.get("is_active", True)),
     )
 
 

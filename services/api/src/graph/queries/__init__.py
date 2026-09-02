@@ -25,6 +25,7 @@ from src.graph.queries.crm_deal_count import RECOMPUTE_PERSON_CRM_DEAL_COUNTS
 from src.graph.queries.entities import (
     LIST_ENTITIES,
     LIST_ENTITY_FILTER_OPTIONS,
+    LIST_ENTITY_METADATA,
     LIST_FILTER_SOURCE_SYSTEMS,
     get_entity_persons_query,
 )
@@ -303,6 +304,7 @@ __all__ = [
     "GET_REVIEW_SALES_RECORD",
     "GET_UNMERGE_TARGET",
     "LIST_ENTITIES",
+    "LIST_ENTITY_METADATA",
     "LIST_ENTITY_FILTER_OPTIONS",
     "LIST_EVENTS",
     "LIST_FILTER_SOURCE_SYSTEMS",

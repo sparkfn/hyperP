@@ -313,7 +313,7 @@ class Neo4jPersonRepository:
     def _start_crm_summary_refresh(self, ttl: int) -> None:
         if self._crm_summary_task is not None and not self._crm_summary_task.done():
             return
-        task = create_detached_task(self._load_crm_summary())
+        task = create_detached_task(self._load_crm_summary(), background_read=True)
         self._crm_summary_task = task
 
         def store_result(completed: asyncio.Task[tuple[int, int]]) -> None:
