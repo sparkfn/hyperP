@@ -38,6 +38,7 @@ class Neo4jEntityRepository:
     def __init__(self) -> None:
         self._summary_cache: list[EntitySummary] | None = None
         self._summary_cache_expires_at = 0.0
+        self._summary_cache_stale_until = 0.0
         self._summary_cache_lock = asyncio.Lock()
         self._summary_refresh_task: asyncio.Task[list[EntitySummary]] | None = None
 
@@ -45,6 +46,17 @@ class Neo4jEntityRepository:
         if self._summary_cache is None or monotonic() >= self._summary_cache_expires_at:
             return None
         return [item.model_copy(deep=True) for item in self._summary_cache]
+
+    def _stale_summary(self) -> list[EntitySummary] | None:
+        if self._summary_cache is None or monotonic() >= self._summary_cache_stale_until:
+            return None
+        return [item.model_copy(deep=True) for item in self._summary_cache]
+
+    def _store_summary(self, loaded: list[EntitySummary], ttl: int, max_stale: int) -> None:
+        cached_at = monotonic()
+        self._summary_cache = loaded
+        self._summary_cache_expires_at = cached_at + ttl
+        self._summary_cache_stale_until = self._summary_cache_expires_at + max_stale
 
     async def _load_all(self) -> list[EntitySummary]:
         async with get_session() as session:
@@ -66,7 +78,6 @@ class Neo4jEntityRepository:
                 person_count=item.person_count,
                 source_record_count=item.source_record_count,
                 last_ingested_at=item.last_ingested_at,
-                active_review_cases=item.active_review_cases,
             )
             for item in summaries
         ]
@@ -75,22 +86,31 @@ class Neo4jEntityRepository:
         ttl = config.entity_summary_cache_ttl_seconds
         if ttl <= 0:
             return await self._load_all()
+        max_stale = config.entity_summary_cache_max_stale_seconds
         cached = self._cached_summary()
         if cached is not None:
             return cached
-        if self._summary_cache is not None:
-            self._start_summary_refresh(ttl)
-            return [item.model_copy(deep=True) for item in self._summary_cache]
+        stale = self._stale_summary()
+        if stale is not None:
+            self._start_summary_refresh(ttl, max_stale)
+            return stale
         async with self._summary_cache_lock:
             cached = self._cached_summary()
             if cached is not None:
                 return cached
+            stale = self._stale_summary()
+            if stale is not None:
+                self._start_summary_refresh(ttl, max_stale)
+                return stale
+            refresh = self._summary_refresh_task
+            if refresh is not None and not refresh.done():
+                loaded = await asyncio.shield(refresh)
+                return [item.model_copy(deep=True) for item in loaded]
             loaded = await self._load_all()
-            self._summary_cache = loaded
-            self._summary_cache_expires_at = monotonic() + ttl
+            self._store_summary(loaded, ttl, max_stale)
             return [item.model_copy(deep=True) for item in loaded]
 
-    def _start_summary_refresh(self, ttl: int) -> None:
+    def _start_summary_refresh(self, ttl: int, max_stale: int) -> None:
         if self._summary_refresh_task is not None and not self._summary_refresh_task.done():
             return
         task = create_detached_task(self._load_all(), background_read=True)
@@ -105,8 +125,7 @@ class Neo4jEntityRepository:
                 loaded = completed.result()
             except Exception:
                 return
-            self._summary_cache = loaded
-            self._summary_cache_expires_at = monotonic() + ttl
+            self._store_summary(loaded, ttl, max_stale)
 
         task.add_done_callback(store_result)
 

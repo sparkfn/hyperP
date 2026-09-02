@@ -7,5 +7,5 @@ export const dynamic = "force-dynamic";
 
 export async function GET(request: Request): Promise<NextResponse> {
   const { searchParams } = new URL(request.url);
-  return proxyToApi<Person[]>("/persons/search", { query: searchParamsToQuery(searchParams) });
+  return proxyToApi<Person[]>("/persons/search", { query: searchParamsToQuery(searchParams), signal: request.signal });
 }

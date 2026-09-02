@@ -30,14 +30,14 @@ class _DelayedResult:
         await asyncio.sleep(0.01)
 
 
-def _scope(headers: list[tuple[bytes, bytes]]) -> Scope:
+def _scope(headers: list[tuple[bytes, bytes]], method: str = "GET") -> Scope:
     return cast(
         Scope,
         {
             "type": "http",
             "asgi": {"version": "3.0", "spec_version": "2.0"},
             "http_version": "1.1",
-            "method": "GET",
+            "method": method,
             "scheme": "http",
             "path": "/",
             "raw_path": b"/",
@@ -121,6 +121,7 @@ def test_request_id_preserves_valid_printable_ascii_token() -> None:
 async def test_disconnect_cancels_downstream_handler_promptly() -> None:
     cancelled = asyncio.Event()
     started = asyncio.Event()
+    initial_request_consumed = asyncio.Event()
 
     async def downstream(_scope: Scope, _receive: Receive, _send: Send) -> None:
         started.set()
@@ -135,7 +136,10 @@ async def test_disconnect_cancels_downstream_handler_promptly() -> None:
     await messages.put({"type": "http.request", "body": b"", "more_body": False})
 
     async def receive() -> Message:
-        return await messages.get()
+        message = await messages.get()
+        if message["type"] == "http.request":
+            initial_request_consumed.set()
+        return message
 
     sent: list[Message] = []
 
@@ -150,6 +154,7 @@ async def test_disconnect_cancels_downstream_handler_promptly() -> None:
         )
     )
     await started.wait()
+    await asyncio.wait_for(initial_request_consumed.wait(), timeout=1)
     await messages.put({"type": "http.disconnect"})
     with pytest.raises(asyncio.CancelledError):
         await task
@@ -158,38 +163,72 @@ async def test_disconnect_cancels_downstream_handler_promptly() -> None:
 
 
 @pytest.mark.anyio
-async def test_bounded_read_ahead_and_full_queue_disconnect_cancellation() -> None:
+async def test_body_bearing_request_is_not_read_ahead() -> None:
     calls = 0
-    second_read = asyncio.Event()
-    allow_second_receive = asyncio.Event()
-    cancelled = asyncio.Event()
-    events: list[Message] = [
-        {"type": "http.request", "body": b"", "more_body": False},
-        {"type": "http.request", "body": b"one", "more_body": True},
-        {"type": "http.disconnect"},
-    ]
+    allow_application_read = asyncio.Event()
+    first_read = asyncio.Event()
+    release = asyncio.Event()
 
     async def receive() -> Message:
         nonlocal calls
         calls += 1
-        if calls == 2:
-            second_read.set()
-            await allow_second_receive.wait()
-        return events.pop(0)
+        first_read.set()
+        await release.wait()
+        return {"type": "http.request", "body": b"payload", "more_body": False}
 
-    async def downstream(_scope: Scope, receive_fn: Receive, _send: Send) -> None:
-        await receive_fn()
-        try:
-            await asyncio.Event().wait()
-        except asyncio.CancelledError:
-            cancelled.set()
-            raise
+    async def downstream(_scope: Scope, receive_fn: Receive, send: Send) -> None:
+        await allow_application_read.wait()
+        message = await receive_fn()
+        assert message["type"] == "http.request"
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
 
     middleware = RequestTimingMiddleware(downstream)
-    task = asyncio.create_task(middleware(_scope([]), receive, lambda _message: asyncio.sleep(0)))
-    await asyncio.wait_for(second_read.wait(), timeout=1)
-    assert calls == 2
-    allow_second_receive.set()
-    with pytest.raises(asyncio.CancelledError):
-        await asyncio.wait_for(task, timeout=1)
-    assert cancelled.is_set()
+    task = asyncio.create_task(
+        middleware(_scope([], "POST"), receive, lambda _message: asyncio.sleep(0))
+    )
+    await asyncio.sleep(0)
+    assert calls == 0
+    allow_application_read.set()
+    await asyncio.wait_for(first_read.wait(), timeout=1)
+    assert calls == 1
+    release.set()
+    await asyncio.wait_for(task, timeout=1)
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize(
+    "headers",
+    [[(b"content-length", b"1")], [(b"transfer-encoding", b"chunked")]],
+)
+async def test_declared_body_get_is_not_read_ahead(headers: list[tuple[bytes, bytes]]) -> None:
+    calls = 0
+    allow_application_read = asyncio.Event()
+    first_read = asyncio.Event()
+    release = asyncio.Event()
+
+    async def receive() -> Message:
+        nonlocal calls
+        calls += 1
+        first_read.set()
+        await release.wait()
+        return {"type": "http.request", "body": b"payload", "more_body": False}
+
+    async def downstream(_scope: Scope, receive_fn: Receive, send: Send) -> None:
+        await allow_application_read.wait()
+        message = await receive_fn()
+        assert message["type"] == "http.request"
+        await send({"type": "http.response.start", "status": 204, "headers": []})
+        await send({"type": "http.response.body", "body": b""})
+
+    middleware = RequestTimingMiddleware(downstream)
+    task = asyncio.create_task(
+        middleware(_scope(headers), receive, lambda _message: asyncio.sleep(0))
+    )
+    await asyncio.sleep(0)
+    assert calls == 0
+    allow_application_read.set()
+    await asyncio.wait_for(first_read.wait(), timeout=1)
+    assert calls == 1
+    release.set()
+    await asyncio.wait_for(task, timeout=1)

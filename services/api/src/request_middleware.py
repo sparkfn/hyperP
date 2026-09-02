@@ -34,14 +34,33 @@ class RequestTimingMiddleware:
         request_id = self._request_id(scope)
         token = begin_request(request_id)
         started_at = monotonic()
-        # One queued message preserves body backpressure; the pump cannot drain
-        # an arbitrary upload ahead of the downstream application.
-        messages: asyncio.Queue[Message] = asyncio.Queue(maxsize=1)
         app_task: asyncio.Future[None] | None = None
         response_started = False
+        initial_request: Message | None = None
+        initial_is_terminal = False
+        initial_ready = asyncio.Event()
+        unexpected_message: Message | None = None
+        unexpected_ready = asyncio.Event()
+        initial_delivered = False
+        unexpected_delivered = False
 
         async def queued_receive() -> Message:
-            return await messages.get()
+            nonlocal initial_delivered, unexpected_delivered
+            await initial_ready.wait()
+            if not initial_delivered:
+                initial_delivered = True
+                if initial_request is None:
+                    raise RuntimeError("disconnect monitor did not retain an initial request")
+                return initial_request
+            if not initial_is_terminal:
+                return await receive()
+            await unexpected_ready.wait()
+            if not unexpected_delivered:
+                unexpected_delivered = True
+                if unexpected_message is None:
+                    raise RuntimeError("disconnect monitor did not retain an unexpected request")
+                return unexpected_message
+            return await receive()
 
         async def send_with_timing(message: Message) -> None:
             nonlocal response_started
@@ -53,16 +72,31 @@ class RequestTimingMiddleware:
             await send(message)
 
         async def pump_disconnect() -> None:
+            nonlocal initial_request, initial_is_terminal, unexpected_message
+            message = await receive()
+            if message["type"] == "http.disconnect":
+                if app_task is not None:
+                    app_task.cancel()
+                return
+            initial_request = message
+            initial_is_terminal = self._is_terminal_empty_request(message)
+            initial_ready.set()
+            if not initial_is_terminal:
+                return
             while True:
                 message = await receive()
                 if message["type"] == "http.disconnect" and app_task is not None:
                     app_task.cancel()
                     return
-                await messages.put(message)
+                unexpected_message = message
+                unexpected_ready.set()
+                return
 
         try:
-            app_task = asyncio.ensure_future(self.app(scope, queued_receive, send_with_timing))
-            pump_task = asyncio.create_task(pump_disconnect())
+            monitor_disconnect = self._is_bodyless_read(scope)
+            app_receive = queued_receive if monitor_disconnect else receive
+            app_task = asyncio.ensure_future(self.app(scope, app_receive, send_with_timing))
+            pump_task = asyncio.create_task(pump_disconnect()) if monitor_disconnect else None
             try:
                 await app_task
             except Exception:
@@ -71,10 +105,45 @@ class RequestTimingMiddleware:
                     raise
                 await self._send_internal_error(send_with_timing, request_id)
             finally:
-                pump_task.cancel()
-                await asyncio.gather(pump_task, return_exceptions=True)
+                if pump_task is not None:
+                    pump_task.cancel()
+                    await asyncio.gather(pump_task, return_exceptions=True)
         finally:
             end_request(token)
+
+    @staticmethod
+    def _is_bodyless_read(scope: Scope) -> bool:
+        """Return whether this request can be monitored without consuming its body.
+
+        GET/HEAD requests without a declared body are the expensive read paths for
+        which we can safely keep one ASGI message of read-ahead in order to notice
+        ``http.disconnect``.  A body-bearing request must leave ``receive`` under
+        application control so middleware cannot violate its backpressure contract.
+        """
+        if scope.get("method") not in {"GET", "HEAD"}:
+            return False
+        headers = cast(list[tuple[bytes, bytes]], scope.get("headers", []))
+        content_lengths = [
+            value.strip() for name, value in headers if name.lower() == b"content-length"
+        ]
+        if any(name.lower() == b"transfer-encoding" for name, _value in headers):
+            return False
+        if not content_lengths:
+            return True
+        if len(content_lengths) != 1:
+            return False
+        try:
+            return int(content_lengths[0]) == 0
+        except ValueError:
+            return False
+
+    @staticmethod
+    def _is_terminal_empty_request(message: Message) -> bool:
+        return (
+            message["type"] == "http.request"
+            and message.get("body", b"") == b""
+            and message.get("more_body", False) is False
+        )
 
     @staticmethod
     def _request_id(scope: Scope) -> str:

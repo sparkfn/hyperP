@@ -629,7 +629,6 @@ class EntityMetrics(BaseModel):
     person_count: int = 0
     source_record_count: int = 0
     last_ingested_at: str | None = None
-    active_review_cases: int = 0
 
 
 class EntityFilterOption(BaseModel):

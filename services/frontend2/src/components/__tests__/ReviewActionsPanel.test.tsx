@@ -70,8 +70,8 @@ describe("ReviewActionsPanel CRM candidates", () => {
     renderPanel();
 
     const selector = await screen.findByLabelText("CRM owner candidate");
-    expect(screen.getByRole("option", { name: "Person Alpha - person-a" })).toBeTruthy();
-    expect(screen.getByRole("option", { name: "Person Beta - person-b" })).toBeTruthy();
+    expect(await screen.findByRole("option", { name: "Person Alpha - person-a" })).toBeTruthy();
+    expect(await screen.findByRole("option", { name: "Person Beta - person-b" })).toBeTruthy();
     await user.selectOptions(selector, "person-b");
 
     await waitFor(() => {
