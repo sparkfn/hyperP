@@ -13,49 +13,57 @@ CALL (source_record_pks, direct_person_ids) {
   WITH source_record_pks
   UNWIND source_record_pks AS source_record_pk
   MATCH (source:SourceRecord {source_record_pk: source_record_pk})
-  MATCH (source)-[:LINKED_TO]->(direct:Person)
+  MATCH (source)-[direct_link:LINKED_TO]->(direct:Person)
+  WHERE coalesce(direct_link.is_active, true) = true
   RETURN direct.person_id AS person_id
   UNION
   WITH source_record_pks
   UNWIND source_record_pks AS source_record_pk
   MATCH (person:Person)-[projection:IDENTIFIED_BY]->()
   WHERE projection.source_record_pk = source_record_pk
+    AND coalesce(projection.is_active, true) = true
   RETURN person.person_id AS person_id
   UNION
   WITH source_record_pks
   UNWIND source_record_pks AS source_record_pk
   MATCH (person:Person)-[projection:LIVES_AT]->()
   WHERE projection.source_record_pk = source_record_pk
+    AND coalesce(projection.is_active, true) = true
   RETURN person.person_id AS person_id
   UNION
   WITH source_record_pks
   UNWIND source_record_pks AS source_record_pk
   MATCH (person:Person)-[projection:HAS_FACT]->()
   WHERE projection.source_record_pk = source_record_pk
+    AND coalesce(projection.is_active, true) = true
   RETURN person.person_id AS person_id
   UNION
   WITH source_record_pks
   UNWIND source_record_pks AS source_record_pk
   MATCH (person:Person)-[context:PURCHASED]->()
   WHERE context.source_record_pk = source_record_pk
+    AND coalesce(context.is_active, true) = true
   RETURN person.person_id AS person_id
   UNION
   WITH source_record_pks
   UNWIND source_record_pks AS source_record_pk
   MATCH (person:Person)-[context:BOUGHT_VEHICLE]->()
   WHERE context.source_record_pk = source_record_pk
+    AND coalesce(context.is_active, true) = true
   RETURN person.person_id AS person_id
   UNION
   WITH source_record_pks
   UNWIND source_record_pks AS source_record_pk
   MATCH (person:Person)-[context:OWNS_VEHICLE]->()
   WHERE context.source_record_pk = source_record_pk
+    AND coalesce(context.is_active, true) = true
   RETURN person.person_id AS person_id
   UNION
   WITH source_record_pks
   UNWIND source_record_pks AS source_record_pk
   MATCH (source:SourceRecord {source_record_pk: source_record_pk})
-        -[:FOR_CUSTOMER_RECORD]->(:SourceRecord)-[:LINKED_TO]->(customer:Person)
+        -[:FOR_CUSTOMER_RECORD]->(:SourceRecord)-[customer_link:LINKED_TO]->(customer:Person)
+  WHERE coalesce(customer_link.is_active, true) = true
   RETURN customer.person_id AS person_id
   UNION
   WITH source_record_pks
@@ -111,13 +119,17 @@ CALL (records) {
         OR (source.lifecycle_status IS NULL AND source.is_latest = true)]
        AS accepted_records
   UNWIND accepted_records AS source
-  OPTIONAL MATCH (source)-[:LINKED_TO]->(direct:Person)
+  OPTIONAL MATCH (source)-[direct_link:LINKED_TO]->(direct:Person)
+  WHERE coalesce(direct_link.is_active, true) = true
   OPTIONAL MATCH (person:Person)-[projection]->()
   WHERE projection.source_record_pk = source.source_record_pk
+    AND coalesce(projection.is_active, true) = true
   OPTIONAL MATCH (knows_from:Person)-[knows:KNOWS]->(knows_to:Person)
   WHERE knows.source_record_pk = source.source_record_pk
+    AND coalesce(knows.is_active, true) = true
   OPTIONAL MATCH (source)-[:FOR_CUSTOMER_RECORD]->(:SourceRecord)
-        -[:LINKED_TO]->(customer:Person)
+        -[customer_link:LINKED_TO]->(customer:Person)
+  WHERE coalesce(customer_link.is_active, true) = true
   RETURN collect(DISTINCT direct.person_id)
        + collect(DISTINCT person.person_id)
        + collect(DISTINCT knows_from.person_id)

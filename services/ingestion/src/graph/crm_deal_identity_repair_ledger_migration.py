@@ -8,6 +8,7 @@ from neo4j import ManagedTransaction, Record
 
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control_instance_migration import assert_ingestion_control_ready
+from src.graph.queries.crm_deal_identity_repair_control import CREATE_CRM_DEAL_REPAIR_CONTROL_SCHEMA
 from src.graph.queries.crm_deal_identity_repair_ledger import CREATE_CRM_DEAL_REPAIR_LEDGER_SCHEMA
 
 MIGRATION_KEY = "crm_deal_identity_repair_ledger_v1"
@@ -48,6 +49,15 @@ REQUIRED_CONSTRAINTS = {
         ("run_id", "verification_id"),
     ),
     "crm_deal_repair_outbox_unique": ("CrmDealRepairOutbox", ("run_id", "event_id")),
+    "crm_deal_repair_control_run_unique": ("CrmDealRepairControl", ("run_id",)),
+    "crm_deal_repair_publication_reservation_unique": (
+        "CrmDealRepairPublicationReservation",
+        ("control_instance_id", "publication_key"),
+    ),
+    "crm_deal_repair_allocation_completion_unique": (
+        "CrmDealRepairAllocationCompletion",
+        ("run_id", "completion_id"),
+    ),
 }
 REQUIRED_INDEXES = {
     "crm_deal_repair_run_status": (
@@ -81,6 +91,10 @@ REQUIRED_INDEXES = {
         ("run_id", "unit_id", "generation", "outcome"),
     ),
     "crm_deal_repair_outbox_state": ("CrmDealRepairOutbox", ("run_id", "state", "sequence")),
+    "crm_deal_repair_control_state": (
+        "CrmDealRepairControl",
+        ("state", "control_instance_id", "revision"),
+    ),
 }
 
 
@@ -88,7 +102,10 @@ def ensure_crm_deal_repair_ledger_ready(client: Neo4jClient) -> None:
     """Install only #300 metadata schema after #272 is provably ready."""
     assert_ingestion_control_ready(client)
     with client.session() as session:
-        for statement in CREATE_CRM_DEAL_REPAIR_LEDGER_SCHEMA:
+        for statement in (
+            *CREATE_CRM_DEAL_REPAIR_LEDGER_SCHEMA,
+            *CREATE_CRM_DEAL_REPAIR_CONTROL_SCHEMA,
+        ):
             session.run(statement).consume()
     _assert_exact_schema(client)
 

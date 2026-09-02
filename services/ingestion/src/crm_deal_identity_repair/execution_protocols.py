@@ -4,6 +4,11 @@ from __future__ import annotations
 
 from typing import Protocol
 
+from src.crm_deal_identity_repair.control_models import (
+    RepairControlRequest,
+    RepairControlStatus,
+    RepairDispatchLease,
+)
 from src.crm_deal_identity_repair.execution_models import (
     RepairBoundaryDriftReason,
     RepairBoundarySnapshot,
@@ -87,6 +92,20 @@ class RepairQuiescenceRepository(Protocol):
     ) -> RepairQuiescence | None: ...
 
     def release_quiescence(self, release: RepairQuiescence) -> RepairQuiescence: ...
+
+
+class RepairControlRepository(Protocol):
+    """#310 metadata-only CAS control; it never releases dispatch or executes CRM work."""
+
+    def claim(
+        self, request: RepairControlRequest, *, boundary_digest: str, control_instance_id: str
+    ) -> RepairDispatchLease: ...
+
+    def pause(self, request: RepairControlRequest) -> RepairDispatchLease: ...
+
+    def resume(self, request: RepairControlRequest) -> RepairDispatchLease: ...
+
+    def status(self, repair_id: str) -> RepairControlStatus: ...
 
 
 class RepairAllocationRepository(Protocol):

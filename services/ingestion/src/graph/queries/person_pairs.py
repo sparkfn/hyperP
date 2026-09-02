@@ -9,7 +9,7 @@ MATCH (id:Identifier {
     normalized_value: $normalized_value
 })
       <-[rel:IDENTIFIED_BY]-(p:Person {status: 'active'})
-WHERE rel.is_active = true
+WHERE coalesce(rel.is_active, true) = true
   AND rel.quality_flag IN ['valid', 'partial_parse']
 RETURN collect(DISTINCT p.person_id) AS person_ids
 """
@@ -23,12 +23,12 @@ OPTIONAL MATCH (id:Identifier {
 })
 CALL (id) {
   OPTIONAL MATCH (id)<-[fanout_rel:IDENTIFIED_BY]-(fanout_person:Person {status: 'active'})
-  WHERE fanout_rel.is_active = true
+  WHERE coalesce(fanout_rel.is_active, true) = true
   RETURN count(DISTINCT fanout_person) AS fanout
 }
 CALL (id) {
   OPTIONAL MATCH (id)<-[rel:IDENTIFIED_BY]-(p:Person {status: 'active'})
-  WHERE rel.is_active = true
+  WHERE coalesce(rel.is_active, true) = true
     AND rel.quality_flag IN ['valid', 'partial_parse']
   RETURN collect(DISTINCT p.person_id) AS person_ids
 }

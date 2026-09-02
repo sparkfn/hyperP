@@ -39,7 +39,8 @@ MATCH (record:SourceRecord {
 })-[:FROM_SOURCE]->(source)
 WHERE record.ingested_at IS NOT NULL
   AND record.ingested_at <= datetime($report_cutoff_at)
-OPTIONAL MATCH (record)-[:LINKED_TO]->(person:Person)
+OPTIONAL MATCH (record)-[link:LINKED_TO]->(person:Person)
+WHERE coalesce(link.is_active, true) = true
 OPTIONAL MATCH (history:SourceRecord {record_type: 'crm_history'})-[:CHILD_OF]->(record)
 WHERE history.ingested_at IS NOT NULL
   AND history.ingested_at <= datetime($report_cutoff_at)

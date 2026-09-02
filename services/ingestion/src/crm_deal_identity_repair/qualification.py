@@ -8,7 +8,10 @@ from typing import Protocol
 
 from src.connectors.bitrix_stage_history.artifact_manifest import ArtifactManifest
 from src.crm_deal_identity_repair.digests import inventory_digest_from_bytes
-from src.crm_deal_identity_repair.execution_models import RepairExecutionBoundaryManifest
+from src.crm_deal_identity_repair.execution_models import (
+    RepairExecutionBoundaryManifest,
+    RepairQualificationRun,
+)
 from src.crm_deal_identity_repair.qualification_inventory import (
     canonical_json_object,
     inventory_source_record_pks,
@@ -47,6 +50,45 @@ class VerifiedRepairArtifact:
     inventory_row_count: int
     eligible_unit_count: int
     negative_control_count: int
+
+
+def read_qualified_stale_run_id(artifact: VerifiedRepairArtifact) -> str:
+    """Read the sealed #300 stale-run target only after artifact authentication."""
+    evidence = canonical_json_object(
+        (Path(artifact.manifest.provenance.artifact_path) / "stale-run-evidence.json").read_bytes(),
+        "repair sealed stale-run evidence",
+    )
+    stale_run_id = evidence.get("stale_run_id")
+    if (
+        not isinstance(stale_run_id, str)
+        or not stale_run_id
+        or evidence.get("state") != "unknown"
+        or evidence.get("execution_allowed") is not False
+    ):
+        raise RuntimeError("repair sealed stale-run evidence is invalid")
+    return stale_run_id
+
+
+def verify_qualified_repair_artifact(
+    store: RepairArtifactStore,
+    *,
+    run: RepairQualificationRun,
+) -> VerifiedRepairArtifact:
+    """Re-authenticate the immutable artifact bound to an already-qualified run.
+
+    Allocation must not reconstruct qualification from CLI arguments: the graph
+    ledger is the authority for every #300 binding.
+    """
+    manifest = run.manifest
+    return verify_repair_artifact(
+        store,
+        artifact_id=run.artifact_id,
+        repair_id=run.repair_id,
+        source_contract_uuid=manifest.source_contract_uuid,
+        repository_sha=manifest.repository_sha,
+        image_digest=manifest.image_digest,
+        configuration_digest=manifest.configuration_digest,
+    )
 
 
 def verify_repair_artifact(

@@ -31,7 +31,7 @@ class _Tx:
 def test_dirty_query_resolves_all_accepted_person_context_once() -> None:
     query = queries.MARK_PROFILE_ANALYSIS_DIRTY
 
-    assert "MATCH (source)-[:LINKED_TO]->(direct:Person)" in query
+    assert "MATCH (source)-[direct_link:LINKED_TO]->(direct:Person)" in query
     for relationship_type in (
         "IDENTIFIED_BY",
         "LIVES_AT",

@@ -23,10 +23,10 @@ from src.graph.client import Neo4jClient
 from src.models import RecordType, SourceRecordEnvelope
 from src.pipeline import IngestPipeline
 
-
 # ---------------------------------------------------------------------------
 # Exports / surface
 # ---------------------------------------------------------------------------
+
 
 def test_vehicle_query_constants_are_exported() -> None:
     assert queries.UPSERT_VEHICLE
@@ -73,6 +73,7 @@ def test_vehicle_queries_do_not_reference_machine_unit_surface() -> None:
 # UPSERT_VEHICLE -- identity, conflict, promotion, create
 # ---------------------------------------------------------------------------
 
+
 def test_upsert_vehicle_lta_match_is_global() -> None:
     """LTA matches across sources: no source_system_key gate on lta_match."""
     query = queries.UPSERT_VEHICLE
@@ -92,7 +93,8 @@ def test_upsert_vehicle_serial_match_is_per_source() -> None:
     assert "$source_system_key IN ser_match.source_systems" in query
     assert "ser_match.normalized_serial_number = $normalized_serial_number" in query
     assert (
-        "$product_sku IN coalesce(ser_match.observed_product_skus_s, []) OR ser_match.product_sku = $product_sku"
+        "$product_sku IN coalesce(ser_match.observed_product_skus_s, []) "
+        "OR ser_match.product_sku = $product_sku"
         in query
     )
 
@@ -120,7 +122,8 @@ def test_upsert_vehicle_fill_uses_coalesce_and_appends_source_and_sku() -> None:
 
     assert "v.normalized_lta_tag = coalesce(v.normalized_lta_tag, $normalized_lta_tag)" in query
     assert (
-        "v.normalized_serial_number = coalesce(v.normalized_serial_number, $normalized_serial_number)"
+        "v.normalized_serial_number = "
+        "coalesce(v.normalized_serial_number, $normalized_serial_number)"
         in query
     )
     assert "v.product_sku = coalesce(v.product_sku, $product_sku)" in query
@@ -149,6 +152,7 @@ def test_upsert_vehicle_conflict_flag_preserves_existing() -> None:
 # ---------------------------------------------------------------------------
 # RESOLVE_EXISTING_VEHICLE_FOR_CHAT
 # ---------------------------------------------------------------------------
+
 
 def test_resolve_existing_vehicle_for_chat_does_not_create() -> None:
     query = queries.RESOLVE_EXISTING_VEHICLE_FOR_CHAT
@@ -194,10 +198,14 @@ def test_resolve_existing_vehicle_for_chat_serial_branch_is_no_lta_fallback() ->
 # Link edges
 # ---------------------------------------------------------------------------
 
+
 def test_link_order_involves_vehicle_carries_source_record_pk() -> None:
     query = queries.LINK_ORDER_INVOLVES_VEHICLE
 
-    assert "MATCH (o:Order {source_system_key: $source_system_key, source_order_id: $source_order_id})" in query
+    assert (
+        "MATCH (o:Order {source_system_key: $source_system_key, source_order_id: $source_order_id})"
+        in query
+    )
     assert "MATCH (v:Vehicle {vehicle_id: $vehicle_id})" in query
     assert "MERGE (o)-[rel:INVOLVES_VEHICLE {" in query
     assert "source_record_pk: $source_record_pk" in query
@@ -251,10 +259,14 @@ def test_link_chat_source_record_mentions_vehicle_links_single_vehicle() -> None
 # FLAG_VEHICLE_OWNER_CONFLICTS
 # ---------------------------------------------------------------------------
 
+
 def test_flag_vehicle_owner_conflicts_flags_multiple_active_owners() -> None:
     query = queries.FLAG_VEHICLE_OWNER_CONFLICTS
 
-    assert "MATCH (v:Vehicle)<-[rel:OWNS_VEHICLE {is_active: true}]-(p:Person {status: 'active'})" in query
+    assert (
+        "MATCH (v:Vehicle)<-[rel:OWNS_VEHICLE {is_active: true}]-(p:Person {status: 'active'})"
+        in query
+    )
     assert "collect(DISTINCT p.person_id) AS owner_ids" in query
     assert "size(owner_ids) > 1" in query
     assert "v.conflict_reason = 'multiple_active_owners'" in query
@@ -264,6 +276,7 @@ def test_flag_vehicle_owner_conflicts_flags_multiple_active_owners() -> None:
 # ---------------------------------------------------------------------------
 # sales.py edits
 # ---------------------------------------------------------------------------
+
 
 def test_merge_order_writes_non_vehicle_lines() -> None:
     query = queries.MERGE_ORDER
@@ -287,7 +300,11 @@ def test_clear_superseded_sales_links_deletes_vehicle_rels() -> None:
 def test_find_vehicle_candidates_for_sales_requires_contact_overlap_and_nric_block() -> None:
     query = queries.FIND_VEHICLE_CANDIDATES_FOR_SALES
 
-    assert "MATCH (sr:SourceRecord {source_record_pk: $sales_source_record_pk, link_status: 'pending_customer'})" in query
+    assert (
+        "MATCH (sr:SourceRecord {source_record_pk: $sales_source_record_pk, "
+        "link_status: 'pending_customer'})"
+        in query
+    )
     assert "INVOLVES_VEHICLE {source_record_pk: $sales_source_record_pk}" in query
     assert "(v)<-[rel:BOUGHT_VEHICLE|OWNS_VEHICLE]-(p:Person {status: 'active'})" in query
     # Contact-channel overlap is a REQUIRED filter (required MATCH, not OPTIONAL),
@@ -298,16 +315,18 @@ def test_find_vehicle_candidates_for_sales_requires_contact_overlap_and_nric_blo
     # Expand identifiers from the already selective candidate Person. A
     # standalone Identifier MATCH produces a global label scan and held the
     # corrective write transaction beyond the reviewed lock ceiling.
-    assert "MATCH (p)-[:IDENTIFIED_BY]->(pi:Identifier)" in query
+    assert "MATCH (p)-[primary_identifier:IDENTIFIED_BY]->(pi:Identifier)" in query
     assert "MATCH (pi:Identifier)" not in query
     assert "pi.value IN $customer_emails AND pi.kind IN ['email']" in query
     assert "pi.value IN $customer_phones AND pi.kind IN ['mobile','phone']" in query
     # The combined value-list + broadened kind gate must be gone.
-    assert "pi.value IN coalesce($customer_emails, []) + coalesce($customer_phones, [])" not in query
+    assert (
+        "pi.value IN coalesce($customer_emails, []) + coalesce($customer_phones, [])" not in query
+    )
     assert "pi.kind IN ['email','phone']" not in query
     assert "collect(DISTINCT pi.kind) AS contact_channels" in query
     assert "ni.kind IN ['nric','nric_hash']" in query
-    assert "customer_nric IS NOT NULL AND customer_nric <> ''" in query
+    assert "customer_nric IS NOT NULL\n  AND customer_nric <> ''" in query
     assert "ni.value <> customer_nric" in query
     assert "size(mismatched_nrics) > 0 AS nric_blocked" in query
     assert "RETURN p.person_id AS person_id" in query
@@ -335,7 +354,7 @@ def test_find_vehicle_candidates_for_sales_excludes_decided_pairs() -> None:
     """
     query = queries.FIND_VEHICLE_CANDIDATES_FOR_SALES
 
-    assert "WHERE NOT EXISTS {" in query
+    assert "AND NOT EXISTS {" in query
     assert "(md:MatchDecision)-[:ABOUT_LEFT {entity_type: 'source_record'}]->(sr)" in query
     assert "(md)-[:ABOUT_RIGHT {entity_type: 'person'}]->(p)" in query
 

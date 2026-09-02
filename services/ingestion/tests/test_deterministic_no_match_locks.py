@@ -109,5 +109,5 @@ def test_prefetched_lock_blocks_without_per_candidate_queries() -> None:
 
 def test_batched_lock_query_preserves_active_lock_semantics() -> None:
     assert "owner:Person {status: 'active'}" in _FIND_ACTIVE_NO_MATCH_LOCKS
-    assert "rel.is_active = true" in _FIND_ACTIVE_NO_MATCH_LOCKS
+    assert "coalesce(rel.is_active, true) = true" in _FIND_ACTIVE_NO_MATCH_LOCKS
     assert "lock.expires_at IS NULL OR lock.expires_at > datetime()" in _FIND_ACTIVE_NO_MATCH_LOCKS

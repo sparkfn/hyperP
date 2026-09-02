@@ -26,7 +26,7 @@ def test_person_pair_query_constants_exist() -> None:
     assert "queue_state IN ['open', 'assigned', 'deferred']" in queries.CHECK_OPEN_PERSON_PAIR_CASE
     assert "IDENTIFIED_BY" in queries.FIND_PERSONS_SHARING_IDENTIFIER
     batch = queries.FIND_PERSONS_SHARING_IDENTIFIERS_BATCH
-    assert "fanout_rel.is_active = true" in batch
+    assert "coalesce(fanout_rel.is_active, true) = true" in batch
     assert "fanout_rel.quality_flag" not in batch
     assert "rel.quality_flag IN ['valid', 'partial_parse']" in batch
 
@@ -231,9 +231,12 @@ def test_relationship_pair_review_boundaries(
     monkeypatch.setattr(module, "score_person_pair", lambda *_args: _score(confidence))
     tx = _ScriptedTx(fanout=2, person_ids=["person-a", "person-b"])
 
-    assert audit_person_pairs(  # type: ignore[arg-type]
-        tx, _nric(), RecordType.RELATIONSHIP
-    ) == expected_cases
+    assert (
+        audit_person_pairs(  # type: ignore[arg-type]
+            tx, _nric(), RecordType.RELATIONSHIP
+        )
+        == expected_cases
+    )
 
 
 def test_relationship_pair_hard_conflict_vetoes_auto_merge(
