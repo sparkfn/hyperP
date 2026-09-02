@@ -312,7 +312,10 @@ ON CREATE SET
     rel.created_at        = datetime()
 SET rel.source_record_pk  = $source_record_pk,
     rel.last_seen_at      = datetime(),
-    rel.last_confirmed_at = datetime()
+    rel.last_confirmed_at = datetime(),
+    rel.is_active         = true,
+    rel.activated_at      = coalesce(rel.activated_at, datetime()),
+    rel.retired_at        = null
 """
 
 CLEAR_SUPERSEDED_SALES_LINKS = """

@@ -94,8 +94,7 @@ def test_upsert_vehicle_serial_match_is_per_source() -> None:
     assert "ser_match.normalized_serial_number = $normalized_serial_number" in query
     assert (
         "$product_sku IN coalesce(ser_match.observed_product_skus_s, []) "
-        "OR ser_match.product_sku = $product_sku"
-        in query
+        "OR ser_match.product_sku = $product_sku" in query
     )
 
 
@@ -123,8 +122,7 @@ def test_upsert_vehicle_fill_uses_coalesce_and_appends_source_and_sku() -> None:
     assert "v.normalized_lta_tag = coalesce(v.normalized_lta_tag, $normalized_lta_tag)" in query
     assert (
         "v.normalized_serial_number = "
-        "coalesce(v.normalized_serial_number, $normalized_serial_number)"
-        in query
+        "coalesce(v.normalized_serial_number, $normalized_serial_number)" in query
     )
     assert "v.product_sku = coalesce(v.product_sku, $product_sku)" in query
     # source_systems appends the caller's source only when not already present.
@@ -239,7 +237,9 @@ def test_link_source_record_mentions_vehicle_carries_context() -> None:
     query = queries.LINK_SOURCE_RECORD_MENTIONS_VEHICLE
 
     assert "MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})" in query
-    assert "MERGE (sr)-[rel:MENTIONS_VEHICLE]->(v)" in query
+    assert "MERGE (sr)-[rel:MENTIONS_VEHICLE {is_active: true}]->(v)" in query
+    assert "rel.activated_at = coalesce(rel.activated_at, datetime())" in query
+    assert "rel.retired_at = null" in query
     assert "rel.source_record_id = $source_record_id" in query
     assert "rel.raw_context = $raw_context" in query
     assert "rel.confidence = $confidence" in query
@@ -251,7 +251,9 @@ def test_link_chat_source_record_mentions_vehicle_links_single_vehicle() -> None
 
     assert "MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})" in query
     assert "MATCH (v:Vehicle {vehicle_id: $vehicle_id})" in query
-    assert "MERGE (sr)-[rel:MENTIONS_VEHICLE]->(v)" in query
+    assert "MERGE (sr)-[rel:MENTIONS_VEHICLE {is_active: true}]->(v)" in query
+    assert "rel.activated_at = coalesce(rel.activated_at, datetime())" in query
+    assert "rel.retired_at = null" in query
     assert "rel.last_seen_at = datetime()" in query
 
 
@@ -302,8 +304,7 @@ def test_find_vehicle_candidates_for_sales_requires_contact_overlap_and_nric_blo
 
     assert (
         "MATCH (sr:SourceRecord {source_record_pk: $sales_source_record_pk, "
-        "link_status: 'pending_customer'})"
-        in query
+        "link_status: 'pending_customer'})" in query
     )
     assert "INVOLVES_VEHICLE {source_record_pk: $sales_source_record_pk}" in query
     assert "(v)<-[rel:BOUGHT_VEHICLE|OWNS_VEHICLE]-(p:Person {status: 'active'})" in query

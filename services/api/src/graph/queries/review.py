@@ -419,7 +419,10 @@ MERGE (p)-[rel:PURCHASED {
 ON CREATE SET rel.first_seen_at = datetime(), rel.created_at = datetime()
 SET rel.source_record_pk  = sr.source_record_pk,
     rel.last_seen_at      = datetime(),
-    rel.last_confirmed_at = datetime()
+    rel.last_confirmed_at = datetime(),
+    rel.is_active         = true,
+    rel.activated_at      = coalesce(rel.activated_at, datetime()),
+    rel.retired_at        = null
 """
 
 LINK_REVIEW_SALES_BOUGHT_VEHICLE = """
@@ -448,7 +451,10 @@ ON CREATE SET rel.created_at = datetime(), rel.first_seen_at = datetime()
 SET rel.source_record_pk  = sr.source_record_pk,
     rel.last_seen_at      = datetime(),
     rel.last_confirmed_at = datetime(),
-    rel.updated_at        = datetime()
+    rel.updated_at        = datetime(),
+    rel.is_active         = true,
+    rel.activated_at      = coalesce(rel.activated_at, datetime()),
+    rel.retired_at        = null
 """
 
 MARK_REVIEW_SALES_RECORD_LINKED = """
@@ -719,6 +725,20 @@ CALL (source, sr, person, stage, order, observations) {
       involves.observed_at = observation.observed_at,
       involves.confidence = observation.confidence,
       involves.quality_flag = observation.quality_flag
+  // Reuse a property-missing legacy current edge before the active-key MERGE.
+  OPTIONAL MATCH (person)-[legacy_bought:BOUGHT_VEHICLE {
+    source_system_key: source.source_key,
+    source_order_id: stage.source_order_id,
+    observation_index: observation.observation_index
+  }]->(vehicle)
+  WHERE coalesce(legacy_bought.is_active, true) = true AND legacy_bought.is_active IS NULL
+  WITH person, stage, source, sr, order, observation, vehicle,
+       collect(legacy_bought) AS legacy_boughts
+  FOREACH (legacy_bought IN legacy_boughts |
+    SET legacy_bought.is_active = true,
+        legacy_bought.activated_at = coalesce(legacy_bought.activated_at, datetime()),
+        legacy_bought.retired_at = null
+  )
   MERGE (person)-[bought:BOUGHT_VEHICLE {source_system_key: source.source_key,
     source_order_id: stage.source_order_id,
     observation_index: observation.observation_index,
@@ -727,13 +747,28 @@ CALL (source, sr, person, stage, order, observations) {
       bought.raw_context = observation.raw_context,
       bought.observed_at = observation.observed_at,
       bought.confidence = observation.confidence,
-      bought.quality_flag = observation.quality_flag, bought.updated_at = datetime()
+      bought.quality_flag = observation.quality_flag, bought.updated_at = datetime(),
+      bought.activated_at = coalesce(bought.activated_at, datetime()), bought.retired_at = null
   RETURN count(observation) AS promoted_observation_count
 }
+// Reuse a property-missing legacy current edge before the active-key MERGE.
+OPTIONAL MATCH (person)-[legacy_purchase:PURCHASED {
+  source_system_key: source.source_key,
+  source_order_id: stage.source_order_id
+}]->(order)
+WHERE coalesce(legacy_purchase.is_active, true) = true AND legacy_purchase.is_active IS NULL
+WITH source, sr, person, stage, order, promoted_line_count, promoted_observation_count,
+     collect(legacy_purchase) AS legacy_purchases
+FOREACH (legacy_purchase IN legacy_purchases |
+  SET legacy_purchase.is_active = true,
+      legacy_purchase.activated_at = coalesce(legacy_purchase.activated_at, datetime()),
+      legacy_purchase.retired_at = null
+)
 MERGE (person)-[purchase:PURCHASED {source_system_key: source.source_key,
   source_order_id: stage.source_order_id, is_active: true}]->(order)
 SET purchase.source_record_pk = sr.source_record_pk, purchase.is_active = true,
     purchase.updated_at = datetime(),
+    purchase.activated_at = coalesce(purchase.activated_at, datetime()), purchase.retired_at = null,
     person.analysis_input_revision = coalesce(person.analysis_input_revision, 0) + 1,
     person.analysis_dirty_at = datetime()
 RETURN sr.source_record_pk AS source_record_pk,
@@ -915,7 +950,10 @@ WITH pending, approved, source, old_versions,
      collect(DISTINCT provisional.person_id) AS prior_person_ids,
      collect(unsafe) AS unsafe_links
 FOREACH (rel IN unsafe_links | DELETE rel)
-MERGE (pending)-[:LINKED_TO {linked_at: datetime(), is_active: true}]->(approved)
+MERGE (pending)-[pending_link:LINKED_TO {linked_at: datetime(), is_active: true}]->(approved)
+SET pending_link.is_active = true,
+    pending_link.activated_at = coalesce(pending_link.activated_at, datetime()),
+    pending_link.retired_at = null
 WITH pending, approved, source, old_versions, prior_person_ids
 CALL (pending, approved, source) {
   OPTIONAL MATCH (call:SourceRecord {record_type: 'call', lifecycle_status: 'pending_review'})
@@ -943,21 +981,21 @@ CALL (pending, approved, source) {
 WITH pending, approved, source, old_versions, prior_person_ids
 CALL (old_versions) {
   UNWIND old_versions AS old
-  OPTIONAL MATCH (old)-[:LINKED_TO]->(old_direct_owner:Person)
+  OPTIONAL MATCH (old)-[old_direct_link:LINKED_TO]->(old_direct_owner:Person)
   RETURN collect(DISTINCT old_direct_owner.person_id) AS old_direct_owners
 }
 CALL (old_versions) {
   UNWIND old_versions AS old
-  OPTIONAL MATCH (owner:Person)-[rel:IDENTIFIED_BY|LIVES_AT]->()
-  WHERE rel.source_record_pk = old.source_record_pk
-  SET rel.is_active = false, rel.updated_at = datetime()
+  OPTIONAL MATCH (owner:Person)-[retired_projection:IDENTIFIED_BY|LIVES_AT]->()
+  WHERE retired_projection.source_record_pk = old.source_record_pk
+  SET retired_projection.is_active = false, retired_projection.updated_at = datetime()
   RETURN collect(DISTINCT owner.person_id) AS old_edge_owners
 }
 CALL (old_versions) {
   UNWIND old_versions AS old
-  OPTIONAL MATCH (owner:Person)-[rel:HAS_FACT]->(old)
-  WHERE rel.source_record_pk = old.source_record_pk
-  SET rel.is_active = false, rel.updated_at = datetime()
+  OPTIONAL MATCH (owner:Person)-[retired_fact:HAS_FACT]->(old)
+  WHERE retired_fact.source_record_pk = old.source_record_pk
+  SET retired_fact.is_active = false, retired_fact.updated_at = datetime()
   RETURN collect(DISTINCT owner.person_id) AS old_fact_owners
 }
 CALL (old_versions) {
@@ -998,7 +1036,8 @@ CALL (pending, approved, source) {
   SET rel.is_active = true, rel.is_verified = ident.is_verified,
       rel.quality_flag = ident.quality_flag, rel.source_system_key = source.source_key,
       rel.source_record_pk = pending.source_record_pk, rel.last_seen_at = datetime(),
-      rel.last_confirmed_at = datetime()
+      rel.last_confirmed_at = datetime(),
+      rel.activated_at = coalesce(rel.activated_at, datetime()), rel.retired_at = null
   RETURN count(*) AS identifier_count
 }
 CALL (pending, approved, source) {
@@ -1013,7 +1052,8 @@ CALL (pending, approved, source) {
   }]->(addr)
   SET rel.is_active = true, rel.is_verified = false, rel.quality_flag = address.quality_flag,
       rel.source_system_key = source.source_key, rel.source_record_pk = pending.source_record_pk,
-      rel.last_seen_at = datetime(), rel.last_confirmed_at = datetime()
+      rel.last_seen_at = datetime(), rel.last_confirmed_at = datetime(),
+      rel.activated_at = coalesce(rel.activated_at, datetime()), rel.retired_at = null
   MERGE (pending)-[described:DESCRIBES_ADDRESS]->(addr)
   SET described.is_active = true, described.source_system_key = source.source_key,
       described.linked_at = datetime()
@@ -1081,9 +1121,9 @@ CALL (pending, approved) {
   UNWIND $knows_relationships AS item
   MATCH (declarer_sr:SourceRecord {source_record_id: item.declarer_source_record_id})
   MATCH (declarer_sr)-[:FROM_SOURCE]->(declarer_source:SourceSystem)
-  MATCH (declarer_sr)
-        -[:LINKED_TO]->(declarer:Person {status: 'active'})
-  WHERE declarer_source.source_key = item.declarer_source_system_key
+  MATCH (declarer_sr)-[declarer_link:LINKED_TO]->(declarer:Person {status: 'active'})
+  WHERE coalesce(declarer_link.is_active, true) = true
+    AND declarer_source.source_key = item.declarer_source_system_key
     AND (declarer_sr.lifecycle_status = 'active'
       OR (declarer_sr.lifecycle_status IS NULL AND declarer_sr.is_latest = true))
   FOREACH (_ IN CASE WHEN declarer <> approved THEN [1] ELSE [] END |

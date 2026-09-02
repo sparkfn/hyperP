@@ -171,6 +171,7 @@ _AUTHORITATIVE_MUTATION_READERS: Final[frozenset[str]] = frozenset(
         "ingestion/graph/queries/crm_history.py:CREATE_CALL_FROM_HISTORY",
         "ingestion/graph/queries/profile_analysis_dirty.py:MARK_PROFILE_ANALYSIS_DIRTY",
         "api/graph/queries/review.py:LINK_REVIEW_SALES_BOUGHT_VEHICLE",
+        "api/graph/queries/review.py:ACTIVATE_PENDING_REVIEW_RECORD",
         "api/graph/queries/review.py:LINK_REVIEW_SALES_PURCHASED_ORDER",
         "ingestion/graph/queries/crm_history.py:LINK_CONVERSATION_TO_CRM_HISTORY",
         "ingestion/graph/queries/crm_history.py:LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS",
@@ -193,6 +194,20 @@ _EXEMPT_MUTATION_READ_BINDINGS: Final[dict[str, frozenset[str]]] = {
         {"old_link"}
     ),
     "ingestion/graph/queries/knows.py:LINK_PERSON_KNOWS": frozenset({"old_rel"}),
+    # Activation retains/retire historical links in several subqueries, but its
+    # declarer_link remains authoritative and is deliberately not exempt.
+    "api/graph/queries/review.py:ACTIVATE_PENDING_REVIEW_RECORD": frozenset(
+        {
+            "unsafe",
+            "old_call_link",
+            "old_direct_link",
+            "retired_projection",
+            "retired_fact",
+            "mention",
+            "old_knows",
+            "changed_knows",
+        }
+    ),
 }
 
 # LINK_PERSON_BOUGHT_VEHICLE intentionally materializes either an active or an
@@ -207,7 +222,6 @@ _LIFECYCLE_MATERIALIZER_BINDINGS: Final[dict[str, frozenset[str]]] = {
 _MUTATION_READERS: Final[frozenset[str]] = frozenset(
     """api/graph/queries/merge.py:EXECUTE_MANUAL_MERGE
 api/graph/queries/merge.py:REVERT_MERGE
-api/graph/queries/review.py:ACTIVATE_PENDING_REVIEW_RECORD
 api/graph/queries/review.py:PROMOTE_STAGED_REVIEW_SALE
 api/graph/queries/review.py:RESOLVE_PENDING_REVIEW_RECORD_NO_MATCH
 api/graph/queries/review.py:REJECT_PENDING_REVIEW_RECORD

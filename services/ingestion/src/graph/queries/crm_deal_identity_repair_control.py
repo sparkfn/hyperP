@@ -506,6 +506,7 @@ FOREACH (_ IN CASE WHEN completion IS NULL THEN [] ELSE [1] END |
       completion.receipt_state = control.state,
       completion.receipt_boundary_digest = control.boundary_digest,
       completion.receipt_sealed_boundary_digest = $sealed_boundary_digest,
+      completion.receipt_digest = $receipt_digest,
       completion.receipt_created_at = datetime()
 )
 RETURN control.run_id AS run_id
@@ -535,9 +536,15 @@ MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id,
 WHERE completion.unit_ids = $unit_ids
   AND control.state IN ['allocated', 'paused']
   AND (control.state = 'allocated' OR control.paused_from_state = 'allocated')
-  AND completion.receipt_control_instance_id IS NOT NULL
+  AND completion.receipt_control_instance_id = control.control_instance_id
+  AND completion.receipt_run_id = $run_id
+  AND completion.receipt_owner_id = $owner_id
+  AND completion.receipt_token_digest = $token_digest
+  AND completion.receipt_revision = completion.request_expected_revision + 1
   AND completion.receipt_state = 'allocated'
+  AND completion.receipt_boundary_digest = completion.boundary_digest
   AND completion.receipt_sealed_boundary_digest IS NOT NULL
+  AND completion.receipt_digest IS NOT NULL
   AND control.sealed_revision = control.revision
   AND control.sealed_boundary_digest IS NOT NULL
 CALL (completion) {
@@ -545,6 +552,7 @@ CALL (completion) {
   OPTIONAL MATCH (stored:CrmDealRepairUnit {run_id: completion.run_id})
   RETURN [unit IN collect(stored) WHERE unit IS NOT NULL] AS stored_units
 }
+WITH control, completion, stored_units
 WHERE size(stored_units) = completion.unit_count
   AND all(unit_id IN completion.unit_ids WHERE unit_id IN [stored IN stored_units | stored.unit_id])
   AND all(unit IN $units WHERE EXISTS {
@@ -564,7 +572,9 @@ WHERE size(stored_units) = completion.unit_count
 RETURN completion.receipt_control_instance_id AS control_instance_id,
        completion.receipt_run_id AS run_id, completion.receipt_owner_id AS owner_id,
        completion.receipt_token_digest AS token_digest, completion.receipt_revision AS revision,
-       completion.receipt_state AS state, completion.receipt_boundary_digest AS boundary_digest
+       completion.receipt_state AS state, completion.receipt_boundary_digest AS boundary_digest,
+       completion.receipt_sealed_boundary_digest AS sealed_boundary_digest,
+       completion.receipt_digest AS receipt_digest
 """
 
 

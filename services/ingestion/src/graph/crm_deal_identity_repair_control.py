@@ -223,6 +223,8 @@ class CrmDealRepairControlRepository:
                 sealed_inventory_row_count=post_quiescence_snapshot.inventory_row_count,
                 sealed_eligible_unit_count=post_quiescence_snapshot.eligible_unit_count,
                 sealed_negative_control_count=post_quiescence_snapshot.negative_control_count,
+                completion_id=None,
+                receipt_digest=None,
             ).single()
             if sealed is None:
                 raise RuntimeError("repair quiescence boundary sealing was rejected")
@@ -294,6 +296,19 @@ class CrmDealRepairControlRepository:
             stored.run.control_instance_id,
             stored.source_record_pks,
         )
+        receipt_digest = (
+            _allocation_receipt_digest(
+                control_instance_id=stored.run.control_instance_id,
+                run_id=stored.run.run_id,
+                owner_id=request.owner_id,
+                token_digest=request.token_digest,
+                revision=revision,
+                boundary_digest=stored.run.boundary_digest,
+                sealed_boundary_digest=snapshot.boundary_digest,
+            )
+            if completion_id is not None
+            else None
+        )
         sealed = tx.run(
             SEAL_QUIESCENCE_BOUNDARY,
             run_id=stored.run.run_id,
@@ -310,6 +325,7 @@ class CrmDealRepairControlRepository:
             sealed_eligible_unit_count=snapshot.eligible_unit_count,
             sealed_negative_control_count=snapshot.negative_control_count,
             completion_id=completion_id,
+            receipt_digest=receipt_digest,
         ).single()
         if sealed is None:
             raise RuntimeError("repair lifecycle boundary sealing was rejected")
@@ -322,13 +338,10 @@ class CrmDealRepairControlRepository:
         proof_digest: str,
         plan: AllocationPlan,
     ) -> RepairDispatchLease:
-        units: list[dict[str, JsonValue]] = [
-            cast(dict[str, JsonValue], asdict(unit)) for unit in plan.units
-        ]
+        units: list[JsonValue] = [cast(JsonValue, asdict(unit)) for unit in plan.units]
         unit_ids = [unit.unit_id for unit in plan.units]
-        units_json: list[JsonValue] = [cast(JsonValue, unit) for unit in units]
         unit_set_digest = object_digest(
-            b"crm-deal-identity-repair-allocation-unit-set-v1\x00", {"units": units_json}
+            b"crm-deal-identity-repair-allocation-unit-set-v1\x00", {"units": units}
         )
         request_digest = object_digest(
             b"crm-deal-identity-repair-allocation-request-v1\x00",
@@ -362,6 +375,7 @@ class CrmDealRepairControlRepository:
                 units=units,
             ).single()
             if replay is not None:
+                _validate_allocation_receipt(replay)
                 return _lease(replay)
             inventory = self._read_allocation_boundary(tx, request.repair_id)
             record = tx.run(
@@ -744,6 +758,66 @@ def _captured_task_identities(
     if not identities:
         raise RuntimeError("repair task topology capture is incomplete")
     return tuple(sorted(identities, key=lambda identity: identity.selector()))
+
+
+def _allocation_receipt_digest(
+    *,
+    control_instance_id: str,
+    run_id: str,
+    owner_id: str,
+    token_digest: str,
+    revision: int,
+    boundary_digest: str,
+    sealed_boundary_digest: str,
+) -> str:
+    """Seal the immutable allocation result returned by exact replays."""
+    return object_digest(
+        b"crm-deal-identity-repair-allocation-receipt-v1\x00",
+        {
+            "control_instance_id": control_instance_id,
+            "run_id": run_id,
+            "owner_id": owner_id,
+            "token_digest": token_digest,
+            "revision": revision,
+            "state": "allocated",
+            "boundary_digest": boundary_digest,
+            "sealed_boundary_digest": sealed_boundary_digest,
+        },
+    )
+
+
+def _validate_allocation_receipt(record: object) -> None:
+    """Fail closed if a persisted exact-replay receipt has been altered."""
+    value = cast(Mapping[str, object], record)
+    required_strings = (
+        "control_instance_id",
+        "run_id",
+        "owner_id",
+        "token_digest",
+        "boundary_digest",
+        "sealed_boundary_digest",
+        "receipt_digest",
+    )
+    strings: dict[str, str] = {}
+    for key in required_strings:
+        candidate = value.get(key)
+        if not isinstance(candidate, str):
+            raise RuntimeError("allocation replay receipt is malformed")
+        strings[key] = candidate
+    state = value.get("state")
+    if state != "allocated":
+        raise RuntimeError("allocation replay receipt state is invalid")
+    expected_digest = _allocation_receipt_digest(
+        control_instance_id=strings["control_instance_id"],
+        run_id=strings["run_id"],
+        owner_id=strings["owner_id"],
+        token_digest=strings["token_digest"],
+        revision=_required_int(value.get("revision"), "allocation receipt revision"),
+        boundary_digest=strings["boundary_digest"],
+        sealed_boundary_digest=strings["sealed_boundary_digest"],
+    )
+    if strings["receipt_digest"] != expected_digest:
+        raise RuntimeError("allocation replay receipt integrity check failed")
 
 
 def _lease_or_none(record: object) -> RepairDispatchLease | None:
