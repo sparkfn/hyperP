@@ -416,7 +416,52 @@ def test_admission_query_requires_exact_verified_status_for_every_prior_unit() -
     assert "authorization_transition_id: authorization.authorization_transition_id" in query
     assert "authorization_digest: authorization.authorization_digest" in query
     assert "state: 'approved', consumable: true" in query
-    assert "size(settled_prior_units) = size(prior_units)" in query
+    assert "RETURN count(prior_fence) AS fence_count" in query
+    assert "RETURN count(mutation) AS mutation_count" in query
+    assert "RETURN count(verification) AS verification_count" in query
+    assert "RETURN count(receipt) AS receipt_count" in query
+    assert "exact_chain_count = 1" in query
+    assert "size(settled_prior_unit_ids) = size(prior_units)" in query
+    assert "size([(prior_fence" not in query
+
+
+def test_acceptance_query_locks_common_records_and_rejects_unallocated_records() -> None:
+    query = queries.ACCEPT_AND_RELEASE
+    assert "integration_acceptance_lock_id = $request_digest" in query
+    assert (
+        "authorization.authorization_transition_id = authorization.authorization_transition_id"
+        in query
+    )
+    assert "fence.fence_id = fence.fence_id" in query
+    assert "result.mutation_id = result.mutation_id" in query
+    assert "image.rollback_image_id = image.rollback_image_id" in query
+    for total, allocated in (
+        ("all_units", "allocated_units"),
+        ("all_fences", "allocated_fences"),
+        ("all_mutations", "allocated_mutations"),
+        ("all_images", "allocated_images"),
+        ("all_verifications", "allocated_verifications"),
+        ("all_authorizations", "allocated_authorizations"),
+        ("all_receipts", "allocated_receipts"),
+    ):
+        assert f"{total} = completion.unit_count" in query
+        assert f"{allocated} = completion.unit_count" in query
+    assert "all_dispositions = allocated_dispositions" in query
+    assert "allocated_dispositions = $observed_secondary_count" in query
+    assert "$expected_secondary_count = $observed_secondary_count" in query
+    for outcome in (
+        "reconciled_dispositions = $reconciled_secondaries",
+        "review_required_dispositions = $review_required_secondaries",
+        "failed_dispositions = $failed_secondaries",
+        "pending_dispositions = $pending_secondaries",
+    ):
+        assert outcome in query
+    assert (
+        "allocated_dispositions = reconciled_dispositions + review_required_dispositions" in query
+    )
+    assert "WITH completion, completion.unit_ids AS allocated_unit_ids" in query
+    assert "WHERE locked_unit_count = completion.unit_count" in queries.LOCK_ACCEPTANCE_SCOPE
+    assert query.count("WHERE locked_unit_count = completion.unit_count") == 1
 
 
 def test_terminal_replay_query_rejects_extra_or_foreign_released_fences() -> None:
@@ -438,6 +483,15 @@ def test_terminal_replay_query_rejects_extra_or_foreign_released_fences() -> Non
     assert "result.payload_digest = image.payload_digest" in query
     assert "unit.state = 'rolled_back' AND image.state = 'restored'" in query
     assert "unit.state = 'review_required' AND image.state = 'review_required'" in query
+
+
+def test_release_query_locks_stable_dispatch_identity_before_ownership_cas() -> None:
+    query = queries.RELEASE_DISPATCH
+    assert "MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat'" in query
+    assert "SET dispatch.control_instance_id = dispatch.control_instance_id" in query
+    assert "integration_release_lock_id" not in query
+    assert "prior IS NOT NULL OR (dispatch.blocked = true" in query
+    assert "dispatch.repair_revision = $revision" in query
 
 
 def test_release_authority_binds_request_digest_for_exact_post_release_replay(
@@ -899,7 +953,12 @@ def test_zero_unit_acceptance_binds_an_empty_receipt_set(
 
     context = _context()
     request = _request("accept", unit_id=None)
-    transaction = _Transaction({queries.READ_RUN_RECEIPTS: [{"unit_count": 0, "receipts": []}]})
+    transaction = _Transaction(
+        {
+            queries.LOCK_ACCEPTANCE_SCOPE: [{"locked_unit_count": 0}],
+            queries.READ_RUN_RECEIPTS: [{"unit_count": 0, "receipts": []}],
+        }
+    )
     repository = _repository(transaction)
     monkeypatch.setattr(repository, "_set_digests", lambda *_: (_DIGEST, _DIGEST))
     monkeypatch.setattr(
@@ -916,8 +975,12 @@ def test_zero_unit_acceptance_binds_an_empty_receipt_set(
             active_deal_origin_phone_projections=0,
             active_deal_origin_email_projections=0,
             active_deal_origin_g_us_projections=0,
+            reconciled_secondaries=0,
+            review_required_secondaries=0,
             failed_secondaries=0,
             pending_secondaries=0,
+            expected_secondary_count=0,
+            observed_secondary_count=0,
             unexplained_secondary_remainder=0,
         ),
     )
