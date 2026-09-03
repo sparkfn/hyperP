@@ -111,7 +111,7 @@ api/graph/queries/persons.py:GET_PERSON_TIMELINE
 api/graph/queries/persons.py:GET_PERSON_TIMELINE_TARGET
 api/graph/queries/persons.py:GET_PERSON_VEHICLES
 api/graph/queries/persons.py:SEARCH_PERSONS
-api/graph/queries/persons_list.py:GET_PERSON_LIST_SUMMARY
+api/graph/queries/persons_list.py:GET_PERSON_LIST_CRM_SUMMARY
 api/graph/queries/persons_list.py:_CONNECTION_COUNT
 api/graph/queries/persons_list.py:_ENTITY_COUNT
 api/graph/queries/persons_list.py:_IDENTIFIER_COUNT
