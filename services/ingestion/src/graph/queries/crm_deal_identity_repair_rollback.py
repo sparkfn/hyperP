@@ -52,7 +52,7 @@ CALL {
 CALL {
   WITH image
   OPTIONAL MATCH (disposition:CrmDealRepairSecondaryDisposition {run_id: $run_id,
-    disposition_id: image.rollback_disposition_id})
+    rollback_image_id: image.rollback_image_id})
   RETURN collect(properties(disposition)) AS dispositions
 }
 RETURN properties(unit) AS unit, properties(fence) AS fence, properties(result) AS result,
@@ -305,7 +305,7 @@ CALL {
 CALL {
   WITH image
   OPTIONAL MATCH (disposition:CrmDealRepairSecondaryDisposition {run_id: $run_id,
-    disposition_id: image.rollback_disposition_id})
+    rollback_image_id: image.rollback_image_id})
   RETURN collect(properties(disposition)) AS dispositions
 }
 RETURN properties(unit) AS unit, properties(fence) AS fence, properties(result) AS result,

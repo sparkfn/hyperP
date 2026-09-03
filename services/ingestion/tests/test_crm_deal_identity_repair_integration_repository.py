@@ -1023,20 +1023,24 @@ def test_rollback_lock_query_rechecks_mutable_eligibility_after_stable_identity_
     assert "authorization.state = 'approved' AND authorization.consumable = true" in query
 
 
-def test_rollback_bundle_collects_only_image_linked_terminal_disposition() -> None:
+def test_rollback_bundle_collects_only_immutable_image_terminal_candidates() -> None:
     from src.graph.queries import crm_deal_identity_repair_rollback as rollback_queries
 
-    query = rollback_queries.LOCK_AND_READ_ROLLBACK_BUNDLE
     terminal_match = (
         "OPTIONAL MATCH (disposition:CrmDealRepairSecondaryDisposition {run_id: $run_id,\n"
-        "    disposition_id: image.rollback_disposition_id})"
+        "    rollback_image_id: image.rollback_image_id})"
     )
-    assert "WITH image" in query
-    assert terminal_match in query
     unit_scoped_match = (
         "unit_id: $unit_id}\n  RETURN collect(properties(disposition)) AS dispositions"
     )
-    assert unit_scoped_match not in query
+    for query in (
+        rollback_queries.LOCK_AND_READ_ROLLBACK_BUNDLE,
+        rollback_queries.READ_ROLLBACK_TERMINAL,
+    ):
+        assert "WITH image" in query
+        assert terminal_match in query
+        assert "disposition_id: image.rollback_disposition_id" not in query
+        assert unit_scoped_match not in query
 
 
 def test_acceptance_query_binds_exact_checkpoint_and_acknowledged_outbox_per_mutation() -> None:

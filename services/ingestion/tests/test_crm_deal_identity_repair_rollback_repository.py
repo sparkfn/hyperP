@@ -524,6 +524,11 @@ def _terminal_row(
             "evidence_digest": _DIGEST,
             "payload_digest": auth.image.payload_digest,
             "state": state,
+            **(
+                {}
+                if state == "available"
+                else {"rollback_disposition_id": disposition_values["disposition_id"]}
+            ),
             "payload_json": payload_json,
             "rollback_result_digest": result_digest,
             "rollback_status_digest": status_digest,
