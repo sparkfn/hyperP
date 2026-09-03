@@ -10,6 +10,7 @@ from src.graph.client import Neo4jClient
 from src.graph.ingestion_control_instance_migration import assert_ingestion_control_ready
 from src.graph.queries.crm_deal_identity_repair_control import CREATE_CRM_DEAL_REPAIR_CONTROL_SCHEMA
 from src.graph.queries.crm_deal_identity_repair_ledger import CREATE_CRM_DEAL_REPAIR_LEDGER_SCHEMA
+from src.graph.queries.crm_deal_identity_repair_integration import CREATE_CRM_DEAL_REPAIR_INTEGRATION_SCHEMA
 
 MIGRATION_KEY = "crm_deal_identity_repair_ledger_v1"
 REQUIRED_CONSTRAINTS = {
@@ -58,6 +59,9 @@ REQUIRED_CONSTRAINTS = {
         "CrmDealRepairAllocationCompletion",
         ("run_id", "completion_id"),
     ),
+    "crm_deal_repair_rollback_receipt_unique": ("CrmDealRepairRollbackReceipt", ("run_id", "receipt_id")),
+    "crm_deal_repair_acceptance_unique": ("CrmDealRepairAcceptance", ("run_id",)),
+    "crm_deal_repair_release_unique": ("CrmDealRepairDispatchRelease", ("run_id",)),
 }
 REQUIRED_INDEXES = {
     "crm_deal_repair_run_status": (
@@ -105,6 +109,7 @@ def ensure_crm_deal_repair_ledger_ready(client: Neo4jClient) -> None:
         for statement in (
             *CREATE_CRM_DEAL_REPAIR_LEDGER_SCHEMA,
             *CREATE_CRM_DEAL_REPAIR_CONTROL_SCHEMA,
+            *CREATE_CRM_DEAL_REPAIR_INTEGRATION_SCHEMA,
         ):
             session.run(statement).consume()
     _assert_exact_schema(client)

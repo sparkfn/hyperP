@@ -47,7 +47,7 @@ class RepairRollbackAuthorization:
     mutation: RepairMutationResult
     image: RepairRollbackImage
     authorization_reference: str
-    authorization_token: str
+    authorization_token_digest: str
     predecessor_transition_id: str
     authorization_policy: str
     authorization_transition_id: str
@@ -57,13 +57,14 @@ class RepairRollbackAuthorization:
             not value or len(value) > 200
             for value in (
                 self.authorization_reference,
-                self.authorization_token,
+                self.authorization_token_digest,
                 self.predecessor_transition_id,
                 self.authorization_policy,
                 self.authorization_transition_id,
             )
         ):
             raise ValueError("rollback authorization transition is invalid")
+        _validate_authorization_token_digest(self.authorization_token_digest)
         records = (self.unit, self.fence, self.mutation, self.image)
         if any(
             item.run_id != self.unit.run_id or item.unit_id != self.unit.unit_id for item in records
@@ -123,7 +124,7 @@ class RepairRollbackAuthorization:
             "image_digest": self.image.image_digest,
             "expected_repaired_digest": self.image.expected_repaired_digest,
             "authorization_reference": self.authorization_reference,
-            "authorization_token": self.authorization_token,
+            "authorization_token_digest": self.authorization_token_digest,
             "predecessor_transition_id": self.predecessor_transition_id,
             "authorization_policy": self.authorization_policy,
             "authorization_transition_id": self.authorization_transition_id,
@@ -293,3 +294,13 @@ def build_rollback_status_digest(
     if drift is not None:
         payload["drift"] = drift.to_dict()
     return rollback_status_digest(payload)
+
+
+def _validate_authorization_token_digest(value: str) -> None:
+    raw = value.removeprefix("sha256:")
+    if (
+        not value.startswith("sha256:")
+        or len(raw) != 64
+        or any(character not in "0123456789abcdef" for character in raw)
+    ):
+        raise ValueError("rollback authorization token digest is invalid")

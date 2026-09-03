@@ -74,7 +74,7 @@ class _GuardParameters(TypedDict):
     image_digest: str
     rollback_request_digest: str
     authorization_reference: str
-    authorization_token: str
+    authorization_token_digest: str
     predecessor_transition_id: str
     authorization_policy: str
     authorization_transition_id: str
@@ -241,7 +241,7 @@ class RollbackLedgerMixin:
                 mutation,
                 image,
                 requested.authorization_reference,
-                requested.authorization_token,
+                requested.authorization_token_digest,
                 requested.predecessor_transition_id,
                 requested.authorization_policy,
                 requested.authorization_transition_id,
@@ -322,7 +322,7 @@ class RollbackLedgerMixin:
             "image_digest": auth.image.image_digest,
             "rollback_request_digest": command.request_digest,
             "authorization_reference": auth.authorization_reference,
-            "authorization_token": auth.authorization_token,
+            "authorization_token_digest": auth.authorization_token_digest,
             "predecessor_transition_id": auth.predecessor_transition_id,
             "authorization_policy": auth.authorization_policy,
             "authorization_transition_id": auth.authorization_transition_id,
@@ -524,7 +524,7 @@ class RollbackLedgerMixin:
             "unit_id": authorization.unit.unit_id,
             "authorization_transition_id": authorization.authorization_transition_id,
             "authorization_reference": authorization.authorization_reference,
-            "authorization_token": authorization.authorization_token,
+            "authorization_token_digest": authorization.authorization_token_digest,
             "predecessor_transition_id": authorization.predecessor_transition_id,
             "authorization_policy": authorization.authorization_policy,
             "generation": authorization.unit.generation,
@@ -595,7 +595,7 @@ class RollbackLedgerMixin:
             "outcome": outcome,
             "rollback_request_digest": command.request_digest,
             "authorization_reference": authorization.authorization_reference,
-            "authorization_token": authorization.authorization_token,
+            "authorization_token_digest": authorization.authorization_token_digest,
             "predecessor_transition_id": authorization.predecessor_transition_id,
             "authorization_policy": authorization.authorization_policy,
             "authorization_transition_id": authorization.authorization_transition_id,

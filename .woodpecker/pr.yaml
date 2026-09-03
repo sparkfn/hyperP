@@ -120,6 +120,7 @@ steps:
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_deal_identity_repair_mutation_neo4j.py -q
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_deal_identity_repair_verification_neo4j.py -q
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_deal_identity_repair_rollback_neo4j.py -q
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_deal_identity_repair_integration_neo4j.py -q
 
   # Frontend (services/frontend2 — active app): tsc --noEmit + eslint errors-only.
   # NOTE: `npm run lint` uses `--max-warnings 9` but the clean tree already carries
