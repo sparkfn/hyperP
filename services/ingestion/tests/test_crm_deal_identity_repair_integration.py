@@ -126,7 +126,7 @@ def test_cli_rejects_missing_rollback_predecessor() -> None:
 
 
 def test_apply_replay_and_post_apply_reads_are_not_limited_to_allocated_state() -> None:
-    claimed_unit = integration_queries.CLAIM_FENCE.split("OPTIONAL MATCH (accepted", 1)[0]
+    claimed_unit = integration_queries.CLAIM_ADMITTED_FENCE.split("OPTIONAL MATCH (accepted", 1)[0]
     assert (
         "inventory_binding_digest: $inventory_binding_digest, state: 'allocated'"
         not in claimed_unit
@@ -134,7 +134,9 @@ def test_apply_replay_and_post_apply_reads_are_not_limited_to_allocated_state() 
     read_unit = integration_queries.READ_FENCE.split("MATCH (fence", 1)[0]
     allocated_match = "inventory_binding_digest: $inventory_binding_digest, state: 'allocated'"
     assert allocated_match not in read_unit
-    assert "unit.state = 'allocated' AND size(stored) = 0" in integration_queries.CLAIM_FENCE
+    assert (
+        "unit.state = 'allocated' AND size(stored) = 0" in integration_queries.CLAIM_ADMITTED_FENCE
+    )
 
 
 def test_acceptance_uses_exact_callback_inputs_and_persists_receipt_digest() -> None:

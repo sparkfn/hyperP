@@ -19,11 +19,11 @@ from src.graph.queries.bitrix_source_instances import CREATE_BITRIX_SOURCE_INSTA
 from src.graph.queries.crm_deal_identity_repair_control import (
     CREATE_CRM_DEAL_REPAIR_CONTROL_SCHEMA,
 )
-from src.graph.queries.crm_deal_identity_repair_ledger import (
-    CREATE_CRM_DEAL_REPAIR_LEDGER_SCHEMA,
-)
 from src.graph.queries.crm_deal_identity_repair_integration import (
     CREATE_CRM_DEAL_REPAIR_INTEGRATION_SCHEMA,
+)
+from src.graph.queries.crm_deal_identity_repair_ledger import (
+    CREATE_CRM_DEAL_REPAIR_LEDGER_SCHEMA,
 )
 from src.graph.queries.crm_history_authority import CREATE_CRM_HISTORY_AUTHORITY_CONSTRAINTS
 from src.graph.queries.crm_stage_backfill import CREATE_CRM_STAGE_BACKFILL_CONSTRAINTS
