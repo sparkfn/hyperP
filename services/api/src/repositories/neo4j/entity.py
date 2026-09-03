@@ -5,6 +5,8 @@ from __future__ import annotations
 import asyncio
 from time import monotonic
 
+from neo4j import Query
+
 from src.config import config
 from src.graph.client import get_session
 from src.graph.mappers_entities import (
@@ -60,7 +62,12 @@ class Neo4jEntityRepository:
 
     async def _load_all(self) -> list[EntitySummary]:
         async with get_session() as session:
-            result = await session.run(LIST_ENTITIES)
+            result = await session.run(
+                Query(
+                    LIST_ENTITIES,
+                    timeout=config.neo4j_background_read_transaction_timeout_seconds,
+                )
+            )
             records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
         return [map_entity_summary(rec) for rec in records]
 

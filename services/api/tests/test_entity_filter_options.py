@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 
 import pytest
+from neo4j import Query
 import src.repositories.neo4j.entity as entity_module
 from src.graph.converters import GraphRecord, GraphValue
 from src.graph.mappers_entities import map_entity_filter_option
@@ -93,6 +94,37 @@ async def test_repository_executes_lightweight_filter_options_query(
         EntityFilterOption(entity_key="legacy", display_name=None),
     ]
     assert session.calls == [LIST_ENTITY_FILTER_OPTIONS]
+
+
+@pytest.mark.anyio
+async def test_exact_entity_aggregate_uses_bounded_background_timeout(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class _AggregateSession:
+        def __init__(self) -> None:
+            self.query: str | Query | None = None
+
+        async def run(self, query: str | Query) -> _Result:
+            self.query = query
+            return _Result([])
+
+    session = _AggregateSession()
+
+    @asynccontextmanager
+    async def fake_get_session() -> AsyncIterator[_AggregateSession]:
+        yield session
+
+    monkeypatch.setattr(entity_module, "get_session", fake_get_session)
+    monkeypatch.setattr(
+        entity_module.config,
+        "neo4j_background_read_transaction_timeout_seconds",
+        47.0,
+    )
+
+    assert await Neo4jEntityRepository()._load_all() == []
+    assert isinstance(session.query, Query)
+    assert session.query.text == entity_module.LIST_ENTITIES
+    assert session.query.timeout == 47.0
 
 
 @pytest.mark.anyio

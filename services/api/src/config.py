@@ -53,7 +53,7 @@ class AppConfig(BaseSettings):
         alias="NEO4J_WEB_READ_TRANSACTION_TIMEOUT_SECONDS",
     )
     neo4j_background_read_transaction_timeout_seconds: float = Field(
-        default=25.0,
+        default=55.0,
         ge=1.0,
         le=55.0,
         alias="NEO4J_BACKGROUND_READ_TRANSACTION_TIMEOUT_SECONDS",
