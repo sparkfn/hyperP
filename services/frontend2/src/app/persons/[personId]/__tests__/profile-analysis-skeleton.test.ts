@@ -1,7 +1,7 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-const pageSource = readFileSync(new URL("../page.tsx", import.meta.url), "utf8");
+const pageSource = readFileSync(new URL("../page-content.tsx", import.meta.url), "utf8");
 
 describe("Person detail profile analysis integration", () => {
   it("places Profile analysis first in the loaded and skeleton navigation", () => {
