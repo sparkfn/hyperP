@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from argparse import Namespace
 from collections.abc import Callable
 from pathlib import Path
@@ -107,10 +108,12 @@ def _context_loader(
         run = ledger.get_qualification(request.control.repair_id)
         if run is None or run.run_id != request.control.run_id:
             raise RuntimeError("repair integration requires exact qualified run")
-        overlay = verify_approval_overlay(
-            Path(settings.crm_deal_identity_repair_approval_root) / f"{request.approval_id}.json",
-            secret=approval_secret,
+        overlay_path = _approval_overlay_path(
+            settings.crm_deal_identity_repair_approval_root, request.approval_id
         )
+        overlay = verify_approval_overlay(overlay_path, secret=approval_secret)
+        if overlay.approval_id != request.approval_id:
+            raise RuntimeError("repair approval overlay ID does not match the request")
         assert_overlay_binds_qualification(overlay, run=run, expected_key_id=approval_key_id)
         with repair_artifact_store_from_settings(settings) as store:
             verified = verify_qualified_repair_artifact(store, run=run)
@@ -134,6 +137,27 @@ def _context_loader(
         return RepairIntegrationContext(run, inventory, authority)
 
     return load
+
+
+def _approval_overlay_path(root_value: str, approval_id: str) -> Path:
+    """Resolve one approved overlay without allowing a request to escape its authority root."""
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]{0,127}", approval_id):
+        raise RuntimeError("repair approval ID is not a file identity")
+    if approval_id.endswith((".", " ")):
+        raise RuntimeError("repair approval ID is not a file identity")
+    basename = approval_id.split(".", 1)[0].upper()
+    reserved = {"CON", "PRN", "AUX", "NUL"} | {
+        f"{prefix}{number}" for prefix in ("COM", "LPT") for number in range(1, 10)
+    }
+    if basename in reserved:
+        raise RuntimeError("repair approval ID is not a file identity")
+    root = Path(root_value).resolve(strict=True)
+    candidate = (root / f"{approval_id}.json").resolve(strict=False)
+    try:
+        candidate.relative_to(root)
+    except ValueError as exc:
+        raise RuntimeError("repair approval overlay escapes its configured root") from exc
+    return candidate
 
 
 def _read_inventory(path: Path) -> tuple[RepairInventoryItem, ...]:

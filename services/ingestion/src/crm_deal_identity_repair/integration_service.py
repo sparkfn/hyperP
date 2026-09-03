@@ -54,22 +54,23 @@ class RepairIntegrationContext:
 
 
 class RepairIntegrationRepository(Protocol):
-    def allocated_unit(
+    def admit_and_claim_fence(
         self, request: RepairIntegrationRequest, context: RepairIntegrationContext
-    ) -> RepairUnit: ...
-
-    def claim_or_read_fence(
-        self,
-        request: RepairIntegrationRequest,
-        context: RepairIntegrationContext,
-        unit: RepairUnit,
-    ) -> RepairFence: ...
+    ) -> tuple[RepairUnit, RepairFence]: ...
 
     def read_fence(
         self,
         request: RepairIntegrationRequest,
         context: RepairIntegrationContext,
     ) -> tuple[RepairUnit, RepairFence]: ...
+
+    def read_terminal_rollback_replay(
+        self,
+        request: RepairIntegrationRequest,
+        context: RepairIntegrationContext,
+        authorization_token_digest: str,
+        policy: str,
+    ) -> RepairRollbackAuthorization | None: ...
 
     def create_rollback_authorization(
         self,
@@ -162,8 +163,7 @@ class CrmDealIdentityRepairIntegrationService:
     def _apply(
         self, request: RepairIntegrationRequest, context: RepairIntegrationContext
     ) -> RepairIntegrationReceipt:
-        unit = self._repository.allocated_unit(request, context)
-        fence = self._repository.claim_or_read_fence(request, context, unit)
+        unit, fence = self._repository.admit_and_claim_fence(request, context)
         result = self._mutation.execute(
             RepairMutationCommand(
                 unit,
@@ -251,14 +251,19 @@ class CrmDealIdentityRepairIntegrationService:
     ) -> RepairRollbackCommand:
         if self._rollback_token_digest is None:
             raise RuntimeError("repair rollback credential is unavailable for this operation")
-        unit, fence, _ = self._claimed(request, context)
+        token_digest = self._rollback_token_digest()
+        policy = context.run.manifest.rollback_authority_policy
+        try:
+            unit, fence, _ = self._claimed(request, context)
+        except RuntimeError as claimed_error:
+            authorization = self._repository.read_terminal_rollback_replay(
+                request, context, token_digest, policy
+            )
+            if authorization is None:
+                raise claimed_error
+            return RepairRollbackCommand(authorization)
         authorization = self._repository.create_rollback_authorization(
-            request,
-            context,
-            unit,
-            fence,
-            self._rollback_token_digest(),
-            context.run.manifest.rollback_authority_policy,
+            request, context, unit, fence, token_digest, policy
         )
         return RepairRollbackCommand(authorization)
 

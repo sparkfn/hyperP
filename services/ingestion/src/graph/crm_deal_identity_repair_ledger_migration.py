@@ -9,8 +9,10 @@ from neo4j import ManagedTransaction, Record
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control_instance_migration import assert_ingestion_control_ready
 from src.graph.queries.crm_deal_identity_repair_control import CREATE_CRM_DEAL_REPAIR_CONTROL_SCHEMA
+from src.graph.queries.crm_deal_identity_repair_integration import (
+    CREATE_CRM_DEAL_REPAIR_INTEGRATION_SCHEMA,
+)
 from src.graph.queries.crm_deal_identity_repair_ledger import CREATE_CRM_DEAL_REPAIR_LEDGER_SCHEMA
-from src.graph.queries.crm_deal_identity_repair_integration import CREATE_CRM_DEAL_REPAIR_INTEGRATION_SCHEMA
 
 MIGRATION_KEY = "crm_deal_identity_repair_ledger_v1"
 REQUIRED_CONSTRAINTS = {
@@ -41,6 +43,10 @@ REQUIRED_CONSTRAINTS = {
         "CrmDealRepairRollbackAuthorization",
         ("run_id", "authorization_transition_id"),
     ),
+    "crm_deal_repair_rollback_authorization_slot_unique": (
+        "CrmDealRepairRollbackAuthorization",
+        ("run_id", "unit_id", "rollback_image_id"),
+    ),
     "crm_deal_repair_secondary_unique": (
         "CrmDealRepairSecondaryDisposition",
         ("run_id", "disposition_id"),
@@ -59,7 +65,10 @@ REQUIRED_CONSTRAINTS = {
         "CrmDealRepairAllocationCompletion",
         ("run_id", "completion_id"),
     ),
-    "crm_deal_repair_rollback_receipt_unique": ("CrmDealRepairRollbackReceipt", ("run_id", "receipt_id")),
+    "crm_deal_repair_rollback_receipt_unique": (
+        "CrmDealRepairRollbackReceipt",
+        ("run_id", "receipt_id"),
+    ),
     "crm_deal_repair_acceptance_unique": ("CrmDealRepairAcceptance", ("run_id",)),
     "crm_deal_repair_release_unique": ("CrmDealRepairDispatchRelease", ("run_id",)),
 }

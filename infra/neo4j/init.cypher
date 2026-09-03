@@ -375,6 +375,9 @@ FOR (image:CrmDealRepairRollbackImage) REQUIRE (image.run_id, image.rollback_ima
 CREATE CONSTRAINT crm_deal_repair_rollback_authorization_unique IF NOT EXISTS
 FOR (authorization:CrmDealRepairRollbackAuthorization)
 REQUIRE (authorization.run_id, authorization.authorization_transition_id) IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_rollback_authorization_slot_unique IF NOT EXISTS
+FOR (authorization:CrmDealRepairRollbackAuthorization)
+REQUIRE (authorization.run_id, authorization.unit_id, authorization.rollback_image_id) IS UNIQUE;
 CREATE CONSTRAINT crm_deal_repair_secondary_unique IF NOT EXISTS
 FOR (disposition:CrmDealRepairSecondaryDisposition) REQUIRE (disposition.run_id, disposition.disposition_id) IS UNIQUE;
 CREATE CONSTRAINT crm_deal_repair_verification_unique IF NOT EXISTS

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hmac
 from collections.abc import Mapping
+from dataclasses import replace
 from typing import cast
 
 from neo4j import ManagedTransaction
@@ -22,7 +23,10 @@ from src.crm_deal_identity_repair.integration_service import (
 )
 from src.crm_deal_identity_repair.models import RepairInventoryItem
 from src.crm_deal_identity_repair.rollback_models import RepairRollbackAuthorization
-from src.crm_deal_identity_repair.verification_equations import RepairRunEquationCommand
+from src.crm_deal_identity_repair.verification_equations import (
+    RepairRunEquationCommand,
+    RepairRunEquationResult,
+)
 from src.graph.client import Neo4jClient
 from src.graph.crm_deal_identity_repair_ledger_records import canonical_json_text
 from src.graph.crm_deal_identity_repair_rollback_records import (
@@ -34,17 +38,18 @@ from src.graph.crm_deal_identity_repair_rollback_records import (
 from src.graph.crm_deal_identity_repair_verification_run import read_run_equation
 from src.graph.queries.crm_deal_identity_repair_integration import (
     ACCEPT_AND_RELEASE,
-    CLAIM_FENCE,
+    CLAIM_ADMITTED_FENCE,
     CREATE_AND_READ_ROLLBACK_AUTHORIZATION,
     READ_ACCEPTANCE,
-    READ_ALLOCATED_UNIT,
     READ_ANY_EXECUTION_EVIDENCE,
     READ_AUTHORITY,
     READ_FENCE,
     READ_RELEASE_AUTHORITY,
     READ_RUN_RECEIPTS,
     READ_RUN_SETS,
+    READ_TERMINAL_ROLLBACK_REPLAY,
     READ_UNIT_EXECUTION_EVIDENCE,
+    READ_UNIT_FOR_ADMISSION,
     RELEASE_DISPATCH,
     RELEASE_TERMINAL_FENCE,
     STORE_ROLLBACK_RECEIPT,
@@ -182,28 +187,30 @@ class CrmDealRepairIntegrationRepository:
 
         return self._client.execute_read(work)
 
-    def allocated_unit(
+    def admit_and_claim_fence(
         self, request: RepairIntegrationRequest, context: RepairIntegrationContext
-    ) -> RepairUnit:
+    ) -> tuple[RepairUnit, RepairFence]:
+        """Atomically serialize exact-next-unit admission and the fence claim."""
         if request.unit_id is None:
             raise RuntimeError("repair apply requires unit scope")
-        params = self._authority_params(request, context) | {"unit_id": request.unit_id}
-        return self._read_unit(READ_ALLOCATED_UNIT, params)
 
-    def claim_or_read_fence(
-        self, request: RepairIntegrationRequest, context: RepairIntegrationContext, unit: RepairUnit
-    ) -> RepairFence:
-        fence_id, fingerprint = self._fence_identity(request, context, unit)
-        params = self._unit_params(request, context, unit) | {
-            "fence_id": fence_id,
-            "fence_fingerprint": fingerprint,
-        }
-
-        def work(tx: ManagedTransaction) -> RepairFence:
-            record = tx.run(CLAIM_FENCE, **params).single()  # type: ignore[arg-type]
+        def work(tx: ManagedTransaction) -> tuple[RepairUnit, RepairFence]:
+            base = self._authority_params(request, context) | {"unit_id": request.unit_id}
+            row = tx.run(READ_UNIT_FOR_ADMISSION, **base).single()  # type: ignore[arg-type]
+            if row is None:
+                raise RuntimeError("repair allocated unit/current control authority rejected")
+            unit = unit_from_properties(_mapping(row["unit"], "unit"))
+            fence_id, fingerprint = self._fence_identity(request, context, unit)
+            params = self._unit_params(request, context, unit) | {
+                "fence_id": fence_id,
+                "fence_fingerprint": fingerprint,
+            }
+            record = tx.run(CLAIM_ADMITTED_FENCE, **params).single()  # type: ignore[arg-type]
             if record is None:
-                raise RuntimeError("repair fence claim rejected by current authority")
-            return fence_from_properties(_mapping(record["fence"], "fence"))
+                raise RuntimeError("repair unit admission or fence claim rejected")
+            returned_unit = unit_from_properties(_mapping(record["unit"], "unit"))
+            fence = fence_from_properties(_mapping(record["fence"], "fence"))
+            return returned_unit, fence
 
         return self._client.execute_write(work)
 
@@ -224,6 +231,92 @@ class CrmDealRepairIntegrationRepository:
             if (fence.fence_id, fence.fence_fingerprint) != (expected_id, expected_fingerprint):
                 raise RuntimeError("repair fence identity is stale or foreign")
             return unit, fence
+
+        return self._client.execute_read(work)
+
+    def read_terminal_rollback_replay(
+        self,
+        request: RepairIntegrationRequest,
+        context: RepairIntegrationContext,
+        authorization_token_digest: str,
+        policy: str,
+    ) -> RepairRollbackAuthorization | None:
+        """Reconstruct only an exact #312 terminal replay after this fence was released."""
+        if request.unit_id is None:
+            raise RuntimeError("repair rollback replay requires unit scope")
+        params = self._authority_params(request, context) | {"unit_id": request.unit_id}
+
+        def work(tx: ManagedTransaction) -> RepairRollbackAuthorization | None:
+            unit_record = tx.run(READ_UNIT_FOR_ADMISSION, **params).single()  # type: ignore[arg-type]
+            if unit_record is None:
+                return None
+            candidate_unit = unit_from_properties(_mapping(unit_record["unit"], "unit"))
+            fence_id, fence_fingerprint = self._fence_identity(request, context, candidate_unit)
+            candidate_fence = RepairFence(
+                candidate_unit.run_id,
+                candidate_unit.unit_id,
+                fence_id,
+                candidate_unit.generation,
+                candidate_unit.sequence,
+                candidate_unit.attempt,
+                request.control.owner_id,
+                request.control.token_digest,
+                candidate_unit.boundary_digest,
+                fence_fingerprint,
+                "released",
+            )
+            transition_id = self._authorization_transition_id(
+                candidate_unit, candidate_fence, authorization_token_digest, request, policy
+            )
+            terminal_params = params | {
+                "fence_id": fence_id,
+                "fence_fingerprint": fence_fingerprint,
+                "authorization_reference": request.authorization_reference,
+                "authorization_token_digest": authorization_token_digest,
+                "predecessor_transition_id": request.predecessor_transition_id,
+                "authorization_policy": policy,
+                "authorization_transition_id": transition_id,
+            }
+            record = tx.run(READ_TERMINAL_ROLLBACK_REPLAY, **terminal_params).single()  # type: ignore[arg-type]
+            if record is None:
+                return None
+            stored_unit = unit_from_properties(_mapping(record["unit"], "unit"))
+            stored_fence = fence_from_properties(_mapping(record["fence"], "fence"))
+            mutation = mutation_from_properties(_mapping(record["result"], "mutation result"))
+            image = image_from_properties(_mapping(record["image"], "rollback image"))
+            if mutation.outcome == "applied":
+                unit = replace(stored_unit, state="applied")
+            elif mutation.outcome == "review_required":
+                unit = replace(stored_unit, state="review_required")
+            else:
+                raise RuntimeError("terminal rollback mutation outcome is not replayable")
+            expected_fence_id, expected_fingerprint = self._fence_identity(request, context, unit)
+            if (
+                stored_fence.state != "released"
+                or stored_fence.fence_id != expected_fence_id
+                or stored_fence.fence_fingerprint != expected_fingerprint
+                or (stored_fence.generation, stored_fence.sequence, stored_fence.attempt)
+                != (unit.generation, unit.sequence, unit.attempt)
+            ):
+                raise RuntimeError("terminal rollback released fence identity differs")
+            fence = replace(stored_fence, state="claimed")
+            transition_id = self._authorization_transition_id(
+                unit, fence, authorization_token_digest, request, policy
+            )
+            values = _mapping(record["authorization"], "rollback authorization")
+            if _returned_authorization_transition_id(values, transition_id) != transition_id:
+                raise RuntimeError("terminal rollback authorization identity differs")
+            return RepairRollbackAuthorization(
+                unit,
+                fence,
+                mutation,
+                image,
+                _required(request.authorization_reference, "rollback authorization reference"),
+                authorization_token_digest,
+                _required(request.predecessor_transition_id, "rollback predecessor transition"),
+                policy,
+                transition_id,
+            )
 
         return self._client.execute_read(work)
 
@@ -342,8 +435,7 @@ class CrmDealRepairIntegrationRepository:
     ) -> None:
         def work(tx: ManagedTransaction) -> None:
             equation = read_run_equation(tx, equation_command)
-            if not equation.balanced:
-                raise RuntimeError("repair acceptance requires an exact balanced run equation")
+            _assert_acceptance_equation(equation)
             unit_digest, fence_digest = self._set_digests(tx, context)
             receipt_bindings = self._receipt_bindings(tx, request, context)
             receipt_digest = self._acceptance_receipt_digest(
@@ -604,6 +696,25 @@ class CrmDealRepairIntegrationRepository:
                 "image_digest": image_digest,
             },
         )[-36:]
+
+
+def _assert_acceptance_equation(equation: RepairRunEquationResult) -> None:
+    """Keep #311 negative/drift accounting while #313 binds its allocated subset in CAS."""
+    if (
+        equation.drifted_units
+        or equation.failed_units
+        or equation.drifted_negative_controls
+        or equation.missing_negative_controls
+        or equation.stamped_negative_controls
+        or equation.unsupported_multi_links
+        or equation.active_deal_origin_phone_projections
+        or equation.active_deal_origin_email_projections
+        or equation.active_deal_origin_g_us_projections
+        or equation.failed_secondaries
+        or equation.pending_secondaries
+        or equation.unexplained_secondary_remainder
+    ):
+        raise RuntimeError("repair acceptance requires an exact balanced run equation")
 
 
 def _canonical_unit(unit: RepairUnit) -> dict[str, JsonValue]:
