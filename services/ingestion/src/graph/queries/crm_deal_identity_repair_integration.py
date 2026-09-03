@@ -129,8 +129,35 @@ MATCH (unit:CrmDealRepairUnit {run_id: $run_id, unit_id: $unit_id,
 WHERE unit.unit_id IN completion.unit_ids
 // Serialize competing admissions on the run control in this same transaction.
 SET control.integration_admission_updated_at = datetime()
+WITH control, completion, unit
 OPTIONAL MATCH (accepted:CrmDealRepairAcceptance {run_id: $run_id})
 OPTIONAL MATCH (all_fences:CrmDealRepairFence {run_id: $run_id, unit_id: $unit_id})
+CALL {
+  WITH completion
+  OPTIONAL MATCH (prior:CrmDealRepairUnit {run_id: completion.run_id})
+  WHERE prior.sequence < $sequence
+  OPTIONAL MATCH (prior_fence:CrmDealRepairFence {run_id: completion.run_id, unit_id: prior.unit_id})
+  OPTIONAL MATCH (prior_result:CrmDealRepairMutationResult {run_id: completion.run_id,
+    unit_id: prior.unit_id})
+  OPTIONAL MATCH (prior_image:CrmDealRepairRollbackImage {run_id: completion.run_id,
+    unit_id: prior.unit_id})
+  OPTIONAL MATCH (prior_authorization:CrmDealRepairRollbackAuthorization {run_id: completion.run_id,
+    unit_id: prior.unit_id})
+  WITH prior, prior_fence, prior_result, prior_image, prior_authorization
+  ORDER BY prior.sequence, prior.unit_id, prior_authorization.authorization_transition_id,
+    prior_fence.fence_id, prior_result.mutation_id, prior_image.rollback_image_id
+  FOREACH (_ IN CASE WHEN prior IS NULL THEN [] ELSE [1] END | SET prior.unit_id = prior.unit_id)
+  FOREACH (_ IN CASE WHEN prior_fence IS NULL THEN [] ELSE [1] END |
+    SET prior_fence.fence_id = prior_fence.fence_id)
+  FOREACH (_ IN CASE WHEN prior_result IS NULL THEN [] ELSE [1] END |
+    SET prior_result.mutation_id = prior_result.mutation_id)
+  FOREACH (_ IN CASE WHEN prior_image IS NULL THEN [] ELSE [1] END |
+    SET prior_image.rollback_image_id = prior_image.rollback_image_id)
+  FOREACH (_ IN CASE WHEN prior_authorization IS NULL THEN [] ELSE [1] END |
+    SET prior_authorization.authorization_transition_id = prior_authorization.authorization_transition_id)
+  RETURN count(DISTINCT prior) AS locked_prior_count
+}
+WITH unit, completion, accepted, all_fences
 CALL {
   WITH completion
   OPTIONAL MATCH (prior:CrmDealRepairUnit {run_id: completion.run_id})
@@ -486,6 +513,7 @@ _ACCEPTANCE_LOCKS = """
 // The first write locks the integration control; the ordered bundle locks below
 // contend with #312 on the same unit, authorization, fence, result, and image nodes.
 SET control.integration_acceptance_lock_id = $request_digest
+WITH control, completion
 CALL {
   WITH completion
   OPTIONAL MATCH (unit:CrmDealRepairUnit {run_id: completion.run_id})
@@ -614,6 +642,24 @@ CALL {
 CALL {
   WITH completion
   WITH completion, completion.unit_ids AS allocated_unit_ids
+  OPTIONAL MATCH (checkpoint:CrmDealRepairCheckpoint {run_id: completion.run_id})
+  WITH allocated_unit_ids, collect(checkpoint) AS nodes
+  RETURN size([item IN nodes WHERE item IS NOT NULL]) AS all_checkpoints,
+    size([item IN nodes WHERE item IS NOT NULL AND item.unit_id IN allocated_unit_ids])
+      AS allocated_checkpoints
+}
+CALL {
+  WITH completion
+  WITH completion, completion.unit_ids AS allocated_unit_ids
+  OPTIONAL MATCH (outbox:CrmDealRepairOutbox {run_id: completion.run_id})
+  WITH allocated_unit_ids, collect(outbox) AS nodes
+  RETURN size([item IN nodes WHERE item IS NOT NULL]) AS all_outboxes,
+    size([item IN nodes WHERE item IS NOT NULL AND item.unit_id IN allocated_unit_ids])
+      AS allocated_outboxes
+}
+CALL {
+  WITH completion
+  WITH completion, completion.unit_ids AS allocated_unit_ids
   OPTIONAL MATCH (disposition:CrmDealRepairSecondaryDisposition {run_id: completion.run_id})
   WITH allocated_unit_ids, collect(disposition) AS nodes
   RETURN size([item IN nodes WHERE item IS NOT NULL]) AS all_dispositions,
@@ -659,6 +705,24 @@ CALL {
     generation: mutation.generation, sequence: mutation.sequence, attempt: mutation.attempt,
     boundary_digest: mutation.boundary_digest, owner_id: mutation.owner_id,
     fence_token: mutation.fence_token, state: 'approved', consumable: true})
+  OPTIONAL MATCH (checkpoint:CrmDealRepairCheckpoint {run_id: completion.run_id,
+    unit_id: mutation.unit_id, checkpoint_id: mutation.checkpoint_id,
+    generation: mutation.generation, sequence: mutation.sequence, attempt: mutation.attempt,
+    owner_id: mutation.owner_id, fence_token: mutation.fence_token,
+    boundary_digest: mutation.boundary_digest, state: 'written'})
+  OPTIONAL MATCH (outbox:CrmDealRepairOutbox {run_id: completion.run_id,
+    unit_id: mutation.unit_id, event_id: mutation.outbox_event_id,
+    generation: mutation.generation, sequence: mutation.sequence, attempt: mutation.attempt,
+    owner_id: mutation.owner_id, delivery_token: mutation.fence_token,
+    boundary_digest: mutation.boundary_digest, mutation_id: mutation.mutation_id,
+    state: 'acknowledged'})
+  OPTIONAL MATCH (verification_outbox:CrmDealRepairVerification {run_id: completion.run_id,
+    unit_id: mutation.unit_id, generation: mutation.generation, sequence: mutation.sequence,
+    attempt: mutation.attempt, owner_id: mutation.owner_id, fence_token: mutation.fence_token,
+    boundary_digest: mutation.boundary_digest, outcome: 'verified'})
+  WITH mutation, image, verification, authorization, checkpoint, outbox, verification_outbox,
+    CASE WHEN outbox.verification_result_digest = verification_outbox.verification_digest
+      AND outbox.verification_request_digest IS NOT NULL THEN outbox END AS acknowledged_outbox
   OPTIONAL MATCH (receipt:CrmDealRepairRollbackReceipt {run_id: completion.run_id,
     unit_id: mutation.unit_id, image_digest: mutation.rollback_image_digest,
     mutation_id: mutation.mutation_id, generation: mutation.generation,
@@ -666,19 +730,21 @@ CALL {
     authorization_transition_id: authorization.authorization_transition_id,
     authorization_digest: authorization.authorization_digest, control_revision: $revision,
     allocation_revision: $allocation_revision, completion_id: $completion_id, state: 'available'})
-  WITH mutation, image, verification, authorization,
+  WITH mutation, image, verification, authorization, checkpoint, acknowledged_outbox,
     CASE WHEN receipt.status_digest STARTS WITH 'sha256:' AND size(receipt.status_digest) = 71
       THEN receipt END AS receipt
   RETURN count(DISTINCT mutation) AS mutations, count(DISTINCT image) AS images,
     count(DISTINCT verification) AS verifications, count(DISTINCT authorization) AS authorizations,
+    count(DISTINCT checkpoint) AS checkpoints, count(DISTINCT acknowledged_outbox) AS outboxes,
     count(DISTINCT receipt) AS receipts
 }
 WITH completion, prior, units, fences, all_units, allocated_units, all_fences, allocated_fences,
   all_mutations, allocated_mutations, all_images, allocated_images, all_verifications,
   allocated_verifications, all_authorizations, allocated_authorizations, all_receipts,
-  allocated_receipts, all_dispositions, allocated_dispositions, reconciled_dispositions,
+  allocated_receipts, all_checkpoints, allocated_checkpoints, all_outboxes, allocated_outboxes,
+  all_dispositions, allocated_dispositions, reconciled_dispositions,
   review_required_dispositions, failed_dispositions, pending_dispositions, bound_receipts,
-  distinct_bound_receipts, mutations, images, verifications, authorizations, receipts
+  distinct_bound_receipts, mutations, images, verifications, authorizations, checkpoints, outboxes, receipts
 WHERE all_units = completion.unit_count AND allocated_units = completion.unit_count
   AND all_fences = completion.unit_count AND allocated_fences = completion.unit_count
   AND all_mutations = completion.unit_count AND allocated_mutations = completion.unit_count
@@ -688,6 +754,8 @@ WHERE all_units = completion.unit_count AND allocated_units = completion.unit_co
   AND all_authorizations = completion.unit_count
   AND allocated_authorizations = completion.unit_count
   AND all_receipts = completion.unit_count AND allocated_receipts = completion.unit_count
+  AND all_checkpoints = completion.unit_count AND allocated_checkpoints = completion.unit_count
+  AND all_outboxes = completion.unit_count AND allocated_outboxes = completion.unit_count
   AND all_dispositions = allocated_dispositions
   AND allocated_dispositions = $observed_secondary_count
   AND $expected_secondary_count = $observed_secondary_count
@@ -705,7 +773,8 @@ WHERE all_units = completion.unit_count AND allocated_units = completion.unit_co
   AND bound_receipts = completion.unit_count AND distinct_bound_receipts = completion.unit_count
   AND size($receipt_bindings) = completion.unit_count AND mutations = completion.unit_count
   AND images = completion.unit_count AND verifications = completion.unit_count
-  AND authorizations = completion.unit_count AND receipts = completion.unit_count
+  AND authorizations = completion.unit_count AND checkpoints = completion.unit_count
+  AND outboxes = completion.unit_count AND receipts = completion.unit_count
 FOREACH (fence IN CASE WHEN prior IS NULL THEN fences ELSE [] END |
   SET fence.state = 'released', fence.released_at = datetime(), fence.release_reason = 'accepted')
 MERGE (acceptance:CrmDealRepairAcceptance {run_id: $run_id})
