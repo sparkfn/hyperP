@@ -15,13 +15,16 @@ describe("person CRM metrics BFF route", () => {
     const response = new Response("crm metrics", { status: 200 });
     proxyToApi.mockResolvedValue(response);
 
+    const request = new Request("https://example.test/bff/persons/person%2Fone/crm/metrics");
     const result = await GET(
-      new Request("https://example.test/bff/persons/person%2Fone/crm/metrics"),
+      request,
       { params: Promise.resolve({ personId: "person/one" }) },
     );
 
     expect(dynamic).toBe("force-dynamic");
-    expect(proxyToApi).toHaveBeenCalledWith("/persons/person%2Fone/crm/metrics");
+    expect(proxyToApi).toHaveBeenCalledWith("/persons/person%2Fone/crm/metrics", {
+      signal: request.signal,
+    });
     expect(result).toBe(response);
   });
 });

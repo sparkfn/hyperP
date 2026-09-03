@@ -103,6 +103,40 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/entities/metadata": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List lightweight entity metadata */
+        get: operations["list_entity_metadata"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/entities/metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List exact entity metrics */
+        get: operations["list_entity_metrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/persons/search": {
         parameters: {
             query?: never;
@@ -132,6 +166,46 @@ export interface paths {
          * @description Returns the all-profile, high-risk, high-value, and no-contact counts shown above the authenticated person listing. Counts exclude merged persons and are calculated in one aggregate graph read.
          */
         get: operations["getPersonListSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/persons/summary/core": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get non-CRM person-listing summary counts
+         * @description Returns exact profile, risk, value, and contact counts without CRM deal aggregation.
+         */
+        get: operations["getPersonListCoreSummary"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/persons/summary/crm": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get exact CRM person-listing summary counts
+         * @description Returns exact CRM deal counts independently from the non-CRM listing summary.
+         */
+        get: operations["getPersonListCrmSummary"];
         put?: never;
         post?: never;
         delete?: never;
@@ -567,6 +641,46 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/oauth2/v1/identity-links/events": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read an ordered immutable identity-link event window
+         * @description OAuth-client-only synchronization feed. The first page freezes through_revision; authenticated opaque cursor pages retain that bound, recheck it against the current stream, and revisions are strictly contiguous. A detected gap requires snapshot recovery.
+         */
+        get: operations["list_identity_link_events_machine"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/oauth2/v1/identity-links/snapshot": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Read a fixed-revision identity-link snapshot
+         * @description OAuth-client-only full-state recovery feed. The first page freezes snapshot_revision; authenticated opaque cursor pages recheck readiness and resolve each link at that same revision. Consumers recover by completing the snapshot and tailing events.
+         */
+        get: operations["list_identity_link_snapshot_machine"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/admin/oauth-clients": {
         parameters: {
             query?: never;
@@ -930,6 +1044,38 @@ export interface paths {
 export type webhooks = Record<string, never>;
 export interface components {
     schemas: {
+        /** @description Privacy-safe immutable identity-link state. Raw source payloads, identifiers, candidate IDs, scores, reasons, lock topology, and internal stream/cause keys are deliberately excluded. */
+        IdentityLinkRevision: {
+            event_id: string;
+            global_revision: number;
+            source_system: string;
+            source_instance_id: string;
+            /** @enum {string} */
+            source_entity_type: "deal" | "contact" | "lead" | "company";
+            source_entity_id: string;
+            identity_policy_version: string;
+            /** @enum {string} */
+            link_status: "resolved" | "unresolved" | "pending_review" | "blocked" | "rejected" | "retired";
+            hyperp_person_id: string | null;
+            /** @enum {string} */
+            resolution_kind: "baseline" | "automatic_activation" | "reviewed_activation" | "review_rejection" | "manual_no_match" | "source_supersession" | "person_merge" | "person_unmerge" | "person_retirement" | "source_retirement";
+            resolution_revision: number;
+            /** Format: date-time */
+            effective_at: string;
+            match_decision_id: string | null;
+            review_case_id: string | null;
+            supersedes_event_id: string | null;
+        };
+        IdentityLinkEventsResponse: {
+            data: components["schemas"]["IdentityLinkRevision"][];
+            meta: components["schemas"]["Meta"];
+            through_revision: number;
+        };
+        IdentityLinkSnapshotResponse: {
+            data: components["schemas"]["IdentityLinkRevision"][];
+            meta: components["schemas"]["Meta"];
+            snapshot_revision: number;
+        };
         Meta: {
             request_id: string;
             next_cursor?: string | null;
@@ -950,7 +1096,7 @@ export interface components {
         /** @enum {string} */
         IdentifierType: "government_id_hash" | "phone" | "email" | "external_customer_id" | "membership_id" | "crm_contact_id" | "loyalty_id" | "custom";
         /** @enum {string} */
-        PersonStatus: "active" | "merged" | "suppressed";
+        PersonStatus: "active" | "merged" | "suppressed" | "retired";
         /** @enum {string} */
         ReviewQueueState: "open" | "assigned" | "deferred" | "resolved" | "cancelled";
         /** @enum {string} */
@@ -1000,9 +1146,29 @@ export interface components {
             high_risk_count: number;
             high_value_count: number;
             no_contact_count: number;
+            deals_this_month_count: number;
+            all_deals_count: number;
         };
         PersonListSummaryEnvelope: {
             data: components["schemas"]["PersonListSummary"];
+            meta: components["schemas"]["Meta"];
+        };
+        PersonListCoreSummary: {
+            all_profiles_count: number;
+            high_risk_count: number;
+            high_value_count: number;
+            no_contact_count: number;
+        };
+        PersonListCoreSummaryEnvelope: {
+            data: components["schemas"]["PersonListCoreSummary"];
+            meta: components["schemas"]["Meta"];
+        };
+        PersonListCrmSummary: {
+            deals_this_month_count: number;
+            all_deals_count: number;
+        };
+        PersonListCrmSummaryEnvelope: {
+            data: components["schemas"]["PersonListCrmSummary"];
             meta: components["schemas"]["Meta"];
         };
         CrmActivityKindCount: {
@@ -1511,6 +1677,27 @@ export interface components {
             /** @default  */
             updated_at: string;
         };
+        EntityMetadata: {
+            entity_key: string;
+            display_name: string | null;
+            entity_type: string | null;
+            country_code: string | null;
+            is_active: boolean;
+        };
+        EntityMetrics: {
+            entity_key: string;
+            person_count: number;
+            source_record_count: number;
+            last_ingested_at: string | null;
+        };
+        EntityMetadataListEnvelope: {
+            data: components["schemas"]["EntityMetadata"][];
+            meta: components["schemas"]["Meta"];
+        };
+        EntityMetricsListEnvelope: {
+            data: components["schemas"]["EntityMetrics"][];
+            meta: components["schemas"]["Meta"];
+        };
         PersonEntitySummary: {
             entity_key: string;
             display_name?: string | null;
@@ -1883,7 +2070,7 @@ export interface components {
             meta: components["schemas"]["Meta"];
         };
         /** @enum {string} */
-        OAuthScope: "persons:read" | "persons:write" | "ingest:write" | "admin";
+        OAuthScope: "persons:read" | "persons:write" | "ingest:write" | "identity-links:read" | "admin";
         OAuthTokenRequest: {
             /** @constant */
             grant_type: "client_credentials";
@@ -2368,6 +2555,54 @@ export interface operations {
             403: components["responses"]["Forbidden"];
         };
     };
+    list_entity_metadata: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Entity metadata without aggregate metrics */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityMetadataListEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    list_entity_metrics: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Exact entity aggregate metrics keyed by entity */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EntityMetricsListEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
     searchPersons: {
         parameters: {
             query?: {
@@ -2416,6 +2651,54 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["PersonListSummaryEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    getPersonListCoreSummary: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Non-CRM person-listing summary counts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonListCoreSummaryEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    getPersonListCrmSummary: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description CRM person-listing summary counts */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonListCrmSummaryEnvelope"];
                 };
             };
             401: components["responses"]["Unauthorized"];
@@ -3236,6 +3519,84 @@ export interface operations {
             401: components["responses"]["Unauthorized"];
             403: components["responses"]["Forbidden"];
             404: components["responses"]["PersonNotFound"];
+        };
+    };
+    list_identity_link_events_machine: {
+        parameters: {
+            query?: {
+                /** @description Exclusive global revision lower bound; cannot be combined with cursor. */
+                after_revision?: number;
+                /** @description Authenticated opaque events cursor; clients must not construct it. */
+                cursor?: string;
+                limit?: number;
+            };
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Contiguous frozen event page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityLinkEventsResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description identity_link_revision_gap when the immutable stream is non-contiguous. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseEnvelope"];
+                };
+            };
+        };
+    };
+    list_identity_link_snapshot_machine: {
+        parameters: {
+            query?: {
+                /** @description Authenticated opaque snapshot cursor; clients must not construct it. */
+                cursor?: string;
+                limit?: number;
+            };
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Fixed-revision snapshot page. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["IdentityLinkSnapshotResponse"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            /** @description identity_link_snapshot_not_ready or identity_link_stream_unavailable. */
+            503: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorResponseEnvelope"];
+                };
+            };
         };
     };
     listOAuthClients: {

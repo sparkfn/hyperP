@@ -7,13 +7,13 @@ import uuid
 from fastapi import HTTPException, Request
 
 from src.graph.converters import decode_cursor, encode_cursor
+from src.request_timing import current_request_id
 from src.types import ApiError, ApiErrorBody, ApiResponse, ResponseMeta
 
 
 def request_id(request: Request) -> str:
     """Return the X-Request-Id header or a freshly generated UUID."""
-    incoming = request.headers.get("x-request-id")
-    return incoming or str(uuid.uuid4())
+    return current_request_id() or request.headers.get("x-request-id") or str(uuid.uuid4())
 
 
 def clamp_limit(raw: int | None, default: int, maximum: int) -> int:

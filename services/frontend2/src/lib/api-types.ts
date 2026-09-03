@@ -293,6 +293,8 @@ export interface EntitySummary {
   last_ingested_at: string | null;
   active_review_cases: number;
 }
+export interface EntityMetadata { entity_key: string; display_name: string | null; entity_type: string | null; country_code: string | null; is_active: boolean; }
+export interface EntityMetrics { entity_key: string; person_count: number; source_record_count: number; last_ingested_at: string | null; }
 
 export interface EntityFilterOption {
   entity_key: string;
@@ -304,6 +306,18 @@ export interface PersonListSummary {
   high_risk_count: number;
   high_value_count: number;
   no_contact_count: number;
+  deals_this_month_count: number;
+  all_deals_count: number;
+}
+
+export interface PersonListCoreSummary {
+  all_profiles_count: number;
+  high_risk_count: number;
+  high_value_count: number;
+  no_contact_count: number;
+}
+
+export interface PersonListCrmSummary {
   deals_this_month_count: number;
   all_deals_count: number;
 }

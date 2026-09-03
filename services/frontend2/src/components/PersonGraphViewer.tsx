@@ -318,7 +318,8 @@ export default function PersonGraphViewer({
 
     const suffix = elementId ? `/bff/persons/graph/node?${params.toString()}` : `/bff/persons/${encodeURIComponent(personId!)}/graph?${params.toString()}`;
     let cancelled = false;
-    bffFetch<PersonGraph>(suffix)
+    const controller = new AbortController();
+    bffFetch<PersonGraph>(suffix, { signal: controller.signal })
       .then((data) => {
         if (cancelled) return;
         const fgData = toForceGraphData(data, personId, elementId);
@@ -334,7 +335,7 @@ export default function PersonGraphViewer({
         }
       })
       .finally(() => { if (!cancelled) setLoading(false); });
-    return () => { cancelled = true; };
+    return () => { cancelled = true; controller.abort(); };
   }, [personId, elementId, maxHops]);
 
   useEffect(() => {

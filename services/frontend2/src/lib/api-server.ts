@@ -11,11 +11,13 @@ import { appendQueryParams, type QueryParams } from "./query-params";
 export class UpstreamError extends Error {
   public readonly status: number;
   public readonly body: ApiError | null;
+  public readonly responseHeaders: Headers;
 
-  constructor(status: number, body: ApiError | null, message: string) {
+  constructor(status: number, body: ApiError | null, message: string, responseHeaders: Headers) {
     super(message);
     this.status = status;
     this.body = body;
+    this.responseHeaders = responseHeaders;
   }
 }
 
@@ -29,6 +31,15 @@ export interface RequestOptions {
   authToken?: string | null;
   // Stable retry key for write endpoints that require idempotent dispatch.
   idempotencyKey?: string;
+  // Abort signal forwarded from a Route Handler's incoming browser request.
+  signal?: AbortSignal;
+  // Correlation ID generated at the BFF boundary; never a user identifier.
+  requestId?: string;
+}
+
+export interface ApiFetchResult<T> {
+  payload: ApiResponse<T>;
+  responseHeaders: Headers;
 }
 
 function buildUrl(path: string, query: RequestOptions["query"]): string {
@@ -37,7 +48,10 @@ function buildUrl(path: string, query: RequestOptions["query"]): string {
   return url.toString();
 }
 
-export async function apiFetch<T>(path: string, options: RequestOptions = {}): Promise<ApiResponse<T>> {
+export async function apiFetchWithTiming<T>(
+  path: string,
+  options: RequestOptions = {},
+): Promise<ApiFetchResult<T>> {
   const url: string = buildUrl(path, options.query);
   const headers: Record<string, string> = {
     "content-type": "application/json",
@@ -58,6 +72,9 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
   if (options.idempotencyKey) {
     headers["Idempotency-Key"] = options.idempotencyKey;
   }
+  if (options.requestId) {
+    headers["X-Request-Id"] = options.requestId;
+  }
   const init: RequestInit & { next?: { revalidate: number | false } } = {
     method: options.method ?? "GET",
     headers,
@@ -65,6 +82,7 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
       ? typeof options.body === "string" ? options.body : JSON.stringify(options.body)
       : undefined,
     next: { revalidate: options.revalidate ?? 0 },
+    signal: options.signal,
   };
 
   const response: Response = await fetch(url, init);
@@ -76,24 +94,47 @@ export async function apiFetch<T>(path: string, options: RequestOptions = {}): P
       parsed !== null && typeof parsed === "object" && "error" in (parsed as Record<string, unknown>)
         ? (parsed as ApiError)
         : null;
-    throw new UpstreamError(response.status, errBody, errBody?.error.message ?? response.statusText);
+    throw new UpstreamError(
+      response.status,
+      errBody,
+      errBody?.error.message ?? response.statusText,
+      response.headers,
+    );
   }
 
   // 204 No Content — return a null payload without requiring a body.
   if (parsed === null) {
-    return { data: null as T, meta: { request_id: "", next_cursor: null } as ResponseMeta };
+    return {
+      payload: { data: null as T, meta: { request_id: "", next_cursor: null } as ResponseMeta },
+      responseHeaders: response.headers,
+    };
   }
 
   // Auto-wrap bare arrays (e.g. admin endpoints that return list[T] without envelope()).
   if (Array.isArray(parsed)) {
-    return { data: parsed as T, meta: { request_id: "", next_cursor: null } as ResponseMeta };
+    return {
+      payload: { data: parsed as T, meta: { request_id: "", next_cursor: null } as ResponseMeta },
+      responseHeaders: response.headers,
+    };
   }
   if (typeof parsed !== "object") {
-    throw new UpstreamError(response.status, null, "Unexpected response shape from API.");
+    throw new UpstreamError(
+      response.status,
+      null,
+      "Unexpected response shape from API.",
+      response.headers,
+    );
   }
   // Auto-wrap bare object responses for endpoints that skip the envelope() wrapper.
   if (!("data" in parsed)) {
-    return { data: parsed as T, meta: { request_id: "", next_cursor: null } as ResponseMeta };
+    return {
+      payload: { data: parsed as T, meta: { request_id: "", next_cursor: null } as ResponseMeta },
+      responseHeaders: response.headers,
+    };
   }
-  return parsed as ApiResponse<T>;
+  return { payload: parsed as ApiResponse<T>, responseHeaders: response.headers };
+}
+
+export async function apiFetch<T>(path: string, options: RequestOptions = {}): Promise<ApiResponse<T>> {
+  return (await apiFetchWithTiming<T>(path, options)).payload;
 }

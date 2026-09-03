@@ -2,11 +2,24 @@
 
 from __future__ import annotations
 
-from neo4j import AsyncDriver, AsyncGraphDatabase, AsyncSession, NotificationMinimumSeverity
+from collections.abc import Awaitable, Callable
+from time import monotonic
+from typing import Any, TypeVar
+
+from neo4j import (
+    AsyncDriver,
+    AsyncGraphDatabase,
+    AsyncResult,
+    AsyncSession,
+    NotificationMinimumSeverity,
+    Query,
+)
 
 from src.config import config
+from src.request_timing import current_request_id, is_background_read, record_repository_duration
 
 _driver: AsyncDriver | None = None
+_T = TypeVar("_T")
 
 
 def get_driver() -> AsyncDriver:
@@ -23,9 +36,75 @@ def get_driver() -> AsyncDriver:
     return _driver
 
 
-def get_session(write: bool = False) -> AsyncSession:
-    """Open a new async session in read or write mode."""
-    return get_driver().session(default_access_mode="WRITE" if write else "READ")
+class TimedAsyncSession:
+    """Session facade that bounds API read queries but leaves writes untouched.
+
+    The API and ingestion services use independent graph clients. This affects
+    repository-mediated API reads only, not ingestion or mutation work.
+    """
+
+    def __init__(self, session: AsyncSession, *, write: bool) -> None:
+        self._session = session
+        self._write = write
+        self._started_at: float | None = None
+
+    async def __aenter__(self) -> TimedAsyncSession:
+        self._started_at = monotonic()
+        await self._session.__aenter__()
+        return self
+
+    async def __aexit__(self, *args: object) -> None:
+        try:
+            await self._session.__aexit__(*args)
+        finally:
+            if self._started_at is not None:
+                record_repository_duration(self._started_at)
+                self._started_at = None
+
+    async def run(
+        self,
+        query: str | Query,
+        parameters: dict[str, Any] | None = None,
+        **kwargs: Any,
+    ) -> AsyncResult:
+        if self._write or isinstance(query, Query):
+            return await self._session.run(query, parameters, **kwargs)
+        timeout = (
+            config.neo4j_web_read_transaction_timeout_seconds
+            if current_request_id() is not None
+            else config.neo4j_background_read_transaction_timeout_seconds
+            if is_background_read()
+            else None
+        )
+        if timeout is None:
+            return await self._session.run(query, parameters, **kwargs)
+        return await self._session.run(
+            Query(query, timeout=timeout),
+            parameters,
+            **kwargs,
+        )
+
+    async def execute_read(
+        self,
+        transaction_function: Callable[..., Awaitable[_T]],
+        *args: Any,
+        **kwargs: Any,
+    ) -> _T:
+        return await self._session.execute_read(transaction_function, *args, **kwargs)
+
+    async def execute_write(
+        self,
+        transaction_function: Callable[..., Awaitable[_T]],
+        *args: Any,
+        **kwargs: Any,
+    ) -> _T:
+        return await self._session.execute_write(transaction_function, *args, **kwargs)
+
+
+def get_session(write: bool = False) -> TimedAsyncSession:
+    """Open an API graph session with a hard timeout for read queries only."""
+    session = get_driver().session(default_access_mode="WRITE" if write else "READ")
+    return TimedAsyncSession(session, write=write)
 
 
 async def close_driver() -> None:

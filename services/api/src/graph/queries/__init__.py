@@ -25,6 +25,7 @@ from src.graph.queries.crm_deal_count import RECOMPUTE_PERSON_CRM_DEAL_COUNTS
 from src.graph.queries.entities import (
     LIST_ENTITIES,
     LIST_ENTITY_FILTER_OPTIONS,
+    LIST_ENTITY_METADATA,
     LIST_FILTER_SOURCE_SYSTEMS,
     get_entity_persons_query,
 )
@@ -108,6 +109,8 @@ from src.graph.queries.persons import (
     SEARCH_PERSONS,
 )
 from src.graph.queries.persons_list import (
+    GET_PERSON_LIST_CORE_SUMMARY,
+    GET_PERSON_LIST_CRM_SUMMARY,
     GET_PERSON_LIST_SUMMARY,
     build_count_persons_query,
     build_list_persons_query,
@@ -269,6 +272,8 @@ __all__ = [
     "GET_PERSON_IDENTIFIERS",
     "GET_PERSON_LOYALTY",
     "GET_PERSON_LIST_SUMMARY",
+    "GET_PERSON_LIST_CORE_SUMMARY",
+    "GET_PERSON_LIST_CRM_SUMMARY",
     "GET_PERSON_MATCHES",
     "GET_PERSON_PROFILE_ANALYSES",
     "GET_PERSON_PROFILE_ANALYSIS_HISTORY",
@@ -299,6 +304,7 @@ __all__ = [
     "GET_REVIEW_SALES_RECORD",
     "GET_UNMERGE_TARGET",
     "LIST_ENTITIES",
+    "LIST_ENTITY_METADATA",
     "LIST_ENTITY_FILTER_OPTIONS",
     "LIST_EVENTS",
     "LIST_FILTER_SOURCE_SYSTEMS",

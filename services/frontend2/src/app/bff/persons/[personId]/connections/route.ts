@@ -12,7 +12,11 @@ interface RouteContext {
 export async function GET(request: Request, context: RouteContext): Promise<NextResponse> {
   const { personId } = await context.params;
   const { searchParams } = new URL(request.url);
-  return proxyToApi<PersonConnection[]>(`/persons/${encodeURIComponent(personId)}/connections`, {
-    query: searchParamsToQuery(searchParams),
-  });
+  return proxyToApi<PersonConnection[]>(
+    `/persons/${encodeURIComponent(personId)}/connections`,
+    {
+      query: searchParamsToQuery(searchParams),
+      signal: request.signal,
+    },
+  );
 }

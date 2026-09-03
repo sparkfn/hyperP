@@ -2,9 +2,16 @@
 
 from __future__ import annotations
 
+import asyncio
+from time import monotonic
+
+from neo4j import Query
+
+from src.config import config
 from src.graph.client import get_session
 from src.graph.mappers_entities import (
     map_entity_filter_option,
+    map_entity_metadata,
     map_entity_person,
     map_entity_summary,
     map_source_system_summary,
@@ -12,20 +19,122 @@ from src.graph.mappers_entities import (
 from src.graph.queries import (
     LIST_ENTITIES,
     LIST_ENTITY_FILTER_OPTIONS,
+    LIST_ENTITY_METADATA,
     LIST_FILTER_SOURCE_SYSTEMS,
     get_entity_persons_query,
 )
-from src.types import EntityFilterOption, EntityPerson, EntitySummary, SourceSystemSummary
+from src.request_timing import create_detached_task
+from src.types import (
+    EntityFilterOption,
+    EntityMetadata,
+    EntityMetrics,
+    EntityPerson,
+    EntitySummary,
+    SourceSystemSummary,
+)
 
 from ._utils import record_to_dict
 
 
 class Neo4jEntityRepository:
-    async def get_all(self) -> list[EntitySummary]:
+    def __init__(self) -> None:
+        self._summary_cache: list[EntitySummary] | None = None
+        self._summary_cache_expires_at = 0.0
+        self._summary_cache_stale_until = 0.0
+        self._summary_cache_lock = asyncio.Lock()
+        self._summary_refresh_task: asyncio.Task[list[EntitySummary]] | None = None
+
+    def _cached_summary(self) -> list[EntitySummary] | None:
+        if self._summary_cache is None or monotonic() >= self._summary_cache_expires_at:
+            return None
+        return [item.model_copy(deep=True) for item in self._summary_cache]
+
+    def _stale_summary(self) -> list[EntitySummary] | None:
+        if self._summary_cache is None or monotonic() >= self._summary_cache_stale_until:
+            return None
+        return [item.model_copy(deep=True) for item in self._summary_cache]
+
+    def _store_summary(self, loaded: list[EntitySummary], ttl: int, max_stale: int) -> None:
+        cached_at = monotonic()
+        self._summary_cache = loaded
+        self._summary_cache_expires_at = cached_at + ttl
+        self._summary_cache_stale_until = self._summary_cache_expires_at + max_stale
+
+    async def _load_all(self) -> list[EntitySummary]:
         async with get_session() as session:
-            result = await session.run(LIST_ENTITIES)
+            result = await session.run(
+                Query(
+                    LIST_ENTITIES,
+                    timeout=config.neo4j_background_read_transaction_timeout_seconds,
+                )
+            )
             records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
         return [map_entity_summary(rec) for rec in records]
+
+    async def get_metadata(self) -> list[EntityMetadata]:
+        async with get_session() as session:
+            result = await session.run(LIST_ENTITY_METADATA)
+            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
+        return [map_entity_metadata(record) for record in records]
+
+    async def get_metrics(self) -> list[EntityMetrics]:
+        summaries = await self.get_all()
+        return [
+            EntityMetrics(
+                entity_key=item.entity_key,
+                person_count=item.person_count,
+                source_record_count=item.source_record_count,
+                last_ingested_at=item.last_ingested_at,
+            )
+            for item in summaries
+        ]
+
+    async def get_all(self) -> list[EntitySummary]:
+        ttl = config.entity_summary_cache_ttl_seconds
+        if ttl <= 0:
+            return await self._load_all()
+        max_stale = config.entity_summary_cache_max_stale_seconds
+        cached = self._cached_summary()
+        if cached is not None:
+            return cached
+        stale = self._stale_summary()
+        if stale is not None:
+            self._start_summary_refresh(ttl, max_stale)
+            return stale
+        async with self._summary_cache_lock:
+            cached = self._cached_summary()
+            if cached is not None:
+                return cached
+            stale = self._stale_summary()
+            if stale is not None:
+                self._start_summary_refresh(ttl, max_stale)
+                return stale
+            refresh = self._summary_refresh_task
+            if refresh is not None and not refresh.done():
+                loaded = await asyncio.shield(refresh)
+                return [item.model_copy(deep=True) for item in loaded]
+            loaded = await self._load_all()
+            self._store_summary(loaded, ttl, max_stale)
+            return [item.model_copy(deep=True) for item in loaded]
+
+    def _start_summary_refresh(self, ttl: int, max_stale: int) -> None:
+        if self._summary_refresh_task is not None and not self._summary_refresh_task.done():
+            return
+        task = create_detached_task(self._load_all(), background_read=True)
+        self._summary_refresh_task = task
+
+        def store_result(completed: asyncio.Task[list[EntitySummary]]) -> None:
+            if self._summary_refresh_task is completed:
+                self._summary_refresh_task = None
+            if completed.cancelled():
+                return
+            try:
+                loaded = completed.result()
+            except Exception:
+                return
+            self._store_summary(loaded, ttl, max_stale)
+
+        task.add_done_callback(store_result)
 
     async def get_filter_options(self) -> list[EntityFilterOption]:
         async with get_session() as session:

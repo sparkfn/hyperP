@@ -25,6 +25,7 @@ from src.redis_client import close_redis
 from src.repositories.neo4j.bootstrap import (
     ensure_source_record_identity_lock_constraint,
 )
+from src.request_middleware import RequestTimingMiddleware
 from src.route_catalog import ROOT_ROUTERS
 
 logger = logging.getLogger("profile_unifier_api")
@@ -104,6 +105,8 @@ def build_app() -> FastAPI:
         allow_methods=["*"],
         allow_headers=["*"],
     )
+
+    app.add_middleware(RequestTimingMiddleware)
 
     # The root app exposes only cross-cutting and unauthenticated surfaces.
     # Every authenticated business route is served exclusively through the

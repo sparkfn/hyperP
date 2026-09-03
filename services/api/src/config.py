@@ -46,6 +46,30 @@ class AppConfig(BaseSettings):
         le=300,
         alias="PERSON_LIST_SUMMARY_CACHE_TTL_SECONDS",
     )
+    neo4j_web_read_transaction_timeout_seconds: float = Field(
+        default=25.0,
+        ge=1.0,
+        le=55.0,
+        alias="NEO4J_WEB_READ_TRANSACTION_TIMEOUT_SECONDS",
+    )
+    neo4j_background_read_transaction_timeout_seconds: float = Field(
+        default=55.0,
+        ge=1.0,
+        le=55.0,
+        alias="NEO4J_BACKGROUND_READ_TRANSACTION_TIMEOUT_SECONDS",
+    )
+    entity_summary_cache_ttl_seconds: int = Field(
+        default=30,
+        ge=0,
+        le=300,
+        alias="ENTITY_SUMMARY_CACHE_TTL_SECONDS",
+    )
+    entity_summary_cache_max_stale_seconds: int = Field(
+        default=120,
+        ge=0,
+        le=900,
+        alias="ENTITY_SUMMARY_CACHE_MAX_STALE_SECONDS",
+    )
     # Minutes before a Google access token is considered expired for revocation purposes.
     # Google issues tokens with a 1-hour expiry; set this to match or slightly above.
     access_token_expiry_minutes: int = Field(default=60, alias="ACCESS_TOKEN_EXPIRY_MINUTES")

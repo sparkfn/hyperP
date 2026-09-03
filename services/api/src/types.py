@@ -616,6 +616,21 @@ class EntitySummary(BaseModel):
     active_review_cases: int = 0
 
 
+class EntityMetadata(BaseModel):
+    entity_key: str
+    display_name: str | None = None
+    entity_type: str | None = None
+    country_code: str | None = None
+    is_active: bool = True
+
+
+class EntityMetrics(BaseModel):
+    entity_key: str
+    person_count: int = 0
+    source_record_count: int = 0
+    last_ingested_at: str | None = None
+
+
 class EntityFilterOption(BaseModel):
     """Minimal entity metadata used by the person-list filter."""
 
@@ -650,6 +665,22 @@ class PersonListSummary(BaseModel):
     high_risk_count: int = 0
     high_value_count: int = 0
     no_contact_count: int = 0
+    deals_this_month_count: int = 0
+    all_deals_count: int = 0
+
+
+class PersonListCoreSummary(BaseModel):
+    """Non-CRM counts displayed above the authenticated person listing."""
+
+    all_profiles_count: int = 0
+    high_risk_count: int = 0
+    high_value_count: int = 0
+    no_contact_count: int = 0
+
+
+class PersonListCrmSummary(BaseModel):
+    """Exact CRM deal counts displayed above the authenticated person listing."""
+
     deals_this_month_count: int = 0
     all_deals_count: int = 0
 

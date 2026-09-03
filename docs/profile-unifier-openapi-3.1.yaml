@@ -351,6 +351,36 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '403':
           $ref: '#/components/responses/Forbidden'
+  /v1/entities/metadata:
+    get:
+      tags: [Entities]
+      summary: List lightweight entity metadata
+      operationId: list_entity_metadata
+      security: [{bearerAuth: []}]
+      parameters: [{$ref: '#/components/parameters/RequestId'}]
+      responses:
+        '200':
+          description: Entity metadata without aggregate metrics
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EntityMetadataListEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
+  /v1/entities/metrics:
+    get:
+      tags: [Entities]
+      summary: List exact entity metrics
+      operationId: list_entity_metrics
+      security: [{bearerAuth: []}]
+      parameters: [{$ref: '#/components/parameters/RequestId'}]
+      responses:
+        '200':
+          description: Exact entity aggregate metrics keyed by entity
+          content:
+            application/json:
+              schema: {$ref: '#/components/schemas/EntityMetricsListEnvelope'}
+        '401': {$ref: '#/components/responses/Unauthorized'}
+        '403': {$ref: '#/components/responses/Forbidden'}
   /v1/persons/search:
     get:
       tags: [Persons]
@@ -419,6 +449,48 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/PersonListSummaryEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/persons/summary/core:
+    get:
+      tags: [Persons]
+      summary: Get non-CRM person-listing summary counts
+      operationId: getPersonListCoreSummary
+      description: Returns exact profile, risk, value, and contact counts without CRM deal aggregation.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Non-CRM person-listing summary counts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonListCoreSummaryEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/persons/summary/crm:
+    get:
+      tags: [Persons]
+      summary: Get exact CRM person-listing summary counts
+      operationId: getPersonListCrmSummary
+      description: Returns exact CRM deal counts independently from the non-CRM listing summary.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: CRM person-listing summary counts
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonListCrmSummaryEnvelope'
         '401':
           $ref: '#/components/responses/Unauthorized'
         '403':
@@ -2311,13 +2383,65 @@ components:
         no_contact_count:
           type: integer
           minimum: 0
-      required: [all_profiles_count, high_risk_count, high_value_count, no_contact_count]
+        deals_this_month_count:
+          type: integer
+          minimum: 0
+        all_deals_count:
+          type: integer
+          minimum: 0
+      required: [all_profiles_count, high_risk_count, high_value_count, no_contact_count, deals_this_month_count, all_deals_count]
       additionalProperties: false
     PersonListSummaryEnvelope:
       type: object
       properties:
         data:
           $ref: '#/components/schemas/PersonListSummary'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    PersonListCoreSummary:
+      type: object
+      properties:
+        all_profiles_count:
+          type: integer
+          minimum: 0
+        high_risk_count:
+          type: integer
+          minimum: 0
+        high_value_count:
+          type: integer
+          minimum: 0
+        no_contact_count:
+          type: integer
+          minimum: 0
+      required: [all_profiles_count, high_risk_count, high_value_count, no_contact_count]
+      additionalProperties: false
+    PersonListCoreSummaryEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/PersonListCoreSummary'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    PersonListCrmSummary:
+      type: object
+      properties:
+        deals_this_month_count:
+          type: integer
+          minimum: 0
+        all_deals_count:
+          type: integer
+          minimum: 0
+      required: [deals_this_month_count, all_deals_count]
+      additionalProperties: false
+    PersonListCrmSummaryEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/PersonListCrmSummary'
         meta:
           $ref: '#/components/schemas/Meta'
       required: [data, meta]
@@ -3476,6 +3600,43 @@ components:
         created_at: {type: string, default: ''}
         updated_at: {type: string, default: ''}
       required: [person_id, status]
+    EntityMetadata:
+      type: object
+      properties:
+        entity_key: {type: string}
+        display_name: {type: [string, 'null']}
+        entity_type: {type: [string, 'null']}
+        country_code: {type: [string, 'null']}
+        is_active: {type: boolean}
+      required: [entity_key, display_name, entity_type, country_code, is_active]
+      additionalProperties: false
+    EntityMetrics:
+      type: object
+      properties:
+        entity_key: {type: string}
+        person_count: {type: integer, minimum: 0}
+        source_record_count: {type: integer, minimum: 0}
+        last_ingested_at: {type: [string, 'null']}
+      required: [entity_key, person_count, source_record_count, last_ingested_at]
+      additionalProperties: false
+    EntityMetadataListEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/EntityMetadata'}
+        meta: {$ref: '#/components/schemas/Meta'}
+      required: [data, meta]
+      additionalProperties: false
+    EntityMetricsListEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items: {$ref: '#/components/schemas/EntityMetrics'}
+        meta: {$ref: '#/components/schemas/Meta'}
+      required: [data, meta]
+      additionalProperties: false
     PersonEntitySummary:
       type: object
       properties:

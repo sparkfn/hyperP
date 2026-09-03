@@ -58,7 +58,8 @@ from src.graph.queries import (
     GET_PERSON_CONNECTIONS_KNOWS,
     GET_PERSON_ENTITIES,
     GET_PERSON_IDENTIFIERS,
-    GET_PERSON_LIST_SUMMARY,
+    GET_PERSON_LIST_CORE_SUMMARY,
+    GET_PERSON_LIST_CRM_SUMMARY,
     GET_PERSON_LOYALTY,
     GET_PERSON_MATCHES,
     GET_PERSON_POSSIBLE_MATCH_DETAIL,
@@ -78,6 +79,7 @@ from src.graph.queries import (
     get_node_graph_query,
 )
 from src.repositories.protocols.person import PersonListFilters, PersonPage
+from src.request_timing import create_detached_task
 from src.types import (
     AuditEvent,
     BankruptcyCase,
@@ -89,6 +91,8 @@ from src.types import (
     PersonEntitySummary,
     PersonGraph,
     PersonIdentifier,
+    PersonListCoreSummary,
+    PersonListCrmSummary,
     PersonListSummary,
     PersonSharedIdentifierCandidate,
     PersonTimelineGroup,
@@ -172,16 +176,30 @@ async def _retry_failed_profile_analysis_tx(
     return record_to_dict(record.keys(), list(record.values()))
 
 
+def _core_summary_fields(summary: PersonListCoreSummary) -> dict[str, int]:
+    """Normalize legacy test/double values to the independently cached core contract."""
+    return {
+        "all_profiles_count": summary.all_profiles_count,
+        "high_risk_count": summary.high_risk_count,
+        "high_value_count": summary.high_value_count,
+        "no_contact_count": summary.no_contact_count,
+    }
+
+
 class Neo4jPersonRepository:
     def __init__(self) -> None:
-        self._summary_cache: PersonListSummary | None = None
+        self._summary_cache: PersonListCoreSummary | None = None
         self._summary_cache_expires_at = 0.0
         self._summary_cache_lock = asyncio.Lock()
+        self._crm_summary_cache: tuple[int, int] | None = None
+        self._crm_summary_cache_expires_at = 0.0
+        self._crm_summary_cache_lock = asyncio.Lock()
+        self._crm_summary_task: asyncio.Task[tuple[int, int]] | None = None
 
-    def _cached_summary(self) -> PersonListSummary | None:
+    def _cached_summary(self) -> PersonListCoreSummary | None:
         if self._summary_cache is None or monotonic() >= self._summary_cache_expires_at:
             return None
-        return PersonListSummary.model_validate(self._summary_cache.model_dump())
+        return PersonListCoreSummary.model_validate(self._summary_cache.model_dump())
 
     async def get_page(
         self,
@@ -252,39 +270,131 @@ class Neo4jPersonRepository:
             total_count=total,
         )
 
-    async def _load_list_summary(self) -> PersonListSummary:
+    async def _load_core_summary(self) -> PersonListCoreSummary:
         async with get_session() as session:
-            result = await session.run(GET_PERSON_LIST_SUMMARY)
+            result = await session.run(GET_PERSON_LIST_CORE_SUMMARY)
             record = await result.single()
         if record is None:
-            return PersonListSummary()
+            return PersonListCoreSummary()
         values = record_to_dict(record.keys(), list(record.values()))
-        return PersonListSummary(
+        return PersonListCoreSummary(
             all_profiles_count=to_int(values.get("all_profiles_count")),
             high_risk_count=to_int(values.get("high_risk_count")),
             high_value_count=to_int(values.get("high_value_count")),
             no_contact_count=to_int(values.get("no_contact_count")),
-            deals_this_month_count=to_int(values.get("deals_this_month_count")),
-            all_deals_count=to_int(values.get("all_deals_count")),
         )
+
+    async def _load_crm_summary(self) -> tuple[int, int]:
+        async with get_session() as session:
+            result = await session.run(GET_PERSON_LIST_CRM_SUMMARY)
+            record = await result.single()
+        if record is None:
+            return 0, 0
+        values = record_to_dict(record.keys(), list(record.values()))
+        return (
+            to_int(values.get("deals_this_month_count")),
+            to_int(values.get("all_deals_count")),
+        )
+
+    async def _load_list_summary(self) -> PersonListSummary:
+        """Load an exact, uncached combined summary for explicit zero-TTL use."""
+        core, crm = await asyncio.gather(self._load_core_summary(), self._load_crm_summary())
+        return PersonListSummary(
+            **_core_summary_fields(core),
+            deals_this_month_count=crm[0],
+            all_deals_count=crm[1],
+        )
+
+    def _cached_crm_summary(self) -> tuple[int, int] | None:
+        if self._crm_summary_cache is None or monotonic() >= self._crm_summary_cache_expires_at:
+            return None
+        return self._crm_summary_cache
+
+    def _start_crm_summary_refresh(self, ttl: int) -> None:
+        if self._crm_summary_task is not None and not self._crm_summary_task.done():
+            return
+        task = create_detached_task(self._load_crm_summary(), background_read=True)
+        self._crm_summary_task = task
+
+        def store_result(completed: asyncio.Task[tuple[int, int]]) -> None:
+            if self._crm_summary_task is completed:
+                self._crm_summary_task = None
+            if completed.cancelled():
+                return
+            try:
+                self._crm_summary_cache = completed.result()
+            except Exception:
+                # The core summary remains available; retain a prior exact CRM
+                # value rather than exposing a CRM scan failure to list users.
+                return
+            self._crm_summary_cache_expires_at = monotonic() + ttl
+
+        task.add_done_callback(store_result)
+
+    async def _get_cached_or_exact_crm_summary(self, ttl: int) -> tuple[int, int]:
+        """Await the first exact CRM result; stale values refresh in background."""
+        cached = self._cached_crm_summary()
+        if cached is not None:
+            return cached
+        if self._crm_summary_cache is not None:
+            self._start_crm_summary_refresh(ttl)
+            return self._crm_summary_cache
+        async with self._crm_summary_cache_lock:
+            cached = self._cached_crm_summary()
+            if cached is not None:
+                return cached
+            crm = await self._load_crm_summary()
+            self._crm_summary_cache = crm
+            self._crm_summary_cache_expires_at = monotonic() + ttl
+            return crm
 
     async def get_list_summary(self) -> PersonListSummary:
         ttl = config.person_list_summary_cache_ttl_seconds
         if ttl <= 0:
             return await self._load_list_summary()
 
-        cached = self._cached_summary()
-        if cached is not None:
-            return cached
+        summary = self._cached_summary()
+        if summary is None:
+            async with self._summary_cache_lock:
+                summary = self._cached_summary()
+                if summary is None:
+                    summary = await self._load_core_summary()
+                    self._summary_cache = summary
+                    self._summary_cache_expires_at = monotonic() + ttl
+        crm = await self._get_cached_or_exact_crm_summary(ttl)
+        return PersonListSummary(
+            **_core_summary_fields(summary),
+            deals_this_month_count=crm[0],
+            all_deals_count=crm[1],
+        )
 
+    async def get_list_core_summary(self) -> PersonListCoreSummary:
+        """Return the exact core summary without waiting for the CRM aggregate."""
+        ttl = config.person_list_summary_cache_ttl_seconds
+        if ttl <= 0:
+            return await self._load_core_summary()
+        summary = self._cached_summary()
+        if summary is not None:
+            return summary
         async with self._summary_cache_lock:
-            cached = self._cached_summary()
-            if cached is not None:
-                return cached
-            summary = await self._load_list_summary()
-            self._summary_cache = summary
-            self._summary_cache_expires_at = monotonic() + ttl
-            return PersonListSummary.model_validate(summary.model_dump())
+            summary = self._cached_summary()
+            if summary is None:
+                summary = await self._load_core_summary()
+                self._summary_cache = summary
+                self._summary_cache_expires_at = monotonic() + ttl
+            return summary
+
+    async def get_list_crm_summary(self) -> PersonListCrmSummary:
+        """Return an exact CRM value, awaiting the first cache fill when needed."""
+        ttl = config.person_list_summary_cache_ttl_seconds
+        if ttl <= 0:
+            crm = await self._load_crm_summary()
+        else:
+            crm = await self._get_cached_or_exact_crm_summary(ttl)
+        return PersonListCrmSummary(
+            deals_this_month_count=crm[0],
+            all_deals_count=crm[1],
+        )
 
     async def search_by_identifier(self, identifier_type: str, value: str) -> list[Person]:
         async with get_session() as session:

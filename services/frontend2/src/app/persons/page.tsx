@@ -8,7 +8,8 @@ import type {
   EntityFilterOption,
   ListedPerson,
   PersonConnection,
-  PersonListSummary,
+  PersonListCoreSummary,
+  PersonListCrmSummary,
   SalesOrder,
 } from "@/lib/api-types";
 import { bffFetchEnvelope, BffError, bffFetch } from "@/lib/api-client";
@@ -1024,7 +1025,7 @@ function PersonsInner(): ReactElement {
   useEffect(() => {
     if (!initialListSettled) return;
     const controller = new AbortController();
-    void bffFetch<PersonListSummary>("/bff/persons/summary", {
+    void bffFetch<PersonListCoreSummary>("/bff/persons/summary/core", {
       cache: "no-store",
       signal: controller.signal,
     })
@@ -1034,11 +1035,19 @@ function PersonsInner(): ReactElement {
         setHighRiskCount(summary.high_risk_count);
         setHighValueCount(summary.high_value_count);
         setNoContactCount(summary.no_contact_count);
-        setDealsThisMonthCount(summary.deals_this_month_count);
-        setAllDealsCount(summary.all_deals_count);
       })
       .catch(() => undefined)
       .finally(() => { if (!controller.signal.aborted) setStatsLoading(false); });
+    void bffFetch<PersonListCrmSummary>("/bff/persons/summary/crm", {
+      cache: "no-store",
+      signal: controller.signal,
+    })
+      .then((summary) => {
+        if (controller.signal.aborted) return;
+        setDealsThisMonthCount(summary.deals_this_month_count);
+        setAllDealsCount(summary.all_deals_count);
+      })
+      .catch(() => undefined);
     return () => controller.abort();
   }, [initialListSettled]);
 
