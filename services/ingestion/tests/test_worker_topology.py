@@ -20,6 +20,7 @@ def test_worker_concurrency_and_task_routes_are_fixed_in_code() -> None:
         "src.standalone_crm_schedule_tasks.*": {"queue": "ingestion"},
         "src.standalone_crm_census_tasks.*": {"queue": "ingestion"},
         "src.crm_tenant_operator_tasks.*": {"queue": "ingestion"},
+        "src.crm_deal_identity_repair_tasks.*": {"queue": "ingestion"},
         "src.stage_history_tasks.*": {"queue": "ingestion"},
         "src.tasks.reconcile_lifecycle_task": {"queue": "lifecycle"},
         "src.tasks.materialize_knows_task": {"queue": "lifecycle"},

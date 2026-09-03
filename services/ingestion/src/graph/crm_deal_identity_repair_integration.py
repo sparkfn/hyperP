@@ -40,6 +40,7 @@ from src.graph.queries.crm_deal_identity_repair_integration import (
     ACCEPT_AND_RELEASE,
     CLAIM_ADMITTED_FENCE,
     CREATE_AND_READ_ROLLBACK_AUTHORIZATION,
+    LOCK_ACCEPTANCE_SCOPE,
     READ_ACCEPTANCE,
     READ_ANY_EXECUTION_EVIDENCE,
     READ_AUTHORITY,
@@ -434,6 +435,12 @@ class CrmDealRepairIntegrationRepository:
         equation_command: RepairRunEquationCommand,
     ) -> None:
         def work(tx: ManagedTransaction) -> None:
+            lock_params = self._authority_params(request, context) | {
+                "request_digest": request.request_digest
+            }
+            locked = tx.run(LOCK_ACCEPTANCE_SCOPE, **lock_params).single()  # type: ignore[arg-type]
+            if locked is None:
+                raise RuntimeError("repair acceptance lock authority rejected")
             equation = read_run_equation(tx, equation_command)
             _assert_acceptance_equation(equation)
             unit_digest, fence_digest = self._set_digests(tx, context)
@@ -448,6 +455,12 @@ class CrmDealRepairIntegrationRepository:
                 "equation_digest": equation.digest,
                 "acceptance_receipt_digest": receipt_digest,
                 "computed_allocation_unit_set_digest": unit_digest,
+                "expected_secondary_count": equation.expected_secondary_count,
+                "observed_secondary_count": equation.observed_secondary_count,
+                "reconciled_secondaries": equation.reconciled_secondaries,
+                "review_required_secondaries": equation.review_required_secondaries,
+                "failed_secondaries": equation.failed_secondaries,
+                "pending_secondaries": equation.pending_secondaries,
                 "receipt_bindings": receipt_bindings,
             }
             record = tx.run(ACCEPT_AND_RELEASE, **params).single()  # type: ignore[arg-type]
