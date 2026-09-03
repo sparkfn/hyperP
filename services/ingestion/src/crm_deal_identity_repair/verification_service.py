@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from src.crm_deal_identity_repair.execution_protocols import RepairVerificationRepository
+from typing import Protocol
+
 from src.crm_deal_identity_repair.verification_models import (
     RepairAtomicVerificationResult,
     RepairRunEquationCommand,
@@ -11,10 +12,20 @@ from src.crm_deal_identity_repair.verification_models import (
 )
 
 
+class AtomicCrmDealVerificationReader(Protocol):
+    """Narrow #311 seam used by guarded orchestration."""
+
+    def verify_and_reconcile_unit(
+        self, command: RepairVerificationCommand
+    ) -> RepairAtomicVerificationResult: ...
+
+    def read_run_equation(self, command: RepairRunEquationCommand) -> RepairRunEquationResult: ...
+
+
 class RepairVerificationService:
     """Keeps callers bound to the repository protocol rather than Neo4j directly."""
 
-    def __init__(self, repository: RepairVerificationRepository) -> None:
+    def __init__(self, repository: AtomicCrmDealVerificationReader) -> None:
         self._repository = repository
 
     def verify(self, command: RepairVerificationCommand) -> RepairAtomicVerificationResult:

@@ -140,3 +140,38 @@ def _validate_sha256_digest(value: str, label: str) -> None:
         or any(character not in "0123456789abcdef" for character in hexadecimal)
     ):
         raise ValueError(f"repair inventory {label} must be a lowercase sha256 digest")
+
+
+def inventory_item_from_json(raw: JsonValue) -> RepairInventoryItem:
+    """Decode one qualified inventory JSON value at an untrusted artifact boundary."""
+    if not isinstance(raw, dict):
+        raise RuntimeError("qualified inventory row is malformed")
+    values = raw
+    required = (
+        "source_system",
+        "source_record_id",
+        "source_record_pk",
+        "deal_id",
+        "partition",
+        "graph_fingerprint",
+        "stored_payload_fingerprint",
+    )
+    if any(not isinstance(values.get(key), str) for key in required):
+        raise RuntimeError("qualified inventory row is malformed")
+    conditions = values.get("repair_conditions")
+    payload = values.get("payload")
+    if not isinstance(conditions, list) or not all(isinstance(item, str) for item in conditions):
+        raise RuntimeError("qualified inventory row is malformed")
+    if not isinstance(payload, dict):
+        raise RuntimeError("qualified inventory row is malformed")
+    return RepairInventoryItem(
+        source_system=cast(str, values["source_system"]),
+        source_record_id=cast(str, values["source_record_id"]),
+        source_record_pk=cast(str, values["source_record_pk"]),
+        deal_id=cast(str, values["deal_id"]),
+        partition=cast(RepairPartition, values["partition"]),
+        repair_conditions=cast(tuple[RepairPartition, ...], tuple(conditions)),
+        graph_fingerprint=cast(str, values["graph_fingerprint"]),
+        stored_payload_fingerprint=cast(str, values["stored_payload_fingerprint"]),
+        payload=payload,
+    )

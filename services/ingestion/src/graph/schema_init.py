@@ -22,6 +22,9 @@ from src.graph.queries.crm_deal_identity_repair_control import (
 from src.graph.queries.crm_deal_identity_repair_ledger import (
     CREATE_CRM_DEAL_REPAIR_LEDGER_SCHEMA,
 )
+from src.graph.queries.crm_deal_identity_repair_integration import (
+    CREATE_CRM_DEAL_REPAIR_INTEGRATION_SCHEMA,
+)
 from src.graph.queries.crm_history_authority import CREATE_CRM_HISTORY_AUTHORITY_CONSTRAINTS
 from src.graph.queries.crm_stage_backfill import CREATE_CRM_STAGE_BACKFILL_CONSTRAINTS
 from src.graph.queries.identity_link_revisions import CREATE_IDENTITY_LINK_SCHEMA
@@ -61,6 +64,7 @@ ON (sr.source_version_key)""",
     *CREATE_CRM_HISTORY_AUTHORITY_CONSTRAINTS,
     *CREATE_CRM_DEAL_REPAIR_LEDGER_SCHEMA,
     *CREATE_CRM_DEAL_REPAIR_CONTROL_SCHEMA,
+    *CREATE_CRM_DEAL_REPAIR_INTEGRATION_SCHEMA,
     *CREATE_CRM_STAGE_BACKFILL_CONSTRAINTS,
     *CREATE_STAGE_HISTORY_INGESTION_CONSTRAINTS,
     *CREATE_STANDALONE_CRM_CENSUS_CONSTRAINTS,

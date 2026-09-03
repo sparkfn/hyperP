@@ -268,3 +268,44 @@ Operator tasks receive JSON objects, never Python dataclasses. For example, `pre
 ```json
 {"scope":{"source_key":"bitrix_chat","source_instance_id":"portal-a","control_instance_id":"default"},"preparation_request_id":"prepare-20260901","manifest":{"entries":[{"company_id":"42","targets":[{"entity_key":"tenant-a"}]}]},"expected_head_boundary":{"head_id":"<deterministic-mapping-head-id>","expected_head":null},"authorization":{"actor":"operator","authorization_reference":"change-ticket","authorization_digest":"sha256:<64-hex>","authorized_at":"2026-09-01T00:00:00Z","expires_at":"2026-09-02T00:00:00Z"},"operation_time":"2026-09-01T00:00:00Z"}
 ```
+
+
+## CRM-deal identity repair integration operator (#313)
+
+This is a **staging-only, default-off** break-glass workflow. It exposes exactly six manually
+selected commands: `apply`, `verify`, `rollback-status`, `rollback`, `accept`, and
+`release-dispatch`. It has no Beat entry and commands never auto-chain.
+
+Before every command, require `DEPLOYMENT_ENVIRONMENT=staging`,
+`CRM_DEAL_IDENTITY_REPAIR_ENABLED=true`, and the control credential in
+`CRM_DEAL_IDENTITY_REPAIR_CONTROL_TOKEN`. The signed overlay key and rollback authorization
+digest are environment-only credentials; the latter is required only by `rollback-status` and
+`rollback`. Never put either credential in command arguments, task payloads, reports, logs, or
+receipts. Celery receives the same strict non-secret fields as the CLI and returns the service
+receipt without printing CLI JSON.
+
+Unit commands (`apply`, `verify`, `rollback-status`, and `rollback`) require the exact
+`--repair-id`, `--run-id`, `--owner-id`, `--expected-revision`, `--approval-id`, and `--unit-id`.
+Rollback commands additionally require `--authorization-reference` and
+`--predecessor-transition-id`. Run commands (`accept`, `release-dispatch`) require the run/control
+identity and approval but reject unit and rollback-only fields. The compatible
+`--negative-control-limit` alias remains accepted for the inventory replay limit.
+
+Normal order is `apply` then `verify`; `rollback-status` and `rollback` may occur after apply or
+after verification, but never after terminal acceptance. `rollback-status` creates/replays an
+immutable digest-only receipt for the exact available image. A crash or lost acknowledgement is
+recovered by replaying the same command with the same authority; a conflicting owner, revision,
+manifest, allocation, fence, boundary, image, receipt, negative-control, or equation result is a
+stop condition, not a reason to retry with altered inputs.
+
+`accept` is terminal and atomic: it requires the complete authenticated allocation unit/fence set,
+all component verification/equation and negative-control checks, available rollback-status evidence
+for every mutation image, and no remainder, failure, drift, pending secondary, or terminal rollback.
+It releases only that run's fences and deliberately leaves dispatch quiesced. `release-dispatch` is
+a separate explicit command after acceptance. It exact-CAS clears only the current repair-owned
+`crm_deal_identity_repair_quiesce` block; it never clears a replaced or unrelated block.
+
+Reports contain only `operation`, `state`, `request_digest`, and `receipt_digest`; SHA-256 digests
+are evidence identifiers, not credentials. Stop immediately on any validation failure, preserve the
+quiesce/fence state, investigate the immutable evidence, then use exact replay only after the
+external discrepancy is resolved. This document does not authorize live execution.

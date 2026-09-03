@@ -8,7 +8,7 @@ from argparse import Namespace
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
-from typing import TYPE_CHECKING, Protocol
+from typing import TYPE_CHECKING, Protocol, cast
 
 from src.crm_deal_identity_repair.cli import parse_arguments
 from src.crm_deal_identity_repair.execution_models import (
@@ -21,7 +21,7 @@ from src.crm_deal_identity_repair.execution_protocols import (
     RepairBoundaryReader,
     RepairQualificationRepository,
 )
-from src.crm_deal_identity_repair.models import RepairInventoryItem
+from src.crm_deal_identity_repair.models import RepairInventoryItem, inventory_item_from_json
 from src.models import JsonValue
 
 if TYPE_CHECKING:
@@ -58,6 +58,16 @@ def main(argv: Sequence[str] | None = None) -> int:
         return _qualify(arguments)
     if arguments.command == "status":
         return _status(arguments)
+    if arguments.command in {
+        "apply",
+        "verify",
+        "rollback-status",
+        "rollback",
+        "accept",
+        "release-dispatch",
+    }:
+        _integration(arguments)
+        return 0
     return _control(arguments)
 
 
@@ -204,37 +214,8 @@ def _control(arguments: Namespace) -> int:
 
 
 def _inventory_item(raw: object) -> RepairInventoryItem:
-    if not isinstance(raw, dict):
-        raise RuntimeError("qualified inventory row is malformed")
-    values = raw
-    required = (
-        "source_system",
-        "source_record_id",
-        "source_record_pk",
-        "deal_id",
-        "partition",
-        "graph_fingerprint",
-        "stored_payload_fingerprint",
-    )
-    if any(not isinstance(values.get(key), str) for key in required):
-        raise RuntimeError("qualified inventory row is malformed")
-    conditions = values.get("repair_conditions")
-    payload = values.get("payload")
-    if not isinstance(conditions, list) or not all(isinstance(item, str) for item in conditions):
-        raise RuntimeError("qualified inventory row is malformed")
-    if not isinstance(payload, dict):
-        raise RuntimeError("qualified inventory row is malformed")
-    return RepairInventoryItem(
-        source_system=values["source_system"],
-        source_record_id=values["source_record_id"],
-        source_record_pk=values["source_record_pk"],
-        deal_id=values["deal_id"],
-        partition=values["partition"],
-        repair_conditions=tuple(conditions),
-        graph_fingerprint=values["graph_fingerprint"],
-        stored_payload_fingerprint=values["stored_payload_fingerprint"],
-        payload=payload,
-    )
+    """Backward-compatible local wrapper for the shared inventory decoder."""
+    return inventory_item_from_json(cast(JsonValue, raw))
 
 
 def _inventory(arguments: Namespace) -> int:
@@ -505,3 +486,12 @@ def _validate_runtime_gate(
         raise RuntimeError(
             "CRM-deal repair inventory requires CRM_DEAL_IDENTITY_REPAIR_ENABLED=true"
         )
+
+
+def _integration(arguments: Namespace) -> dict[str, str]:
+    """Delegate guarded execution to the typed #313 runtime factory."""
+    from src.crm_deal_identity_repair.integration_runtime import execute_integration
+
+    report = execute_integration(arguments)
+    print(json.dumps(report, sort_keys=True))
+    return report

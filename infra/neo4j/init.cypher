@@ -415,3 +415,11 @@ CREATE CONSTRAINT crm_deal_repair_allocation_completion_unique IF NOT EXISTS
 FOR (completion:CrmDealRepairAllocationCompletion) REQUIRE (completion.run_id, completion.completion_id) IS UNIQUE;
 CREATE INDEX crm_deal_repair_control_state IF NOT EXISTS
 FOR (control:CrmDealRepairControl) ON (control.state, control.control_instance_id, control.revision);
+
+// CRM-deal repair integration schema (#313).
+CREATE CONSTRAINT crm_deal_repair_rollback_receipt_unique IF NOT EXISTS
+FOR (receipt:CrmDealRepairRollbackReceipt) REQUIRE (receipt.run_id, receipt.receipt_id) IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_acceptance_unique IF NOT EXISTS
+FOR (acceptance:CrmDealRepairAcceptance) REQUIRE acceptance.run_id IS UNIQUE;
+CREATE CONSTRAINT crm_deal_repair_release_unique IF NOT EXISTS
+FOR (release:CrmDealRepairDispatchRelease) REQUIRE release.run_id IS UNIQUE;
