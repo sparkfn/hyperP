@@ -19,6 +19,7 @@ import test_crm_deal_identity_repair_mutation_neo4j as mutation
 from neo4j import Driver, GraphDatabase, ManagedTransaction, Session
 from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json_bytes
 from src.crm_deal_identity_repair.execution_models import RepairExecutionBoundaryManifest
+from src.crm_deal_identity_repair.models import RepairInventoryItem
 from src.crm_deal_identity_repair.mutation_models import (
     RepairAtomicMutationResult,
     RepairMutationCommand,
@@ -34,6 +35,7 @@ from src.graph.crm_deal_identity_repair_rollback import (
     RepairRollbackAuthorityError,
     RepairRollbackDriftError,
 )
+from src.graph.crm_deal_identity_repair_verification_run import canonical_source_record_pks_json
 
 T = TypeVar("T")
 _FAILURE_STAGES: tuple[RollbackFailureStage, ...] = (
@@ -157,12 +159,13 @@ def _seed_canonical_qualification_manifest(
     driver: Driver,
     mutation_command: RepairMutationCommand,
     manifest: RepairExecutionBoundaryManifest,
+    *,
+    inventory: tuple[RepairInventoryItem, ...] | None = None,
 ) -> None:
     """Upgrade the #309 fixture to the canonical #300 qualified-run evidence shape."""
     manifest_json = canonical_json_bytes(manifest.to_dict()).decode("utf-8")
-    source_record_pks_json = canonical_json_bytes(
-        {"source_record_pks": [mutation_command.inventory.source_record_pk]}
-    ).decode("utf-8")
+    canonical_inventory = (mutation_command.inventory,) if inventory is None else inventory
+    source_record_pks_json = canonical_source_record_pks_json(canonical_inventory)
     values = {
         "manifest_digest": manifest.manifest_digest,
         "artifact_id": manifest.artifact_id,
@@ -250,6 +253,32 @@ def _terminal_counts(driver: Driver, run_id: str) -> dict[str, int]:
             run_id=run_id,
         ).single(strict=True)
     return {"images": row["images"], "dispositions": row["dispositions"]}
+
+
+def _rollback_evidence_state(
+    driver: Driver, command: RepairRollbackCommand, conflicting_disposition_id: str
+) -> dict[str, object]:
+    with driver.session() as session:
+        row = session.run(
+            """
+            MATCH (unit:CrmDealRepairUnit {run_id: $run_id, unit_id: $unit_id})
+            MATCH (image:CrmDealRepairRollbackImage {run_id: $run_id,
+              rollback_image_id: $rollback_image_id})
+            OPTIONAL MATCH (candidate:CrmDealRepairSecondaryDisposition {run_id: $run_id,
+              rollback_image_id: image.rollback_image_id})
+            OPTIONAL MATCH (expected:CrmDealRepairSecondaryDisposition {run_id: $run_id,
+              disposition_id: $expected_disposition_id})
+            RETURN unit.state AS unit_state, image.state AS image_state,
+              image.rollback_disposition_id AS image_disposition_id,
+              count(DISTINCT candidate) AS candidate_count,
+              count(DISTINCT expected) AS expected_terminal_count
+            """,
+            run_id=command.authorization.unit.run_id,
+            unit_id=command.authorization.unit.unit_id,
+            rollback_image_id=command.authorization.image.rollback_image_id,
+            expected_disposition_id=command.disposition_id,
+        ).single(strict=True)
+    return dict(row)
 
 
 def test_exact_rollback_restores_saved_authoritative_root_descendant_and_relationships(
@@ -477,6 +506,49 @@ def test_foreign_fence_and_changed_transition_have_no_terminal_write(
     assert _terminal_counts(neo4j_driver, command.authorization.unit.run_id) == {
         "images": 1,
         "dispositions": 1,
+    }
+
+
+@pytest.mark.parametrize("linked_from_image", (False, True))
+def test_available_image_rejects_conflicting_terminal_evidence_before_restoration(
+    neo4j_driver: Driver, linked_from_image: bool
+) -> None:
+    command = _rollback_command(neo4j_driver)
+    conflicting_disposition_id = "conflicting-rollback-terminal"
+    with neo4j_driver.session() as session:
+        session.run(
+            """
+            MATCH (image:CrmDealRepairRollbackImage {run_id: $run_id,
+              rollback_image_id: $rollback_image_id})
+            CREATE (:CrmDealRepairSecondaryDisposition {run_id: $run_id, unit_id: $unit_id,
+              disposition_id: 'verification-secondary', outcome: 'reconciled'})
+            CREATE (:CrmDealRepairSecondaryDisposition {run_id: $run_id, unit_id: $unit_id,
+              disposition_id: $conflicting_disposition_id,
+              rollback_image_id: image.rollback_image_id, outcome: 'reconciled'})
+            WITH image
+            FOREACH (_ IN CASE WHEN $linked_from_image THEN [1] ELSE [] END |
+              SET image.rollback_disposition_id = $conflicting_disposition_id)
+            """,
+            run_id=command.authorization.unit.run_id,
+            unit_id=command.authorization.unit.unit_id,
+            rollback_image_id=command.authorization.image.rollback_image_id,
+            conflicting_disposition_id=conflicting_disposition_id,
+            linked_from_image=linked_from_image,
+        ).consume()
+    before = _rollback_evidence_state(neo4j_driver, command, conflicting_disposition_id)
+
+    with pytest.raises(
+        RepairRollbackDriftError, match="available rollback image has terminal evidence"
+    ):
+        _repository(neo4j_driver).commit_atomic_rollback(command)
+
+    assert _rollback_evidence_state(neo4j_driver, command, conflicting_disposition_id) == before
+    assert before == {
+        "unit_state": "applied",
+        "image_state": "available",
+        "image_disposition_id": conflicting_disposition_id if linked_from_image else None,
+        "candidate_count": 1,
+        "expected_terminal_count": 0,
     }
 
 

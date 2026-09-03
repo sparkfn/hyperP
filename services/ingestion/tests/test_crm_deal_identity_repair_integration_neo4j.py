@@ -41,6 +41,7 @@ from src.graph.crm_deal_identity_repair_rollback import CrmDealIdentityRepairRol
 from src.graph.crm_deal_identity_repair_verification import (
     CrmDealIdentityRepairVerificationRepository,
 )
+from src.graph.crm_deal_identity_repair_verification_run import canonical_source_record_pks_json
 from src.graph.queries import crm_deal_identity_repair_integration as queries
 from src.graph.queries import crm_deal_identity_repair_rollback as rollback_queries
 from test_crm_deal_identity_repair_mutation_neo4j import (
@@ -1168,16 +1169,23 @@ def _service(
     _deactivate_child_contamination(driver)
     item, negative = _inventory(driver)
     inventory = tuple(sorted((item, negative), key=lambda row: row.inventory_key))
+    eligible_unit_count = sum(row.partition != "negative_control" for row in inventory)
+    negative_control_count = sum(row.partition == "negative_control" for row in inventory)
     manifest = replace(
         _canonical_qualification_manifest("reviewed-312", "reviewed_rollback_v1"),
         inventory_digest=inventory_digest(inventory),
         inventory_row_count=len(inventory),
-        eligible_unit_count=1,
-        negative_control_count=1,
+        eligible_unit_count=eligible_unit_count,
+        negative_control_count=negative_control_count,
     )
     run_id = str(uuid5(NAMESPACE_URL, manifest.qualification_identity))
     mutation_command = _seed_authority(driver, item, run_id=run_id)
-    _seed_canonical_qualification_manifest(driver, mutation_command, manifest)
+    _seed_canonical_qualification_manifest(
+        driver,
+        mutation_command,
+        manifest,
+        inventory=inventory,
+    )
     control = RepairControlRequest(manifest.repair_id, run_id, "worker-a", "operator-secret", 1)
     unit_set_digest = object_digest(
         b"crm-deal-identity-repair-allocation-unit-set-v1\x00",
@@ -1315,6 +1323,45 @@ def _rollback_request(
         authorization_reference=authorization_reference,
         predecessor_transition_id=predecessor,
     )
+
+
+def test_shared_service_seed_uses_one_canonical_full_inventory_contract(
+    neo4j_driver: Driver,
+) -> None:
+    """Persist all qualified-run identity fields from the context's complete inventory."""
+    _, context, _ = _service(neo4j_driver)
+    manifest = context.run.manifest
+    with neo4j_driver.session() as session:
+        row = session.run(
+            """
+            MATCH (run:CrmDealRepairRun {run_id: $run_id})
+            MATCH (run)-[:QUALIFIED_WITH]->(boundary:RepairExecutionBoundary)
+            RETURN run.inventory_digest AS run_inventory_digest,
+              run.inventory_row_count AS run_inventory_row_count,
+              run.eligible_unit_count AS run_eligible_unit_count,
+              run.negative_control_count AS run_negative_control_count,
+              run.source_record_pks_json AS run_source_record_pks_json,
+              boundary.inventory_digest AS boundary_inventory_digest,
+              boundary.inventory_row_count AS boundary_inventory_row_count,
+              boundary.eligible_unit_count AS boundary_eligible_unit_count,
+              boundary.negative_control_count AS boundary_negative_control_count,
+              boundary.source_record_pks_json AS boundary_source_record_pks_json
+            """,
+            run_id=context.run.run_id,
+        ).single(strict=True)
+    expected = {
+        "run_inventory_digest": manifest.inventory_digest,
+        "run_inventory_row_count": len(context.inventory),
+        "run_eligible_unit_count": manifest.eligible_unit_count,
+        "run_negative_control_count": manifest.negative_control_count,
+        "run_source_record_pks_json": canonical_source_record_pks_json(context.inventory),
+        "boundary_inventory_digest": manifest.inventory_digest,
+        "boundary_inventory_row_count": len(context.inventory),
+        "boundary_eligible_unit_count": manifest.eligible_unit_count,
+        "boundary_negative_control_count": manifest.negative_control_count,
+        "boundary_source_record_pks_json": canonical_source_record_pks_json(context.inventory),
+    }
+    assert dict(row) == expected
 
 
 def test_shared_service_real_apply_replay_verify_and_rollback_status(neo4j_driver: Driver) -> None:

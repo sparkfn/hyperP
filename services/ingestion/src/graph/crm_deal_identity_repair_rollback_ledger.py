@@ -374,9 +374,12 @@ class RollbackLedgerMixin:
         """Validate cardinality and all immutable stage-one record cross-links."""
         checkpoint = _require_singleton(_record_value(row, "checkpoints"), "checkpoint")
         outbox = _require_singleton(_record_value(row, "outboxes"), "outbox")
-        _optional_singleton(_record_value(row, "dispositions"), "disposition")
+        terminal_disposition = _optional_singleton(
+            _record_value(row, "dispositions"), "disposition"
+        )
         result = property_map(_record_value(row, "result"), "result")
         image = property_map(_record_value(row, "image"), "image")
+        self._assert_terminal_evidence_baseline(image, terminal_disposition)
         unit = authorization.unit
         fence = authorization.fence
         mutation = authorization.mutation
@@ -424,6 +427,27 @@ class RollbackLedgerMixin:
             }
         )
         _require_equal(outbox, "payload_digest", expected_outbox_digest)
+
+    @staticmethod
+    def _assert_terminal_evidence_baseline(
+        image: dict[str, JsonValue], terminal_disposition: dict[str, JsonValue] | None
+    ) -> None:
+        """Fail closed when immutable terminal evidence conflicts with image state."""
+        state = image.get("state")
+        pointer = image.get("rollback_disposition_id")
+        if state == "available":
+            if terminal_disposition is not None or pointer is not None:
+                raise RepairRollbackDriftError("available rollback image has terminal evidence")
+            return
+        if state not in {"restored", "review_required"}:
+            raise RepairRollbackDriftError("rollback image state is malformed")
+        disposition = terminal_disposition
+        if disposition is None:
+            raise RepairRollbackDriftError("terminal rollback image lacks disposition")
+        if _required_string(image, "rollback_disposition_id") != _required_string(
+            disposition, "disposition_id"
+        ):
+            raise RepairRollbackDriftError("rollback terminal disposition pointer differs")
 
     def _assert_decoded_bundle_bindings(
         self,
