@@ -716,13 +716,10 @@ CALL {
     owner_id: mutation.owner_id, delivery_token: mutation.fence_token,
     boundary_digest: mutation.boundary_digest, mutation_id: mutation.mutation_id,
     state: 'acknowledged'})
-  OPTIONAL MATCH (verification_outbox:CrmDealRepairVerification {run_id: completion.run_id,
-    unit_id: mutation.unit_id, generation: mutation.generation, sequence: mutation.sequence,
-    attempt: mutation.attempt, owner_id: mutation.owner_id, fence_token: mutation.fence_token,
-    boundary_digest: mutation.boundary_digest, outcome: 'verified'})
-  WITH mutation, image, verification, authorization, checkpoint, outbox, verification_outbox,
-    CASE WHEN outbox.verification_result_digest = verification_outbox.verification_digest
-      AND outbox.verification_request_digest IS NOT NULL THEN outbox END AS acknowledged_outbox
+  WITH completion, mutation, image, verification, authorization, checkpoint, outbox,
+    CASE WHEN outbox.verification_request_digest = verification.request_digest
+      AND outbox.verification_result_digest = verification.verification_digest
+    THEN outbox END AS acknowledged_outbox
   OPTIONAL MATCH (receipt:CrmDealRepairRollbackReceipt {run_id: completion.run_id,
     unit_id: mutation.unit_id, image_digest: mutation.rollback_image_digest,
     mutation_id: mutation.mutation_id, generation: mutation.generation,
