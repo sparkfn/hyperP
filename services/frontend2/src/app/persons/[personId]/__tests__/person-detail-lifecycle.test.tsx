@@ -34,7 +34,7 @@ vi.mock("@/app/review/[reviewCaseId]/ReviewCaseDetailModal", () => ({
 import type { Person } from "@/lib/api-types";
 import type { PersonAuditEvent, PersonIdentifier } from "@/lib/api-types-person";
 import type { ReviewCaseSummary } from "@/lib/api-types-ops";
-import { MatchesTab, TimelineTab, type DetailData } from "../page";
+import { MatchesTab, TimelineTab, type DetailData } from "../page-content";
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void; reject: (error: Error) => void } {
   let resolve!: (value: T) => void;
