@@ -473,7 +473,9 @@ def test_acceptance_query_locks_common_records_and_rejects_unallocated_records()
     assert "checkpoint_id: mutation.checkpoint_id" in query
     assert "event_id: mutation.outbox_event_id" in query
     assert "state: 'acknowledged'" in query
-    assert "outbox.verification_result_digest = verification_outbox.verification_digest" in query
+    assert "outbox.verification_request_digest = verification.request_digest" in query
+    assert "outbox.verification_result_digest = verification.verification_digest" in query
+    assert "WITH completion, mutation, image, verification" in query
     assert "WHERE locked_unit_count = completion.unit_count" in queries.LOCK_ACCEPTANCE_SCOPE
     assert query.count("WHERE locked_unit_count = completion.unit_count") == 1
 
@@ -1027,7 +1029,7 @@ def test_acceptance_query_binds_exact_checkpoint_and_acknowledged_outbox_per_mut
     assert "event_id: mutation.outbox_event_id" in query
     assert "state: 'written'" in query
     assert "state: 'acknowledged'" in query
-    assert "verification_request_digest IS NOT NULL" in query
-    assert "verification_result_digest = verification_outbox.verification_digest" in query
+    assert "verification_request_digest = verification.request_digest" in query
+    assert "verification_result_digest = verification.verification_digest" in query
     assert "count(DISTINCT checkpoint) AS checkpoints" in query
     assert "count(DISTINCT acknowledged_outbox) AS outboxes" in query

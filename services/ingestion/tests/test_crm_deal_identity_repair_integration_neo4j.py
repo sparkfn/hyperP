@@ -64,8 +64,9 @@ T = TypeVar("T")
 
 
 class _Client:
-    def __init__(self, driver: Driver) -> None:
+    def __init__(self, driver: Driver, write_metadata: dict[str, str] | None = None) -> None:
         self._driver = driver
+        self._write_metadata = write_metadata
 
     @contextmanager
     def session(self) -> Iterator[Session]:
@@ -78,6 +79,15 @@ class _Client:
 
     def execute_write(self, work: Callable[[ManagedTransaction], T]) -> T:
         with self._driver.session() as session:
+            if self._write_metadata is not None:
+                transaction = session.begin_transaction(metadata=self._write_metadata)
+                try:
+                    result = work(cast(ManagedTransaction, transaction))
+                except BaseException:
+                    transaction.rollback()
+                    raise
+                transaction.commit()
+                return result
             return session.execute_write(work)
 
 
@@ -108,6 +118,33 @@ def neo4j_driver() -> Iterator[Driver]:
     finally:
         _mutation_reset(driver)
         driver.close()
+
+
+def _wait_for_marked_lock_wait(driver: Driver, marker: str, query_fragment: str) -> None:
+    """Prove a contender reached Neo4j's lock wait before releasing the winner."""
+    deadline = time.monotonic() + 10
+    while time.monotonic() < deadline:
+        with driver.session() as session:
+            row = session.run(
+                """
+                SHOW TRANSACTIONS YIELD metaData, currentQuery, currentQueryStatus
+                WHERE metaData.crm_repair_test_marker = $marker
+                RETURN currentQuery AS current_query, currentQueryStatus AS query_status
+                """,
+                marker=marker,
+            ).single()
+        if row is not None:
+            current_query = row["current_query"]
+            query_status = row["query_status"]
+            if (
+                isinstance(current_query, str)
+                and isinstance(query_status, str)
+                and query_fragment in current_query
+                and query_status.lower() == "waiting"
+            ):
+                return
+        time.sleep(0.05)
+    raise AssertionError("contender did not enter the expected Neo4j lock wait")
 
 
 def _params() -> dict[str, str | int]:
@@ -490,7 +527,7 @@ def _seed_one_unit_acceptance(driver: Driver) -> dict[str, object]:
             CREATE (:CrmDealRepairVerification {run_id: $run_id, unit_id: 'unit-a', generation: 1,
               sequence: 0, attempt: 1, owner_id: $owner_id, fence_token: $token_digest,
               boundary_digest: $boundary_digest, outcome: 'verified',
-              verification_digest: $inventory_digest})
+              request_digest: $request_digest, verification_digest: $inventory_digest})
             CREATE (:CrmDealRepairCheckpoint {run_id: $run_id, unit_id: 'unit-a',
               checkpoint_id: 'checkpoint-a',
               generation: 1, sequence: 0, attempt: 1, owner_id: $owner_id,
@@ -703,7 +740,7 @@ def test_multi_unit_acceptance_rejects_extra_run_scoped_records(
             CREATE (:CrmDealRepairVerification {run_id: $run_id, unit_id: 'unit-b', generation: 1,
               sequence: 1, attempt: 1, owner_id: $owner_id, fence_token: $token_digest,
               boundary_digest: $boundary_digest, outcome: 'verified',
-              verification_digest: $inventory_digest})
+              request_digest: $request_digest, verification_digest: $inventory_digest})
             CREATE (:CrmDealRepairCheckpoint {run_id: $run_id, unit_id: 'unit-b',
               checkpoint_id: 'checkpoint-b',
               generation: 1, sequence: 1, attempt: 1, owner_id: $owner_id,
@@ -811,9 +848,9 @@ def test_acceptance_first_blocks_rollback_then_rollback_revalidates_after_accept
     rollback_params = _rollback_bundle_params(values)
     acceptance_locked = Event()
     rollback_started = Event()
-    rollback_finished = Event()
     errors: list[BaseException] = []
     rollback_rows: list[bool] = []
+    rollback_marker = "acceptance-first-rollback"
 
     def accept() -> None:
         transaction = None
@@ -826,7 +863,7 @@ def test_acceptance_first_blocks_rollback_then_rollback_revalidates_after_accept
                 assert locked["locked_unit_count"] == 1
                 acceptance_locked.set()
                 assert rollback_started.wait(timeout=10)
-                assert not rollback_finished.wait(timeout=2)
+                _wait_for_marked_lock_wait(neo4j_driver, rollback_marker, "rollback_lock_id")
                 accepted = transaction.run(queries.ACCEPT_AND_RELEASE, **values).single(strict=True)
                 assert accepted["receipt_digest"] == values["acceptance_receipt_digest"]
                 transaction.commit()
@@ -836,20 +873,23 @@ def test_acceptance_first_blocks_rollback_then_rollback_revalidates_after_accept
             errors.append(exc)
 
     def rollback() -> None:
+        transaction = None
         try:
             assert acceptance_locked.wait(timeout=10)
             rollback_started.set()
             with neo4j_driver.session() as session:
-                record = session.execute_write(
-                    lambda tx: tx.run(
-                        rollback_queries.LOCK_AND_READ_ROLLBACK_BUNDLE, **rollback_params
-                    ).single()
+                transaction = session.begin_transaction(
+                    metadata={"crm_repair_test_marker": rollback_marker}
                 )
+                record = transaction.run(
+                    rollback_queries.LOCK_AND_READ_ROLLBACK_BUNDLE, **rollback_params
+                ).single()
+                transaction.commit()
             rollback_rows.append(record is None)
         except BaseException as exc:  # noqa: BLE001
+            if transaction is not None:
+                transaction.rollback()
             errors.append(exc)
-        finally:
-            rollback_finished.set()
 
     threads = (Thread(target=accept), Thread(target=rollback))
     for thread in threads:
@@ -900,9 +940,9 @@ def test_rollback_first_blocks_next_unit_admission_then_prevents_new_fence(
     terminal_params = _terminal_rollback_params(values)
     rollback_locked = Event()
     admission_started = Event()
-    admission_finished = Event()
     errors: list[BaseException] = []
     admission_rows: list[bool] = []
+    admission_marker = "rollback-first-admission"
     with neo4j_driver.session() as session:
         session.run(
             """
@@ -927,7 +967,9 @@ def test_rollback_first_blocks_next_unit_admission_then_prevents_new_fence(
                 assert locked["unit"]["unit_id"] == "unit-a"
                 rollback_locked.set()
                 assert admission_started.wait(timeout=10)
-                assert not admission_finished.wait(timeout=2)
+                _wait_for_marked_lock_wait(
+                    neo4j_driver, admission_marker, "integration_admission_updated_at"
+                )
                 terminal = transaction.run(
                     rollback_queries.PERSIST_ROLLBACK_TERMINAL, **terminal_params
                 ).single(strict=True)
@@ -939,18 +981,21 @@ def test_rollback_first_blocks_next_unit_admission_then_prevents_new_fence(
             errors.append(exc)
 
     def admit() -> None:
+        transaction = None
         try:
             assert rollback_locked.wait(timeout=10)
             admission_started.set()
             with neo4j_driver.session() as session:
-                record = session.execute_write(
-                    lambda tx: tx.run(queries.CLAIM_ADMITTED_FENCE, **admission_params).single()
+                transaction = session.begin_transaction(
+                    metadata={"crm_repair_test_marker": admission_marker}
                 )
+                record = transaction.run(queries.CLAIM_ADMITTED_FENCE, **admission_params).single()
+                transaction.commit()
             admission_rows.append(record is None)
         except BaseException as exc:  # noqa: BLE001
+            if transaction is not None:
+                transaction.rollback()
             errors.append(exc)
-        finally:
-            admission_finished.set()
 
     threads = (Thread(target=rollback), Thread(target=admit))
     for thread in threads:
@@ -1048,7 +1093,9 @@ def test_admission_then_rollback_remains_available_before_acceptance(
         "MATCH (result:CrmDealRepairMutationResult {run_id: $run_id, unit_id: 'unit-a'}) "
         "SET result.outbox_event_id = 'outbox-mismatch'",
         "MATCH (outbox:CrmDealRepairOutbox {run_id: $run_id, unit_id: 'unit-a'}) "
-        "SET outbox.verification_result_digest = 'sha256:' + 'b' * 64",
+        "SET outbox.verification_result_digest = $replacement_digest",
+        "MATCH (outbox:CrmDealRepairOutbox {run_id: $run_id, unit_id: 'unit-a'}) "
+        "SET outbox.verification_request_digest = $replacement_digest",
     ),
 )
 def test_one_unit_acceptance_rejects_checkpoint_or_outbox_binding_ambiguity(
@@ -1056,7 +1103,7 @@ def test_one_unit_acceptance_rejects_checkpoint_or_outbox_binding_ambiguity(
 ) -> None:
     values = _seed_one_unit_acceptance(neo4j_driver)
     with neo4j_driver.session() as session:
-        session.run(injection, **values).consume()
+        session.run(injection, **(values | {"replacement_digest": "sha256:" + "b" * 64})).consume()
         rejected = session.execute_write(
             lambda tx: tx.run(queries.ACCEPT_AND_RELEASE, **values).single()
         )
@@ -1096,7 +1143,7 @@ def test_zero_unit_acceptance_rejects_extra_checkpoint_or_pending_outbox(
 
 
 def _service(
-    driver: Driver,
+    driver: Driver, *, write_metadata: dict[str, str] | None = None
 ) -> tuple[CrmDealIdentityRepairIntegrationService, RepairIntegrationContext]:
     """Seed #309 authority, then compose #313 around the real component repositories."""
     _seed_domain(driver, independent_support=True)
@@ -1104,7 +1151,7 @@ def _service(
         session.run(
             "MATCH (person:Person) SET person.crm_deal_count = coalesce(person.crm_deal_count, 0), "
             "person.analysis_input_revision = coalesce(person.analysis_input_revision, 0), "
-            "person.golden_profile_version = coalesce(person.golden_profile_version, 0), "
+            "person.golden_profile_version = coalesce(person.golden_profile_version, 'v0.1.0'), "
             "person.profile_completeness_score = coalesce(person.profile_completeness_score, 0)"
         ).consume()
     _deactivate_child_contamination(driver)
@@ -1196,7 +1243,7 @@ def _service(
         tuple(sorted((item, negative), key=lambda row: row.inventory_key)),
         authority,
     )
-    client = cast(Neo4jClient, _Client(driver))
+    client = cast(Neo4jClient, _Client(driver, write_metadata))
     service = CrmDealIdentityRepairIntegrationService(
         CrmDealRepairIntegrationRepository(client),
         lambda _: context,
@@ -1311,7 +1358,11 @@ def test_shared_service_accept_and_release_after_verified_happy_path(neo4j_drive
 def test_acceptance_waits_for_rollback_lock_and_rejects_terminal_rollback(
     neo4j_driver: Driver,
 ) -> None:
-    service, context = _service(neo4j_driver)
+    acceptance_marker = "rollback-first-acceptance"
+    service, context = _service(
+        neo4j_driver,
+        write_metadata={"crm_repair_test_marker": acceptance_marker},
+    )
     service.execute(_request("apply", context))
     service.execute(_request("verify", context))
     service.execute(_rollback_request(neo4j_driver, "rollback-status", context))
@@ -1346,7 +1397,6 @@ def test_acceptance_waits_for_rollback_lock_and_rejects_terminal_rollback(
     }
     rollback_locked = Event()
     acceptance_started = Event()
-    acceptance_finished = Event()
     rollback_errors: list[BaseException] = []
     acceptance_errors: list[BaseException] = []
 
@@ -1361,7 +1411,9 @@ def test_acceptance_waits_for_rollback_lock_and_rejects_terminal_rollback(
                 assert locked["unit"]["unit_id"] == authorization.unit.unit_id
                 rollback_locked.set()
                 assert acceptance_started.wait(timeout=10)
-                assert not acceptance_finished.wait(timeout=2)
+                _wait_for_marked_lock_wait(
+                    neo4j_driver, acceptance_marker, "integration_acceptance_lock_id"
+                )
                 terminal = transaction.run(
                     rollback_queries.PERSIST_ROLLBACK_TERMINAL, **terminal_params
                 ).single(strict=True)
@@ -1379,8 +1431,6 @@ def test_acceptance_waits_for_rollback_lock_and_rejects_terminal_rollback(
             service.execute(_request("accept", context))
         except BaseException as exc:  # noqa: BLE001
             acceptance_errors.append(exc)
-        finally:
-            acceptance_finished.set()
 
     threads = (Thread(target=rollback), Thread(target=accept))
     for thread in threads:
@@ -1416,6 +1466,7 @@ def test_dispatch_replacement_wins_against_waiting_release(neo4j_driver: Driver)
     release_started = Event()
     release_results: list[bool] = []
     errors: list[BaseException] = []
+    release_marker = "dispatch-replacement-release"
 
     def replace_block() -> None:
         try:
@@ -1431,6 +1482,9 @@ def test_dispatch_replacement_wins_against_waiting_release(neo4j_driver: Driver)
                 ).consume()
                 locked.set()
                 assert release_started.wait(timeout=10)
+                _wait_for_marked_lock_wait(
+                    neo4j_driver, release_marker, "CrmDealRepairDispatchRelease"
+                )
                 transaction.run(
                     """
                     MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat',
@@ -1449,15 +1503,20 @@ def test_dispatch_replacement_wins_against_waiting_release(neo4j_driver: Driver)
             errors.append(exc)
 
     def release_dispatch() -> None:
+        transaction = None
         try:
             assert locked.wait(timeout=10)
             release_started.set()
             with neo4j_driver.session() as session:
-                result = session.execute_write(
-                    lambda tx: tx.run(queries.RELEASE_DISPATCH, **values).single()
+                transaction = session.begin_transaction(
+                    metadata={"crm_repair_test_marker": release_marker}
                 )
+                result = transaction.run(queries.RELEASE_DISPATCH, **values).single()
+                transaction.commit()
             release_results.append(result is None)
         except BaseException as exc:  # noqa: BLE001
+            if transaction is not None:
+                transaction.rollback()
             errors.append(exc)
 
     threads = (Thread(target=replace_block), Thread(target=release_dispatch))
