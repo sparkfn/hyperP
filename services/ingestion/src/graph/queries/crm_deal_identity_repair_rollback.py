@@ -8,7 +8,7 @@ MATCH (unit:CrmDealRepairUnit {run_id: $run_id, unit_id: $unit_id, generation: $
   inventory_fingerprint: $unit_fingerprint})
 MATCH (fence:CrmDealRepairFence {run_id: $run_id, unit_id: $unit_id, fence_id: $fence_id,
   generation: $generation, sequence: $sequence, attempt: $attempt, owner_id: $owner_id,
-  token: $fence_token, boundary_digest: $boundary_digest, state: 'claimed'})
+  token: $fence_token, boundary_digest: $boundary_digest})
 MATCH (result:CrmDealRepairMutationResult {run_id: $run_id, unit_id: $unit_id,
   mutation_id: $mutation_id, generation: $generation, sequence: $sequence, attempt: $attempt,
   owner_id: $owner_id, fence_token: $fence_token, boundary_digest: $boundary_digest,
@@ -27,11 +27,14 @@ MATCH (authorization:CrmDealRepairRollbackAuthorization {run_id: $run_id, unit_i
 WHERE result.rollback_image_digest = image.image_digest AND result.fence_token = fence.token
   AND result.evidence_digest = image.evidence_digest AND result.payload_digest = image.payload_digest
   AND authorization.predecessor_transition_id = result.mutation_id + ':applied:' + image.rollback_image_id
-  AND image.state = 'available' AND authorization.state = 'approved' AND authorization.consumable = true
+SET unit.unit_id = unit.unit_id, fence.fence_id = fence.fence_id,
+  result.mutation_id = result.mutation_id, image.rollback_image_id = image.rollback_image_id,
+  authorization.authorization_transition_id = authorization.authorization_transition_id
+WITH unit, fence, result, image, authorization
+WHERE fence.state = 'claimed' AND image.state = 'available'
+  AND authorization.state = 'approved' AND authorization.consumable = true
 SET unit.rollback_lock_id = coalesce(unit.rollback_lock_id, $rollback_request_digest),
-  authorization.authorization_lock_id = coalesce(authorization.authorization_lock_id, $rollback_request_digest),
-  fence.fence_id = fence.fence_id, result.mutation_id = result.mutation_id,
-  image.rollback_image_id = image.rollback_image_id
+  authorization.authorization_lock_id = coalesce(authorization.authorization_lock_id, $rollback_request_digest)
 WITH unit, fence, result, image, authorization
 WHERE unit.rollback_lock_id = $rollback_request_digest
   AND authorization.authorization_lock_id = $rollback_request_digest

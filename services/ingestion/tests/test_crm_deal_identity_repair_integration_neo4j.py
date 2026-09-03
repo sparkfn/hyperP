@@ -322,12 +322,16 @@ def test_admission_requires_verified_status_for_every_prior_sequence(neo4j_drive
               fence_fingerprint: $inventory_digest, state: 'claimed'})
             CREATE (:CrmDealRepairMutationResult {run_id: $run_id, unit_id: 'unit-a',
               mutation_id: 'mutation-a', rollback_image_id: 'image-a',
-              rollback_image_digest: $inventory_digest, generation: 1, sequence: 0, attempt: 1,
-              owner_id: $owner_id, fence_token: $token_digest, boundary_digest: $boundary_digest})
+              rollback_image_digest: $inventory_digest, checkpoint_id: 'checkpoint-a',
+              outbox_event_id: 'outbox-a', generation: 1, sequence: 0, attempt: 1,
+              owner_id: $owner_id, fence_token: $token_digest, boundary_digest: $boundary_digest,
+              unit_fingerprint: $inventory_digest, evidence_digest: $inventory_digest,
+              payload_digest: $inventory_digest})
             CREATE (:CrmDealRepairRollbackImage {run_id: $run_id, unit_id: 'unit-a',
               rollback_image_id: 'image-a', image_digest: $inventory_digest, generation: 1,
               sequence: 0, attempt: 1, owner_id: $owner_id, fence_token: $token_digest,
-              boundary_digest: $boundary_digest, state: 'available'})
+              boundary_digest: $boundary_digest, state: 'available',
+              evidence_digest: $inventory_digest, payload_digest: $inventory_digest})
             CREATE (:CrmDealRepairRollbackAuthorization {run_id: $run_id, unit_id: 'unit-a',
               authorization_transition_id: 'authorization-a',
               authorization_digest: $inventory_digest, mutation_id: 'mutation-a',
@@ -473,22 +477,41 @@ def _seed_one_unit_acceptance(driver: Driver) -> dict[str, object]:
               fence_fingerprint: $inventory_digest, state: 'claimed'})
             CREATE (:CrmDealRepairMutationResult {run_id: $run_id, unit_id: 'unit-a',
               mutation_id: 'mutation-a', rollback_image_id: 'image-a',
-              rollback_image_digest: $inventory_digest, generation: 1, sequence: 0, attempt: 1,
-              owner_id: $owner_id, fence_token: $token_digest, boundary_digest: $boundary_digest})
+              rollback_image_digest: $inventory_digest, checkpoint_id: 'checkpoint-a',
+              outbox_event_id: 'outbox-a', generation: 1, sequence: 0, attempt: 1,
+              owner_id: $owner_id, fence_token: $token_digest, boundary_digest: $boundary_digest,
+              unit_fingerprint: $inventory_digest, evidence_digest: $inventory_digest,
+              payload_digest: $inventory_digest})
             CREATE (:CrmDealRepairRollbackImage {run_id: $run_id, unit_id: 'unit-a',
               rollback_image_id: 'image-a', image_digest: $inventory_digest, generation: 1,
               sequence: 0, attempt: 1, owner_id: $owner_id, fence_token: $token_digest,
-              boundary_digest: $boundary_digest, state: 'available'})
+              boundary_digest: $boundary_digest, state: 'available',
+              evidence_digest: $inventory_digest, payload_digest: $inventory_digest})
             CREATE (:CrmDealRepairVerification {run_id: $run_id, unit_id: 'unit-a', generation: 1,
               sequence: 0, attempt: 1, owner_id: $owner_id, fence_token: $token_digest,
-              boundary_digest: $boundary_digest, outcome: 'verified'})
+              boundary_digest: $boundary_digest, outcome: 'verified',
+              verification_digest: $inventory_digest})
+            CREATE (:CrmDealRepairCheckpoint {run_id: $run_id, unit_id: 'unit-a',
+              checkpoint_id: 'checkpoint-a',
+              generation: 1, sequence: 0, attempt: 1, owner_id: $owner_id,
+              fence_token: $token_digest,
+              boundary_digest: $boundary_digest, state: 'written'})
+            CREATE (:CrmDealRepairOutbox {run_id: $run_id, unit_id: 'unit-a', event_id: 'outbox-a',
+              generation: 1, sequence: 0, attempt: 1, owner_id: $owner_id,
+              delivery_token: $token_digest,
+              boundary_digest: $boundary_digest, mutation_id: 'mutation-a', state: 'acknowledged',
+              verification_request_digest: $request_digest,
+              verification_result_digest: $inventory_digest})
             CREATE (:CrmDealRepairRollbackAuthorization {run_id: $run_id, unit_id: 'unit-a',
               authorization_transition_id: 'authorization-a',
               authorization_digest: $inventory_digest, mutation_id: 'mutation-a',
               rollback_image_id: 'image-a', image_digest: $inventory_digest,
               generation: 1, sequence: 0, attempt: 1, boundary_digest: $boundary_digest,
               owner_id: $owner_id, fence_token: $token_digest, fence_id: 'fence-a',
-              state: 'approved', consumable: true})
+              authorization_reference: 'reviewed-312',
+              authorization_token_digest: $inventory_digest,
+              predecessor_transition_id: 'mutation-a:applied:image-a',
+              authorization_policy: 'reviewed_rollback_v1', state: 'approved', consumable: true})
             CREATE (:CrmDealRepairRollbackReceipt {run_id: $run_id, receipt_id: 'receipt-a',
               unit_id: 'unit-a', fence_id: 'fence-a', image_digest: $inventory_digest,
               mutation_id: 'mutation-a', authorization_transition_id: 'authorization-a',
@@ -627,7 +650,10 @@ def test_partial_allocation_acceptance_rejects_outside_run_scoped_records(
     assert row["state"] == "claimed"
 
 
-def test_multi_unit_acceptance_rejects_outside_run_scoped_records(neo4j_driver: Driver) -> None:
+@pytest.mark.parametrize("extra_kind", ("outside", "pending_outbox"))
+def test_multi_unit_acceptance_rejects_extra_run_scoped_records(
+    neo4j_driver: Driver, extra_kind: str
+) -> None:
     values = _seed_one_unit_acceptance(neo4j_driver)
     receipt_b_digest = rollback_status_receipt_digest(
         run_id="run-313",
@@ -667,7 +693,8 @@ def test_multi_unit_acceptance_rejects_outside_run_scoped_records(neo4j_driver: 
               fence_fingerprint: $inventory_digest, state: 'claimed'})
             CREATE (:CrmDealRepairMutationResult {run_id: $run_id, unit_id: 'unit-b',
               mutation_id: 'mutation-b', rollback_image_id: 'image-b',
-              rollback_image_digest: $inventory_digest, generation: 1, sequence: 1, attempt: 1,
+              rollback_image_digest: $inventory_digest, checkpoint_id: 'checkpoint-b',
+              outbox_event_id: 'outbox-b', generation: 1, sequence: 1, attempt: 1,
               owner_id: $owner_id, fence_token: $token_digest, boundary_digest: $boundary_digest})
             CREATE (:CrmDealRepairRollbackImage {run_id: $run_id, unit_id: 'unit-b',
               rollback_image_id: 'image-b', image_digest: $inventory_digest, generation: 1,
@@ -675,7 +702,19 @@ def test_multi_unit_acceptance_rejects_outside_run_scoped_records(neo4j_driver: 
               boundary_digest: $boundary_digest, state: 'available'})
             CREATE (:CrmDealRepairVerification {run_id: $run_id, unit_id: 'unit-b', generation: 1,
               sequence: 1, attempt: 1, owner_id: $owner_id, fence_token: $token_digest,
-              boundary_digest: $boundary_digest, outcome: 'verified'})
+              boundary_digest: $boundary_digest, outcome: 'verified',
+              verification_digest: $inventory_digest})
+            CREATE (:CrmDealRepairCheckpoint {run_id: $run_id, unit_id: 'unit-b',
+              checkpoint_id: 'checkpoint-b',
+              generation: 1, sequence: 1, attempt: 1, owner_id: $owner_id,
+              fence_token: $token_digest,
+              boundary_digest: $boundary_digest, state: 'written'})
+            CREATE (:CrmDealRepairOutbox {run_id: $run_id, unit_id: 'unit-b', event_id: 'outbox-b',
+              generation: 1, sequence: 1, attempt: 1, owner_id: $owner_id,
+              delivery_token: $token_digest,
+              boundary_digest: $boundary_digest, mutation_id: 'mutation-b', state: 'acknowledged',
+              verification_request_digest: $request_digest,
+              verification_result_digest: $inventory_digest})
             CREATE (:CrmDealRepairRollbackAuthorization {run_id: $run_id, unit_id: 'unit-b',
               authorization_transition_id: 'authorization-b',
               authorization_digest: $inventory_digest, mutation_id: 'mutation-b',
@@ -693,7 +732,14 @@ def test_multi_unit_acceptance_rejects_outside_run_scoped_records(neo4j_driver: 
             """,
             **multi_values,
         ).consume()
-        _create_outside_unit_and_fence(session, multi_values)
+        if extra_kind == "outside":
+            _create_outside_unit_and_fence(session, multi_values)
+        else:
+            session.run(
+                "CREATE (:CrmDealRepairOutbox {run_id: $run_id, unit_id: 'unit-b', "
+                "event_id: 'outbox-pending', state: 'pending'})",
+                **multi_values,
+            ).consume()
         rejected = session.execute_write(
             lambda tx: tx.run(queries.ACCEPT_AND_RELEASE, **multi_values).single()
         )
@@ -705,6 +751,348 @@ def test_multi_unit_acceptance_rejects_outside_run_scoped_records(neo4j_driver: 
         ).single(strict=True)
     assert rejected is None
     assert rows["states"] == ["claimed", "claimed"]
+
+
+def _rollback_bundle_params(values: dict[str, object]) -> dict[str, object]:
+    return values | {
+        "unit_id": "unit-a",
+        "generation": 1,
+        "sequence": 0,
+        "attempt": 1,
+        "unit_fingerprint": _DIGEST,
+        "fence_id": "fence-a",
+        "fence_token": values["token_digest"],
+        "mutation_id": "mutation-a",
+        "rollback_image_id": "image-a",
+        "image_digest": _DIGEST,
+        "authorization_transition_id": "authorization-a",
+        "authorization_reference": "reviewed-312",
+        "authorization_token_digest": _DIGEST,
+        "predecessor_transition_id": "mutation-a:applied:image-a",
+        "authorization_policy": "reviewed_rollback_v1",
+        "rollback_request_digest": "sha256:" + "d" * 64,
+    }
+
+
+def _terminal_rollback_params(values: dict[str, object]) -> dict[str, object]:
+    return _rollback_bundle_params(values) | {
+        "disposition_id": "rollback-disposition-a",
+        "evidence_digest": _DIGEST,
+        "payload_digest": _DIGEST,
+        "result_digest": "sha256:" + "e" * 64,
+        "image_state": "restored",
+        "unit_state": "rolled_back",
+        "outcome": "reconciled",
+        "drift_total_mismatch_count": 0,
+        "drift_summaries_json": "[]",
+        "drift_complete_digest": None,
+        "status_digest": "sha256:" + "f" * 64,
+    }
+
+
+def _assert_unaccepted_with_claimed_fences(session: Session, values: dict[str, object]) -> None:
+    row = session.run(
+        """
+        OPTIONAL MATCH (acceptance:CrmDealRepairAcceptance {run_id: $run_id})
+        OPTIONAL MATCH (fence:CrmDealRepairFence {run_id: $run_id})
+        RETURN count(DISTINCT acceptance) AS acceptances,
+          collect(DISTINCT fence.state) AS fence_states
+        """,
+        **values,
+    ).single(strict=True)
+    assert row["acceptances"] == 0
+    assert row["fence_states"] == ["claimed"]
+
+
+def test_acceptance_first_blocks_rollback_then_rollback_revalidates_after_acceptance(
+    neo4j_driver: Driver,
+) -> None:
+    values = _seed_one_unit_acceptance(neo4j_driver)
+    rollback_params = _rollback_bundle_params(values)
+    acceptance_locked = Event()
+    rollback_started = Event()
+    rollback_finished = Event()
+    errors: list[BaseException] = []
+    rollback_rows: list[bool] = []
+
+    def accept() -> None:
+        transaction = None
+        try:
+            with neo4j_driver.session() as session:
+                transaction = session.begin_transaction()
+                locked = transaction.run(queries.LOCK_ACCEPTANCE_SCOPE, **values).single(
+                    strict=True
+                )
+                assert locked["locked_unit_count"] == 1
+                acceptance_locked.set()
+                assert rollback_started.wait(timeout=10)
+                assert not rollback_finished.wait(timeout=2)
+                accepted = transaction.run(queries.ACCEPT_AND_RELEASE, **values).single(strict=True)
+                assert accepted["receipt_digest"] == values["acceptance_receipt_digest"]
+                transaction.commit()
+        except BaseException as exc:  # noqa: BLE001
+            if transaction is not None:
+                transaction.rollback()
+            errors.append(exc)
+
+    def rollback() -> None:
+        try:
+            assert acceptance_locked.wait(timeout=10)
+            rollback_started.set()
+            with neo4j_driver.session() as session:
+                record = session.execute_write(
+                    lambda tx: tx.run(
+                        rollback_queries.LOCK_AND_READ_ROLLBACK_BUNDLE, **rollback_params
+                    ).single()
+                )
+            rollback_rows.append(record is None)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+        finally:
+            rollback_finished.set()
+
+    threads = (Thread(target=accept), Thread(target=rollback))
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert all(not thread.is_alive() for thread in threads)
+    assert not errors
+    assert rollback_rows == [True]
+    with neo4j_driver.session() as session:
+        row = session.run(
+            """
+            MATCH (unit:CrmDealRepairUnit {run_id: $run_id, unit_id: 'unit-a'})
+            MATCH (image:CrmDealRepairRollbackImage {run_id: $run_id, unit_id: 'unit-a'})
+            MATCH (authorization:CrmDealRepairRollbackAuthorization {run_id: $run_id,
+              unit_id: 'unit-a'})
+            OPTIONAL MATCH (disposition:CrmDealRepairSecondaryDisposition {run_id: $run_id})
+            RETURN unit.state AS unit_state, image.state AS image_state,
+              authorization.state AS authorization_state, authorization.consumable AS consumable,
+              count(disposition) AS dispositions
+            """,
+            **values,
+        ).single(strict=True)
+    assert dict(row) == {
+        "unit_state": "applied",
+        "image_state": "available",
+        "authorization_state": "approved",
+        "consumable": True,
+        "dispositions": 0,
+    }
+
+
+def test_rollback_first_blocks_next_unit_admission_then_prevents_new_fence(
+    neo4j_driver: Driver,
+) -> None:
+    values = _seed_one_unit_acceptance(neo4j_driver)
+    admission_params = values | {
+        "unit_id": "unit-b",
+        "generation": 1,
+        "sequence": 1,
+        "attempt": 1,
+        "inventory_fingerprint": _DIGEST,
+        "inventory_binding_digest": _DIGEST,
+        "fence_id": "fence-b",
+        "fence_fingerprint": _DIGEST,
+    }
+    rollback_params = _rollback_bundle_params(values)
+    terminal_params = _terminal_rollback_params(values)
+    rollback_locked = Event()
+    admission_started = Event()
+    admission_finished = Event()
+    errors: list[BaseException] = []
+    admission_rows: list[bool] = []
+    with neo4j_driver.session() as session:
+        session.run(
+            """
+            MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
+            SET completion.unit_count = 2, completion.unit_ids = ['unit-a', 'unit-b']
+            CREATE (:CrmDealRepairUnit {run_id: $run_id, unit_id: 'unit-b', generation: 1,
+              sequence: 1, attempt: 1, boundary_digest: $boundary_digest,
+              inventory_fingerprint: $inventory_digest, inventory_binding_digest: $inventory_digest,
+              state: 'allocated'})
+            """,
+            **admission_params,
+        ).consume()
+
+    def rollback() -> None:
+        transaction = None
+        try:
+            with neo4j_driver.session() as session:
+                transaction = session.begin_transaction()
+                locked = transaction.run(
+                    rollback_queries.LOCK_AND_READ_ROLLBACK_BUNDLE, **rollback_params
+                ).single(strict=True)
+                assert locked["unit"]["unit_id"] == "unit-a"
+                rollback_locked.set()
+                assert admission_started.wait(timeout=10)
+                assert not admission_finished.wait(timeout=2)
+                terminal = transaction.run(
+                    rollback_queries.PERSIST_ROLLBACK_TERMINAL, **terminal_params
+                ).single(strict=True)
+                assert terminal["disposition"]["disposition_id"] == "rollback-disposition-a"
+                transaction.commit()
+        except BaseException as exc:  # noqa: BLE001
+            if transaction is not None:
+                transaction.rollback()
+            errors.append(exc)
+
+    def admit() -> None:
+        try:
+            assert rollback_locked.wait(timeout=10)
+            admission_started.set()
+            with neo4j_driver.session() as session:
+                record = session.execute_write(
+                    lambda tx: tx.run(queries.CLAIM_ADMITTED_FENCE, **admission_params).single()
+                )
+            admission_rows.append(record is None)
+        except BaseException as exc:  # noqa: BLE001
+            errors.append(exc)
+        finally:
+            admission_finished.set()
+
+    threads = (Thread(target=rollback), Thread(target=admit))
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert all(not thread.is_alive() for thread in threads)
+    assert not errors
+    assert admission_rows == [True]
+    with neo4j_driver.session() as session:
+        row = session.run(
+            """
+            MATCH (unit:CrmDealRepairUnit {run_id: $run_id, unit_id: 'unit-a'})
+            OPTIONAL MATCH (next_fence:CrmDealRepairFence {run_id: $run_id, unit_id: 'unit-b'})
+            OPTIONAL MATCH (acceptance:CrmDealRepairAcceptance {run_id: $run_id})
+            RETURN unit.state AS unit_state, count(next_fence) AS next_fences,
+              count(acceptance) AS acceptances
+            """,
+            **admission_params,
+        ).single(strict=True)
+    assert dict(row) == {"unit_state": "rolled_back", "next_fences": 0, "acceptances": 0}
+
+
+def test_admission_then_rollback_remains_available_before_acceptance(
+    neo4j_driver: Driver,
+) -> None:
+    values = _seed_one_unit_acceptance(neo4j_driver)
+    admission_params = values | {
+        "unit_id": "unit-b",
+        "generation": 1,
+        "sequence": 1,
+        "attempt": 1,
+        "inventory_fingerprint": _DIGEST,
+        "inventory_binding_digest": _DIGEST,
+        "fence_id": "fence-b",
+        "fence_fingerprint": _DIGEST,
+    }
+    with neo4j_driver.session() as session:
+        session.run(
+            """
+            MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
+            SET completion.unit_count = 2, completion.unit_ids = ['unit-a', 'unit-b']
+            CREATE (:CrmDealRepairUnit {run_id: $run_id, unit_id: 'unit-b', generation: 1,
+              sequence: 1, attempt: 1, boundary_digest: $boundary_digest,
+              inventory_fingerprint: $inventory_digest, inventory_binding_digest: $inventory_digest,
+              state: 'allocated'})
+            """,
+            **admission_params,
+        ).consume()
+        admitted = session.execute_write(
+            lambda tx: tx.run(queries.CLAIM_ADMITTED_FENCE, **admission_params).single(strict=True)
+        )
+        assert admitted["fence"]["fence_id"] == "fence-b"
+        rollback_params = _rollback_bundle_params(values)
+        terminal_params = _terminal_rollback_params(values)
+        terminal = session.execute_write(
+            lambda tx: (
+                tx.run(rollback_queries.LOCK_AND_READ_ROLLBACK_BUNDLE, **rollback_params).single(
+                    strict=True
+                ),
+                tx.run(rollback_queries.PERSIST_ROLLBACK_TERMINAL, **terminal_params).single(
+                    strict=True
+                ),
+            )[1]
+        )
+        assert terminal["disposition"]["disposition_id"] == "rollback-disposition-a"
+        rejected = session.execute_write(
+            lambda tx: tx.run(queries.ACCEPT_AND_RELEASE, **admission_params).single()
+        )
+        row = session.run(
+            """
+            MATCH (prior:CrmDealRepairUnit {run_id: $run_id, unit_id: 'unit-a'})
+            MATCH (next_fence:CrmDealRepairFence {run_id: $run_id, unit_id: 'unit-b'})
+            OPTIONAL MATCH (acceptance:CrmDealRepairAcceptance {run_id: $run_id})
+            RETURN prior.state AS prior_state, next_fence.state AS next_fence_state,
+              count(acceptance) AS acceptances
+            """,
+            **admission_params,
+        ).single(strict=True)
+    assert rejected is None
+    assert dict(row) == {
+        "prior_state": "rolled_back",
+        "next_fence_state": "claimed",
+        "acceptances": 0,
+    }
+
+
+@pytest.mark.parametrize(
+    "injection",
+    (
+        "CREATE (:CrmDealRepairCheckpoint {run_id: $run_id, unit_id: 'unit-a', "
+        "checkpoint_id: 'checkpoint-extra', state: 'written'})",
+        "MATCH (result:CrmDealRepairMutationResult {run_id: $run_id, unit_id: 'unit-a'}) "
+        "SET result.checkpoint_id = 'checkpoint-mismatch'",
+        "MATCH (result:CrmDealRepairMutationResult {run_id: $run_id, unit_id: 'unit-a'}) "
+        "SET result.outbox_event_id = 'outbox-mismatch'",
+        "MATCH (outbox:CrmDealRepairOutbox {run_id: $run_id, unit_id: 'unit-a'}) "
+        "SET outbox.verification_result_digest = 'sha256:' + 'b' * 64",
+    ),
+)
+def test_one_unit_acceptance_rejects_checkpoint_or_outbox_binding_ambiguity(
+    neo4j_driver: Driver, injection: str
+) -> None:
+    values = _seed_one_unit_acceptance(neo4j_driver)
+    with neo4j_driver.session() as session:
+        session.run(injection, **values).consume()
+        rejected = session.execute_write(
+            lambda tx: tx.run(queries.ACCEPT_AND_RELEASE, **values).single()
+        )
+        _assert_unaccepted_with_claimed_fences(session, values)
+    assert rejected is None
+
+
+@pytest.mark.parametrize(
+    "injection",
+    (
+        "CREATE (:CrmDealRepairCheckpoint {run_id: $run_id, unit_id: 'outside-unit', "
+        "checkpoint_id: 'checkpoint-extra', state: 'written'})",
+        "CREATE (:CrmDealRepairOutbox {run_id: $run_id, unit_id: 'outside-unit', "
+        "event_id: 'outbox-pending', state: 'pending'})",
+    ),
+)
+def test_zero_unit_acceptance_rejects_extra_checkpoint_or_pending_outbox(
+    neo4j_driver: Driver, injection: str
+) -> None:
+    _seed_zero_unit_run(neo4j_driver)
+    values = _params()
+    with neo4j_driver.session() as session:
+        session.run(injection, **values).consume()
+        rejected = session.execute_write(
+            lambda tx: tx.run(queries.ACCEPT_AND_RELEASE, **values).single()
+        )
+        row = session.run(
+            """
+            MATCH (dispatch:BitrixDispatchControl {control_instance_id: $control_instance_id})
+            OPTIONAL MATCH (acceptance:CrmDealRepairAcceptance {run_id: $run_id})
+            RETURN dispatch.blocked AS blocked, count(acceptance) AS acceptances
+            """,
+            **values,
+        ).single(strict=True)
+    assert rejected is None
+    assert dict(row) == {"blocked": True, "acceptances": 0}
 
 
 def _service(

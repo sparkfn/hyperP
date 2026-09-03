@@ -423,11 +423,15 @@ def test_admission_query_requires_exact_verified_status_for_every_prior_unit() -
     assert "exact_chain_count = 1" in query
     assert "size(settled_prior_unit_ids) = size(prior_units)" in query
     assert "size([(prior_fence" not in query
+    assert "SET prior.unit_id = prior.unit_id" in query
+    assert "SET prior_authorization.authorization_transition_id" in query
+    assert "WITH control, completion, unit" in query
 
 
 def test_acceptance_query_locks_common_records_and_rejects_unallocated_records() -> None:
     query = queries.ACCEPT_AND_RELEASE
     assert "integration_acceptance_lock_id = $request_digest" in query
+    assert "WITH control, completion\nCALL {" in query
     assert (
         "authorization.authorization_transition_id = authorization.authorization_transition_id"
         in query
@@ -460,6 +464,16 @@ def test_acceptance_query_locks_common_records_and_rejects_unallocated_records()
         "allocated_dispositions = reconciled_dispositions + review_required_dispositions" in query
     )
     assert "WITH completion, completion.unit_ids AS allocated_unit_ids" in query
+    for total, allocated in (
+        ("all_checkpoints", "allocated_checkpoints"),
+        ("all_outboxes", "allocated_outboxes"),
+    ):
+        assert f"{total} = completion.unit_count" in query
+        assert f"{allocated} = completion.unit_count" in query
+    assert "checkpoint_id: mutation.checkpoint_id" in query
+    assert "event_id: mutation.outbox_event_id" in query
+    assert "state: 'acknowledged'" in query
+    assert "outbox.verification_result_digest = verification_outbox.verification_digest" in query
     assert "WHERE locked_unit_count = completion.unit_count" in queries.LOCK_ACCEPTANCE_SCOPE
     assert query.count("WHERE locked_unit_count = completion.unit_count") == 1
 
@@ -993,3 +1007,27 @@ def test_zero_unit_acceptance_binds_an_empty_receipt_set(
 
     accept_params = transaction.calls[-1][1]
     assert accept_params["receipt_bindings"] == []
+
+
+def test_rollback_lock_query_rechecks_mutable_eligibility_after_stable_identity_locks() -> None:
+    from src.graph.queries import crm_deal_identity_repair_rollback as rollback_queries
+
+    query = rollback_queries.LOCK_AND_READ_ROLLBACK_BUNDLE
+    stable_lock = "SET unit.unit_id = unit.unit_id, fence.fence_id = fence.fence_id"
+    eligibility = "WHERE fence.state = 'claimed' AND image.state = 'available'"
+    assert stable_lock in query
+    assert eligibility in query
+    assert query.index(stable_lock) < query.index(eligibility)
+    assert "authorization.state = 'approved' AND authorization.consumable = true" in query
+
+
+def test_acceptance_query_binds_exact_checkpoint_and_acknowledged_outbox_per_mutation() -> None:
+    query = queries.ACCEPT_AND_RELEASE
+    assert "checkpoint_id: mutation.checkpoint_id" in query
+    assert "event_id: mutation.outbox_event_id" in query
+    assert "state: 'written'" in query
+    assert "state: 'acknowledged'" in query
+    assert "verification_request_digest IS NOT NULL" in query
+    assert "verification_result_digest = verification_outbox.verification_digest" in query
+    assert "count(DISTINCT checkpoint) AS checkpoints" in query
+    assert "count(DISTINCT acknowledged_outbox) AS outboxes" in query
