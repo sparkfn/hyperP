@@ -6,15 +6,16 @@ import os
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from dataclasses import asdict
+from dataclasses import asdict, replace
 from threading import Event, Thread
 from typing import TypeVar, cast
 from urllib.parse import urlparse
 from uuid import NAMESPACE_URL, uuid5
 
 import pytest
-from neo4j import Driver, GraphDatabase, ManagedTransaction, Session
+from neo4j import Driver, GraphDatabase, ManagedTransaction, Session, Transaction
 from src.crm_deal_identity_repair.control_models import RepairControlRequest
+from src.crm_deal_identity_repair.digests import inventory_digest, object_digest
 from src.crm_deal_identity_repair.execution_models import RepairQualificationRun
 from src.crm_deal_identity_repair.integration_models import (
     IntegrationOperation,
@@ -64,9 +65,15 @@ T = TypeVar("T")
 
 
 class _Client:
-    def __init__(self, driver: Driver, write_metadata: dict[str, str] | None = None) -> None:
+    def __init__(self, driver: Driver) -> None:
         self._driver = driver
-        self._write_metadata = write_metadata
+        self._next_write_metadata: dict[str, str] | None = None
+
+    def set_next_write_metadata(self, metadata: dict[str, str]) -> None:
+        """Apply metadata to exactly one following write transaction."""
+        if self._next_write_metadata is not None:
+            raise RuntimeError("test write metadata is already set")
+        self._next_write_metadata = metadata
 
     @contextmanager
     def session(self) -> Iterator[Session]:
@@ -79,16 +86,24 @@ class _Client:
 
     def execute_write(self, work: Callable[[ManagedTransaction], T]) -> T:
         with self._driver.session() as session:
-            if self._write_metadata is not None:
-                transaction = session.begin_transaction(metadata=self._write_metadata)
+            metadata = self._next_write_metadata
+            self._next_write_metadata = None
+            if metadata is not None:
+                transaction = session.begin_transaction(metadata=metadata)
                 try:
                     result = work(cast(ManagedTransaction, transaction))
                 except BaseException:
-                    transaction.rollback()
+                    _rollback_if_open(transaction)
                     raise
                 transaction.commit()
                 return result
             return session.execute_write(work)
+
+
+def _rollback_if_open(transaction: Transaction | None) -> None:
+    """Avoid masking a worker exception by rolling back an already closed transaction."""
+    if transaction is not None and not transaction.closed():
+        transaction.rollback()
 
 
 @pytest.fixture
@@ -868,8 +883,7 @@ def test_acceptance_first_blocks_rollback_then_rollback_revalidates_after_accept
                 assert accepted["receipt_digest"] == values["acceptance_receipt_digest"]
                 transaction.commit()
         except BaseException as exc:  # noqa: BLE001
-            if transaction is not None:
-                transaction.rollback()
+            _rollback_if_open(transaction)
             errors.append(exc)
 
     def rollback() -> None:
@@ -887,8 +901,7 @@ def test_acceptance_first_blocks_rollback_then_rollback_revalidates_after_accept
                 transaction.commit()
             rollback_rows.append(record is None)
         except BaseException as exc:  # noqa: BLE001
-            if transaction is not None:
-                transaction.rollback()
+            _rollback_if_open(transaction)
             errors.append(exc)
 
     threads = (Thread(target=accept), Thread(target=rollback))
@@ -976,8 +989,7 @@ def test_rollback_first_blocks_next_unit_admission_then_prevents_new_fence(
                 assert terminal["disposition"]["disposition_id"] == "rollback-disposition-a"
                 transaction.commit()
         except BaseException as exc:  # noqa: BLE001
-            if transaction is not None:
-                transaction.rollback()
+            _rollback_if_open(transaction)
             errors.append(exc)
 
     def admit() -> None:
@@ -993,8 +1005,7 @@ def test_rollback_first_blocks_next_unit_admission_then_prevents_new_fence(
                 transaction.commit()
             admission_rows.append(record is None)
         except BaseException as exc:  # noqa: BLE001
-            if transaction is not None:
-                transaction.rollback()
+            _rollback_if_open(transaction)
             errors.append(exc)
 
     threads = (Thread(target=rollback), Thread(target=admit))
@@ -1143,8 +1154,8 @@ def test_zero_unit_acceptance_rejects_extra_checkpoint_or_pending_outbox(
 
 
 def _service(
-    driver: Driver, *, write_metadata: dict[str, str] | None = None
-) -> tuple[CrmDealIdentityRepairIntegrationService, RepairIntegrationContext]:
+    driver: Driver,
+) -> tuple[CrmDealIdentityRepairIntegrationService, RepairIntegrationContext, _Client]:
     """Seed #309 authority, then compose #313 around the real component repositories."""
     _seed_domain(driver, independent_support=True)
     with driver.session() as session:
@@ -1156,13 +1167,18 @@ def _service(
         ).consume()
     _deactivate_child_contamination(driver)
     item, negative = _inventory(driver)
-    manifest = _canonical_qualification_manifest("reviewed-312", "reviewed_rollback_v1")
+    inventory = tuple(sorted((item, negative), key=lambda row: row.inventory_key))
+    manifest = replace(
+        _canonical_qualification_manifest("reviewed-312", "reviewed_rollback_v1"),
+        inventory_digest=inventory_digest(inventory),
+        inventory_row_count=len(inventory),
+        eligible_unit_count=1,
+        negative_control_count=1,
+    )
     run_id = str(uuid5(NAMESPACE_URL, manifest.qualification_identity))
     mutation_command = _seed_authority(driver, item, run_id=run_id)
     _seed_canonical_qualification_manifest(driver, mutation_command, manifest)
     control = RepairControlRequest(manifest.repair_id, run_id, "worker-a", "operator-secret", 1)
-    from src.crm_deal_identity_repair.digests import object_digest
-
     unit_set_digest = object_digest(
         b"crm-deal-identity-repair-allocation-unit-set-v1\x00",
         {"units": [asdict(mutation_command.unit)]},
@@ -1240,10 +1256,11 @@ def _service(
             manifest.graph_boundary_digest,
             "qualified",
         ),
-        tuple(sorted((item, negative), key=lambda row: row.inventory_key)),
+        inventory,
         authority,
     )
-    client = cast(Neo4jClient, _Client(driver, write_metadata))
+    raw_client = _Client(driver)
+    client = cast(Neo4jClient, raw_client)
     service = CrmDealIdentityRepairIntegrationService(
         CrmDealRepairIntegrationRepository(client),
         lambda _: context,
@@ -1252,7 +1269,7 @@ def _service(
         CrmDealIdentityRepairRollbackService(CrmDealIdentityRepairRollbackRepository(client)),
         lambda: "sha256:" + "d" * 64,
     )
-    return service, context
+    return service, context, raw_client
 
 
 def _request(
@@ -1301,7 +1318,7 @@ def _rollback_request(
 
 
 def test_shared_service_real_apply_replay_verify_and_rollback_status(neo4j_driver: Driver) -> None:
-    service, context = _service(neo4j_driver)
+    service, context, _ = _service(neo4j_driver)
     applied = service.execute(_request("apply", context))
     replay = service.execute(_request("apply", context))
     verified = service.execute(_request("verify", context))
@@ -1313,7 +1330,7 @@ def test_shared_service_real_apply_replay_verify_and_rollback_status(neo4j_drive
 
 
 def test_shared_service_real_rollback_after_verification(neo4j_driver: Driver) -> None:
-    service, context = _service(neo4j_driver)
+    service, context, _ = _service(neo4j_driver)
     service.execute(_request("apply", context))
     service.execute(_request("verify", context))
     service.execute(_rollback_request(neo4j_driver, "rollback-status", context))
@@ -1330,13 +1347,13 @@ def test_shared_service_real_rollback_after_verification(neo4j_driver: Driver) -
 
 
 def test_shared_service_rejects_verify_before_apply(neo4j_driver: Driver) -> None:
-    service, context = _service(neo4j_driver)
+    service, context, _ = _service(neo4j_driver)
     with pytest.raises(RuntimeError, match="fence"):
         service.execute(_request("verify", context))
 
 
 def test_shared_service_real_rollback_before_verification(neo4j_driver: Driver) -> None:
-    service, context = _service(neo4j_driver)
+    service, context, _ = _service(neo4j_driver)
     service.execute(_request("apply", context))
     service.execute(_rollback_request(neo4j_driver, "rollback-status", context))
     result = service.execute(_rollback_request(neo4j_driver, "rollback", context))
@@ -1344,7 +1361,7 @@ def test_shared_service_real_rollback_before_verification(neo4j_driver: Driver) 
 
 
 def test_shared_service_accept_and_release_after_verified_happy_path(neo4j_driver: Driver) -> None:
-    service, context = _service(neo4j_driver)
+    service, context, _ = _service(neo4j_driver)
     service.execute(_request("apply", context))
     service.execute(_request("verify", context))
     service.execute(_rollback_request(neo4j_driver, "rollback-status", context))
@@ -1359,13 +1376,19 @@ def test_acceptance_waits_for_rollback_lock_and_rejects_terminal_rollback(
     neo4j_driver: Driver,
 ) -> None:
     acceptance_marker = "rollback-first-acceptance"
-    service, context = _service(
-        neo4j_driver,
-        write_metadata={"crm_repair_test_marker": acceptance_marker},
-    )
+    service, context, client = _service(neo4j_driver)
     service.execute(_request("apply", context))
     service.execute(_request("verify", context))
     service.execute(_rollback_request(neo4j_driver, "rollback-status", context))
+    with neo4j_driver.session() as session:
+        baseline_dispositions = session.run(
+            """
+            MATCH (:CrmDealRepairSecondaryDisposition {run_id: $run_id})
+            RETURN count(*) AS count
+            """,
+            run_id=context.run.run_id,
+        ).single(strict=True)["count"]
+    assert isinstance(baseline_dispositions, int)
     rollback_request = _rollback_request(neo4j_driver, "rollback", context)
     command = service._rollback_command(rollback_request, context)
     authorization = command.authorization
@@ -1420,14 +1443,14 @@ def test_acceptance_waits_for_rollback_lock_and_rejects_terminal_rollback(
                 assert terminal["disposition"]["disposition_id"] == command.disposition_id
                 transaction.commit()
         except BaseException as exc:  # noqa: BLE001
-            if transaction is not None:
-                transaction.rollback()
+            _rollback_if_open(transaction)
             rollback_errors.append(exc)
 
     def accept() -> None:
         try:
             assert rollback_locked.wait(timeout=10)
             acceptance_started.set()
+            client.set_next_write_metadata({"crm_repair_test_marker": acceptance_marker})
             service.execute(_request("accept", context))
         except BaseException as exc:  # noqa: BLE001
             acceptance_errors.append(exc)
@@ -1448,11 +1471,19 @@ def test_acceptance_waits_for_rollback_lock_and_rejects_terminal_rollback(
             OPTIONAL MATCH (disposition:CrmDealRepairSecondaryDisposition {run_id: $run_id})
             RETURN count(DISTINCT acceptance) AS acceptances,
               count(DISTINCT image) AS images,
-              count(DISTINCT disposition) AS dispositions
+              count(DISTINCT disposition) AS dispositions,
+              count(DISTINCT CASE WHEN disposition.disposition_id = $disposition_id
+                THEN disposition END) AS terminal_dispositions
             """,
             run_id=context.run.run_id,
+            disposition_id=command.disposition_id,
         ).single(strict=True)
-    assert dict(row) == {"acceptances": 0, "images": 1, "dispositions": 1}
+    assert dict(row) == {
+        "acceptances": 0,
+        "images": 1,
+        "dispositions": baseline_dispositions + 1,
+        "terminal_dispositions": 1,
+    }
 
 
 def test_dispatch_replacement_wins_against_waiting_release(neo4j_driver: Driver) -> None:
@@ -1515,8 +1546,7 @@ def test_dispatch_replacement_wins_against_waiting_release(neo4j_driver: Driver)
                 transaction.commit()
             release_results.append(result is None)
         except BaseException as exc:  # noqa: BLE001
-            if transaction is not None:
-                transaction.rollback()
+            _rollback_if_open(transaction)
             errors.append(exc)
 
     threads = (Thread(target=replace_block), Thread(target=release_dispatch))

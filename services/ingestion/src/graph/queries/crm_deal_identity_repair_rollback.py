@@ -38,13 +38,26 @@ SET unit.rollback_lock_id = coalesce(unit.rollback_lock_id, $rollback_request_di
 WITH unit, fence, result, image, authorization
 WHERE unit.rollback_lock_id = $rollback_request_digest
   AND authorization.authorization_lock_id = $rollback_request_digest
-OPTIONAL MATCH (checkpoint:CrmDealRepairCheckpoint {run_id: $run_id, checkpoint_id: result.checkpoint_id})
-OPTIONAL MATCH (outbox:CrmDealRepairOutbox {run_id: $run_id, event_id: result.outbox_event_id})
-OPTIONAL MATCH (disposition:CrmDealRepairSecondaryDisposition {run_id: $run_id, unit_id: $unit_id})
+CALL {
+  WITH result
+  OPTIONAL MATCH (checkpoint:CrmDealRepairCheckpoint {run_id: $run_id,
+    checkpoint_id: result.checkpoint_id})
+  RETURN collect(properties(checkpoint)) AS checkpoints
+}
+CALL {
+  WITH result
+  OPTIONAL MATCH (outbox:CrmDealRepairOutbox {run_id: $run_id, event_id: result.outbox_event_id})
+  RETURN collect(properties(outbox)) AS outboxes
+}
+CALL {
+  WITH image
+  OPTIONAL MATCH (disposition:CrmDealRepairSecondaryDisposition {run_id: $run_id,
+    disposition_id: image.rollback_disposition_id})
+  RETURN collect(properties(disposition)) AS dispositions
+}
 RETURN properties(unit) AS unit, properties(fence) AS fence, properties(result) AS result,
   properties(image) AS image, properties(authorization) AS authorization,
-  collect(properties(checkpoint)) AS checkpoints, collect(properties(outbox)) AS outboxes,
-  collect(properties(disposition)) AS dispositions
+  checkpoints, outboxes, dispositions
 """
 
 LOCK_AND_ASSERT_ROLLBACK_DOMAIN_GUARD = """
@@ -278,14 +291,26 @@ MATCH (authorization:CrmDealRepairRollbackAuthorization {run_id: $run_id, unit_i
 WHERE result.rollback_image_digest = image.image_digest AND result.evidence_digest = image.evidence_digest
   AND result.payload_digest = image.payload_digest
   AND authorization.predecessor_transition_id = result.mutation_id + ':applied:' + image.rollback_image_id
-OPTIONAL MATCH (checkpoint:CrmDealRepairCheckpoint {run_id: $run_id, checkpoint_id: result.checkpoint_id})
-OPTIONAL MATCH (outbox:CrmDealRepairOutbox {run_id: $run_id, event_id: result.outbox_event_id})
-OPTIONAL MATCH (disposition:CrmDealRepairSecondaryDisposition {run_id: $run_id,
-  disposition_id: image.rollback_disposition_id})
+CALL {
+  WITH result
+  OPTIONAL MATCH (checkpoint:CrmDealRepairCheckpoint {run_id: $run_id,
+    checkpoint_id: result.checkpoint_id})
+  RETURN collect(properties(checkpoint)) AS checkpoints
+}
+CALL {
+  WITH result
+  OPTIONAL MATCH (outbox:CrmDealRepairOutbox {run_id: $run_id, event_id: result.outbox_event_id})
+  RETURN collect(properties(outbox)) AS outboxes
+}
+CALL {
+  WITH image
+  OPTIONAL MATCH (disposition:CrmDealRepairSecondaryDisposition {run_id: $run_id,
+    disposition_id: image.rollback_disposition_id})
+  RETURN collect(properties(disposition)) AS dispositions
+}
 RETURN properties(unit) AS unit, properties(fence) AS fence, properties(result) AS result,
   properties(image) AS image, properties(authorization) AS authorization,
-  collect(properties(checkpoint)) AS checkpoints, collect(properties(outbox)) AS outboxes,
-  collect(properties(disposition)) AS dispositions
+  checkpoints, outboxes, dispositions
 """
 
 READ_RESTORED_ROLLBACK_STATE = """
