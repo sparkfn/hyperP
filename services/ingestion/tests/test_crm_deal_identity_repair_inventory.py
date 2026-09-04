@@ -10,6 +10,7 @@ from src.crm_deal_identity_repair.inventory import RepairInventory, collect_repa
 from src.graph.queries.crm_deal_identity_repair import (
     INVENTORY_ACTIVE_CRM_DEALS,
     INVENTORY_CRM_DEAL_PROJECTIONS,
+    INVENTORY_INVALID_CRM_DEAL_SOURCE_RECORD_PKS,
     INVENTORY_STALE_RUN_CONTROL_PLANE,
 )
 
@@ -31,15 +32,27 @@ class _Transaction:
 
     def run(self, query: str, **parameters: object) -> _Rows:
         if query == INVENTORY_ACTIVE_CRM_DEALS:
-            assert set(parameters) == {"source_system", "skip", "limit"}
+            assert set(parameters) == {"source_system", "after_source_record_pk", "limit"}
             assert parameters["source_system"] == "bitrix_chat"
-            skip = parameters["skip"]
+            after_source_record_pk = parameters["after_source_record_pk"]
             limit = parameters["limit"]
-            assert isinstance(skip, int) and skip >= 0
+            assert isinstance(after_source_record_pk, str)
             assert isinstance(limit, int) and limit > 0
             self.active_deal_parameters.append(dict(parameters))
-            ordered = tuple(sorted(self._rows, key=lambda row: str(row["source_record_pk"])))
-            return _Rows(ordered[skip : skip + limit])
+            ordered = tuple(
+                row
+                for row in sorted(self._rows, key=lambda row: str(row["source_record_pk"]))
+                if after_source_record_pk is None
+                or str(row["source_record_pk"]) > after_source_record_pk
+            )
+            return _Rows(ordered[:limit])
+        if query == INVENTORY_INVALID_CRM_DEAL_SOURCE_RECORD_PKS:
+            assert parameters == {"source_system": "bitrix_chat"}
+            invalid_count = sum(
+                not isinstance(row.get("source_record_pk"), str) or not row["source_record_pk"]
+                for row in self._rows
+            )
+            return _Rows(({"invalid_source_record_pk_count": invalid_count},))
         if query == INVENTORY_CRM_DEAL_PROJECTIONS:
             assert parameters == {"source_system": "bitrix_chat"}
             return _Rows(
@@ -130,6 +143,7 @@ def test_inventory_query_is_read_only_and_captures_closure_families() -> None:
     catalog = (
         INVENTORY_ACTIVE_CRM_DEALS,
         INVENTORY_CRM_DEAL_PROJECTIONS,
+        INVENTORY_INVALID_CRM_DEAL_SOURCE_RECORD_PKS,
         INVENTORY_STALE_RUN_CONTROL_PLANE,
     )
     forbidden = (" CREATE ", " MERGE ", " SET ", " DELETE ", " REMOVE ")
@@ -146,11 +160,23 @@ def test_inventory_query_is_read_only_and_captures_closure_families() -> None:
     assert "outgoing_owner_merges" in INVENTORY_ACTIVE_CRM_DEALS
     assert "incoming_owner_merges" in INVENTORY_ACTIVE_CRM_DEALS
     assert "owner_impacts" in INVENTORY_ACTIVE_CRM_DEALS
-    page_clause = "WITH deal\nORDER BY deal.source_record_pk\nSKIP $skip\nLIMIT $limit"
+    page_clause = (
+        "MATCH (deal:SourceRecord)\n"
+        "USING INDEX deal:SourceRecord(source_record_pk)\n"
+        "WHERE deal.source_record_pk > $after_source_record_pk\n"
+        "  AND deal.record_type = 'crm_deal'\n"
+        "  AND EXISTS {\n"
+        "      MATCH (deal)-[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})\n"
+        "  }\n"
+        "WITH deal\n"
+        "ORDER BY deal.source_record_pk\n"
+        "LIMIT $limit"
+    )
     first_evidence_call = INVENTORY_ACTIVE_CRM_DEALS.index("CALL {")
     assert INVENTORY_ACTIVE_CRM_DEALS.index(page_clause) < first_evidence_call
-    assert INVENTORY_ACTIVE_CRM_DEALS.rindex("SKIP $skip") < first_evidence_call
     assert INVENTORY_ACTIVE_CRM_DEALS.rindex("LIMIT $limit") < first_evidence_call
+    assert "SKIP" not in INVENTORY_ACTIVE_CRM_DEALS
+    assert "invalid_source_record_pk_count" in INVENTORY_INVALID_CRM_DEAL_SOURCE_RECORD_PKS
     assert "ORDER BY deal.source_record_id, deal.source_record_pk" in INVENTORY_ACTIVE_CRM_DEALS
     assert "DESCRIBES_ADDRESS" in INVENTORY_CRM_DEAL_PROJECTIONS
     assert "-[projection]->" not in INVENTORY_CRM_DEAL_PROJECTIONS
@@ -173,6 +199,19 @@ def test_inventory_query_is_read_only_and_captures_closure_families() -> None:
         assert f"-[projection:{relationship_type}]->" in INVENTORY_CRM_DEAL_PROJECTIONS
     assert "'unknown' AS stale_run_state" in INVENTORY_STALE_RUN_CONTROL_PLANE
     assert "orphaned_candidate" not in INVENTORY_STALE_RUN_CONTROL_PLANE
+
+
+def test_inventory_rejects_invalid_source_record_pk_before_keyset_paging() -> None:
+    client = _Client((_row(source_record_pk=""),))
+
+    try:
+        collect_repair_inventory(client)
+    except ValueError as exc:
+        assert str(exc) == "repair inventory contains an invalid source_record_pk"
+    else:
+        raise AssertionError("invalid source_record_pk was not rejected")
+
+    assert client.active_deal_parameters == []
 
 
 def test_inventory_includes_historical_versions_and_active_inactive_links() -> None:
@@ -310,8 +349,12 @@ def test_inventory_reads_active_deals_in_bounded_deterministic_pages() -> None:
         f"deal-pk-{index:03d}" for index in range(101)
     ]
     assert client.active_deal_parameters == [
-        {"source_system": "bitrix_chat", "skip": 0, "limit": 100},
-        {"source_system": "bitrix_chat", "skip": 100, "limit": 100},
+        {"source_system": "bitrix_chat", "after_source_record_pk": "", "limit": 100},
+        {
+            "source_system": "bitrix_chat",
+            "after_source_record_pk": "deal-pk-099",
+            "limit": 100,
+        },
     ]
 
 

@@ -18,6 +18,7 @@ from src.crm_deal_identity_repair.models import RepairInventoryItem, RepairParti
 from src.graph.queries.crm_deal_identity_repair import (
     INVENTORY_ACTIVE_CRM_DEALS,
     INVENTORY_CRM_DEAL_PROJECTIONS,
+    INVENTORY_INVALID_CRM_DEAL_SOURCE_RECORD_PKS,
     INVENTORY_STALE_RUN_CONTROL_PLANE,
 )
 from src.models import JsonValue
@@ -94,6 +95,15 @@ def collect_repair_inventory(
     def _work(
         tx: ManagedTransaction,
     ) -> tuple[tuple[RepairInventoryItem, ...], dict[str, JsonValue]]:
+        invalid_key_record = tx.run(
+            INVENTORY_INVALID_CRM_DEAL_SOURCE_RECORD_PKS,
+            source_system=source_system,
+        ).single(strict=True)
+        if invalid_key_record is None:
+            raise ValueError("repair inventory key validation is unavailable")
+        invalid_key_count = _value(invalid_key_record, "invalid_source_record_pk_count")
+        if type(invalid_key_count) is not int or invalid_key_count != 0:
+            raise ValueError("repair inventory contains an invalid source_record_pk")
         projections_by_pk: dict[str, list[JsonValue]] = {}
         for projection_record in tx.run(
             INVENTORY_CRM_DEAL_PROJECTIONS,
@@ -103,16 +113,24 @@ def collect_repair_inventory(
             projection = _json_value(_value(projection_record, "projection"))
             projections_by_pk.setdefault(source_record_pk, []).append(projection)
         items: list[RepairInventoryItem] = []
-        skip = 0
+        after_source_record_pk = ""
         while True:
             page = tuple(
                 tx.run(
                     INVENTORY_ACTIVE_CRM_DEALS,
                     source_system=source_system,
-                    skip=skip,
+                    after_source_record_pk=after_source_record_pk,
                     limit=_ACTIVE_DEAL_PAGE_SIZE,
                 )
             )
+            page_source_record_pks = tuple(
+                _required_string(record, "source_record_pk") for record in page
+            )
+            if any(
+                source_record_pk <= after_source_record_pk
+                for source_record_pk in page_source_record_pks
+            ):
+                raise RuntimeError("active CRM-deal inventory keyset cursor did not advance")
             items.extend(
                 _item_from_record(
                     record,
@@ -122,7 +140,7 @@ def collect_repair_inventory(
             )
             if len(page) < _ACTIVE_DEAL_PAGE_SIZE:
                 break
-            skip += _ACTIVE_DEAL_PAGE_SIZE
+            after_source_record_pk = max(page_source_record_pks)
         stale_record = tx.run(
             INVENTORY_STALE_RUN_CONTROL_PLANE,
             source_system=source_system,
