@@ -495,3 +495,7 @@ def _integration(arguments: Namespace) -> dict[str, str]:
     report = execute_integration(arguments)
     print(json.dumps(report, sort_keys=True))
     return report
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

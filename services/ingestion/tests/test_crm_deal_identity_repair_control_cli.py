@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
 from contextlib import nullcontext
 from dataclasses import asdict
 from pathlib import Path
@@ -28,6 +31,45 @@ _DIGEST = f"sha256:{'a' * 64}"
 _ARTIFACT_HMAC = "b" * 64
 _ARTIFACT_ID = "c" * 32
 _REPOSITORY_SHA = "d" * 40
+_INGESTION_ROOT = Path(__file__).resolve().parents[1]
+_CONTROL_MODULE = "src.crm_deal_identity_repair_control"
+
+
+def _run_control_module(*arguments: str) -> subprocess.CompletedProcess[str]:
+    environment = os.environ.copy()
+    python_path = environment.get("PYTHONPATH")
+    for key in tuple(environment):
+        if key.startswith(("CRM_DEAL_IDENTITY_REPAIR_", "NEO4J_")):
+            environment.pop(key)
+    environment["PYTHONPATH"] = os.pathsep.join(
+        part for part in (str(_INGESTION_ROOT), python_path) if part
+    )
+    environment["DEPLOYMENT_ENVIRONMENT"] = "development"
+    environment["NEO4J_PASSWORD"] = "test-password"
+    return subprocess.run(
+        [sys.executable, "-m", _CONTROL_MODULE, *arguments],
+        cwd=_INGESTION_ROOT,
+        env=environment,
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+
+
+def test_module_execution_displays_help() -> None:
+    result = _run_control_module("--help")
+
+    assert result.returncode == 0
+    assert result.stdout
+    assert "usage:" in result.stdout.lower()
+    assert "python -m src.crm_deal_identity_repair_control" in result.stdout
+
+
+def test_module_execution_dispatches_to_status_handler() -> None:
+    result = _run_control_module("status", "--repair-id", "subprocess-dispatch-probe")
+
+    assert result.returncode != 0
+    assert "CRM-deal repair inventory requires DEPLOYMENT_ENVIRONMENT=staging" in result.stderr
 
 
 class _Secret:
