@@ -3,11 +3,15 @@
 from __future__ import annotations
 
 INVENTORY_ACTIVE_CRM_DEALS = """
-MATCH (deal:SourceRecord {record_type: 'crm_deal'})-[:FROM_SOURCE]->
-      (:SourceSystem {source_key: $source_system})
+MATCH (deal:SourceRecord)
+USING INDEX deal:SourceRecord(source_record_pk)
+WHERE deal.source_record_pk > $after_source_record_pk
+  AND deal.record_type = 'crm_deal'
+  AND EXISTS {
+      MATCH (deal)-[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})
+  }
 WITH deal
 ORDER BY deal.source_record_pk
-SKIP $skip
 LIMIT $limit
 CALL {
     WITH deal
@@ -163,6 +167,13 @@ RETURN deal.source_record_pk AS source_record_pk,
        record_decisions_and_reviews + pair_decisions_and_reviews AS decisions_and_reviews,
        owner_profiles + owner_locks + outgoing_owner_merges + incoming_owner_merges AS owner_impacts
 ORDER BY deal.source_record_id, deal.source_record_pk
+"""
+
+INVENTORY_INVALID_CRM_DEAL_SOURCE_RECORD_PKS = """
+MATCH (deal:SourceRecord {record_type: 'crm_deal'})-[:FROM_SOURCE]->
+      (:SourceSystem {source_key: $source_system})
+WHERE deal.source_record_pk IS NULL OR deal.source_record_pk = ''
+RETURN count(deal) AS invalid_source_record_pk_count
 """
 
 _CRM_DEAL_PREFIX = """
