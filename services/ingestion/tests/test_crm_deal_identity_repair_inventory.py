@@ -42,8 +42,7 @@ class _Transaction:
             ordered = tuple(
                 row
                 for row in sorted(self._rows, key=lambda row: str(row["source_record_pk"]))
-                if after_source_record_pk is None
-                or str(row["source_record_pk"]) > after_source_record_pk
+                if str(row["source_record_pk"]) > after_source_record_pk
             )
             return _Rows(ordered[:limit])
         if query == INVENTORY_INVALID_CRM_DEAL_SOURCE_RECORD_PKS:
