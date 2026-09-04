@@ -172,7 +172,7 @@ RETURN deal.source_record_pk AS source_record_pk,
          relationship_type: type(projection),
          is_active: coalesce(projection.is_active, true),
          relationship_properties: properties(projection),
-         owner_person_id: start.person_id,
+         owner_person_id: __OWNER_PERSON__,
          identifier_type: target.identifier_type,
          identifier_value: target.normalized_value,
          address_id: target.address_id,
@@ -208,12 +208,13 @@ def _crm_deal_projection_branch(
     else:
         pattern = f"MATCH (start)-[projection:{relationship_type}]->(target)"
         condition = "WHERE projection.source_record_pk = deal.source_record_pk"
+    owner_person = "null" if deal_owned_address else "start.person_id"
     return "\n".join(
         (
             _CRM_DEAL_PREFIX.strip(),
             pattern,
             condition,
-            _CRM_DEAL_PROJECTION_RETURN.strip(),
+            _CRM_DEAL_PROJECTION_RETURN.replace("__OWNER_PERSON__", owner_person).strip(),
         )
     )
 
