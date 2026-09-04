@@ -415,6 +415,14 @@ def _install_allocate_seams(
         lambda _store, *, run: verified if run == _run() else pytest.fail("wrong stored run"),
         raising=False,
     )
+    monkeypatch.setattr(
+        qualification_module,
+        "iter_verified_inventory_lines",
+        lambda artifact: (
+            (inventory_path / "inventory.jsonl").read_bytes().splitlines(keepends=True)
+        ),
+        raising=False,
+    )
 
     def verify(path: Path, *, secret: bytes) -> ApprovalOverlay:
         assert path == tmp_path / "approvals" / "approval-1.json"

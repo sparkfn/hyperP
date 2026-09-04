@@ -20,7 +20,11 @@ from src.connectors.bitrix_stage_history.artifact_runtime import (
     sha256_digest,
 )
 from src.connectors.bitrix_stage_history.artifact_store import LocalRestrictedArtifactStore
-from src.crm_deal_identity_repair.digests import inventory_digest, inventory_jsonl
+from src.crm_deal_identity_repair.digests import (
+    INVENTORY_PART_MAX_BYTES,
+    inventory_digest,
+    inventory_jsonl_parts,
+)
 from src.crm_deal_identity_repair.models import RepairInventoryItem
 from src.models import JsonValue
 
@@ -58,7 +62,8 @@ def repair_inventory_configuration_digest(settings: Settings) -> str:
         "artifact_signing_key_id": settings.crm_deal_identity_repair_artifact_signing_key_id,
         "repository_sha": settings.crm_deal_identity_repair_repository_sha,
         "image_digest": settings.crm_deal_identity_repair_image_digest,
-        "inventory_contract": "crm-deal-graph-discovery-v2",
+        "inventory_contract": "crm-deal-graph-discovery-v3",
+        "inventory_part_max_bytes": INVENTORY_PART_MAX_BYTES,
     }
     return sha256_digest(canonical_json_bytes(payload))
 
@@ -112,6 +117,7 @@ def seal_inventory_artifact(
     population_counts: Mapping[str, int],
     stale_run_evidence: Mapping[str, JsonValue],
     representative_replay_limit: int = _MAX_REPLAY_IDS,
+    inventory_part_max_bytes: int = INVENTORY_PART_MAX_BYTES,
 ) -> ArtifactManifest:
     """Seal graph evidence and descriptive #255 handoff guidance only."""
     if not items:
@@ -125,7 +131,10 @@ def seal_inventory_artifact(
     compensation = _compensation_guidance(items)
     clean_boundary = _clean_boundary(impact, replay, stale_run_evidence)
     with store.begin(artifact_kind=_ARTIFACT_KIND) as artifact:
-        artifact.write_bytes("inventory.jsonl", inventory_jsonl(items))
+        for file_name, content in inventory_jsonl_parts(
+            items, max_part_bytes=inventory_part_max_bytes
+        ):
+            artifact.write_bytes(file_name, content)
         artifact.write_json("impact-summary.json", impact)
         artifact.write_json("representative-replay-plan.json", replay)
         artifact.write_json("compensation-guidance.json", compensation)

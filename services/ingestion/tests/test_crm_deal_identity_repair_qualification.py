@@ -213,6 +213,36 @@ def _replace_document(manifest: ArtifactManifest, name: str, content: bytes) -> 
     return _with_metadata(manifest, inventory_digest=inventory_digest_from_bytes(content))
 
 
+def _partition_inventory(manifest: ArtifactManifest) -> ArtifactManifest:
+    roots = (Path(manifest.provenance.artifact_path), Path(manifest.backup_path))
+    content = (roots[0] / "inventory.jsonl").read_bytes()
+    lines = content.splitlines(keepends=True)
+    split_at = max(1, len(lines) // 2)
+    parts = {
+        "inventory-00001.jsonl": b"".join(lines[:split_at]),
+        "inventory-00002.jsonl": b"".join(lines[split_at:]),
+    }
+    if not parts["inventory-00002.jsonl"]:
+        parts = {"inventory-00001.jsonl": content}
+    for root in roots:
+        (root / "inventory.jsonl").unlink()
+        for name, part in parts.items():
+            (root / name).write_bytes(part)
+    non_inventory = tuple(
+        item for item in manifest.files if item.relative_path != "inventory.jsonl"
+    )
+    inventory_files = tuple(
+        ArtifactFileDigest(name, hashlib.sha256(part).hexdigest(), len(part))
+        for name, part in sorted(parts.items())
+    )
+    return replace(
+        manifest,
+        files=tuple(
+            sorted((*non_inventory, *inventory_files), key=lambda item: item.relative_path)
+        ),
+    )
+
+
 def test_qualification_accepts_authenticated_canonical_boundary(tmp_path: Path) -> None:
     verified = _verify(_manifest(tmp_path))
     assert (
@@ -220,6 +250,68 @@ def test_qualification_accepts_authenticated_canonical_boundary(tmp_path: Path) 
         verified.eligible_unit_count,
         verified.negative_control_count,
     ) == (("pk-1", "pk-2"), 1, 1)
+
+
+def test_qualification_accepts_contiguous_partitioned_inventory(tmp_path: Path) -> None:
+    verified = _verify(_partition_inventory(_manifest(tmp_path)))
+
+    assert verified.inventory_file_names == (
+        "inventory-00001.jsonl",
+        "inventory-00002.jsonl",
+    )
+    assert verified.inventory_source_record_pks == ("pk-1", "pk-2")
+
+
+def test_qualification_rejects_missing_or_noncontiguous_inventory_parts(tmp_path: Path) -> None:
+    manifest = _partition_inventory(_manifest(tmp_path))
+    second = next(item for item in manifest.files if item.relative_path == "inventory-00002.jsonl")
+    noncontiguous = replace(second, relative_path="inventory-00003.jsonl")
+    invalid = replace(
+        manifest,
+        files=tuple(noncontiguous if item == second else item for item in manifest.files),
+    )
+
+    with pytest.raises(RuntimeError, match="not contiguous"):
+        _verify(invalid)
+
+
+def test_qualification_rejects_duplicate_inventory_part_names(tmp_path: Path) -> None:
+    manifest = _partition_inventory(_manifest(tmp_path))
+    duplicate = next(
+        item for item in manifest.files if item.relative_path == "inventory-00001.jsonl"
+    )
+
+    with pytest.raises(ValueError, match="sorted and unique"):
+        replace(manifest, files=(*manifest.files, duplicate))
+
+
+def test_qualification_rejects_empty_inventory_part(tmp_path: Path) -> None:
+    manifest = _partition_inventory(_manifest(tmp_path))
+    for root in (Path(manifest.provenance.artifact_path), Path(manifest.backup_path)):
+        (root / "inventory-00002.jsonl").write_bytes(b"")
+
+    with pytest.raises(RuntimeError, match="must not be empty"):
+        _verify(manifest)
+
+
+def test_qualification_rejects_partition_primary_backup_tamper(tmp_path: Path) -> None:
+    manifest = _partition_inventory(_manifest(tmp_path))
+    (Path(manifest.backup_path) / "inventory-00002.jsonl").write_bytes(b"tampered\n")
+
+    with pytest.raises(RuntimeError, match="primary and backup"):
+        _verify(manifest)
+
+
+def test_qualification_rejects_reordered_inventory_parts(tmp_path: Path) -> None:
+    manifest = _partition_inventory(_manifest(tmp_path))
+    for root in (Path(manifest.provenance.artifact_path), Path(manifest.backup_path)):
+        first = (root / "inventory-00001.jsonl").read_bytes()
+        second = (root / "inventory-00002.jsonl").read_bytes()
+        (root / "inventory-00001.jsonl").write_bytes(second)
+        (root / "inventory-00002.jsonl").write_bytes(first)
+
+    with pytest.raises(RuntimeError, match="canonical inventory-key order"):
+        _verify(manifest)
 
 
 def test_qualification_uses_inventory_key_order_and_returns_sorted_pks(tmp_path: Path) -> None:

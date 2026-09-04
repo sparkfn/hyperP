@@ -43,7 +43,9 @@ construct a replacement source envelope.
 
 The restricted graph-discovery artifact contains only non-executable documents:
 
-- canonical `inventory.jsonl`;
+- canonical, contiguous `inventory-00001.jsonl` ... inventory parts, each bounded
+  below the restricted store's per-file limit while one digest authenticates their
+  exact logical concatenation;
 - measurable impact counts and condition equations;
 - a bounded deterministic list of representative inventory IDs;
 - descriptive compensation/rollback guidance with expected-before multiplicity
