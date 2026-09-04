@@ -27,11 +27,19 @@ class _Rows(tuple[dict[str, object], ...]):
 class _Transaction:
     def __init__(self, rows: tuple[dict[str, object], ...]) -> None:
         self._rows = rows
+        self.active_deal_parameters: list[dict[str, object]] = []
 
     def run(self, query: str, **parameters: object) -> _Rows:
         if query == INVENTORY_ACTIVE_CRM_DEALS:
-            assert parameters == {"source_system": "bitrix_chat"}
-            return _Rows(self._rows)
+            assert set(parameters) == {"source_system", "skip", "limit"}
+            assert parameters["source_system"] == "bitrix_chat"
+            skip = parameters["skip"]
+            limit = parameters["limit"]
+            assert isinstance(skip, int) and skip >= 0
+            assert isinstance(limit, int) and limit > 0
+            self.active_deal_parameters.append(dict(parameters))
+            ordered = tuple(sorted(self._rows, key=lambda row: str(row["source_record_pk"])))
+            return _Rows(ordered[skip : skip + limit])
         if query == INVENTORY_CRM_DEAL_PROJECTIONS:
             assert parameters == {"source_system": "bitrix_chat"}
             return _Rows(
@@ -57,10 +65,14 @@ class _Transaction:
 
 class _Client:
     def __init__(self, rows: tuple[dict[str, object], ...]) -> None:
-        self._rows = rows
+        self._transaction = _Transaction(rows)
 
     def execute_read(self, work: Callable[[ManagedTransaction], _T]) -> _T:
-        return work(cast(ManagedTransaction, _Transaction(self._rows)))
+        return work(cast(ManagedTransaction, self._transaction))
+
+    @property
+    def active_deal_parameters(self) -> list[dict[str, object]]:
+        return self._transaction.active_deal_parameters
 
 
 def _row(
@@ -134,6 +146,8 @@ def test_inventory_query_is_read_only_and_captures_closure_families() -> None:
     assert "outgoing_owner_merges" in INVENTORY_ACTIVE_CRM_DEALS
     assert "incoming_owner_merges" in INVENTORY_ACTIVE_CRM_DEALS
     assert "owner_impacts" in INVENTORY_ACTIVE_CRM_DEALS
+    assert "ORDER BY deal.source_record_pk\nSKIP $skip\nLIMIT $limit" in INVENTORY_ACTIVE_CRM_DEALS
+    assert "ORDER BY deal.source_record_id" not in INVENTORY_ACTIVE_CRM_DEALS
     assert "DESCRIBES_ADDRESS" in INVENTORY_CRM_DEAL_PROJECTIONS
     assert "-[projection]->" not in INVENTORY_CRM_DEAL_PROJECTIONS
     assert "UNION ALL" in INVENTORY_CRM_DEAL_PROJECTIONS
@@ -273,6 +287,28 @@ def test_inventory_preserves_all_clean_stored_versions() -> None:
 
     assert len(inventory.negative_controls) == 101
     assert len(inventory.items) == 101
+
+
+def test_inventory_reads_active_deals_in_bounded_deterministic_pages() -> None:
+    rows = tuple(
+        _row(
+            source_record_pk=f"deal-pk-{index:03d}",
+            source_record_id=f"bitrix-crm-deal-{index:03d}",
+            links=[_link(f"person-{index}")],
+        )
+        for index in range(101)
+    )
+    client = _Client(tuple(reversed(rows)))
+
+    inventory = collect_repair_inventory(client)
+
+    assert [item.source_record_pk for item in inventory.items] == [
+        f"deal-pk-{index:03d}" for index in range(101)
+    ]
+    assert client.active_deal_parameters == [
+        {"source_system": "bitrix_chat", "skip": 0, "limit": 100},
+        {"source_system": "bitrix_chat", "skip": 100, "limit": 100},
+    ]
 
 
 def test_shared_payload_fingerprint_helper_matches_inventory_item() -> None:

@@ -24,6 +24,8 @@ from src.models import JsonValue
 
 T = TypeVar("T")
 
+_ACTIVE_DEAL_PAGE_SIZE = 100
+
 
 class RepairInventoryReadClient(Protocol):
     def execute_read(self, work: Callable[[ManagedTransaction], T]) -> T: ...
@@ -100,13 +102,27 @@ def collect_repair_inventory(
             source_record_pk = _required_string(projection_record, "source_record_pk")
             projection = _json_value(_value(projection_record, "projection"))
             projections_by_pk.setdefault(source_record_pk, []).append(projection)
-        items = tuple(
-            _item_from_record(
-                record,
-                projections_by_pk.get(_required_string(record, "source_record_pk"), []),
+        items: list[RepairInventoryItem] = []
+        skip = 0
+        while True:
+            page = tuple(
+                tx.run(
+                    INVENTORY_ACTIVE_CRM_DEALS,
+                    source_system=source_system,
+                    skip=skip,
+                    limit=_ACTIVE_DEAL_PAGE_SIZE,
+                )
             )
-            for record in tx.run(INVENTORY_ACTIVE_CRM_DEALS, source_system=source_system)
-        )
+            items.extend(
+                _item_from_record(
+                    record,
+                    projections_by_pk.get(_required_string(record, "source_record_pk"), []),
+                )
+                for record in page
+            )
+            if len(page) < _ACTIVE_DEAL_PAGE_SIZE:
+                break
+            skip += _ACTIVE_DEAL_PAGE_SIZE
         stale_record = tx.run(
             INVENTORY_STALE_RUN_CONTROL_PLANE,
             source_system=source_system,
@@ -114,7 +130,7 @@ def collect_repair_inventory(
         ).single(strict=True)
         if stale_record is None:
             raise ValueError("repair stale-run graph evidence is unavailable")
-        return items, _stale_run_evidence(stale_record)
+        return tuple(items), _stale_run_evidence(stale_record)
 
     observed, stale_run_evidence = client.execute_read(_work)
     ownership: list[RepairInventoryItem] = []
