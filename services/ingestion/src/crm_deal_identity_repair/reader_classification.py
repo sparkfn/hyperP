@@ -51,7 +51,7 @@ _AUDIT_READERS: Final[frozenset[str]] = frozenset(
         "api/graph/queries/review.py:GET_PENDING_REVIEW_RECORD",
         "ingestion/graph/fundbox_source_migration.py:CHECK_LEGACY_SOURCE_LINKS",
         "ingestion/graph/queries/crm_deal_identity_repair.py:INVENTORY_ACTIVE_CRM_DEALS",
-        "ingestion/graph/queries/crm_deal_identity_repair.py:INVENTORY_CRM_DEAL_PROJECTIONS",
+        "ingestion/graph/queries/crm_deal_identity_repair.py:_crm_deal_projection_branch",
         "ingestion/graph/queries/crm_deal_identity_repair_ledger.py:READ_CONTROL_RELATIONSHIPS",
         "ingestion/graph/queries/crm_deal_identity_repair_mutation.py:READ_MUTATION_GRAPH_SNAPSHOT",
         "ingestion/graph/queries/crm_deal_identity_repair_mutation.py:READ_REPAIRED_OWNER_IDS",
