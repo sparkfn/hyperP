@@ -111,6 +111,13 @@ def _control(arguments: Namespace) -> int:
         elif arguments.command == "quiesce":
             # The CLI intentionally invokes its own bounded inspectors rather
             # than accepting caller-provided observations as authorization.
+            from src.crm_deal_identity_repair.artifacts import (
+                repair_artifact_store_from_settings,
+            )
+            from src.crm_deal_identity_repair.qualification import (
+                read_qualified_stale_run_id,
+                verify_qualified_repair_artifact,
+            )
             from src.crm_deal_identity_repair.quiescence import RepairQuiescenceService
             from src.crm_deal_identity_repair.task_inspection import (
                 CeleryWorkerInspector,
@@ -123,11 +130,6 @@ def _control(arguments: Namespace) -> int:
             secret = proof_secret_text.encode()
             if not secret or not settings.crm_deal_identity_repair_absence_proof_key_id:
                 raise RuntimeError("repair task-absence proof signing configuration is missing")
-            from src.crm_deal_identity_repair.artifacts import repair_artifact_store_from_settings
-            from src.crm_deal_identity_repair.qualification import (
-                read_qualified_stale_run_id,
-                verify_qualified_repair_artifact,
-            )
 
             with repair_artifact_store_from_settings(settings) as store:
                 verified = verify_qualified_repair_artifact(store, run=run)
@@ -160,7 +162,10 @@ def _control(arguments: Namespace) -> int:
                 verify_approval_overlay,
             )
             from src.crm_deal_identity_repair.artifacts import repair_artifact_store_from_settings
-            from src.crm_deal_identity_repair.qualification import verify_qualified_repair_artifact
+            from src.crm_deal_identity_repair.qualification import (
+                iter_verified_inventory_lines,
+                verify_qualified_repair_artifact,
+            )
 
             secret = (
                 settings.crm_deal_identity_repair_approval_key_secret.get_secret_value().encode()
@@ -176,11 +181,9 @@ def _control(arguments: Namespace) -> int:
                 secret=secret,
             )
             assert_overlay_binds_qualification(overlay, run=run, expected_key_id=key_id)
-            inventory_bytes = (
-                Path(verified.manifest.provenance.artifact_path) / "inventory.jsonl"
-            ).read_text(encoding="utf-8")
             inventory = tuple(
-                _inventory_item(json.loads(line)) for line in inventory_bytes.splitlines()
+                _inventory_item(json.loads(line))
+                for line in iter_verified_inventory_lines(verified)
             )
             plan = plan_allocation(
                 run_id=run.run_id,

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections.abc import Iterable
 
 from src.connectors.bitrix_stage_history.artifact_manifest import (
     ArtifactManifest,
@@ -85,22 +86,36 @@ def validate_artifact_count_boundary(
 
 
 def inventory_source_record_pks(content: bytes) -> tuple[tuple[str, ...], int, int]:
-    items: list[RepairInventoryItem] = []
-    for line in content.splitlines(keepends=True):
+    return inventory_source_record_pks_from_lines(content.splitlines(keepends=True))
+
+
+def inventory_source_record_pks_from_lines(
+    lines: Iterable[bytes],
+) -> tuple[tuple[str, ...], int, int]:
+    """Validate canonical inventory rows across one or more bounded files."""
+    previous_key: str | None = None
+    source_record_pks: list[str] = []
+    observed_source_record_pks: set[str] = set()
+    negative_count = 0
+    for line in lines:
         if not line.endswith(b"\n"):
             raise RuntimeError("repair inventory JSONL is not canonical")
-        items.append(_inventory_item(canonical_json_object(line, "repair inventory JSONL")))
-    inventory_keys = tuple(item.inventory_key for item in items)
-    if inventory_keys != tuple(sorted(inventory_keys)) or len(set(inventory_keys)) != len(items):
-        raise RuntimeError("repair inventory rows are not in canonical inventory-key order")
-    source_record_pks = tuple(sorted(item.source_record_pk for item in items))
-    if not source_record_pks or len(set(source_record_pks)) != len(items):
+        item = _inventory_item(canonical_json_object(line, "repair inventory JSONL"))
+        if previous_key is not None and item.inventory_key <= previous_key:
+            raise RuntimeError("repair inventory rows are not in canonical inventory-key order")
+        previous_key = item.inventory_key
+        if item.source_record_pk in observed_source_record_pks:
+            raise RuntimeError("repair inventory source record identities are invalid")
+        observed_source_record_pks.add(item.source_record_pk)
+        source_record_pks.append(item.source_record_pk)
+        if item.partition == "negative_control":
+            negative_count += 1
+    if not source_record_pks:
         raise RuntimeError("repair inventory source record identities are invalid")
-    negative_count = sum(item.partition == "negative_control" for item in items)
-    eligible_count = len(items) - negative_count
+    eligible_count = len(source_record_pks) - negative_count
     if eligible_count < 1:
         raise RuntimeError("repair inventory contains no eligible repair units")
-    return source_record_pks, eligible_count, negative_count
+    return tuple(sorted(source_record_pks)), eligible_count, negative_count
 
 
 def canonical_json_object(content: bytes, label: str) -> dict[str, JsonValue]:

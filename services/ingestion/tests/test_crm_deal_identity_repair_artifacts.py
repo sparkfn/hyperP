@@ -6,12 +6,18 @@ import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
+import pytest
 from src.connectors.bitrix_stage_history.artifact_runtime import ArtifactStoreConfiguration
 from src.crm_deal_identity_repair.artifacts import (
     CRM_DEAL_IDENTITY_REPAIR_MANIFEST_HMAC_DOMAIN,
     RepairArtifactContext,
     _representative_replay,
     seal_inventory_artifact,
+)
+from src.crm_deal_identity_repair.digests import (
+    inventory_digest,
+    inventory_digest_from_parts,
+    inventory_jsonl_parts,
 )
 from src.crm_deal_identity_repair.models import RepairInventoryItem, RepairPartition
 
@@ -42,9 +48,10 @@ def _item(
 
 
 def _population_counts(*, cleanup: int, clean: int) -> dict[str, int]:
+    active = cleanup + clean
     return {
-        "active_deal_count": 1,
-        "authoritative_version_count": 1,
+        "active_deal_count": active,
+        "authoritative_version_count": active,
         "active_link_count": 0,
         "active_distinct_owner_count": 0,
         "multi_linked_deal_count": 0,
@@ -95,7 +102,7 @@ def test_graph_discovery_artifact_contains_only_non_executable_handoff_documents
 
     assert verified.metadata["execution_allowed"] is False
     assert {item.relative_path for item in verified.files} == {
-        "inventory.jsonl",
+        "inventory-00001.jsonl",
         "impact-summary.json",
         "representative-replay-plan.json",
         "compensation-guidance.json",
@@ -103,7 +110,9 @@ def test_graph_discovery_artifact_contains_only_non_executable_handoff_documents
         "clean-boundary-plan.json",
     }
     artifact_path = Path(verified.provenance.artifact_path)
-    inventory_row = json.loads((artifact_path / "inventory.jsonl").read_text(encoding="utf-8"))
+    inventory_row = json.loads(
+        (artifact_path / "inventory-00001.jsonl").read_text(encoding="utf-8")
+    )
     impact = json.loads((artifact_path / "impact-summary.json").read_text(encoding="utf-8"))
     assert inventory_row["execution_allowed"] is False
     assert impact["prior_246_evidence"] == {
@@ -170,6 +179,75 @@ def test_impact_equations_include_negative_control_partition(tmp_path: Path) -> 
         encoding="utf-8"
     )
     assert '"negative_control":1' in impact
+
+
+def test_inventory_jsonl_parts_preserve_logical_digest_and_boundaries() -> None:
+    items = (
+        _item("bitrix-crm-deal-12", policy="pre_policy"),
+        _item("bitrix-crm-deal-11", policy="policy_v2"),
+    )
+    one_row_size = len(tuple(inventory_jsonl_parts((items[0],), max_part_bytes=100_000))[0][1])
+    parts = tuple(inventory_jsonl_parts(items, max_part_bytes=one_row_size))
+
+    assert tuple(name for name, _ in parts) == (
+        "inventory-00001.jsonl",
+        "inventory-00002.jsonl",
+    )
+    assert all(len(content) <= one_row_size for _, content in parts)
+    assert inventory_digest_from_parts(content for _, content in parts) == inventory_digest(items)
+
+
+def test_inventory_jsonl_parts_reject_one_row_larger_than_part_limit() -> None:
+    item = _item("bitrix-crm-deal-13", policy="pre_policy")
+    row_size = len(tuple(inventory_jsonl_parts((item,), max_part_bytes=100_000))[0][1])
+
+    with pytest.raises(ValueError, match="row exceeds"):
+        tuple(inventory_jsonl_parts((item,), max_part_bytes=row_size - 1))
+
+
+def test_sealed_inventory_uses_contiguous_bounded_parts(tmp_path: Path) -> None:
+    config = ArtifactStoreConfiguration(
+        primary_root=tmp_path / "primary",
+        backup_root=tmp_path / "backup",
+        signing_key_id="repair-key",
+        signing_key_secret=b"r" * 32,
+        hmac_domain=CRM_DEAL_IDENTITY_REPAIR_MANIFEST_HMAC_DOMAIN,
+    )
+    context = RepairArtifactContext(
+        repair_id="issue-382-partitioned-inventory",
+        environment="staging",
+        source_contract_uuid="12345678-1234-5678-9234-567812345678",
+        repository_sha="a" * 40,
+        image_digest="sha256:" + "b" * 64,
+        configuration_digest="sha256:" + "c" * 64,
+        boundary={"source_system": "bitrix_chat", "execution_allowed": False},
+        retention_expires_at=datetime.now(UTC) + timedelta(days=1),
+    )
+    items = (
+        _item("bitrix-crm-deal-20", policy="pre_policy"),
+        _item("bitrix-crm-deal-21", policy="policy_v2"),
+    )
+    one_row_size = len(tuple(inventory_jsonl_parts((items[0],), max_part_bytes=100_000))[0][1])
+
+    with config.open() as store:
+        manifest = seal_inventory_artifact(
+            store,
+            context=context,
+            items=items,
+            population_counts=_population_counts(cleanup=2, clean=0),
+            stale_run_evidence={"state": "unknown", "execution_allowed": False},
+            inventory_part_max_bytes=one_row_size,
+        )
+        verified = store.verify(manifest.artifact_id)
+
+    inventory_files = tuple(
+        item for item in verified.files if item.relative_path.endswith(".jsonl")
+    )
+    assert tuple(item.relative_path for item in inventory_files) == (
+        "inventory-00001.jsonl",
+        "inventory-00002.jsonl",
+    )
+    assert all(item.byte_count <= one_row_size for item in inventory_files)
 
 
 def test_representative_replay_limit_bounds_seed_strata() -> None:

@@ -23,7 +23,11 @@ from src.crm_deal_identity_repair.integration_service import (
 )
 from src.crm_deal_identity_repair.models import RepairInventoryItem, inventory_item_from_json
 from src.crm_deal_identity_repair.mutation_service import CrmDealIdentityRepairMutationService
-from src.crm_deal_identity_repair.qualification import verify_qualified_repair_artifact
+from src.crm_deal_identity_repair.qualification import (
+    VerifiedRepairArtifact,
+    iter_verified_inventory_lines,
+    verify_qualified_repair_artifact,
+)
 from src.crm_deal_identity_repair.rollback_service import CrmDealIdentityRepairRollbackService
 from src.crm_deal_identity_repair.verification_service import RepairVerificationService
 from src.graph.client import Neo4jClient
@@ -117,9 +121,7 @@ def _context_loader(
         assert_overlay_binds_qualification(overlay, run=run, expected_key_id=approval_key_id)
         with repair_artifact_store_from_settings(settings) as store:
             verified = verify_qualified_repair_artifact(store, run=run)
-        inventory = _read_inventory(
-            Path(verified.manifest.provenance.artifact_path) / "inventory.jsonl"
-        )
+        inventory = _read_inventory(verified)
         authority = integration.load_authority(
             request, run, overlay.overlay_digest, approval_key_id, approval_secret
         )
@@ -160,10 +162,10 @@ def _approval_overlay_path(root_value: str, approval_id: str) -> Path:
     return candidate
 
 
-def _read_inventory(path: Path) -> tuple[RepairInventoryItem, ...]:
+def _read_inventory(artifact: VerifiedRepairArtifact) -> tuple[RepairInventoryItem, ...]:
     """Strictly decode the qualified immutable inventory artifact."""
     rows: list[RepairInventoryItem] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
+    for line in iter_verified_inventory_lines(artifact):
         rows.append(inventory_item_from_json(json.loads(line)))
     inventory = tuple(rows)
     if not inventory:

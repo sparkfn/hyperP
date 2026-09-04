@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable, Iterator
 
 from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json_bytes
 from src.crm_deal_identity_repair.models import RepairInventoryItem
@@ -29,6 +30,7 @@ VERIFICATION_RUN_EQUATION_DIGEST_DOMAIN = b"crm-deal-identity-repair-run-equatio
 VERIFICATION_OUTBOX_CLAIM_DIGEST_DOMAIN = b"crm-deal-identity-repair-outbox-claim-v1\x00"
 
 INVENTORY_DIGEST_DOMAIN = b"crm-deal-identity-repair-inventory-v1\x00"
+INVENTORY_PART_MAX_BYTES = 256 * 1024 * 1024
 
 
 def canonical_jsonl(rows: tuple[dict[str, JsonValue], ...]) -> bytes:
@@ -52,19 +54,28 @@ def inventory_digest(items: tuple[RepairInventoryItem, ...]) -> str:
     keys = tuple(item.inventory_key for item in ordered)
     if len(keys) != len(set(keys)):
         raise ValueError("repair inventory rows must have unique source-version identities")
-    digest = hashlib.sha256()
-    digest.update(INVENTORY_DIGEST_DOMAIN)
-    digest.update(canonical_jsonl(tuple(item.to_dict() for item in ordered)))
-    return "sha256:" + digest.hexdigest()
+    return inventory_digest_from_parts(canonical_json_bytes(item.to_dict()) for item in ordered)
 
 
 def inventory_digest_from_bytes(content: bytes) -> str:
     """Digest the exact immutable #254 inventory bytes without reserializing them."""
     if not content or not content.endswith(b"\n"):
         raise ValueError("repair inventory bytes must be non-empty canonical JSONL")
+    return inventory_digest_from_parts((content,))
+
+
+def inventory_digest_from_parts(parts: Iterable[bytes]) -> str:
+    """Digest canonical inventory bytes without concatenating bounded artifact parts."""
     digest = hashlib.sha256()
     digest.update(INVENTORY_DIGEST_DOMAIN)
-    digest.update(content)
+    observed = False
+    for part in parts:
+        if not part or not part.endswith(b"\n"):
+            raise ValueError("repair inventory parts must be non-empty canonical JSONL")
+        observed = True
+        digest.update(part)
+    if not observed:
+        raise ValueError("repair inventory parts must be non-empty canonical JSONL")
     return "sha256:" + digest.hexdigest()
 
 
@@ -75,6 +86,39 @@ def inventory_jsonl(items: tuple[RepairInventoryItem, ...]) -> bytes:
     if len(keys) != len(set(keys)):
         raise ValueError("repair inventory rows must have unique source-version identities")
     return canonical_jsonl(tuple(item.to_dict() for item in ordered))
+
+
+def inventory_jsonl_parts(
+    items: tuple[RepairInventoryItem, ...],
+    *,
+    max_part_bytes: int = INVENTORY_PART_MAX_BYTES,
+) -> Iterator[tuple[str, bytes]]:
+    """Encode canonical inventory rows into deterministic bounded JSONL parts."""
+    if type(max_part_bytes) is not int or max_part_bytes < 1:
+        raise ValueError("repair inventory part limit must be a positive integer")
+    ordered = tuple(sorted(items, key=lambda item: item.inventory_key))
+    keys = tuple(item.inventory_key for item in ordered)
+    if not keys:
+        raise ValueError("repair inventory cannot be empty")
+    if len(keys) != len(set(keys)):
+        raise ValueError("repair inventory rows must have unique source-version identities")
+    part_index = 1
+    current = bytearray()
+    for item in ordered:
+        row = canonical_json_bytes(item.to_dict())
+        if len(row) > max_part_bytes:
+            raise ValueError("repair inventory row exceeds the part byte limit")
+        if current and len(current) + len(row) > max_part_bytes:
+            yield _inventory_part_name(part_index), bytes(current)
+            part_index += 1
+            current.clear()
+        current.extend(row)
+    if current:
+        yield _inventory_part_name(part_index), bytes(current)
+
+
+def _inventory_part_name(index: int) -> str:
+    return f"inventory-{index:05d}.jsonl"
 
 
 def mutation_request_digest(value: dict[str, JsonValue]) -> str:
