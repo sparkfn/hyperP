@@ -135,6 +135,24 @@ def test_inventory_query_is_read_only_and_captures_closure_families() -> None:
     assert "incoming_owner_merges" in INVENTORY_ACTIVE_CRM_DEALS
     assert "owner_impacts" in INVENTORY_ACTIVE_CRM_DEALS
     assert "DESCRIBES_ADDRESS" in INVENTORY_CRM_DEAL_PROJECTIONS
+    assert "-[projection]->" not in INVENTORY_CRM_DEAL_PROJECTIONS
+    assert "UNION ALL" in INVENTORY_CRM_DEAL_PROJECTIONS
+    assert "projection:DESCRIBES_ADDRESS]->" in INVENTORY_CRM_DEAL_PROJECTIONS
+    assert "projection.source_record_pk IS NULL" in INVENTORY_CRM_DEAL_PROJECTIONS
+    for relationship_type in (
+        "BOUGHT_VEHICLE",
+        "HAS_BANKRUPTCY_CASE",
+        "HAS_FACT",
+        "IDENTIFIED_BY",
+        "INVOLVES_VEHICLE",
+        "KNOWS",
+        "LIVES_AT",
+        "MENTIONS_VEHICLE",
+        "MOVED_RELATIONSHIP",
+        "OWNS_VEHICLE",
+        "PURCHASED",
+    ):
+        assert f"-[projection:{relationship_type}]->" in INVENTORY_CRM_DEAL_PROJECTIONS
     assert "'unknown' AS stale_run_state" in INVENTORY_STALE_RUN_CONTROL_PLANE
     assert "orphaned_candidate" not in INVENTORY_STALE_RUN_CONTROL_PLANE
 

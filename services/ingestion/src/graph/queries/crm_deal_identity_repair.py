@@ -161,14 +161,12 @@ RETURN deal.source_record_pk AS source_record_pk,
 ORDER BY deal.source_record_id, deal.source_record_pk
 """
 
-INVENTORY_CRM_DEAL_PROJECTIONS = """
+_CRM_DEAL_PREFIX = """
 MATCH (deal:SourceRecord {record_type: 'crm_deal'})-[:FROM_SOURCE]->
       (:SourceSystem {source_key: $source_system})
-MATCH (start)-[projection]->(target)
-WHERE (projection.source_record_pk = deal.source_record_pk
-       OR (start = deal AND type(projection) = 'DESCRIBES_ADDRESS'
-           AND projection.source_record_pk IS NULL))
-  AND NOT (start = deal AND target:Person AND type(projection) = 'LINKED_TO')
+"""
+
+_CRM_DEAL_PROJECTION_RETURN = """
 RETURN deal.source_record_pk AS source_record_pk,
        {
          relationship_type: type(projection),
@@ -182,6 +180,60 @@ RETURN deal.source_record_pk AS source_record_pk,
          source_record_pk: projection.source_record_pk
        } AS projection
 """
+
+_CRM_DEAL_PROJECTION_RELATIONSHIP_TYPES = (
+    "BOUGHT_VEHICLE",
+    "HAS_BANKRUPTCY_CASE",
+    "HAS_FACT",
+    "IDENTIFIED_BY",
+    "INVOLVES_VEHICLE",
+    "KNOWS",
+    "LIVES_AT",
+    "MENTIONS_VEHICLE",
+    "MOVED_RELATIONSHIP",
+    "OWNS_VEHICLE",
+    "PURCHASED",
+)
+
+
+def _crm_deal_projection_branch(
+    relationship_type: str,
+    *,
+    deal_owned_address: bool = False,
+) -> str:
+    """Build one indexed branch of the CRM-deal projection inventory query."""
+    if deal_owned_address:
+        pattern = "MATCH (deal)-[projection:DESCRIBES_ADDRESS]->(target)"
+        condition = "WHERE projection.source_record_pk IS NULL"
+    else:
+        pattern = f"MATCH (start)-[projection:{relationship_type}]->(target)"
+        condition = "WHERE projection.source_record_pk = deal.source_record_pk"
+    return "\n".join(
+        (
+            _CRM_DEAL_PREFIX.strip(),
+            pattern,
+            condition,
+            _CRM_DEAL_PROJECTION_RETURN.strip(),
+        )
+    )
+
+
+def _crm_deal_projection_query() -> str:
+    """Use only explicit relationship types so each branch can use its index."""
+    branches = [
+        _crm_deal_projection_branch(relationship_type)
+        for relationship_type in _CRM_DEAL_PROJECTION_RELATIONSHIP_TYPES
+    ]
+    branches.extend(
+        (
+            _crm_deal_projection_branch("DESCRIBES_ADDRESS"),
+            _crm_deal_projection_branch("DESCRIBES_ADDRESS", deal_owned_address=True),
+        )
+    )
+    return "\nUNION ALL\n".join(branches)
+
+
+INVENTORY_CRM_DEAL_PROJECTIONS = _crm_deal_projection_query()
 
 INVENTORY_STALE_RUN_CONTROL_PLANE = """
 OPTIONAL MATCH (run:IngestRun {ingest_run_id: $stale_run_id})
