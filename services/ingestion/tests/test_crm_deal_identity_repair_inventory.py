@@ -146,8 +146,12 @@ def test_inventory_query_is_read_only_and_captures_closure_families() -> None:
     assert "outgoing_owner_merges" in INVENTORY_ACTIVE_CRM_DEALS
     assert "incoming_owner_merges" in INVENTORY_ACTIVE_CRM_DEALS
     assert "owner_impacts" in INVENTORY_ACTIVE_CRM_DEALS
-    assert "ORDER BY deal.source_record_pk\nSKIP $skip\nLIMIT $limit" in INVENTORY_ACTIVE_CRM_DEALS
-    assert "ORDER BY deal.source_record_id" not in INVENTORY_ACTIVE_CRM_DEALS
+    page_clause = "WITH deal\nORDER BY deal.source_record_pk\nSKIP $skip\nLIMIT $limit"
+    first_evidence_call = INVENTORY_ACTIVE_CRM_DEALS.index("CALL {")
+    assert INVENTORY_ACTIVE_CRM_DEALS.index(page_clause) < first_evidence_call
+    assert INVENTORY_ACTIVE_CRM_DEALS.rindex("SKIP $skip") < first_evidence_call
+    assert INVENTORY_ACTIVE_CRM_DEALS.rindex("LIMIT $limit") < first_evidence_call
+    assert "ORDER BY deal.source_record_id, deal.source_record_pk" in INVENTORY_ACTIVE_CRM_DEALS
     assert "DESCRIBES_ADDRESS" in INVENTORY_CRM_DEAL_PROJECTIONS
     assert "-[projection]->" not in INVENTORY_CRM_DEAL_PROJECTIONS
     assert "UNION ALL" in INVENTORY_CRM_DEAL_PROJECTIONS

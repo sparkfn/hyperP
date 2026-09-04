@@ -5,6 +5,10 @@ from __future__ import annotations
 INVENTORY_ACTIVE_CRM_DEALS = """
 MATCH (deal:SourceRecord {record_type: 'crm_deal'})-[:FROM_SOURCE]->
       (:SourceSystem {source_key: $source_system})
+WITH deal
+ORDER BY deal.source_record_pk
+SKIP $skip
+LIMIT $limit
 CALL {
     WITH deal
     OPTIONAL MATCH (deal)-[link:LINKED_TO]->(owner:Person)
@@ -158,9 +162,7 @@ RETURN deal.source_record_pk AS source_record_pk,
        linked_people, logical_versions, descendants,
        record_decisions_and_reviews + pair_decisions_and_reviews AS decisions_and_reviews,
        owner_profiles + owner_locks + outgoing_owner_merges + incoming_owner_merges AS owner_impacts
-ORDER BY deal.source_record_pk
-SKIP $skip
-LIMIT $limit
+ORDER BY deal.source_record_id, deal.source_record_pk
 """
 
 _CRM_DEAL_PREFIX = """
