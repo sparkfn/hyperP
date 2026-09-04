@@ -39,12 +39,15 @@ def _run_control_module(*arguments: str) -> subprocess.CompletedProcess[str]:
     environment = os.environ.copy()
     python_path = environment.get("PYTHONPATH")
     for key in tuple(environment):
-        if key.startswith(("CRM_DEAL_IDENTITY_REPAIR_", "NEO4J_")):
+        if key.upper().startswith(("CRM_DEAL_IDENTITY_REPAIR_", "NEO4J_")):
             environment.pop(key)
     environment["PYTHONPATH"] = os.pathsep.join(
         part for part in (str(_INGESTION_ROOT), python_path) if part
     )
     environment["DEPLOYMENT_ENVIRONMENT"] = "development"
+    # This unsupported URI must fail locally before any network access if the gate regresses.
+    environment["NEO4J_URI"] = "unsupported://127.0.0.1:1"
+    environment["NEO4J_USER"] = "test-user"
     environment["NEO4J_PASSWORD"] = "test-password"
     return subprocess.run(
         [sys.executable, "-m", _CONTROL_MODULE, *arguments],
@@ -53,6 +56,7 @@ def _run_control_module(*arguments: str) -> subprocess.CompletedProcess[str]:
         capture_output=True,
         text=True,
         check=False,
+        timeout=10,
     )
 
 
@@ -68,7 +72,8 @@ def test_module_execution_displays_help() -> None:
 def test_module_execution_dispatches_to_status_handler() -> None:
     result = _run_control_module("status", "--repair-id", "subprocess-dispatch-probe")
 
-    assert result.returncode != 0
+    assert result.returncode == 1
+    assert "in _status" in result.stderr
     assert "CRM-deal repair inventory requires DEPLOYMENT_ENVIRONMENT=staging" in result.stderr
 
 
