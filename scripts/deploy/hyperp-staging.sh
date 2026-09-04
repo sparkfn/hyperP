@@ -238,7 +238,7 @@ wait_service_stable() {
 
 assert_internal_api_health() {
   "${COMPOSE[@]}" exec -T api python -c \
-    "import urllib.request; urllib.request.urlopen('http://localhost:3000/health', timeout=10).read()" \
+    "import urllib.request; urllib.request.urlopen('http://localhost:3000/health', timeout=10).read()" </dev/null \
     || fail "internal API health request failed"
 }
 
