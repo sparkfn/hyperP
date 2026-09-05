@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from pathlib import Path
 
 import pytest
@@ -9,6 +10,7 @@ from intelligence import artifacts, artifacts_core, artifacts_manifest
 from intelligence.artifacts import (
     append_run_log,
     publish_file,
+    publish_inventory,
     read_manifest,
     scan_staged_outputs,
     validate_manifest,
@@ -75,6 +77,32 @@ def test_no_replace_output_collision(tmp_path: Path) -> None:
     source.write_text("{}", encoding="utf-8")
     with pytest.raises(FileExistsError):
         publish_file(tmp_path, "run", source, 100)
+
+
+def test_hard_linked_staging_files_are_rejected_before_publication(tmp_path: Path) -> None:
+    """Accepted output inodes must not remain mutable through another hard link."""
+    staging = tmp_path / "staging" / "run"
+    staging.mkdir(parents=True)
+    outside = tmp_path / "outside.json"
+    outside.write_text("{}", encoding="utf-8")
+    linked = staging / "linked.json"
+    try:
+        os.link(outside, linked)
+    except OSError:
+        pytest.skip("hard links are unavailable in this test environment")
+    with pytest.raises(ValueError, match="hard links"):
+        scan_staged_outputs(tmp_path, "run", 100)
+
+    linked.unlink()
+    source = staging / "result.json"
+    source.write_text("{}", encoding="utf-8")
+    inventory = scan_staged_outputs(tmp_path, "run", 100)
+    try:
+        os.link(source, outside)
+    except OSError:
+        pytest.skip("hard links are unavailable in this test environment")
+    with pytest.raises(ValueError, match="hard links"):
+        publish_inventory(tmp_path, "run", inventory, 100)
 
 
 def test_log_has_required_safe_fields_and_stops_at_bound(tmp_path: Path) -> None:

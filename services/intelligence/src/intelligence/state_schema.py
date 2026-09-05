@@ -110,6 +110,7 @@ def upgrade(connection: sqlite3.Connection, version: int) -> None:
     if version < 1 or version > 6:
         raise RuntimeError("Intelligence state schema is unsupported")
     columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(runs)")}
+    added_execution_fence = "execution_may_be_alive" not in columns
     for name in (
         "cancellation_requested",
         "publishing_inventory_json",
@@ -133,6 +134,13 @@ def upgrade(connection: sqlite3.Connection, version: int) -> None:
             if name == "execution_may_be_alive":
                 default = " INTEGER NOT NULL DEFAULT 0"
             connection.execute(f"ALTER TABLE runs ADD COLUMN {name}{default}")
+    if added_execution_fence:
+        # Historical supervisors had no durable quiescence proof. Active rows
+        # remain fenced until a trusted epoch change is proven.
+        connection.execute(
+            "UPDATE runs SET execution_may_be_alive = 1 "
+            "WHERE state IN ('queued', 'running', 'publishing')"
+        )
     connection.execute(
         "UPDATE metadata SET value = ? WHERE key = 'schema_version'", (str(SCHEMA_VERSION),)
     )

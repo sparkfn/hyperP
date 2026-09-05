@@ -11,7 +11,7 @@ from collections.abc import Callable
 from multiprocessing import get_context
 from multiprocessing.process import BaseProcess
 from pathlib import Path
-from typing import Protocol, cast
+from typing import NoReturn, Protocol, cast
 
 from intelligence.artifacts import (
     append_run_log,
@@ -79,10 +79,12 @@ class IntelligenceRuntime:
             },
         )
         staging = self.state.layout.staging / run.run_id
-        staging.mkdir(mode=0o700, parents=True, exist_ok=False)
         started = time.monotonic()
-        self._log(run, "started", {})
+        process_start_attempted = False
         try:
+            staging.mkdir(mode=0o700, parents=True, exist_ok=False)
+            self._log(run, "started", {})
+            process_start_attempted = True
             process = _start_command(command.execute, staging)
             started = time.monotonic()
             terminal_state, termination_reason = self._wait_for_command(process, run, started)
@@ -123,6 +125,8 @@ class IntelligenceRuntime:
             self.state.mark_cleanup_unresolved(run)
             raise
         except BaseException:
+            if not process_start_attempted:
+                self.state.mark_execution_quiescent(run)
             terminal_state = self._terminal_state(run.run_id, started, failed=True)
             self._finish_if_possible(run, terminal_state, "runtime_error")
             raise
@@ -232,7 +236,12 @@ class IntelligenceRuntime:
         *,
         publication: bool = False,
     ) -> None:
-        self._log(run, "terminal", {"state": state})
+        try:
+            self._log(run, "terminal", {"state": state})
+        except (OSError, RuntimeError):
+            # Terminal state and parent-owned manifest evidence must not depend
+            # on a best-effort terminal log append.
+            pass
         manifest = self._manifest(run, state, outputs, reason)
         if publication:
             self.state.complete_publication(run, outputs, manifest)
@@ -316,7 +325,10 @@ def _start_command(handler: CommandHandler, staging: Path) -> BaseProcess:
     context = get_context("spawn")
     parent_ready, child_ready = context.Pipe(duplex=False)
     process = context.Process(target=_child_entry, args=(handler, staging, child_ready))
-    process.start()
+    try:
+        process.start()
+    except BaseException as error:
+        _abort_unready_child(process, error)
     child_ready.close()
     try:
         if not parent_ready.poll(_READY_TIMEOUT_SECONDS):
@@ -324,11 +336,9 @@ def _start_command(handler: CommandHandler, staging: Path) -> BaseProcess:
         if not bool(parent_ready.recv()):
             raise RuntimeError("reviewed child failed before readiness")
     except (EOFError, OSError) as error:
-        _stop_child(process, group_ready=False)
-        raise RuntimeError("reviewed child readiness failed") from error
-    except BaseException:
-        _stop_child(process, group_ready=False)
-        raise
+        _abort_unready_child(process, error)
+    except BaseException as error:
+        _abort_unready_child(process, error)
     finally:
         parent_ready.close()
     return process
@@ -358,6 +368,15 @@ def _child_entry(handler: CommandHandler, staging: Path, ready: _ReadyChannel) -
 def _not_cancelled() -> bool:
     """Child cancellation is enforced by the parent supervisor rather than trusted cooperation."""
     return False
+
+
+def _abort_unready_child(process: BaseProcess, error: BaseException) -> NoReturn:
+    """Retain the durable lock when readiness leaves process-group ownership uncertain."""
+    try:
+        _stop_child(process, group_ready=False)
+    except BaseException as cleanup_error:
+        raise CleanupUnresolvedError("unready child cleanup could not be proven") from cleanup_error
+    raise CleanupUnresolvedError("reviewed child process-group readiness was not proven") from error
 
 
 def _stop_child(process: BaseProcess, *, group_ready: bool = True) -> None:

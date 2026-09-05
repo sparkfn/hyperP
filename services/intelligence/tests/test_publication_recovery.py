@@ -313,6 +313,9 @@ def test_actual_v4_active_rows_emit_unknown_limit_evidence(tmp_path: Path, run_s
     connection.close()
     state = State(tmp_path, runtime_epoch="recreated-container")
     try:
+        run = state.inspect("legacy-active")
+        assert run is not None and run.execution_may_be_alive
+        state.mark_execution_quiescent(run)
         state.recover_stale("legacy-active", "v4 recovery", 1)
         evidence = json.loads(
             (state.layout.manifests / "legacy-active.json").read_text(encoding="utf-8")

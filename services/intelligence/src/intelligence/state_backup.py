@@ -18,6 +18,7 @@ from intelligence.state_schema import SCHEMA_VERSION
 BACKUP_SCHEMA_VERSION = 1
 LEGACY_STATE_SCHEMA_VERSION = 4
 LEGACY_STATE_SCHEMA_VERSIONS = frozenset({4, 5, 6})
+VERSIONED_STATE_SCHEMA_VERSIONS = frozenset({6, SCHEMA_VERSION})
 
 
 def create_backup(
@@ -292,12 +293,14 @@ def _read_backup_manifest(
         "state_snapshot",
         "evidence",
     }:
+        backup_version = raw.get("backup_schema_version")
+        state_version = raw.get("state_schema_version")
         if (
-            raw.get("backup_schema_version") != BACKUP_SCHEMA_VERSION
-            or raw.get("state_schema_version") != SCHEMA_VERSION
+            backup_version != BACKUP_SCHEMA_VERSION
+            or state_version not in VERSIONED_STATE_SCHEMA_VERSIONS
         ):
             raise ValueError("backup bundle schema is invalid")
-        state_schema_version = SCHEMA_VERSION
+        state_schema_version = int(state_version)
     else:
         raise ValueError("backup bundle schema is invalid")
     snapshot, evidence = raw.get("state_snapshot"), raw.get("evidence")
