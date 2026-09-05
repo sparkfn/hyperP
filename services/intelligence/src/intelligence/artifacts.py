@@ -7,12 +7,37 @@ import json
 import os
 import stat
 import time
+import uuid
 from collections.abc import Mapping, Sequence
 from pathlib import Path
+from typing import cast
 
 from intelligence.models import OutputInventory, RunLogInventory, TerminalRunState, WorkspaceLayout
 
 MANIFEST_SCHEMA_VERSION = 1
+MANIFEST_LIMIT_KEYS = frozenset(
+    {"max_log_bytes", "max_output_bytes", "max_output_entries", "max_runtime_seconds"}
+)
+DEFAULT_MANIFEST_LIMITS: dict[str, int] = {
+    "max_log_bytes": 1_000_000,
+    "max_output_bytes": 100_000_000,
+    "max_output_entries": 10_000,
+    "max_runtime_seconds": 3_600,
+}
+_MANIFEST_BASE_KEYS = frozenset(
+    {
+        "schema_version",
+        "run_id",
+        "command",
+        "created_at",
+        "started_at",
+        "ended_at",
+        "state",
+        "limits",
+        "outputs",
+        "run_log",
+    }
+)
 _SECRET_MARKERS: tuple[str, ...] = ("secret", "token", "password", "credential", "authorization")
 _LogValue = str | int | float | bool | None
 
@@ -44,7 +69,7 @@ def workspace_layout(workspace: Path) -> WorkspaceLayout:
 
 
 def scan_staged_outputs(
-    workspace: Path, run_id: str, maximum_bytes: int
+    workspace: Path, run_id: str, maximum_bytes: int, maximum_entries: int = 10_000
 ) -> tuple[OutputInventory, ...]:
     """Return a sorted inventory after rejecting unsafe staged filesystem entries."""
     layout = workspace_layout(workspace)
@@ -52,6 +77,7 @@ def scan_staged_outputs(
     staging = layout.staging / run_id
     if staging.is_symlink() or not staging.is_dir():
         raise ValueError("run staging directory is missing or unsafe")
+    scan_staged_usage(workspace, run_id, maximum_bytes, maximum_entries)
     total = 0
     inventory: list[OutputInventory] = []
     for candidate in sorted(staging.rglob("*"), key=lambda path: path.as_posix()):
@@ -73,14 +99,18 @@ def scan_staged_outputs(
 
 
 def publish_inventory(
-    workspace: Path, run_id: str, inventory: Sequence[OutputInventory], maximum_bytes: int
+    workspace: Path,
+    run_id: str,
+    inventory: Sequence[OutputInventory],
+    maximum_bytes: int,
+    maximum_entries: int = 10_000,
 ) -> tuple[OutputInventory, ...]:
     """Atomically publish a complete pre-scanned run directory without replacement."""
     layout = workspace_layout(workspace)
     _validate_run_id(run_id)
     staging = layout.staging / run_id
     expected = tuple(sorted(inventory, key=lambda item: item.relative_path))
-    actual = scan_staged_outputs(layout.root, run_id, maximum_bytes)
+    actual = scan_staged_outputs(layout.root, run_id, maximum_bytes, maximum_entries)
     if actual != expected:
         raise RuntimeError("staged output inventory changed before publication")
     destination = layout.outputs / run_id
@@ -99,18 +129,24 @@ def publish_inventory(
     )
 
 
-def publish_file(workspace: Path, run_id: str, source: Path, maximum_bytes: int) -> OutputInventory:
+def publish_file(
+    workspace: Path,
+    run_id: str,
+    source: Path,
+    maximum_bytes: int,
+    maximum_entries: int = 10_000,
+) -> OutputInventory:
     """Publish a one-file staging directory through the public compatibility seam."""
     layout = workspace_layout(workspace)
     try:
         relative = source.relative_to(layout.staging / run_id)
     except ValueError as error:
         raise ValueError("output must be inside this run's staging directory") from error
-    inventory = scan_staged_outputs(layout.root, run_id, maximum_bytes)
+    inventory = scan_staged_outputs(layout.root, run_id, maximum_bytes, maximum_entries)
     matches = tuple(item for item in inventory if item.relative_path == relative.as_posix())
     if len(matches) != 1:
         raise ValueError("output must be one regular file inside this run's staging directory")
-    published = publish_inventory(layout.root, run_id, inventory, maximum_bytes)
+    published = publish_inventory(layout.root, run_id, inventory, maximum_bytes, maximum_entries)
     return published[
         tuple(item.relative_path for item in inventory).index(matches[0].relative_path)
     ]
@@ -150,7 +186,7 @@ def write_manifest(
         else now,
         "ended_at": now,
         "state": state,
-        "limits": dict(sorted((limits or {}).items())),
+        "limits": dict(sorted((limits or DEFAULT_MANIFEST_LIMITS).items())),
         "outputs": [
             {"byte_count": item.byte_count, "path": item.relative_path, "sha256": item.sha256}
             for item in sorted(all_outputs, key=lambda item: item.relative_path)
@@ -165,6 +201,19 @@ def write_manifest(
     }
     if reason is not None:
         value["reason"] = reason
+    created_value = _manifest_number(value["created_at"], "created_at")
+    started_value = _manifest_number(value["started_at"], "started_at")
+    validate_manifest(
+        value,
+        expected_run_id=run_id,
+        expected_command=command,
+        expected_state=state,
+        expected_outputs=all_outputs,
+        expected_reason=reason,
+        expected_created_at=created_value,
+        expected_started_at=started_value,
+        expected_run_log=run_log,
+    )
     path = workspace_layout(workspace).manifests / f"{run_id}.json"
     encoded = canonical_json(value)
     try:
@@ -174,6 +223,35 @@ def write_manifest(
         if _read_regular_text(path) != encoded:
             raise RuntimeError("terminal manifest already exists with different content") from None
     return value
+
+
+def quarantine_manifest(workspace: Path, run_id: str) -> Path | None:
+    """Move an untrusted pre-existing manifest aside without reading or following it."""
+    _validate_run_id(run_id)
+    layout = workspace_layout(workspace)
+    source = layout.manifests / f"{run_id}.json"
+    try:
+        metadata = source.lstat()
+    except FileNotFoundError:
+        return None
+    destination_directory = layout.staging / run_id
+    if destination_directory.is_symlink() or not destination_directory.is_dir():
+        raise ValueError("run staging directory is missing or unsafe")
+    for _ in range(3):
+        destination = destination_directory / f".rejected-manifest-{uuid.uuid4().hex}.json"
+        if destination.exists() or destination.is_symlink():
+            continue
+        if stat.S_ISREG(metadata.st_mode):
+            os.link(source, destination, follow_symlinks=False)
+            try:
+                source.unlink()
+            except BaseException:
+                destination.unlink(missing_ok=True)
+                raise
+        else:
+            os.rename(source, destination)
+        return destination
+    raise RuntimeError("could not reserve a safe manifest quarantine path")
 
 
 def append_run_log(
@@ -247,9 +325,207 @@ def sha256_file(path: Path) -> str:
     return digest.hexdigest()
 
 
+def scan_staged_usage(
+    workspace: Path, run_id: str, maximum_bytes: int, maximum_entries: int = 10_000
+) -> None:
+    """Bound live staged usage without hashing or materializing the complete tree."""
+    layout = workspace_layout(workspace)
+    _validate_run_id(run_id)
+    if maximum_bytes < 1 or maximum_entries < 1:
+        raise ValueError("staged output limits must be positive")
+    staging = layout.staging / run_id
+    if staging.is_symlink() or not staging.is_dir():
+        raise ValueError("run staging directory is missing or unsafe")
+    total_bytes = 0
+    entries = 0
+    pending = [staging]
+    while pending:
+        directory = pending.pop()
+        try:
+            with os.scandir(directory) as iterator:
+                for entry in iterator:
+                    entries += 1
+                    if entries > maximum_entries:
+                        raise RuntimeError("staged outputs exceed configured entry limit")
+                    candidate = Path(entry.path)
+                    relative = candidate.relative_to(staging)
+                    _validate_relative_path(relative)
+                    try:
+                        metadata = os.stat(entry.path, follow_symlinks=False)
+                    except OSError as error:
+                        raise ValueError("staged output could not be inspected") from error
+                    if stat.S_ISLNK(metadata.st_mode):
+                        raise ValueError("staged outputs must not contain symbolic links")
+                    if stat.S_ISDIR(metadata.st_mode):
+                        pending.append(candidate)
+                        continue
+                    if not stat.S_ISREG(metadata.st_mode):
+                        raise ValueError("staged outputs must contain regular files only")
+                    total_bytes += metadata.st_size
+                    if total_bytes > maximum_bytes:
+                        raise RuntimeError("staged outputs exceed configured byte limit")
+        except OSError as error:
+            raise ValueError("staged output directory could not be inspected") from error
+
+
 def canonical_json(value: object) -> str:
     """Encode deterministic JSON used for immutable evidence."""
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=True)
+
+
+def read_manifest(
+    path: Path,
+    *,
+    expected_run_id: str,
+    expected_command: str,
+    expected_state: TerminalRunState,
+    expected_outputs: Sequence[OutputInventory] = (),
+    expected_reason: str | None = None,
+    expected_created_at: float | None = None,
+    expected_started_at: float | None = None,
+    expected_ended_at: float | None = None,
+    expected_limits: Mapping[str, int] | None = None,
+    expected_run_log: RunLogInventory | None = None,
+) -> dict[str, object]:
+    """Read and strictly validate immutable parent-owned terminal evidence."""
+    if path.is_symlink() or not path.is_file():
+        raise ValueError("terminal manifest is unsafe")
+    try:
+        encoded = path.read_text(encoding="utf-8")
+        raw = json.loads(encoded)
+    except (OSError, UnicodeDecodeError, json.JSONDecodeError) as error:
+        raise ValueError("terminal manifest is invalid") from error
+    if canonical_json(raw) != encoded:
+        raise ValueError("terminal manifest is not canonical")
+    return validate_manifest(
+        raw,
+        expected_run_id=expected_run_id,
+        expected_command=expected_command,
+        expected_state=expected_state,
+        expected_outputs=expected_outputs,
+        expected_reason=expected_reason,
+        expected_created_at=expected_created_at,
+        expected_started_at=expected_started_at,
+        expected_ended_at=expected_ended_at,
+        expected_limits=expected_limits,
+        expected_run_log=expected_run_log,
+    )
+
+
+def validate_manifest(
+    value: object,
+    *,
+    expected_run_id: str,
+    expected_command: str,
+    expected_state: TerminalRunState,
+    expected_outputs: Sequence[OutputInventory] = (),
+    expected_reason: str | None = None,
+    expected_created_at: float | None = None,
+    expected_started_at: float | None = None,
+    expected_ended_at: float | None = None,
+    expected_limits: Mapping[str, int] | None = None,
+    expected_run_log: RunLogInventory | None = None,
+) -> dict[str, object]:
+    """Validate exact manifest schema, evidence, limits, and public values."""
+    if not isinstance(value, dict):
+        raise ValueError("terminal manifest must be an object")
+    manifest = cast(dict[str, object], value)
+    keys = _MANIFEST_BASE_KEYS | ({"reason"} if expected_reason is not None else set())
+    if set(manifest) != keys:
+        raise ValueError("terminal manifest schema is invalid")
+    if manifest.get("schema_version") != MANIFEST_SCHEMA_VERSION:
+        raise ValueError("terminal manifest schema is invalid")
+    if manifest.get("run_id") != expected_run_id or manifest.get("command") != expected_command:
+        raise ValueError("terminal manifest identity is invalid")
+    if manifest.get("state") != expected_state:
+        raise ValueError("terminal manifest state is invalid")
+    created_at = _manifest_number(manifest.get("created_at"), "created_at")
+    started_at = _manifest_number(manifest.get("started_at"), "started_at")
+    ended_at = _manifest_number(manifest.get("ended_at"), "ended_at")
+    if expected_created_at is not None and created_at != expected_created_at:
+        raise ValueError("terminal manifest creation time is invalid")
+    if expected_started_at is not None and started_at != expected_started_at:
+        raise ValueError("terminal manifest start time is invalid")
+    if expected_ended_at is not None and ended_at != expected_ended_at:
+        raise ValueError("terminal manifest end time is invalid")
+    if started_at < created_at or ended_at < started_at:
+        raise ValueError("terminal manifest timestamps are invalid")
+    raw_limits = manifest.get("limits")
+    if not isinstance(raw_limits, dict) or set(raw_limits) != MANIFEST_LIMIT_KEYS:
+        raise ValueError("terminal manifest limits are invalid")
+    for key, limit in raw_limits.items():
+        if not isinstance(key, str) or not isinstance(limit, int) or isinstance(limit, bool):
+            raise ValueError("terminal manifest limits are invalid")
+        if limit < 1:
+            raise ValueError("terminal manifest limits are invalid")
+    if expected_limits is not None and dict(raw_limits) != dict(expected_limits):
+        raise ValueError("terminal manifest limits do not match expected configuration")
+    actual_outputs = _manifest_outputs(manifest.get("outputs"))
+    expected_output_values = tuple(sorted(expected_outputs, key=lambda item: item.relative_path))
+    if actual_outputs != expected_output_values:
+        raise ValueError("terminal manifest outputs are invalid")
+    actual_log = _manifest_log(manifest.get("run_log"), expected_run_id)
+    if actual_log != expected_run_log:
+        raise ValueError("terminal manifest log evidence is invalid")
+    if expected_reason is None:
+        if "reason" in manifest:
+            raise ValueError("terminal manifest reason is invalid")
+    elif manifest.get("reason") != expected_reason:
+        raise ValueError("terminal manifest reason is invalid")
+    return manifest
+
+
+def _manifest_number(value: object, field: str) -> float:
+    if not isinstance(value, (int, float)) or isinstance(value, bool):
+        raise ValueError(f"terminal manifest {field} is invalid")
+    return float(value)
+
+
+def _manifest_outputs(value: object) -> tuple[OutputInventory, ...]:
+    if not isinstance(value, list):
+        raise ValueError("terminal manifest outputs are invalid")
+    outputs: list[OutputInventory] = []
+    for entry in value:
+        if not isinstance(entry, dict) or set(entry) != {"byte_count", "path", "sha256"}:
+            raise ValueError("terminal manifest outputs are invalid")
+        path, digest, byte_count = entry.get("path"), entry.get("sha256"), entry.get("byte_count")
+        if (
+            not isinstance(path, str)
+            or not isinstance(digest, str)
+            or not isinstance(byte_count, int)
+            or isinstance(byte_count, bool)
+        ):
+            raise ValueError("terminal manifest outputs are invalid")
+        relative = Path(path)
+        _validate_relative_path(relative)
+        if (
+            len(digest) != 64
+            or any(char not in "0123456789abcdef" for char in digest)
+            or byte_count < 0
+        ):
+            raise ValueError("terminal manifest outputs are invalid")
+        outputs.append(OutputInventory(path, digest, byte_count))
+    return tuple(sorted(outputs, key=lambda item: item.relative_path))
+
+
+def _manifest_log(value: object, run_id: str) -> RunLogInventory | None:
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"byte_count", "path", "sha256"}:
+        raise ValueError("terminal manifest log evidence is invalid")
+    path, digest, byte_count = value.get("path"), value.get("sha256"), value.get("byte_count")
+    if (
+        not isinstance(path, str)
+        or path != f"runs/logs/{run_id}.ndjson"
+        or not isinstance(digest, str)
+        or not isinstance(byte_count, int)
+        or isinstance(byte_count, bool)
+        or byte_count < 0
+        or len(digest) != 64
+        or any(char not in "0123456789abcdef" for char in digest)
+    ):
+        raise ValueError("terminal manifest log evidence is invalid")
+    return RunLogInventory(path, digest, byte_count)
 
 
 def _ensure_directory(path: Path) -> None:
@@ -259,10 +535,26 @@ def _ensure_directory(path: Path) -> None:
 
 
 def _write_new_file(path: Path, content: str) -> None:
-    with path.open("x", encoding="utf-8") as handle:
-        handle.write(content)
-        handle.flush()
-        os.fsync(handle.fileno())
+    temporary = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex}")
+    try:
+        descriptor = os.open(temporary, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        try:
+            with os.fdopen(descriptor, "wb") as handle:
+                handle.write(content.encode("utf-8"))
+                handle.flush()
+                os.fsync(handle.fileno())
+        except BaseException:
+            try:
+                os.close(descriptor)
+            except OSError:
+                pass
+            raise
+        os.link(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def _append_durable(path: Path, content: bytes) -> None:

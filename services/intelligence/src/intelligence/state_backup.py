@@ -10,8 +10,8 @@ import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
-from intelligence.artifacts import canonical_json, sha256_file
-from intelligence.models import OutputInventory, WorkspaceLayout
+from intelligence.artifacts import canonical_json, read_manifest, sha256_file
+from intelligence.models import OutputInventory, RunLogInventory, WorkspaceLayout
 from intelligence.state_publication import _validate_output
 from intelligence.state_schema import SCHEMA_VERSION
 
@@ -330,6 +330,32 @@ def _verify_run_manifest(
         or raw.get("state") != "completed"
     ):
         raise ValueError("accepted run manifest does not match durable state")
+    raw_log = raw.get("run_log")
+    run_log: RunLogInventory | None = None
+    if raw_log is not None:
+        if not isinstance(raw_log, dict):
+            raise ValueError("accepted run manifest log inventory is invalid")
+        log_path, log_digest, log_count = (
+            raw_log.get("path"),
+            raw_log.get("sha256"),
+            raw_log.get("byte_count"),
+        )
+        if (
+            not isinstance(log_path, str)
+            or not isinstance(log_digest, str)
+            or not isinstance(log_count, int)
+            or isinstance(log_count, bool)
+        ):
+            raise ValueError("accepted run manifest log inventory is invalid")
+        run_log = RunLogInventory(log_path, log_digest, log_count)
+    read_manifest(
+        path,
+        expected_run_id=run_id,
+        expected_command=command,
+        expected_state="completed",
+        expected_outputs=outputs,
+        expected_run_log=run_log,
+    )
     entries = raw.get("outputs")
     if not isinstance(entries, list):
         raise ValueError("accepted run manifest output inventory is invalid")

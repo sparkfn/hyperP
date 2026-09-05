@@ -36,6 +36,7 @@ class RuntimeConfig:
     max_runtime_seconds: int = 3_600
     max_log_bytes: int = 1_000_000
     max_output_bytes: int = 100_000_000
+    max_output_entries: int = 10_000
     stale_seconds: int = 300
 
     @classmethod
@@ -48,5 +49,6 @@ class RuntimeConfig:
             max_runtime_seconds=_positive("INTELLIGENCE_MAX_RUNTIME_SECONDS", 3_600),
             max_log_bytes=_positive("INTELLIGENCE_MAX_LOG_BYTES", 1_000_000),
             max_output_bytes=_positive("INTELLIGENCE_MAX_OUTPUT_BYTES", 100_000_000),
+            max_output_entries=_positive("INTELLIGENCE_MAX_OUTPUT_ENTRIES", 10_000),
             stale_seconds=_positive("INTELLIGENCE_STALE_SECONDS", 300),
         )

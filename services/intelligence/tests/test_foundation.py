@@ -44,6 +44,34 @@ def test_lock_fence_cancel_recovery_and_reopen(tmp_path: Path) -> None:
     reopened.close()
 
 
+def test_stale_recovery_fence_mismatch_rolls_back_run_and_lock(tmp_path: Path) -> None:
+    """A corrupt owner fence cannot partially transition the run or release the lock."""
+    state = State(tmp_path)
+    run = state.create_mutating_run("test")
+    state.connection.execute(
+        "UPDATE mutation_lock SET fence = fence + 1, heartbeat_at = 0 WHERE singleton = 1"
+    )
+    before_run = state.connection.execute(
+        "SELECT state, manifest_json, fence FROM runs WHERE id = ?", (run.run_id,)
+    ).fetchone()
+    before_lock = state.connection.execute(
+        "SELECT run_id, heartbeat_at, fence FROM mutation_lock WHERE singleton = 1"
+    ).fetchone()
+    try:
+        with pytest.raises(RuntimeError, match="fence"):
+            state.recover_stale(run.run_id, "operator recovery", 1)
+        after_run = state.connection.execute(
+            "SELECT state, manifest_json, fence FROM runs WHERE id = ?", (run.run_id,)
+        ).fetchone()
+        after_lock = state.connection.execute(
+            "SELECT run_id, heartbeat_at, fence FROM mutation_lock WHERE singleton = 1"
+        ).fetchone()
+        assert tuple(after_run) == tuple(before_run)
+        assert tuple(after_lock) == tuple(before_lock)
+    finally:
+        state.close()
+
+
 def test_atomic_no_replace_manifest_and_backup(tmp_path: Path) -> None:
     staging = tmp_path / "staging" / "run"
     staging.mkdir(parents=True)
