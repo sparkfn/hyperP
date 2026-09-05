@@ -149,3 +149,42 @@ def test_bundle_rejects_unsafe_extra_symlink(tmp_path: Path) -> None:
             state.verify_backup(bundle)
     finally:
         state.close()
+
+
+def test_bundle_rejects_custom_limit_manifest_tamper(tmp_path: Path) -> None:
+    """Backup verification binds completed evidence to persisted admission limits."""
+    runtime = IntelligenceRuntime(
+        RuntimeConfig(
+            tmp_path,
+            mutations_enabled=True,
+            max_log_bytes=101,
+            max_output_bytes=202,
+            max_output_entries=3,
+            max_runtime_seconds=4,
+        ),
+        Registry((RegisteredCommand("approved", True, bundle_success_handler, {}),)),
+    )
+    try:
+        run_id = runtime.run("approved")
+    finally:
+        runtime.close()
+    state = State(tmp_path)
+    try:
+        bundle = state.layout.backups / "custom-limits.bundle"
+        state.backup(bundle)
+        path = bundle / "evidence" / "manifests" / f"{run_id}.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["limits"]["max_output_bytes"] = 999
+        path.write_text(canonical_json(manifest), encoding="utf-8")
+        inventory_path = bundle / "manifest.json"
+        inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        for item in inventory["evidence"]:
+            if item["path"] == f"evidence/manifests/{run_id}.json":
+                item["sha256"] = sha256_file(path)
+                item["byte_count"] = path.stat().st_size
+                break
+        inventory_path.write_text(canonical_json(inventory), encoding="utf-8")
+        with pytest.raises(ValueError, match="limits"):
+            state.verify_backup(bundle)
+    finally:
+        state.close()

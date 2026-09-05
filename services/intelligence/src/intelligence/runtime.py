@@ -17,6 +17,7 @@ from intelligence.artifacts import (
     append_run_log,
     publish_inventory,
     quarantine_manifest,
+    read_manifest,
     run_log_inventory,
     scan_staged_outputs,
     scan_staged_usage,
@@ -32,6 +33,10 @@ _KILLPG = "killpg"
 _SIGKILL = "SIGKILL"
 _READY_TIMEOUT_SECONDS = 5
 _GROUP_GRACE_SECONDS = 1
+
+
+class CleanupUnresolvedError(RuntimeError):
+    """The child process group was not proven quiescent; durable lock must remain held."""
 
 
 class _ReadyChannel(Protocol):
@@ -64,7 +69,15 @@ class IntelligenceRuntime:
             raise RuntimeError("foundation accepts only bounded mutating command runs")
         if not self.config.mutations_enabled:
             raise RuntimeError("mutating execution is disabled")
-        run = self.state.create_mutating_run(name)
+        run = self.state.create_mutating_run(
+            name,
+            {
+                "max_log_bytes": self.config.max_log_bytes,
+                "max_output_bytes": self.config.max_output_bytes,
+                "max_output_entries": self.config.max_output_entries,
+                "max_runtime_seconds": self.config.max_runtime_seconds,
+            },
+        )
         staging = self.state.layout.staging / run.run_id
         staging.mkdir(mode=0o700, parents=True, exist_ok=False)
         started = time.monotonic()
@@ -106,6 +119,8 @@ class IntelligenceRuntime:
             )
             self._finish(run, "completed", published, None, publication=True)
             return run.run_id
+        except CleanupUnresolvedError:
+            raise
         except BaseException:
             terminal_state = self._terminal_state(run.run_id, started, failed=True)
             self._finish_if_possible(run, terminal_state, "runtime_error")
@@ -113,10 +128,36 @@ class IntelligenceRuntime:
 
     def _reconcile_startup(self) -> None:
         for recovered in self.state.reconcile_publications():
-            self._log(recovered.run, "publication_recovered", {"state": recovered.state})
-            manifest = self._manifest(
-                recovered.run, recovered.state, recovered.outputs, recovered.reason
-            )
+            manifest_path = self.state.layout.manifests / f"{recovered.run.run_id}.json"
+            existing: dict[str, object] | None = None
+            if manifest_path.exists() or manifest_path.is_symlink():
+                try:
+                    existing = read_manifest(
+                        manifest_path,
+                        expected_run_id=recovered.run.run_id,
+                        expected_command=recovered.run.command,
+                        expected_state=recovered.state,
+                        expected_outputs=recovered.outputs,
+                        expected_reason=recovered.reason,
+                        expected_created_at=recovered.run.created_at,
+                        expected_started_at=recovered.run.started_at,
+                        expected_ended_at=recovered.run.ended_at,
+                        expected_limits=(
+                            dict(recovered.run.limits) if recovered.run.limits else None
+                        ),
+                        expected_run_log=run_log_inventory(
+                            self.config.workspace, recovered.run.run_id
+                        ),
+                    )
+                except (OSError, ValueError):
+                    quarantine_manifest(self.config.workspace, recovered.run.run_id)
+            if existing is None:
+                self._log(recovered.run, "publication_recovered", {"state": recovered.state})
+                manifest = self._manifest(
+                    recovered.run, recovered.state, recovered.outputs, recovered.reason
+                )
+            else:
+                manifest = existing
             self.state.finalize_reconciled(recovered.run, manifest, recovered.outputs)
 
     def _wait_for_command(
@@ -147,18 +188,31 @@ class IntelligenceRuntime:
                 self.state.heartbeat(run)
                 time.sleep(0.1)
             process.join()
-            _quiesce_process_group(process)
+            try:
+                _quiesce_process_group(process)
+            except CleanupUnresolvedError:
+                raise
+            except BaseException as error:
+                raise CleanupUnresolvedError(
+                    "reviewed child process group cleanup failed"
+                ) from error
             return (
                 ("completed", "completed")
                 if process.exitcode == 0
                 else ("failed", "command_failed")
             )
+        except CleanupUnresolvedError:
+            raise
         except BaseException as error:
             try:
                 if process.is_alive():
                     _stop_child(process)
+                else:
+                    _quiesce_process_group(process)
+            except CleanupUnresolvedError:
+                raise
             except BaseException as cleanup_error:
-                raise RuntimeError("reviewed child cleanup failed") from cleanup_error
+                raise CleanupUnresolvedError("reviewed child cleanup failed") from cleanup_error
             raise error
 
     def _finish(
@@ -209,7 +263,8 @@ class IntelligenceRuntime:
             reason=reason,
             created_at=run.created_at,
             started_at=run.started_at,
-            limits={
+            limits=dict(run.limits)
+            or {
                 "max_log_bytes": self.config.max_log_bytes,
                 "max_output_bytes": self.config.max_output_bytes,
                 "max_output_entries": self.config.max_output_entries,
@@ -312,7 +367,7 @@ def _stop_child(process: BaseProcess, *, group_ready: bool = True) -> None:
     if group_ready:
         _quiesce_process_group(process)
     if process.is_alive():
-        raise RuntimeError("reviewed child process did not stop after forced termination")
+        raise CleanupUnresolvedError("reviewed child process did not stop after forced termination")
 
 
 def _signal_process_group(pid: int, signum: int) -> bool:
@@ -361,4 +416,4 @@ def _quiesce_process_group(process: BaseProcess) -> None:
         while _process_group_exists(pid) and time.monotonic() < deadline:
             time.sleep(0.01)
     if _process_group_exists(pid):
-        raise RuntimeError("reviewed child process group did not stop")
+        raise CleanupUnresolvedError("reviewed child process group did not stop")

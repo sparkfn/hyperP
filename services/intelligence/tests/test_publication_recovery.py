@@ -2,12 +2,20 @@
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 
 import pytest
 from intelligence import state as state_module
-from intelligence.artifacts import publish_inventory, scan_staged_outputs
+from intelligence.artifacts import (
+    canonical_json,
+    publish_inventory,
+    scan_staged_outputs,
+    sha256_file,
+    write_manifest,
+)
 from intelligence.config import RuntimeConfig
+from intelligence.models import OutputInventory
 from intelligence.registry import Registry
 from intelligence.runtime import IntelligenceRuntime
 from intelligence.state import State
@@ -109,3 +117,195 @@ def test_unreadable_published_evidence_is_classified_as_invalid(
         assert state.accepted_outputs(run_id) == ()
     finally:
         state.close()
+
+
+@pytest.mark.parametrize("kind", ("corrupt", "partial", "directory", "symlink"))
+def test_post_publication_invalid_manifest_is_quarantined(tmp_path: Path, kind: str) -> None:
+    """Post-rename recovery uses the independent rejected-manifest area."""
+    run_id, state = _orphan_publishing_run(tmp_path, publish=True)
+    manifest_path = state.layout.manifests / f"{run_id}.json"
+    if kind == "corrupt":
+        manifest_path.write_text("not-json", encoding="utf-8")
+    elif kind == "partial":
+        manifest_path.write_text('{"schema_version":2,"run_id":"broken"}', encoding="utf-8")
+    elif kind == "directory":
+        manifest_path.mkdir()
+    else:
+        target = tmp_path / "manifest-target"
+        target.write_text("attacker", encoding="utf-8")
+        try:
+            manifest_path.unlink()
+            manifest_path.symlink_to(target)
+        except OSError:
+            state.close()
+            pytest.skip("symbolic links are unavailable in this test environment")
+    state.close()
+    runtime = IntelligenceRuntime(RuntimeConfig(tmp_path), Registry())
+    try:
+        run = runtime.state.inspect(run_id)
+        assert run is not None and run.state == "completed"
+        assert len(runtime.state.accepted_outputs(run_id)) == 1
+        quarantine = tuple(
+            (runtime.state.layout.rejected_manifests / run_id).glob(".rejected-manifest-*.json")
+        )
+        assert len(quarantine) == 1
+        assert (runtime.state.layout.manifests / f"{run_id}.json").is_file()
+    finally:
+        runtime.close()
+
+
+def test_legacy_v1_manifest_allows_post_publication_stale_recovery(tmp_path: Path) -> None:
+    """A prior schema-v1 manifest remains valid after publication and stale recovery."""
+    run_id, state = _orphan_publishing_run(tmp_path, publish=True, release_lock=False)
+    try:
+        run = state.inspect(run_id)
+        assert run is not None
+        output_path = state.layout.outputs / run_id / "result.json"
+        output = OutputInventory(
+            f"outputs/{run_id}/result.json",
+            sha256_file(output_path),
+            output_path.stat().st_size,
+        )
+        legacy = {
+            "schema_version": 1,
+            "run_id": run_id,
+            "command": "approved",
+            "created_at": run.created_at,
+            "started_at": run.started_at,
+            "ended_at": run.created_at + 1,
+            "state": "completed",
+            "limits": {
+                "max_log_bytes": 101,
+                "max_output_bytes": 202,
+                "max_runtime_seconds": 303,
+            },
+            "outputs": [
+                {
+                    "byte_count": output.byte_count,
+                    "path": output.relative_path,
+                    "sha256": output.sha256,
+                }
+            ],
+            "run_log": None,
+        }
+        (state.layout.manifests / f"{run_id}.json").write_text(
+            canonical_json(legacy), encoding="utf-8"
+        )
+        state.connection.execute("UPDATE runs SET limits_json = NULL WHERE id = ?", (run_id,))
+        state.connection.execute("UPDATE mutation_lock SET heartbeat_at = 0 WHERE singleton = 1")
+        state.recover_stale(run_id, "operator recovery", 1)
+        recovered = state.inspect(run_id)
+        assert recovered is not None and recovered.state == "completed"
+        assert state.accepted_outputs(run_id) == (output,)
+    finally:
+        state.close()
+
+
+def test_legacy_v1_custom_limits_reused_during_lock_free_startup(tmp_path: Path) -> None:
+    """A migrated v4 row does not impose current runtime limits on old evidence."""
+    run_id, state = _orphan_publishing_run(tmp_path, publish=True)
+    run = state.inspect(run_id)
+    assert run is not None
+    output_path = state.layout.outputs / run_id / "result.json"
+    output = OutputInventory(
+        f"outputs/{run_id}/result.json",
+        sha256_file(output_path),
+        output_path.stat().st_size,
+    )
+    legacy = {
+        "schema_version": 1,
+        "run_id": run_id,
+        "command": "approved",
+        "created_at": run.created_at,
+        "started_at": run.started_at,
+        "ended_at": run.created_at + 1,
+        "state": "completed",
+        "limits": {
+            "max_log_bytes": 111,
+            "max_output_bytes": 222,
+            "max_runtime_seconds": 333,
+        },
+        "outputs": [
+            {
+                "byte_count": output.byte_count,
+                "path": output.relative_path,
+                "sha256": output.sha256,
+            }
+        ],
+        "run_log": None,
+    }
+    (state.layout.manifests / f"{run_id}.json").write_text(canonical_json(legacy), encoding="utf-8")
+    state.connection.execute("UPDATE runs SET limits_json = NULL WHERE id = ?", (run_id,))
+    state.close()
+    runtime = IntelligenceRuntime(RuntimeConfig(tmp_path), Registry())
+    try:
+        recovered = runtime.state.inspect(run_id)
+        assert recovered is not None and recovered.state == "completed"
+        assert (
+            json.loads(
+                (runtime.state.layout.manifests / f"{run_id}.json").read_text(encoding="utf-8")
+            )["limits"]
+            == legacy["limits"]
+        )
+    finally:
+        runtime.close()
+
+
+def test_post_publication_quarantine_failure_can_retry(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """An interrupted quarantine preserves the stale lock until a later retry succeeds."""
+    run_id, state = _orphan_publishing_run(tmp_path, publish=True, release_lock=False)
+    try:
+        (state.layout.manifests / f"{run_id}.json").write_text("not-json", encoding="utf-8")
+        state.connection.execute("UPDATE mutation_lock SET heartbeat_at = 0 WHERE singleton = 1")
+
+        def fail_quarantine(_workspace: Path, _run_id: str) -> Path | None:
+            raise OSError("injected quarantine interruption")
+
+        original = state_module.quarantine_manifest
+        monkeypatch.setattr(state_module, "quarantine_manifest", fail_quarantine)
+        with pytest.raises(OSError, match="interruption"):
+            state.recover_stale(run_id, "operator recovery", 1)
+        lock = state.connection.execute(
+            "SELECT run_id FROM mutation_lock WHERE singleton = 1"
+        ).fetchone()
+        assert lock is not None and lock[0] == run_id
+        monkeypatch.setattr(state_module, "quarantine_manifest", original)
+        state.recover_stale(run_id, "operator retry", 1)
+        recovered = state.inspect(run_id)
+        assert recovered is not None and recovered.state == "completed"
+        assert state.active_run() is None
+    finally:
+        state.close()
+
+
+def test_startup_reuses_valid_preexisting_parent_manifest(tmp_path: Path) -> None:
+    """A valid parent manifest survives the publication-to-DB crash window unchanged."""
+    run_id, state = _orphan_publishing_run(tmp_path, publish=True)
+    run = state.inspect(run_id)
+    assert run is not None
+    output_path = state.layout.outputs / run_id / "result.json"
+    output = OutputInventory(
+        f"outputs/{run_id}/result.json", sha256_file(output_path), output_path.stat().st_size
+    )
+    write_manifest(
+        tmp_path,
+        run_id,
+        run.command,
+        "completed",
+        outputs=(output,),
+        created_at=run.created_at,
+        started_at=run.started_at,
+        limits=dict(run.limits),
+    )
+    original = (state.layout.manifests / f"{run_id}.json").read_bytes()
+    state.close()
+    runtime = IntelligenceRuntime(RuntimeConfig(tmp_path), Registry())
+    try:
+        assert (runtime.state.layout.manifests / f"{run_id}.json").read_bytes() == original
+        assert tuple((runtime.state.layout.rejected_manifests / run_id).glob("*")) == ()
+        recovered = runtime.state.inspect(run_id)
+        assert recovered is not None and recovered.state == "completed"
+    finally:
+        runtime.close()

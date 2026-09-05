@@ -29,6 +29,7 @@ class WorkspaceLayout:
     staging: Path
     runs: Path
     manifests: Path
+    rejected_manifests: Path
     logs: Path
     outputs: Path
     backups: Path
@@ -48,6 +49,7 @@ class Run:
     recovery_reason: str | None = None
     started_at: float | None = None
     ended_at: float | None = None
+    limits: tuple[tuple[str, int], ...] = ()
 
 
 @dataclass(frozen=True)

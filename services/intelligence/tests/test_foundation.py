@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import json
+import sqlite3
 from pathlib import Path
 
 import pytest
-from intelligence.artifacts import publish_file, write_manifest
+from intelligence.artifacts import canonical_json, publish_file, workspace_layout, write_manifest
 from intelligence.config import RuntimeConfig
 from intelligence.registry import PRODUCTION_REGISTRY, RegisteredCommand, Registry
 from intelligence.runtime import IntelligenceRuntime
@@ -110,3 +112,72 @@ def test_newer_schema_is_rejected_on_reopen(tmp_path: Path) -> None:
     state.close()
     with pytest.raises(RuntimeError, match="newer schema"):
         State(tmp_path)
+
+
+def test_legacy_v1_manifest_reopens_and_verifies_in_backup(tmp_path: Path) -> None:
+    """Prior schema-v1 evidence with empty limits remains readable and exportable."""
+    state = State(tmp_path)
+    run = state.create_mutating_run("legacy")
+    legacy = {
+        "schema_version": 1,
+        "run_id": run.run_id,
+        "command": "legacy",
+        "created_at": run.created_at,
+        "started_at": run.started_at,
+        "ended_at": run.created_at + 1,
+        "state": "completed",
+        "limits": {},
+        "outputs": [],
+        "run_log": None,
+    }
+    (state.layout.outputs / run.run_id).mkdir(parents=True)
+    state.terminal(run, "completed", legacy)
+    manifest_path = state.layout.manifests / f"{run.run_id}.json"
+    manifest_path.write_text(canonical_json(legacy), encoding="utf-8")
+    state.close()
+    reopened = State(tmp_path)
+    try:
+        backup = reopened.layout.backups / "legacy-v1.bundle"
+        reopened.backup(backup)
+        reopened.verify_backup(backup)
+        assert json.loads(manifest_path.read_text(encoding="utf-8"))["schema_version"] == 1
+    finally:
+        reopened.close()
+
+
+def test_schema_v4_state_migrates_admission_limits_column(tmp_path: Path) -> None:
+    """The limits metadata migration is safe for an existing v4 workspace."""
+    layout = workspace_layout(tmp_path)
+    connection = sqlite3.connect(layout.state_database)
+    connection.executescript(
+        """
+        CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO metadata(key, value) VALUES('schema_version', '4');
+        CREATE TABLE runs (
+            id TEXT PRIMARY KEY, command TEXT NOT NULL, state TEXT NOT NULL,
+            fence INTEGER NOT NULL, created_at REAL NOT NULL, heartbeat_at REAL,
+            cancellation_requested INTEGER NOT NULL DEFAULT 0, recovery_reason TEXT,
+            manifest_json TEXT, publishing_inventory_json TEXT, started_at REAL, ended_at REAL
+        );
+        CREATE TABLE mutation_lock (
+            singleton INTEGER PRIMARY KEY CHECK(singleton = 1), run_id TEXT,
+            fence INTEGER NOT NULL DEFAULT 0, heartbeat_at REAL
+        );
+        CREATE TABLE accepted_outputs (
+            relative_path TEXT PRIMARY KEY, run_id TEXT NOT NULL,
+            sha256 TEXT NOT NULL, byte_count INTEGER NOT NULL
+        );
+        INSERT INTO mutation_lock(singleton) VALUES(1);
+        """
+    )
+    connection.close()
+    reopened = State(tmp_path)
+    try:
+        version = reopened.connection.execute(
+            "SELECT value FROM metadata WHERE key = 'schema_version'"
+        ).fetchone()[0]
+        columns = {str(row[1]) for row in reopened.connection.execute("PRAGMA table_info(runs)")}
+        assert version == "5"
+        assert "limits_json" in columns
+    finally:
+        reopened.close()

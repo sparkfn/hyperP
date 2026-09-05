@@ -31,7 +31,8 @@ symlinked, or tampered publication is terminalized as failed with no accepted ou
 ## Persistence and recovery
 
 SQLite uses WAL and the named volume contains `state/`, `staging/`, `runs/manifests/`,
-`runs/logs/`, `outputs/`, and `backups/`. Terminal run evidence is immutable canonical JSON; each
+`runs/rejected-manifests/`, `runs/logs/`, `outputs/`, and `backups/`. Terminal run evidence is
+immutable canonical JSON; each
 bounded secret-free NDJSON log has timestamps, severity, command/run identity, safe details, and a
 checksum recorded in its terminal manifest. Removing/recreating only the Intelligence container
 preserves the volume. Do not remove the volume. Restore, pruning, automatic cleanup, schedules,
@@ -39,3 +40,9 @@ and live execution are excluded. Future reviewed work remains default-off and bo
 parent starts each handler in a private process session, suppresses raw child stdout/stderr,
 monitors aggregate staged bytes and entry count while it runs, and terminates the whole
 process group on timeout or durable cancellation.
+
+Manifest writers emit schema v2 while readers retain safe schema-v1 compatibility for legacy
+empty or three-key limit objects, normalizing the missing entry limit to its documented default.
+Effective limits are persisted at run admission and reused for stale recovery and backup
+verification. Any handler-created or corrupt manifest is quarantined under
+`runs/rejected-manifests/` without being read or followed.

@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 ConnectionVerifier = Callable[[sqlite3.Connection], None]
 
 
@@ -61,7 +61,8 @@ def bootstrap(connection: sqlite3.Connection, verify_connection: ConnectionVerif
             id TEXT PRIMARY KEY, command TEXT NOT NULL, state TEXT NOT NULL,
             fence INTEGER NOT NULL, created_at REAL NOT NULL, heartbeat_at REAL,
             cancellation_requested INTEGER NOT NULL DEFAULT 0, recovery_reason TEXT,
-            manifest_json TEXT, publishing_inventory_json TEXT, started_at REAL, ended_at REAL
+            manifest_json TEXT, publishing_inventory_json TEXT, started_at REAL, ended_at REAL,
+            limits_json TEXT
         );
         CREATE TABLE IF NOT EXISTS mutation_lock (
             singleton INTEGER PRIMARY KEY CHECK(singleton = 1), run_id TEXT,
@@ -91,13 +92,21 @@ def bootstrap(connection: sqlite3.Connection, verify_connection: ConnectionVerif
 
 def upgrade(connection: sqlite3.Connection, version: int) -> None:
     """Apply the bounded in-place schema upgrade path."""
-    if version < 1 or version > 3:
+    if version < 1 or version > 4:
         raise RuntimeError("Intelligence state schema is unsupported")
     columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(runs)")}
-    for name in ("cancellation_requested", "publishing_inventory_json", "started_at", "ended_at"):
+    for name in (
+        "cancellation_requested",
+        "publishing_inventory_json",
+        "started_at",
+        "ended_at",
+        "limits_json",
+    ):
         if name not in columns:
             default = " INTEGER NOT NULL DEFAULT 0" if name == "cancellation_requested" else " REAL"
             if name == "publishing_inventory_json":
+                default = " TEXT"
+            if name == "limits_json":
                 default = " TEXT"
             connection.execute(f"ALTER TABLE runs ADD COLUMN {name}{default}")
     connection.execute(
