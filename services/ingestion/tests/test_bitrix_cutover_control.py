@@ -438,9 +438,17 @@ def test_predecessor_freeze_is_generation_scoped() -> None:
     )
     assert "collect(old_relation) AS old_relations" in VERIFY_BITRIX_SUCCESSOR_TAIL
     assert "relation.status = 'superseded'" in VERIFY_BITRIX_SUCCESSOR_TAIL
-    assert "count(coverage) AS successor_coverage_count" in VERIFY_BITRIX_SUCCESSOR_TAIL
+    assert (
+        "count(CASE WHEN coverage.stream_key IN expected_streams THEN 1 END)"
+        in VERIFY_BITRIX_SUCCESSOR_TAIL
+    )
     assert "AS acceptable_coverage_count" in VERIFY_BITRIX_SUCCESSOR_TAIL
-    assert "collect(DISTINCT coverage.stream_key) AS coverage_streams" in (
+    assert "coverage.stream_key IN expected_streams" in VERIFY_BITRIX_SUCCESSOR_TAIL
+    assert (
+        "collect(DISTINCT CASE WHEN coverage.stream_key IN expected_streams "
+        "THEN coverage.stream_key END)"
+    ) in VERIFY_BITRIX_SUCCESSOR_TAIL
+    assert "all(expected IN expected_streams WHERE expected IN coverage_streams)" in (
         VERIFY_BITRIX_SUCCESSOR_TAIL
     )
     assert "NOT coverage.disposition IN ['conflict', 'failed']" in (VERIFY_BITRIX_SUCCESSOR_TAIL)
