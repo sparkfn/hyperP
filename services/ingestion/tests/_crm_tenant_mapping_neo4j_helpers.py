@@ -82,13 +82,16 @@ def _neo4j_driver() -> Iterator[Driver]:
     driver = GraphDatabase.driver(
         uri, auth=(os.getenv("HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_USER", "neo4j"), password)
     )
+    setup_complete = False
     try:
         driver.verify_connectivity()
         _cleanup(driver)
+        setup_complete = True
         yield driver
     finally:
         try:
-            _cleanup(driver)
+            if setup_complete:
+                _cleanup(driver)
         finally:
             driver.close()
 

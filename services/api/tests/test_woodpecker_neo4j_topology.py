@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import re
+import subprocess
+import sys
 from pathlib import Path
 from typing import cast
 
@@ -15,6 +17,7 @@ _NEO4J_SHARDS = {
     "projection": {
         "service": "neo4j-projection",
         "families": ("HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST",),
+        "readiness_family": "HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST",
     },
     "ledger-api": {
         "service": "neo4j-ledger-api",
@@ -22,8 +25,13 @@ _NEO4J_SHARDS = {
             "HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST",
             "HYPERP_NEO4J_CRM_METRICS_TEST",
             "HYPERP_NEO4J_PERSON_LIST_TEST",
-            "HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST",
         ),
+        "readiness_family": "HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST",
+    },
+    "ledger-310": {
+        "service": "neo4j-ledger-310",
+        "families": ("HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST",),
+        "readiness_family": "HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST",
     },
     "census-migration": {
         "service": "neo4j-census-migration",
@@ -35,6 +43,7 @@ _NEO4J_SHARDS = {
             "HYPERP_NEO4J_STANDALONE_CRM_CENSUS_TEST",
             "HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST",
         ),
+        "readiness_family": "HYPERP_NEO4J_PERSON_COMPLETENESS_TEST",
     },
     "repair-mapping": {
         "service": "neo4j-repair-mapping",
@@ -42,6 +51,7 @@ _NEO4J_SHARDS = {
             "HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST",
             "HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST",
         ),
+        "readiness_family": "HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST",
     },
 }
 _NEO4J_SUITE_MANIFEST = frozenset(
@@ -101,6 +111,29 @@ def _workflow_steps(workflow: dict[str, object]) -> dict[str, dict[str, object]]
     return steps
 
 
+def _readiness_command(family: str) -> str:
+    assert (_REPOSITORY_ROOT / "scripts" / "wait_for_neo4j.py").is_file()
+    return (
+        "uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py "
+        f"--uri-env {family}_URI --user-env {family}_USER "
+        f"--password-env {family}_PASSWORD --timeout-seconds 90"
+    )
+
+
+def _assert_readiness_precedes_pytest(step: dict[str, object], family: str) -> None:
+    commands = step.get("commands")
+    assert isinstance(commands, list)
+    rendered_commands = [command for command in commands if isinstance(command, str)]
+    assert len(rendered_commands) == len(commands)
+    assert rendered_commands[:2] == ["uv sync --frozen", _readiness_command(family)]
+    assert rendered_commands.count(_readiness_command(family)) == 1
+    pytest_indexes = [
+        index for index, command in enumerate(rendered_commands) if " pytest " in command
+    ]
+    assert pytest_indexes
+    assert 1 < min(pytest_indexes)
+
+
 def _neo4j_manifest(steps: dict[str, dict[str, object]]) -> frozenset[tuple[str, str]]:
     manifest: set[tuple[str, str]] = set()
     for shard in _NEO4J_SHARDS:
@@ -117,6 +150,30 @@ def _neo4j_manifest(steps: dict[str, dict[str, object]]) -> frozenset[tuple[str,
                 if token.startswith("services/") and "_neo4j" in token and token.endswith(".py"):
                     manifest.add((token, selector))
     return frozenset(manifest)
+
+
+def test_woodpecker_neo4j_readiness_timeout_rejects_non_finite_values() -> None:
+    script = _REPOSITORY_ROOT / "scripts" / "wait_for_neo4j.py"
+    for timeout in ("nan", "inf", "-inf"):
+        result = subprocess.run(
+            [
+                sys.executable,
+                str(script),
+                "--uri-env",
+                "HYPERP_UNUSED_NEO4J_URI",
+                "--user-env",
+                "HYPERP_UNUSED_NEO4J_USER",
+                "--password-env",
+                "HYPERP_UNUSED_NEO4J_PASSWORD",
+                "--timeout-seconds",
+                timeout,
+            ],
+            capture_output=True,
+            check=False,
+            text=True,
+        )
+        assert result.returncode != 0
+        assert "finite positive number" in result.stderr
 
 
 def test_woodpecker_neo4j_shards_are_complete_isolated_and_parity_checked() -> None:
@@ -165,6 +222,9 @@ def test_woodpecker_neo4j_shards_are_complete_isolated_and_parity_checked() -> N
             step = steps[f"neo4j-{shard}-checks"]
             step_environment = step.get("environment")
             assert step.get("depends_on") == []
+            readiness_family = contract["readiness_family"]
+            assert isinstance(readiness_family, str)
+            _assert_readiness_precedes_pytest(step, readiness_family)
             assert isinstance(step_environment, dict)
             shard_environment = cast(dict[str, object], step_environment)
             environments.append(shard_environment)
@@ -206,8 +266,8 @@ def test_woodpecker_neo4j_shards_are_complete_isolated_and_parity_checked() -> N
             else:
                 assert "when" not in step
 
-        assert len({environment["UV_PROJECT_ENVIRONMENT"] for environment in environments}) == 4
-        assert len({environment["PYTEST_ADDOPTS"] for environment in environments}) == 4
+        assert len({environment["UV_PROJECT_ENVIRONMENT"] for environment in environments}) == 5
+        assert len({environment["PYTEST_ADDOPTS"] for environment in environments}) == 5
         manifests[workflow_name] = _neo4j_manifest(steps)
         rendered = str(workflow).lower()
         prohibited_terms = (
