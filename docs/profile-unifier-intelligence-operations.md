@@ -22,6 +22,12 @@ single safe names, not paths or `.sqlite3` snapshots. A bundle is atomic/no-repl
 SQLite online snapshot plus checksummed copies of completed-run manifests and accepted outputs;
 verify it before exporting a copy off-volume. There is no restore or pruning command.
 
+Cancellation is accepted while a run is queued or executing. Entering `publishing` is the
+explicit non-cancellable commit point: a second connection receives a rejection rather than
+silently racing terminal publication. A stale publishing run is recovered against its durable
+inventory: every intact published output is registered and completed, while a missing, partial,
+symlinked, or tampered publication is terminalized as failed with no accepted outputs.
+
 ## Persistence and recovery
 
 SQLite uses WAL and the named volume contains `state/`, `staging/`, `runs/manifests/`,
@@ -30,4 +36,6 @@ bounded secret-free NDJSON log has timestamps, severity, command/run identity, s
 checksum recorded in its terminal manifest. Removing/recreating only the Intelligence container
 preserves the volume. Do not remove the volume. Restore, pruning, automatic cleanup, schedules,
 and live execution are excluded. Future reviewed work remains default-off and bounded because the
-parent terminates its spawned child on timeout or durable cancellation.
+parent starts each handler in a private process session, suppresses raw child stdout/stderr,
+monitors aggregate staged bytes while it runs, and terminates the whole process group on timeout
+or durable cancellation.

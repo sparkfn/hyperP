@@ -2,11 +2,17 @@
 
 from __future__ import annotations
 
+import contextlib
 import json
+import os
+import signal
+import sys
 import time
+from collections.abc import Callable
 from multiprocessing import get_context
 from multiprocessing.process import BaseProcess
 from pathlib import Path
+from typing import cast
 
 from intelligence.artifacts import (
     append_run_log,
@@ -19,6 +25,10 @@ from intelligence.config import RuntimeConfig
 from intelligence.models import Health, OutputInventory, Run, TerminalRunState
 from intelligence.registry import PRODUCTION_REGISTRY, CommandHandler, Registry
 from intelligence.state import State
+
+_SETSID = "setsid"
+_KILLPG = "killpg"
+_SIGKILL = "SIGKILL"
 
 
 class IntelligenceRuntime:
@@ -52,9 +62,9 @@ class IntelligenceRuntime:
         self._log(run, "started", {})
         try:
             process = _start_command(command.execute, staging)
-            terminal_state = self._wait_for_command(process, run, started)
+            terminal_state, termination_reason = self._wait_for_command(process, run, started)
             if terminal_state != "completed":
-                self._finish(run, terminal_state, (), "command_terminated")
+                self._finish(run, terminal_state, (), termination_reason)
                 if terminal_state == "failed":
                     raise RuntimeError("reviewed command process failed")
                 return run.run_id
@@ -85,19 +95,43 @@ class IntelligenceRuntime:
             )
             self.state.finalize_reconciled(recovered.run, manifest, recovered.outputs)
 
-    def _wait_for_command(self, process: BaseProcess, run: Run, started: float) -> TerminalRunState:
+    def _wait_for_command(
+        self, process: BaseProcess, run: Run, started: float
+    ) -> tuple[TerminalRunState, str]:
         """Enforce cancellation/runtime bounds by terminating a reviewed child process."""
-        while process.is_alive():
-            if self.state.is_cancelled(run.run_id):
-                _stop_child(process)
-                return "cancelled"
-            if time.monotonic() - started >= self.config.max_runtime_seconds:
-                _stop_child(process)
-                return "timed_out"
-            self.state.heartbeat(run)
-            time.sleep(0.1)
-        process.join()
-        return "completed" if process.exitcode == 0 else "failed"
+        try:
+            while process.is_alive():
+                if self.state.is_cancelled(run.run_id):
+                    _stop_child(process)
+                    return "cancelled", "cancellation_requested"
+                if time.monotonic() - started >= self.config.max_runtime_seconds:
+                    _stop_child(process)
+                    return "timed_out", "runtime_limit_exceeded"
+                try:
+                    scan_staged_outputs(
+                        self.config.workspace, run.run_id, self.config.max_output_bytes
+                    )
+                except RuntimeError:
+                    _stop_child(process)
+                    return "failed", "output_limit_exceeded"
+                except ValueError:
+                    _stop_child(process)
+                    return "failed", "unsafe_staged_output"
+                self.state.heartbeat(run)
+                time.sleep(0.1)
+            process.join()
+            return (
+                ("completed", "completed")
+                if process.exitcode == 0
+                else ("failed", "command_failed")
+            )
+        except BaseException as error:
+            try:
+                if process.is_alive():
+                    _stop_child(process)
+            except BaseException as cleanup_error:
+                raise RuntimeError("reviewed child cleanup failed") from cleanup_error
+            raise error
 
     def _finish(
         self,
@@ -190,9 +224,25 @@ class IntelligenceRuntime:
 def _start_command(handler: CommandHandler, staging: Path) -> BaseProcess:
     """Start only a reviewed registry callable; no caller executable or shell is accepted."""
     context = get_context("spawn")
-    process = context.Process(target=handler, args=(staging, _not_cancelled))
+    process = context.Process(target=_child_entry, args=(handler, staging))
     process.start()
     return process
+
+
+def _child_entry(handler: CommandHandler, staging: Path) -> None:
+    """Run a handler in a private session with raw output and tracebacks suppressed."""
+    if os.name != "nt":
+        cast(Callable[[], None], getattr(os, _SETSID))()
+    with open(os.devnull, "w", encoding="utf-8") as sink:
+        sys.stdout.flush()
+        sys.stderr.flush()
+        os.dup2(sink.fileno(), 1)
+        os.dup2(sink.fileno(), 2)
+        with contextlib.redirect_stdout(sink), contextlib.redirect_stderr(sink):
+            try:
+                handler(staging, _not_cancelled)
+            except BaseException:
+                sys.exit(1)
 
 
 def _not_cancelled() -> bool:
@@ -202,10 +252,24 @@ def _not_cancelled() -> bool:
 
 def _stop_child(process: BaseProcess) -> None:
     """Terminate, then kill if necessary, before releasing a bounded-run mutation lock."""
-    process.terminate()
+    if os.name != "nt" and process.pid is not None:
+        try:
+            cast(Callable[[int, int], None], getattr(os, _KILLPG))(process.pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    else:
+        process.terminate()
     process.join(timeout=5)
     if process.is_alive():
-        process.kill()
+        if os.name != "nt" and process.pid is not None:
+            try:
+                cast(Callable[[int, int], None], getattr(os, _KILLPG))(
+                    process.pid, cast(int, getattr(signal, _SIGKILL))
+                )
+            except ProcessLookupError:
+                pass
+        else:
+            process.kill()
         process.join(timeout=5)
     if process.is_alive():
         raise RuntimeError("reviewed child process did not stop after forced termination")

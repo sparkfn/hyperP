@@ -92,6 +92,7 @@ def publish_inventory(
         raise FileExistsError("accepted output directory already exists") from error
     except OSError as error:
         raise RuntimeError("output publication requires the workspace same volume") from error
+    _fsync_directory(destination.parent)
     return tuple(
         OutputInventory(f"outputs/{run_id}/{item.relative_path}", item.sha256, item.byte_count)
         for item in expected
@@ -168,6 +169,7 @@ def write_manifest(
     encoded = canonical_json(value)
     try:
         _write_new_file(path, encoded)
+        _fsync_directory(path.parent)
     except FileExistsError:
         if _read_regular_text(path) != encoded:
             raise RuntimeError("terminal manifest already exists with different content") from None
@@ -268,6 +270,17 @@ def _append_durable(path: Path, content: bytes) -> None:
         handle.write(content)
         handle.flush()
         os.fsync(handle.fileno())
+
+
+def _fsync_directory(path: Path) -> None:
+    """Persist a directory entry where the host supports directory fsync."""
+    if os.name == "nt":
+        return
+    descriptor = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(descriptor)
+    finally:
+        os.close(descriptor)
 
 
 def _read_regular_text(path: Path) -> str:
