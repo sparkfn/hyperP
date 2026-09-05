@@ -1,23 +1,47 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import {
-  Bolt,
-  ChatBubbleOutline,
-  Handshake,
-  PhoneInTalk,
-  WorkOutline,
-} from "@mui/icons-material";
-import React, { useEffect, useState, type ReactElement } from "react";
+import Bolt from "@mui/icons-material/Bolt";
+import ChatBubbleOutline from "@mui/icons-material/ChatBubbleOutline";
+import Handshake from "@mui/icons-material/Handshake";
+import PhoneInTalk from "@mui/icons-material/PhoneInTalk";
+import WorkOutline from "@mui/icons-material/WorkOutline";
+import React, { useEffect, useMemo, useState, type ReactElement } from "react";
 
 import { bffFetch, BffError } from "@/lib/api-client";
-import type { PersonCrmMetrics } from "@/lib/api-types";
+import type {
+  PersonCrmActivityMetrics,
+  PersonCrmDealMetrics,
+} from "@/lib/api-types";
 import styles from "./CrmMetricsPanel.module.css";
 
 interface CrmMetricsPanelProps {
   personId: string;
   onTotalLoaded: (total: number) => void;
 }
+
+type CombinedCrmMetrics = PersonCrmDealMetrics & {
+  activity_count: number | null;
+  call_count: number | null;
+  activity_kind_breakdown: PersonCrmActivityMetrics extends infer T
+    ? T extends { activity_kind_breakdown: infer B } ? B : never : never;
+  first_activity_at: string | null;
+  first_activity_at_display: string | null;
+  last_activity_at: string | null;
+  last_activity_at_display: string | null;
+  recent_30d_activity_count: number | null;
+  recent_30d_call_count: number | null;
+  recent_30d_daily_activity_counts: number[];
+  recent_30d_daily_call_counts: number[];
+  recent_30d_activity_change_pct: number | null;
+  recent_30d_call_change_pct: number | null;
+  last_crm_touch_at: string | null;
+  last_crm_touch_at_display: string | null;
+  days_since_last_crm_touch: number | null;
+  days_since_last_activity: number | null;
+  activity_status: "loading" | "complete" | "partial" | "unavailable";
+  activity_reason: string | null;
+};
 
 function titleCase(value: string): string {
   return value
@@ -27,13 +51,11 @@ function titleCase(value: string): string {
     .join(" ");
 }
 
-function metricTotal(metrics: PersonCrmMetrics): number {
-  return (
-    metrics.deal_count +
-    metrics.activity_count +
-    metrics.call_count +
-    metrics.conversation_count
-  );
+function metricTotal(metrics: CombinedCrmMetrics): number {
+  const liveTotal = metrics.activity_status === "complete"
+    ? (metrics.activity_count ?? 0) + (metrics.call_count ?? 0)
+    : 0;
+  return metrics.deal_count + metrics.conversation_count + liveTotal;
 }
 
 function errorMessage(error: Error | null): string {
@@ -49,25 +71,67 @@ function displayDate(value: string | null): string {
   return value ?? "—";
 }
 
+function composeMetrics(
+  deals: PersonCrmDealMetrics,
+  activity: PersonCrmActivityMetrics | undefined,
+  activityFailed: boolean,
+): CombinedCrmMetrics {
+  const completeActivity = activity?.status === "complete" ? activity : null;
+  const aggregate = activity?.status === "complete" || activity?.status === "partial" ? activity : null;
+  return {
+    ...deals,
+    entity_breakdown: deals.entity_breakdown,
+    activity_count: aggregate?.activity_count ?? null,
+    call_count: aggregate?.call_count ?? null,
+    activity_kind_breakdown: aggregate?.activity_kind_breakdown ?? [],
+    first_activity_at: aggregate?.first_activity_at ?? null,
+    first_activity_at_display: aggregate?.first_activity_at_display ?? null,
+    last_activity_at: aggregate?.last_activity_at ?? null,
+    last_activity_at_display: aggregate?.last_activity_at_display ?? null,
+    recent_30d_activity_count: aggregate?.recent_30d_activity_count ?? null,
+    recent_30d_call_count: aggregate?.recent_30d_call_count ?? null,
+    recent_30d_daily_activity_counts: completeActivity?.recent_30d_daily_activity_counts ?? [],
+    recent_30d_daily_call_counts: completeActivity?.recent_30d_daily_call_counts ?? [],
+    recent_30d_activity_change_pct: completeActivity?.recent_30d_activity_change_pct ?? null,
+    recent_30d_call_change_pct: completeActivity?.recent_30d_call_change_pct ?? null,
+    last_crm_touch_at: completeActivity?.last_activity_at ?? deals.last_graph_crm_touch_at,
+    last_crm_touch_at_display: completeActivity?.last_activity_at_display ?? deals.last_graph_crm_touch_at_display,
+    days_since_last_crm_touch: null,
+    days_since_last_activity: null,
+    activity_status: activity === undefined
+      ? activityFailed ? "unavailable" : "loading"
+      : activity.status,
+    activity_reason: activity?.status === "complete"
+      ? null
+      : activity?.failure_reason ?? (activityFailed ? "request_failed" : null),
+  };
+}
+
 export default function CrmMetricsPanel({
   personId,
   onTotalLoaded,
 }: CrmMetricsPanelProps): ReactElement {
-  const query = useQuery<PersonCrmMetrics, Error>({
-    queryKey: ["person-crm-metrics", personId],
-    queryFn: ({ signal }): Promise<PersonCrmMetrics> =>
-      bffFetch<PersonCrmMetrics>(
-        `/bff/persons/${encodeURIComponent(personId)}/crm/metrics`,
-        { signal },
-      ),
+  const dealsQuery = useQuery<PersonCrmDealMetrics, Error>({
+    queryKey: ["person-crm-deal-metrics", personId],
+    queryFn: ({ signal }) => bffFetch(`/bff/persons/${encodeURIComponent(personId)}/crm/deal-metrics`, { signal }),
   });
+  const activityQuery = useQuery<PersonCrmActivityMetrics, Error>({
+    queryKey: ["person-crm-activity-metrics", personId],
+    queryFn: ({ signal }) => bffFetch(`/bff/persons/${encodeURIComponent(personId)}/crm/activity-metrics`, { signal }),
+  });
+  const metrics = useMemo(
+    () => (dealsQuery.data
+      ? composeMetrics(dealsQuery.data, activityQuery.data, activityQuery.isError)
+      : undefined),
+    [activityQuery.data, activityQuery.isError, dealsQuery.data],
+  );
 
   useEffect(() => {
-    if (query.data === undefined) return;
-    onTotalLoaded(metricTotal(query.data));
-  }, [onTotalLoaded, query.data]);
+    if (metrics === undefined) return;
+    onTotalLoaded(metricTotal(metrics));
+  }, [metrics, onTotalLoaded]);
 
-  if (query.isPending) {
+  if (dealsQuery.isPending) {
     return (
       <div className={styles.loadingState} role="status" aria-busy="true">
         Loading CRM engagement…
@@ -75,34 +139,68 @@ export default function CrmMetricsPanel({
     );
   }
 
-  if (query.isError) {
+  if (dealsQuery.isError) {
     return (
       <div className={styles.errorState} role="alert">
-        {errorMessage(query.error)}
+        {errorMessage(dealsQuery.error)}
       </div>
     );
   }
 
-  if (metricTotal(query.data) === 0) {
+  if (
+    metrics === undefined ||
+    (metricTotal(metrics) === 0 && metrics.activity_status === "complete")
+  ) {
     return <div className={styles.emptyState}>No CRM records on file.</div>;
   }
 
   return (
     <div className={styles.panel}>
       <section className={styles.overviewSection} aria-label="CRM overview">
-        <CrmMetricCards metrics={query.data} />
+        <CrmMetricCards metrics={metrics} />
       </section>
-      <CrmBreakdowns metrics={query.data} />
-      <CrmRecency metrics={query.data} />
+      <LiveActivityStatus metrics={metrics} activity={activityQuery.data} />
+      <CrmBreakdowns metrics={metrics} />
+      <CrmRecency metrics={metrics} />
     </div>
   );
 }
 
-function CrmMetricCards({ metrics }: { metrics: PersonCrmMetrics }): ReactElement {
+function LiveActivityStatus({
+  metrics,
+  activity,
+}: {
+  metrics: CombinedCrmMetrics;
+  activity: PersonCrmActivityMetrics | undefined;
+}): ReactElement {
+  const freshness = activity === undefined
+    ? null
+    : activity.cache_disposition === "hit"
+      ? "cache hit"
+      : activity.cache_disposition === "coalesced"
+        ? "coalesced request"
+        : activity.cache_disposition === "disabled"
+          ? "cache disabled"
+          : "fresh";
+  const fetched = activity?.fetched_at_display ?? activity?.fetched_at;
+  const metadata = fetched && freshness ? ` Fetched ${fetched} (${freshness}).` : "";
+  const incomplete = metrics.activity_status === "complete"
+    ? ""
+    : " Incomplete activity series are not charted.";
+  return (
+    <p className={styles.breakdownEmpty} role="status">
+      Live activity {metrics.activity_status}
+      {metrics.activity_reason ? `: ${metrics.activity_reason}` : ""}.
+      {metadata}{incomplete}
+    </p>
+  );
+}
+
+function CrmMetricCards({ metrics }: { metrics: CombinedCrmMetrics }): ReactElement {
   const cards: ReadonlyArray<{
     label: string;
-    value: number;
-    periodValue: number;
+    value: number | null;
+    periodValue: number | null;
     changePct: number | null;
     Icon: typeof WorkOutline;
     tone: "deals" | "activities" | "calls" | "chats";
@@ -144,39 +242,53 @@ function CrmMetricCards({ metrics }: { metrics: PersonCrmMetrics }): ReactElemen
   return (
     <div className={styles.metricGrid}>
       <div className={styles.metricCards}>
-        {cards.map(({ label, value, periodValue, changePct, Icon, tone }) => (
+        {cards.map(({ label, value, periodValue, changePct, Icon, tone }) => {
+          const isLive = tone === "activities" || tone === "calls";
+          const lowerBound = isLive && metrics.activity_status === "partial";
+          const prefix = lowerBound ? "≥" : "";
+          return (
           <div className={`${styles.metricItem} ${styles[`metricCard--${tone}`] ?? ""}`} key={label}>
             <div className={styles.metricBody}>
               <div className={styles.metricTop}>
-                <span className={styles.metricValue}>{periodValue}</span>
+                <span className={styles.metricValue}>
+                  {periodValue === null ? "—" : `${prefix}${periodValue}`}
+                </span>
                 <div className={styles.metricInfo}>
                   <span className={styles.metricLabel}>{label}</span>
-                  <span className={styles.metricAllTime}>{value} all time</span>
+                  <span className={styles.metricAllTime}>
+                    {value === null ? "Unavailable" : `${prefix}${value} all time`}
+                  </span>
                 </div>
                 <span className={`${styles.metricIcon} ${styles[`metricIcon--${tone}`] ?? ""}`}>
                   <Icon fontSize="small" />
                 </span>
               </div>
-              <DeltaIndicator changePct={changePct} tone={tone} />
+              {isLive && metrics.activity_status !== "complete" ? null : (
+                <DeltaIndicator changePct={changePct} tone={tone} />
+              )}
             </div>
           </div>
-        ))}
+          );
+        })}
       </div>
       <CrmTrendChart metrics={metrics} />
     </div>
   );
 }
 
-function CrmTrendChart({ metrics }: { metrics: PersonCrmMetrics }): ReactElement {
+function CrmTrendChart({ metrics }: { metrics: CombinedCrmMetrics }): ReactElement {
   const [hoveredIndex, setHoveredIndex] = useState<number | null>(null);
   const [period, setPeriod] = useState<"daily" | "weekly" | "monthly">("daily");
   const [horizontalZoom, setHorizontalZoom] = useState(1);
-  const series = [
+  const graphSeries = [
     { label: "Deals", values: aggregateTrend(metrics.recent_30d_daily_deal_counts, period), tone: "deals" },
-    { label: "Activities", values: aggregateTrend(metrics.recent_30d_daily_activity_counts, period), tone: "activities" },
-    { label: "Calls", values: aggregateTrend(metrics.recent_30d_daily_call_counts, period), tone: "calls" },
     { label: "Chats", values: aggregateTrend(metrics.recent_30d_daily_conversation_counts, period), tone: "chats" },
   ] as const;
+  const liveSeries = metrics.activity_status === "complete" ? [
+    { label: "Activities", values: aggregateTrend(metrics.recent_30d_daily_activity_counts, period), tone: "activities" as const },
+    { label: "Calls", values: aggregateTrend(metrics.recent_30d_daily_call_counts, period), tone: "calls" as const },
+  ] : [];
+  const series = [...graphSeries, ...liveSeries];
   const periodDays = period === "daily" ? 1 : period === "weekly" ? 7 : 30;
   const width = 900;
   const height = 240;
@@ -218,7 +330,7 @@ function CrmTrendChart({ metrics }: { metrics: PersonCrmMetrics }): ReactElement
             <option value="weekly">Weekly</option>
             <option value="monthly">Monthly</option>
           </select>
-          <span aria-hidden="true">⌄</span>
+          <span aria-hidden="true">⌁</span>
         </label>
         <div className={styles.chartZoom} aria-label="Chart zoom controls">
           <button type="button" onClick={() => setHorizontalZoom((value) => Math.max(1, value - 0.15))} aria-label="Zoom out">−</button>
@@ -481,8 +593,8 @@ function compactElapsedLabel(days: number | null, date: string | null): string {
   return `${days} days ago`;
 }
 
-function CrmRecency({ metrics }: { metrics: PersonCrmMetrics }): ReactElement {
-  const touches: ReadonlyArray<{
+function CrmRecency({ metrics }: { metrics: CombinedCrmMetrics }): ReactElement {
+  const graphTouches: ReadonlyArray<{
     label: string;
     date: string | null;
     days: number | null;
@@ -491,9 +603,17 @@ function CrmRecency({ metrics }: { metrics: PersonCrmMetrics }): ReactElement {
     { label: "Last CRM", date: metrics.last_crm_touch_at_display, days: metrics.days_since_last_crm_touch, relative: true },
     { label: "First deal", date: metrics.first_deal_at_display, days: null, relative: false },
     { label: "Last deal", date: metrics.last_deal_at_display, days: metrics.days_since_last_deal, relative: true },
+  ];
+  const liveTouches: ReadonlyArray<{
+    label: string;
+    date: string | null;
+    days: number | null;
+    relative: boolean;
+  }> = metrics.activity_status === "unavailable" || metrics.activity_status === "loading" ? [] : [
     { label: "First activity", date: metrics.first_activity_at_display, days: null, relative: false },
     { label: "Last activity", date: metrics.last_activity_at_display, days: metrics.days_since_last_activity, relative: true },
   ];
+  const touches = [...graphTouches, ...liveTouches];
 
   return (
     <section className={styles.recencySection} aria-labelledby="crm-recency-title">
@@ -511,7 +631,7 @@ function CrmRecency({ metrics }: { metrics: PersonCrmMetrics }): ReactElement {
   );
 }
 
-function CrmBreakdowns({ metrics }: { metrics: PersonCrmMetrics }): ReactElement {
+function CrmBreakdowns({ metrics }: { metrics: CombinedCrmMetrics }): ReactElement {
   return (
     <section className={styles.breakdownSection} aria-labelledby="crm-breakdowns-title">
       <h3 id="crm-breakdowns-title" className={styles.sectionTitle}>Breakdowns</h3>
@@ -524,7 +644,7 @@ function CrmBreakdowns({ metrics }: { metrics: PersonCrmMetrics }): ReactElement
   );
 }
 
-function CrmStageBreakdown({ metrics }: { metrics: PersonCrmMetrics }): ReactElement {
+function CrmStageBreakdown({ metrics }: { metrics: CombinedCrmMetrics }): ReactElement {
   return (
     <section className={styles.breakdownItem} aria-label="Deals">
       <div className={styles.breakdownHeader}>
@@ -555,7 +675,7 @@ function CrmStageBreakdown({ metrics }: { metrics: PersonCrmMetrics }): ReactEle
 function CrmActivityBreakdown({
   metrics,
 }: {
-  metrics: PersonCrmMetrics;
+  metrics: CombinedCrmMetrics;
 }): ReactElement {
   return (
     <section className={styles.breakdownItem} aria-label="Activities">
@@ -564,16 +684,28 @@ function CrmActivityBreakdown({
           <Bolt fontSize="inherit" className={styles.cardTitleIcon} />
           Activities
         </h3>
-        <span className={styles.breakdownTotal}>{metrics.activity_count} total</span>
+        <span className={styles.breakdownTotal}>
+          {metrics.activity_count === null
+            ? "Unavailable"
+            : `${metrics.activity_status === "partial" ? "≥" : ""}${metrics.activity_count} total`}
+        </span>
       </div>
-      {metrics.activity_kind_breakdown.length === 0 ? (
-        <p className={styles.breakdownEmpty}>No activities on record.</p>
+      {metrics.activity_count === null ? (
+        <p className={styles.breakdownEmpty}>Live activity data unavailable.</p>
+      ) : metrics.activity_kind_breakdown.length === 0 ? (
+        <p className={styles.breakdownEmpty}>
+          {metrics.activity_status === "complete"
+            ? "No activities on record."
+            : "No validated activities returned before the read was truncated."}
+        </p>
       ) : (
         <div className={styles.breakdownScroll}>
           <ul className={styles.breakdownList}>
             {metrics.activity_kind_breakdown.map((activity) => (
               <li className={styles.activityRow} key={activity.history_kind}>
-                <strong className={styles.activityCount}>{activity.count}</strong>
+                <strong className={styles.activityCount}>
+                  {metrics.activity_status === "partial" ? "≥" : ""}{activity.count}
+                </strong>
                 <span className={styles.activityValue}>
                   <span className={styles.activityType}>{titleCase(activity.history_kind)}</span>
                   <span className={styles.activityDate}> - {displayDate(activity.last_event_at_display)}</span>
@@ -587,7 +719,7 @@ function CrmActivityBreakdown({
   );
 }
 
-function CrmEntityTable({ metrics }: { metrics: PersonCrmMetrics }): ReactElement {
+function CrmEntityTable({ metrics }: { metrics: CombinedCrmMetrics }): ReactElement {
   return (
     <section className={`${styles.breakdownItem} ${styles.entitySection}`} aria-labelledby="crm-entity-title">
       <div className={styles.breakdownHeader}>
@@ -611,7 +743,7 @@ function CrmEntityTable({ metrics }: { metrics: PersonCrmMetrics }): ReactElemen
                   {entity.entity_display_name ?? entity.entity_key}
                 </span>
                 <span className={styles.entitySummary}>
-                  {entity.deal_count} deals - {entity.activity_count} Activities - {entity.conversation_count} Chats
+                  {entity.deal_count} deals - {entity.conversation_count} Chats
                 </span>
               </li>
             ))}

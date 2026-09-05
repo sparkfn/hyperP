@@ -6,8 +6,10 @@ All injected types are the Protocol interfaces, so route code never imports Neo4
 
 from __future__ import annotations
 
+from src.config import config
+from src.repositories.bitrix.activity import BitrixCrmActivityRepository
 from src.repositories.neo4j.admin import Neo4jAdminRepository
-from src.repositories.neo4j.crm import Neo4jCrmMetricsRepository
+from src.repositories.neo4j.crm import Neo4jCrmDealMetricsRepository
 from src.repositories.neo4j.entity import Neo4jEntityRepository
 from src.repositories.neo4j.event import Neo4jEventRepository
 from src.repositories.neo4j.identity_link_revision import Neo4jIdentityLinkRevisionRepository
@@ -19,7 +21,8 @@ from src.repositories.neo4j.review import Neo4jReviewRepository
 from src.repositories.neo4j.sales import Neo4jSalesRepository
 from src.repositories.neo4j.survivorship import Neo4jSurvivorshipRepository
 from src.repositories.protocols.admin import AdminRepository
-from src.repositories.protocols.crm import CrmMetricsRepository
+from src.repositories.protocols.crm import CrmDealMetricsRepository
+from src.repositories.protocols.crm_activity import CrmActivityMetricsRepository
 from src.repositories.protocols.entity import EntityRepository
 from src.repositories.protocols.event import EventRepository
 from src.repositories.protocols.identity_link_revision import IdentityLinkRevisionRepository
@@ -41,7 +44,8 @@ _report_repo: ReportRepository = Neo4jReportRepository()
 _event_repo: EventRepository = Neo4jEventRepository()
 _admin_repo: AdminRepository = Neo4jAdminRepository()
 _ingest_repo: IngestRepository = Neo4jIngestRepository()
-_crm_metrics_repo: CrmMetricsRepository = Neo4jCrmMetricsRepository()
+_crm_deal_metrics_repo: CrmDealMetricsRepository = Neo4jCrmDealMetricsRepository()
+_crm_activity_metrics_repo: CrmActivityMetricsRepository = BitrixCrmActivityRepository(config)
 _identity_link_revision_repo: IdentityLinkRevisionRepository = Neo4jIdentityLinkRevisionRepository()
 
 
@@ -85,8 +89,12 @@ def get_ingest_repo() -> IngestRepository:
     return _ingest_repo
 
 
-def get_crm_metrics_repo() -> CrmMetricsRepository:
-    return _crm_metrics_repo
+def get_crm_deal_metrics_repo() -> CrmDealMetricsRepository:
+    return _crm_deal_metrics_repo
+
+
+def get_crm_activity_metrics_repo() -> CrmActivityMetricsRepository:
+    return _crm_activity_metrics_repo
 
 
 def get_identity_link_revision_repo() -> IdentityLinkRevisionRepository:

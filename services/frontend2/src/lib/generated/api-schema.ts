@@ -248,7 +248,7 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
-    "/v1/persons/{person_id}/crm/metrics": {
+    "/v1/persons/{person_id}/crm/deal-metrics": {
         parameters: {
             query?: never;
             header?: never;
@@ -256,10 +256,30 @@ export interface paths {
             cookie?: never;
         };
         /**
-         * Get CRM engagement metrics for a person
-         * @description Returns read-only aggregate counts and date ranges computed from effective-active CRM deals, CRM activities, calls, and conversations from the bitrix_chat source that are linked to the person's merge survivor. The graph reader admits only legacy-null or activity-family CRM history records, uses active person-record links, and excludes superseded or rejected records.
+         * Get graph-backed CRM deal metrics for a person
+         * @description Returns only effective-active Bitrix CRM deal and Open Lines conversation presentation from Neo4j. It never reports graph activity or calls as live Bitrix activity.
          */
-        get: operations["getPersonCrmMetrics"];
+        get: operations["get_person_crm_deal_metrics"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/persons/{person_id}/crm/activity-metrics": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get bounded live Bitrix CRM activity metrics for a person
+         * @description Performs only bounded owner-filtered request-time Bitrix reads for the person's effective-active deal IDs. Complete is exact (including zero); partial values are lower bounds; unavailable has no aggregates. No raw payload, content, history persistence, or portal-wide scan is permitted.
+         */
+        get: operations["get_person_crm_activity_metrics"];
         put?: never;
         post?: never;
         delete?: never;
@@ -1182,14 +1202,13 @@ export interface components {
             stage_id: string | null;
             count: number;
         };
-        CrmEntityBreakdown: {
+        CrmDealEntityBreakdown: {
             entity_key: string;
             entity_display_name: string | null;
             deal_count: number;
-            activity_count: number;
             conversation_count: number;
         };
-        PersonCrmMetrics: {
+        PersonCrmDealMetrics: {
             deal_count: number;
             deal_stage_breakdown: components["schemas"]["CrmDealStageCount"][];
             /** Format: date-time */
@@ -1198,31 +1217,142 @@ export interface components {
             /** Format: date-time */
             last_deal_at: string | null;
             last_deal_at_display: string | null;
+            conversation_count: number;
+            /** Format: date-time */
+            last_conversation_at: string | null;
+            last_conversation_at_display: string | null;
+            recent_30d_deal_count: number;
+            recent_30d_conversation_count: number;
+            recent_30d_daily_deal_counts: number[];
+            recent_30d_daily_conversation_counts: number[];
+            recent_30d_deal_change_pct: number | null;
+            recent_30d_conversation_change_pct: number | null;
+            /** Format: date-time */
+            last_graph_crm_touch_at: string | null;
+            last_graph_crm_touch_at_display: string | null;
+            days_since_last_deal: number | null;
+            entity_breakdown: components["schemas"]["CrmDealEntityBreakdown"][];
+        };
+        PersonCrmDealMetricsEnvelope: {
+            data: components["schemas"]["PersonCrmDealMetrics"];
+            meta: components["schemas"]["Meta"];
+        };
+        CrmCallClassificationCount: {
+            classification: string;
+            count: number;
+        };
+        PersonCrmActivityMetricsEnvelope: {
+            data: components["schemas"]["PersonCrmActivityMetricsComplete"] | components["schemas"]["PersonCrmActivityMetricsPartial"] | components["schemas"]["PersonCrmActivityMetricsUnavailable"];
+            meta: components["schemas"]["Meta"];
+        };
+        PersonCrmActivityMetricsComplete: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            status: "complete";
+            /** @constant */
+            completeness: "complete";
+            /** @constant */
+            source: "bitrix_crm_activity";
+            source_instance: string;
+            /** Format: date-time */
+            fetched_at: string;
+            fetched_at_display: string | null;
+            /** @enum {string} */
+            cache_disposition: "miss" | "hit" | "coalesced" | "disabled";
+            /** @constant */
+            truncated: false;
+            queried_deal_count: number;
+            resolved_deal_count: number;
+            request_count: number;
+            page_count: number;
+            row_count: number;
+            failure_reason: null;
             activity_count: number;
             call_count: number;
-            conversation_count: number;
             activity_kind_breakdown: components["schemas"]["CrmActivityKindCount"][];
+            call_classification_breakdown: components["schemas"]["CrmCallClassificationCount"][];
             /** Format: date-time */
             first_activity_at: string | null;
             first_activity_at_display: string | null;
             /** Format: date-time */
             last_activity_at: string | null;
             last_activity_at_display: string | null;
-            entity_breakdown: components["schemas"]["CrmEntityBreakdown"][];
-            recent_30d_deal_count: number;
             recent_30d_activity_count: number;
             recent_30d_call_count: number;
-            recent_30d_conversation_count: number;
-            /** Format: date-time */
-            last_crm_touch_at: string | null;
-            last_crm_touch_at_display: string | null;
-            days_since_last_crm_touch: number | null;
-            days_since_last_deal: number | null;
-            days_since_last_activity: number | null;
+            recent_30d_daily_activity_counts: number[];
+            recent_30d_daily_call_counts: number[];
+            recent_30d_activity_change_pct: number | null;
+            recent_30d_call_change_pct: number | null;
         };
-        PersonCrmMetricsEnvelope: {
-            data: components["schemas"]["PersonCrmMetrics"];
-            meta: components["schemas"]["Meta"];
+        PersonCrmActivityMetricsPartial: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            status: "partial";
+            /** @constant */
+            completeness: "partial";
+            /** @constant */
+            source: "bitrix_crm_activity";
+            source_instance: string;
+            /** Format: date-time */
+            fetched_at: string;
+            fetched_at_display: string | null;
+            /** @enum {string} */
+            cache_disposition: "miss" | "hit" | "coalesced" | "disabled";
+            /** @constant */
+            truncated: true;
+            queried_deal_count: number;
+            resolved_deal_count: number;
+            request_count: number;
+            page_count: number;
+            row_count: number;
+            failure_reason: components["schemas"]["CrmActivityFailureReason"];
+            activity_count: number;
+            call_count: number;
+            activity_kind_breakdown: components["schemas"]["CrmActivityKindCount"][];
+            call_classification_breakdown: components["schemas"]["CrmCallClassificationCount"][];
+            /** Format: date-time */
+            first_activity_at: string | null;
+            first_activity_at_display: string | null;
+            /** Format: date-time */
+            last_activity_at: string | null;
+            last_activity_at_display: string | null;
+            recent_30d_activity_count: number;
+            recent_30d_call_count: number;
+            recent_30d_daily_activity_counts: number[];
+            recent_30d_daily_call_counts: number[];
+            recent_30d_activity_change_pct: number | null;
+            recent_30d_call_change_pct: number | null;
+        };
+        /** @enum {string} */
+        CrmActivityFailureReason: "not_configured" | "deal_limit" | "request_limit" | "page_limit" | "row_limit" | "elapsed_limit" | "non_advancing_pagination" | "rate_limited" | "timeout" | "upstream_error" | "malformed_response";
+        PersonCrmActivityMetricsUnavailable: {
+            /**
+             * @description discriminator enum property added by openapi-typescript
+             * @enum {string}
+             */
+            status: "unavailable";
+            /** @constant */
+            completeness: "unavailable";
+            /** @constant */
+            source: "bitrix_crm_activity";
+            source_instance: string;
+            /** Format: date-time */
+            fetched_at: string;
+            fetched_at_display: string | null;
+            /** @enum {string} */
+            cache_disposition: "miss" | "hit" | "coalesced" | "disabled";
+            /** @constant */
+            truncated: false;
+            queried_deal_count: number;
+            resolved_deal_count: number;
+            request_count: number;
+            page_count: number;
+            row_count: number;
+            failure_reason: components["schemas"]["CrmActivityFailureReason"];
         };
         AddressSummary: {
             /** Format: uuid */
@@ -2759,7 +2889,7 @@ export interface operations {
             404: components["responses"]["PersonNotFound"];
         };
     };
-    getPersonCrmMetrics: {
+    get_person_crm_deal_metrics: {
         parameters: {
             query?: never;
             header?: {
@@ -2772,13 +2902,40 @@ export interface operations {
         };
         requestBody?: never;
         responses: {
-            /** @description Aggregate CRM engagement metrics */
+            /** @description Graph-backed deal and conversation metrics */
             200: {
                 headers: {
                     [name: string]: unknown;
                 };
                 content: {
-                    "application/json": components["schemas"]["PersonCrmMetricsEnvelope"];
+                    "application/json": components["schemas"]["PersonCrmDealMetricsEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["PersonNotFound"];
+        };
+    };
+    get_person_crm_activity_metrics: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path: {
+                person_id: components["parameters"]["PersonId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Complete, partial, or unavailable bounded live metrics */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonCrmActivityMetricsEnvelope"];
                 };
             };
             401: components["responses"]["Unauthorized"];

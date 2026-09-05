@@ -70,6 +70,45 @@ class AppConfig(BaseSettings):
         le=900,
         alias="ENTITY_SUMMARY_CACHE_MAX_STALE_SECONDS",
     )
+    # Request-time Bitrix activity read. The URL is a secret-bearing inbound
+    # webhook endpoint and is intentionally server-only.
+    bitrix_activity_api_url: str | None = Field(default=None, alias="BITRIX_ACTIVITY_API_URL")
+    bitrix_activity_source_instance: str = Field(
+        default="bitrix-primary", alias="BITRIX_ACTIVITY_SOURCE_INSTANCE"
+    )
+    bitrix_activity_timeout_seconds: float = Field(
+        default=5.0, ge=0.1, le=30.0, alias="BITRIX_ACTIVITY_TIMEOUT_SECONDS"
+    )
+    bitrix_activity_elapsed_seconds: float = Field(
+        default=12.0, ge=0.5, le=55.0, alias="BITRIX_ACTIVITY_ELAPSED_SECONDS"
+    )
+    bitrix_activity_deal_limit: int = Field(
+        default=100, ge=1, le=500, alias="BITRIX_ACTIVITY_DEAL_LIMIT"
+    )
+    bitrix_activity_owner_batch_size: int = Field(
+        default=25, ge=1, le=100, alias="BITRIX_ACTIVITY_OWNER_BATCH_SIZE"
+    )
+    bitrix_activity_max_attempts: int = Field(
+        default=2, ge=1, le=5, alias="BITRIX_ACTIVITY_MAX_ATTEMPTS"
+    )
+    bitrix_activity_max_requests: int = Field(
+        default=20, ge=1, le=100, alias="BITRIX_ACTIVITY_MAX_REQUESTS"
+    )
+    bitrix_activity_max_pages: int = Field(
+        default=20, ge=1, le=100, alias="BITRIX_ACTIVITY_MAX_PAGES"
+    )
+    bitrix_activity_max_rows: int = Field(
+        default=2000, ge=1, le=10000, alias="BITRIX_ACTIVITY_MAX_ROWS"
+    )
+    bitrix_activity_max_concurrency: int = Field(
+        default=3, ge=1, le=10, alias="BITRIX_ACTIVITY_MAX_CONCURRENCY"
+    )
+    bitrix_activity_cache_ttl_seconds: int = Field(
+        default=30, ge=0, le=300, alias="BITRIX_ACTIVITY_CACHE_TTL_SECONDS"
+    )
+    bitrix_activity_cache_max_entries: int = Field(
+        default=200, ge=1, le=2000, alias="BITRIX_ACTIVITY_CACHE_MAX_ENTRIES"
+    )
     # Minutes before a Google access token is considered expired for revocation purposes.
     # Google issues tokens with a 1-hour expiry; set this to match or slightly above.
     access_token_expiry_minutes: int = Field(default=60, alias="ACCESS_TOKEN_EXPIRY_MINUTES")
