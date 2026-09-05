@@ -10,7 +10,7 @@ import uuid
 from collections.abc import Sequence
 from pathlib import Path
 
-from intelligence.artifacts import canonical_json, read_manifest, sha256_file
+from intelligence.artifacts import MANIFEST_LIMIT_KEYS, canonical_json, read_manifest, sha256_file
 from intelligence.models import OutputInventory, RunLogInventory, WorkspaceLayout
 from intelligence.state_publication import _validate_output
 from intelligence.state_schema import SCHEMA_VERSION
@@ -136,7 +136,8 @@ def _backup_evidence(root: Path, connection: sqlite3.Connection) -> tuple[tuple[
     if invalid is not None:
         raise RuntimeError("accepted output belongs to a non-completed run")
     rows = connection.execute(
-        "SELECT r.id, r.command FROM runs AS r WHERE r.state = 'completed' ORDER BY r.id"
+        "SELECT r.id, r.command, r.limits_json FROM runs AS r "
+        "WHERE r.state = 'completed' ORDER BY r.id"
     )
     evidence: list[tuple[Path, Path]] = []
     for row in rows:
@@ -152,7 +153,7 @@ def _backup_evidence(root: Path, connection: sqlite3.Connection) -> tuple[tuple[
                 (run_id,),
             )
         )
-        _verify_run_manifest(manifest, run_id, str(row[1]), outputs)
+        _verify_run_manifest(manifest, run_id, str(row[1]), outputs, row[2])
         evidence.append((manifest, Path("manifests") / manifest.name))
         output_root = root / "outputs" / run_id
         expected = {
@@ -267,7 +268,7 @@ def _verify_bundle_evidence(backup: Path, inventory: Sequence[dict[object, objec
             raise ValueError("backup accepted output belongs to a non-completed run")
         expected_evidence: set[Path] = set()
         rows = connection.execute(
-            "SELECT id, command FROM runs WHERE state = 'completed' ORDER BY id"
+            "SELECT id, command, limits_json FROM runs WHERE state = 'completed' ORDER BY id"
         )
         for row in rows:
             run_id = str(row["id"])
@@ -283,7 +284,7 @@ def _verify_bundle_evidence(backup: Path, inventory: Sequence[dict[object, objec
                 _validate_output(item)
             manifest = backup / "evidence" / "manifests" / f"{run_id}.json"
             expected_evidence.add(Path("evidence") / "manifests" / f"{run_id}.json")
-            _verify_run_manifest(manifest, run_id, str(row["command"]), outputs)
+            _verify_run_manifest(manifest, run_id, str(row["command"]), outputs, row["limits_json"])
             if outputs:
                 output_root = backup / "evidence" / "outputs" / run_id
                 expected = {
@@ -314,7 +315,11 @@ def _verify_bundle_evidence(backup: Path, inventory: Sequence[dict[object, objec
 
 
 def _verify_run_manifest(
-    path: Path, run_id: str, command: str, outputs: Sequence[OutputInventory]
+    path: Path,
+    run_id: str,
+    command: str,
+    outputs: Sequence[OutputInventory],
+    limits_json: object = None,
 ) -> None:
     if path.is_symlink() or not path.is_file():
         raise ValueError("accepted run manifest is missing or unsafe")
@@ -354,6 +359,7 @@ def _verify_run_manifest(
         expected_command=command,
         expected_state="completed",
         expected_outputs=outputs,
+        expected_limits=_decode_persisted_limits(limits_json),
         expected_run_log=run_log,
     )
     entries = raw.get("outputs")
@@ -375,6 +381,25 @@ def _verify_run_manifest(
         manifest_outputs.append(item)
     if tuple(sorted(manifest_outputs, key=lambda item: item.relative_path)) != tuple(outputs):
         raise ValueError("accepted run manifest does not match accepted outputs")
+
+
+def _decode_persisted_limits(value: object) -> dict[str, int] | None:
+    if value is None:
+        return None
+    try:
+        raw = json.loads(str(value))
+    except json.JSONDecodeError as error:
+        raise ValueError("persisted run limits are invalid") from error
+    if not isinstance(raw, dict) or set(raw) != MANIFEST_LIMIT_KEYS:
+        raise ValueError("persisted run limits are invalid")
+    limits: dict[str, int] = {}
+    for key, item in raw.items():
+        if not isinstance(key, str) or not isinstance(item, int) or isinstance(item, bool):
+            raise ValueError("persisted run limits are invalid")
+        if item < 1:
+            raise ValueError("persisted run limits are invalid")
+        limits[key] = item
+    return limits
 
 
 def _assert_directory_inventory(directory: Path, expected: set[Path]) -> None:

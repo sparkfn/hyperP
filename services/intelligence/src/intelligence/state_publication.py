@@ -8,7 +8,7 @@ from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
-from intelligence.artifacts import canonical_json, sha256_file
+from intelligence.artifacts import MANIFEST_LIMIT_KEYS, canonical_json, sha256_file
 from intelligence.models import OutputInventory, Run, RunState
 
 _TERMINAL: frozenset[str] = frozenset(
@@ -20,6 +20,25 @@ def _row_to_run(row: sqlite3.Row) -> Run:
     state = str(row["state"])
     if state not in {"queued", "running", "publishing", *_TERMINAL}:
         raise RuntimeError("run state is corrupt")
+    limits_value = row["limits_json"]
+    limits: tuple[tuple[str, int], ...] = ()
+    if limits_value is not None:
+        try:
+            raw_limits = json.loads(str(limits_value))
+        except json.JSONDecodeError as error:
+            raise RuntimeError("run limits are corrupt") from error
+        if not isinstance(raw_limits, dict):
+            raise RuntimeError("run limits are corrupt")
+        if set(raw_limits) != MANIFEST_LIMIT_KEYS:
+            raise RuntimeError("run limits are corrupt")
+        parsed: list[tuple[str, int]] = []
+        for key, value in raw_limits.items():
+            if not isinstance(key, str) or not isinstance(value, int) or isinstance(value, bool):
+                raise RuntimeError("run limits are corrupt")
+            if value < 1:
+                raise RuntimeError("run limits are corrupt")
+            parsed.append((key, value))
+        limits = tuple(sorted(parsed))
     return Run(
         str(row["id"]),
         str(row["command"]),
@@ -31,6 +50,7 @@ def _row_to_run(row: sqlite3.Row) -> Run:
         None if row["recovery_reason"] is None else str(row["recovery_reason"]),
         None if row["started_at"] is None else float(row["started_at"]),
         None if row["ended_at"] is None else float(row["ended_at"]),
+        limits,
     )
 
 

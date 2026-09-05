@@ -11,6 +11,8 @@ from typing import cast
 
 from intelligence import state_queries
 from intelligence.artifacts import (
+    DEFAULT_MANIFEST_LIMITS,
+    MANIFEST_LIMIT_KEYS,
     canonical_json,
     quarantine_manifest,
     read_manifest,
@@ -77,9 +79,16 @@ class State:
         """Close the underlying SQLite connection."""
         self.connection.close()
 
-    def create_mutating_run(self, command: str) -> Run:
+    def create_mutating_run(self, command: str, limits: dict[str, int] | None = None) -> Run:
         """Claim the exclusive mutation lock or reject concurrent work."""
         run_id, now = uuid.uuid4().hex, time.time()
+        effective_limits = dict(limits or DEFAULT_MANIFEST_LIMITS)
+        if set(effective_limits) != MANIFEST_LIMIT_KEYS or any(
+            not isinstance(value, int) or isinstance(value, bool) or value < 1
+            for value in effective_limits.values()
+        ):
+            raise ValueError("effective runtime limits are invalid")
+        limits_json = canonical_json(effective_limits)
         self.connection.execute("BEGIN IMMEDIATE")
         try:
             changed = self.connection.execute(
@@ -96,15 +105,24 @@ class State:
                 raise RuntimeError("mutation lock is missing")
             fence = int(row[0])
             self.connection.execute(
-                "INSERT INTO runs(id, command, state, fence, created_at, heartbeat_at, started_at) "
-                "VALUES(?, ?, 'running', ?, ?, ?, ?)",
-                (run_id, command, fence, now, now, now),
+                "INSERT INTO runs(id, command, state, fence, created_at, heartbeat_at, started_at, "
+                "limits_json) VALUES(?, ?, 'running', ?, ?, ?, ?, ?)",
+                (run_id, command, fence, now, now, now, limits_json),
             )
             self.connection.execute("COMMIT")
         except BaseException:
             self.connection.execute("ROLLBACK")
             raise
-        return Run(run_id, command, "running", fence, now, now, started_at=now)
+        return Run(
+            run_id,
+            command,
+            "running",
+            fence,
+            now,
+            now,
+            started_at=now,
+            limits=tuple(sorted(effective_limits.items())),
+        )
 
     def verify_fence(self, run: Run) -> None:
         """Reject mutation or publication by an owner whose durable fence was lost."""
@@ -303,6 +321,7 @@ class State:
                         expected_reason=recovery_reason,
                         expected_created_at=run.created_at,
                         expected_started_at=run.started_at,
+                        expected_limits=dict(run.limits) if run.limits else None,
                         expected_run_log=run_log_inventory(self.workspace, run.run_id),
                     )
                 except (OSError, ValueError):
@@ -316,6 +335,7 @@ class State:
                 reason=recovery_reason,
                 created_at=run.created_at,
                 started_at=run.started_at,
+                limits=dict(run.limits) or DEFAULT_MANIFEST_LIMITS,
                 run_log=run_log_inventory(self.workspace, run.run_id),
             )
             if recovery_state == "completed":
