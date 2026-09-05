@@ -31,7 +31,7 @@ training = [
 package = false
 
 [tool.uv.workspace]
-members = ["services/api", "services/ingestion"]
+members = ["services/api", "services/ingestion", "services/intelligence"]
 
 # --- Shared tool config ----------------------------------------------------
 # Both services inherit these settings; per-service overrides go in the

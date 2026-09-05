@@ -120,6 +120,36 @@ x-ingestion-env: &ingestion-env
   TZ: ${TZ:-UTC}
 
 services:
+  intelligence:
+    build:
+      context: .
+      dockerfile: services/intelligence/Dockerfile
+    cpus: ${INTELLIGENCE_CPUS:-0.5}
+    mem_limit: ${INTELLIGENCE_MEMORY_LIMIT:-512M}
+    pids_limit: ${INTELLIGENCE_PIDS_LIMIT:-128}
+    init: true
+    stop_grace_period: ${INTELLIGENCE_STOP_GRACE_PERIOD:-30s}
+    read_only: true
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    environment:
+      INTELLIGENCE_WORKSPACE: /var/lib/intelligence
+      INTELLIGENCE_MUTATIONS_ENABLED: ${INTELLIGENCE_MUTATIONS_ENABLED:-false}
+      INTELLIGENCE_MAX_RUNTIME_SECONDS: ${INTELLIGENCE_MAX_RUNTIME_SECONDS:-3600}
+      INTELLIGENCE_MAX_LOG_BYTES: ${INTELLIGENCE_MAX_LOG_BYTES:-1000000}
+      INTELLIGENCE_MAX_OUTPUT_BYTES: ${INTELLIGENCE_MAX_OUTPUT_BYTES:-100000000}
+      INTELLIGENCE_STALE_SECONDS: ${INTELLIGENCE_STALE_SECONDS:-300}
+    volumes:
+      - intelligence-data:/var/lib/intelligence
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    healthcheck:
+      test: ["CMD", "intelligence", "health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
   neo4j:
     image: neo4j:5.26-community
     cpus: 2.0
@@ -314,3 +344,6 @@ services:
       - beat
       - --loglevel=info
       - --schedule=/var/celerybeat/schedule
+
+volumes:
+  intelligence-data:

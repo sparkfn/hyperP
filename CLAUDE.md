@@ -70,6 +70,11 @@ Both frontend Dockerfiles use `npm install --legacy-peer-deps` because `@mui/x-d
 
 ## Service Topology
 
+**Intelligence runtime:** one non-root, CLI-only `intelligence` container has no port or service
+dependencies. It persists only via `intelligence-data` at `/var/lib/intelligence`, starts idle, and
+keeps mutation execution disabled by default. Use fixed CLI controls only; do not add HTTP, a
+scheduler, a sidecar, or arbitrary command execution.
+
 Eight Docker containers defined in `docker-compose.yml`:
 
 | Service | Image / Build | Internal address | Notes |

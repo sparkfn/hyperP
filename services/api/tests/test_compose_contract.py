@@ -100,7 +100,7 @@ EXCEPTIONS: tuple[ComposeTransformation, ...] = (
     ),
     *(
         ComposeTransformation(("services", name, "build", "context"), ".", "../..")
-        for name in ("api", "frontend2", "ingestion-worker", "lifecycle-worker", "beat")
+        for name in ("intelligence", "api", "frontend2", "ingestion-worker", "lifecycle-worker", "beat")
     ),
     ComposeTransformation(
         ("services", "api", "volumes"),
@@ -206,6 +206,7 @@ def test_staging_compose_critical_invariants() -> None:
     services = staging["services"]
     assert isinstance(services, dict)
     assert set(services) == {
+        "intelligence",
         "neo4j",
         "redis",
         "api",
@@ -215,12 +216,30 @@ def test_staging_compose_critical_invariants() -> None:
         "lifecycle-worker",
         "beat",
     }
+    intelligence = services["intelligence"]
     web = services["web"]
     ingestion_worker = services["ingestion-worker"]
     beat = services["beat"]
     assert isinstance(web, dict)
     assert isinstance(ingestion_worker, dict)
     assert isinstance(beat, dict)
+    assert isinstance(intelligence, dict)
+    assert intelligence["build"] == {
+        "context": "../..", "dockerfile": "services/intelligence/Dockerfile"
+    }
+    assert intelligence["volumes"] == ["intelligence-data:/var/lib/intelligence"]
+    assert intelligence["read_only"] is True
+    assert intelligence["cpus"] == "${INTELLIGENCE_CPUS:-0.5}"
+    assert intelligence["mem_limit"] == "${INTELLIGENCE_MEMORY_LIMIT:-512M}"
+    assert intelligence["pids_limit"] == "${INTELLIGENCE_PIDS_LIMIT:-128}"
+    assert intelligence["init"] is True
+    assert intelligence["stop_grace_period"] == "${INTELLIGENCE_STOP_GRACE_PERIOD:-30s}"
+    assert intelligence["cap_drop"] == ["ALL"]
+    assert intelligence["security_opt"] == ["no-new-privileges:true"]
+    assert intelligence["tmpfs"] == ["/tmp:rw,noexec,nosuid,size=64m"]
+    assert "ports" not in intelligence
+    assert "depends_on" not in intelligence
+    assert staging["volumes"] == {"intelligence-data": None}
     assert "ports" not in web
     assert web["networks"] == ["default", "traefik"]
     assert ingestion_worker["build"] == {
