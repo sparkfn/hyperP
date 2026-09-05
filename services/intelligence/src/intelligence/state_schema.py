@@ -71,10 +71,49 @@ def bootstrap(
     runtime_epoch: str | None,
 ) -> None:
     """Create or migrate the durable schema and establish the singleton lock row."""
-    connection.executescript(
+    objects = _user_schema_objects(connection)
+    metadata_exists = "metadata" in objects
+    if not metadata_exists:
+        if objects:
+            raise RuntimeError("Intelligence database has no schema metadata")
+        _create_current_schema(connection)
+        version = SCHEMA_VERSION
+    else:
+        row = connection.execute(
+            "SELECT value FROM metadata WHERE key = 'schema_version'"
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("Intelligence schema version is missing")
+        try:
+            version = int(row[0])
+        except (TypeError, ValueError) as error:
+            raise RuntimeError("Intelligence schema version is invalid") from error
+    if version > SCHEMA_VERSION:
+        raise RuntimeError("Intelligence state was created by a newer schema")
+    if version < SCHEMA_VERSION:
+        upgrade(connection, version, runtime_epoch)
+        _validate_current_schema(connection, require_constraints=False)
+    else:
+        migrated_legacy = connection.execute(
+            "SELECT 1 FROM metadata WHERE key = 'legacy_schema_migration'"
+        ).fetchone()
+        _validate_current_schema(connection, require_constraints=migrated_legacy is None)
+    connection.execute("INSERT OR IGNORE INTO mutation_lock(singleton) VALUES(1)")
+    verify_connection(connection)
+
+
+def _user_schema_objects(connection: sqlite3.Connection) -> set[str]:
+    rows = connection.execute("SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'")
+    return {str(row[0]) for row in rows}
+
+
+def _create_current_schema(connection: sqlite3.Connection) -> None:
+    statements = (
         """
-        CREATE TABLE IF NOT EXISTS metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
-        CREATE TABLE IF NOT EXISTS runs (
+        CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL)
+        """,
+        """
+        CREATE TABLE runs (
             id TEXT PRIMARY KEY, command TEXT NOT NULL, state TEXT NOT NULL,
             fence INTEGER NOT NULL, created_at REAL NOT NULL, heartbeat_at REAL,
             cancellation_requested INTEGER NOT NULL DEFAULT 0, recovery_reason TEXT,
@@ -82,31 +121,88 @@ def bootstrap(
             limits_json TEXT, runtime_epoch TEXT,
             cleanup_unresolved INTEGER NOT NULL DEFAULT 0,
             execution_may_be_alive INTEGER NOT NULL DEFAULT 0
-        );
-        CREATE TABLE IF NOT EXISTS mutation_lock (
+        )
+        """,
+        """
+        CREATE TABLE mutation_lock (
             singleton INTEGER PRIMARY KEY CHECK(singleton = 1), run_id TEXT,
             fence INTEGER NOT NULL DEFAULT 0, heartbeat_at REAL
-        );
-        CREATE TABLE IF NOT EXISTS accepted_outputs (
+        )
+        """,
+        """
+        CREATE TABLE accepted_outputs (
             relative_path TEXT PRIMARY KEY, run_id TEXT NOT NULL REFERENCES runs(id),
             sha256 TEXT NOT NULL, byte_count INTEGER NOT NULL CHECK(byte_count >= 0)
-        );
-        """
+        )
+        """,
     )
-    connection.execute(
-        "INSERT OR IGNORE INTO metadata(key, value) VALUES('schema_version', ?)",
-        (str(SCHEMA_VERSION),),
-    )
-    row = connection.execute("SELECT value FROM metadata WHERE key = 'schema_version'").fetchone()
-    if row is None:
-        raise RuntimeError("Intelligence schema version is missing")
-    version = int(row[0])
-    if version > SCHEMA_VERSION:
-        raise RuntimeError("Intelligence state was created by a newer schema")
-    if version < SCHEMA_VERSION:
-        upgrade(connection, version, runtime_epoch)
-    connection.execute("INSERT OR IGNORE INTO mutation_lock(singleton) VALUES(1)")
-    verify_connection(connection)
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        for statement in statements:
+            connection.execute(statement)
+        connection.execute("INSERT INTO metadata(key, value) VALUES('schema_version', '7')")
+        connection.execute("COMMIT")
+    except BaseException:
+        connection.execute("ROLLBACK")
+        raise
+
+
+def _validate_current_schema(connection: sqlite3.Connection, *, require_constraints: bool) -> None:
+    required: dict[str, frozenset[str]] = {
+        "metadata": frozenset({"key", "value"}),
+        "runs": frozenset(
+            {
+                "id",
+                "command",
+                "state",
+                "fence",
+                "created_at",
+                "heartbeat_at",
+                "cancellation_requested",
+                "recovery_reason",
+                "manifest_json",
+                "publishing_inventory_json",
+                "started_at",
+                "ended_at",
+                "limits_json",
+                "runtime_epoch",
+                "cleanup_unresolved",
+                "execution_may_be_alive",
+            }
+        ),
+        "mutation_lock": frozenset({"singleton", "run_id", "fence", "heartbeat_at"}),
+        "accepted_outputs": frozenset({"relative_path", "run_id", "sha256", "byte_count"}),
+    }
+    objects = _user_schema_objects(connection)
+    if not set(required).issubset(objects):
+        raise RuntimeError("Intelligence current schema is incomplete")
+    for table, expected in required.items():
+        actual = frozenset(str(row[1]) for row in connection.execute(f"PRAGMA table_info({table})"))
+        if not expected.issubset(actual):
+            raise RuntimeError("Intelligence current schema is incomplete")
+    if not require_constraints:
+        return
+    primary_keys = {
+        "runs": "id",
+        "mutation_lock": "singleton",
+        "accepted_outputs": "relative_path",
+    }
+    for table, column in primary_keys.items():
+        rows = tuple(connection.execute(f"PRAGMA table_info({table})"))
+        primary = next((row for row in rows if str(row[1]) == column), None)
+        if primary is None or int(primary[5]) != 1:
+            raise RuntimeError("Intelligence current schema constraints are invalid")
+    constraints = {
+        "mutation_lock": ("CHECK(SINGLETON = 1)",),
+        "accepted_outputs": ("REFERENCES RUNS", "CHECK(BYTE_COUNT >= 0)"),
+    }
+    for table, fragments in constraints.items():
+        sql_row = connection.execute(
+            "SELECT sql FROM sqlite_master WHERE type = 'table' AND name = ?", (table,)
+        ).fetchone()
+        sql = "" if sql_row is None or sql_row[0] is None else str(sql_row[0]).upper()
+        if any(fragment.upper() not in sql for fragment in fragments):
+            raise RuntimeError("Intelligence current schema constraints are invalid")
 
 
 def upgrade(connection: sqlite3.Connection, version: int, runtime_epoch: str | None) -> None:
@@ -115,6 +211,12 @@ def upgrade(connection: sqlite3.Connection, version: int, runtime_epoch: str | N
         raise RuntimeError("Intelligence state schema is unsupported")
     connection.execute("BEGIN IMMEDIATE")
     try:
+        if version < 6 and runtime_epoch is None:
+            active = connection.execute(
+                "SELECT 1 FROM runs WHERE state IN ('queued', 'running', 'publishing') LIMIT 1"
+            ).fetchone()
+            if active is not None:
+                raise RuntimeError("active legacy execution requires a trusted runtime epoch")
         columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(runs)")}
         added_runtime_epoch = "runtime_epoch" not in columns
         added_execution_fence = "execution_may_be_alive" not in columns
@@ -161,6 +263,9 @@ def upgrade(connection: sqlite3.Connection, version: int, runtime_epoch: str | N
         connection.execute(
             "UPDATE metadata SET value = ? WHERE key = 'schema_version'",
             (str(SCHEMA_VERSION),),
+        )
+        connection.execute(
+            "INSERT OR REPLACE INTO metadata(key, value) VALUES('legacy_schema_migration', '1')"
         )
         connection.execute("COMMIT")
     except BaseException:

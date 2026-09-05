@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import ctypes
+import errno
 import hashlib
 import json
 import os
@@ -95,6 +97,38 @@ def _write_new_file(path: Path, content: str) -> None:
             temporary.unlink()
         except FileNotFoundError:
             pass
+
+
+def _rename_noreplace(source: Path, destination: Path) -> None:
+    """Atomically install a path only when its destination does not exist."""
+    if os.name == "nt":
+        os.rename(source, destination)
+        return
+    try:
+        library = ctypes.CDLL(None, use_errno=True)
+        renameat2 = library.renameat2
+    except AttributeError as error:
+        raise RuntimeError("atomic no-replace rename is unavailable") from error
+    renameat2.argtypes = [
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_int,
+        ctypes.c_char_p,
+        ctypes.c_uint,
+    ]
+    renameat2.restype = ctypes.c_int
+    result = renameat2(
+        -100,
+        os.fsencode(source),
+        -100,
+        os.fsencode(destination),
+        1,
+    )
+    if result != 0:
+        error_number = ctypes.get_errno()
+        if error_number == errno.EEXIST:
+            raise FileExistsError(destination)
+        raise OSError(error_number, os.strerror(error_number), str(destination))
 
 
 def _append_durable(path: Path, content: bytes) -> None:

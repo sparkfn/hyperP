@@ -39,6 +39,10 @@ class CleanupUnresolvedError(RuntimeError):
     """The child process group was not proven quiescent; durable lock must remain held."""
 
 
+class PreLaunchError(RuntimeError):
+    """A launch setup operation failed before process.start was invoked."""
+
+
 class _ReadyChannel(Protocol):
     def send(self, value: object) -> None: ...
 
@@ -80,12 +84,10 @@ class IntelligenceRuntime:
         )
         staging = self.state.layout.staging / run.run_id
         started = time.monotonic()
-        process_start_attempted = False
         process: BaseProcess | None = None
         try:
             staging.mkdir(mode=0o700, parents=True, exist_ok=False)
             self._log(run, "started", {})
-            process_start_attempted = True
             process = _start_command(command.execute, staging)
             started = time.monotonic()
             terminal_state, termination_reason = self._wait_for_command(process, run, started)
@@ -122,6 +124,10 @@ class IntelligenceRuntime:
             )
             self._finish(run, "completed", published, None, publication=True)
             return run.run_id
+        except PreLaunchError:
+            self.state.mark_execution_quiescent(run)
+            self._finish_if_possible(run, "failed", "launch_setup_failed")
+            raise
         except CleanupUnresolvedError:
             self.state.mark_cleanup_unresolved(run)
             raise
@@ -135,10 +141,8 @@ class IntelligenceRuntime:
                 "stale_recovered",
             }:
                 raise
-            if not process_start_attempted:
+            if process is None:
                 self.state.mark_execution_quiescent(run)
-            elif process is None:
-                self.state.mark_cleanup_unresolved(run)
             else:
                 try:
                     _stop_child(process)
@@ -340,9 +344,18 @@ class IntelligenceRuntime:
 
 def _start_command(handler: CommandHandler, staging: Path) -> BaseProcess:
     """Start only a reviewed registry callable; no caller executable or shell is accepted."""
-    context = get_context("spawn")
-    parent_ready, child_ready = context.Pipe(duplex=False)
-    process = context.Process(target=_child_entry, args=(handler, staging, child_ready))
+    parent_ready: _ReadyChannel | None = None
+    child_ready: _ReadyChannel | None = None
+    try:
+        context = get_context("spawn")
+        parent_ready, child_ready = context.Pipe(duplex=False)
+        process = context.Process(target=_child_entry, args=(handler, staging, child_ready))
+    except BaseException as error:
+        _close_endpoint(child_ready)
+        _close_endpoint(parent_ready)
+        raise PreLaunchError("reviewed child launch setup failed") from error
+    # No exception after this point may be treated as proof that no child exists:
+    # multiprocessing may create an OS child before reporting a start failure.
     try:
         process.start()
     except BaseException as error:
@@ -364,6 +377,15 @@ def _start_command(handler: CommandHandler, staging: Path) -> BaseProcess:
         except BaseException as error:
             _abort_unready_child(process, error)
     return process
+
+
+def _close_endpoint(endpoint: _ReadyChannel | None) -> None:
+    if endpoint is None:
+        return
+    try:
+        endpoint.close()
+    except BaseException:
+        pass
 
 
 def _child_entry(handler: CommandHandler, staging: Path, ready: _ReadyChannel) -> None:

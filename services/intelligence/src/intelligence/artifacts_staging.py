@@ -9,6 +9,7 @@ from pathlib import Path
 
 from intelligence.artifacts_core import (
     _fsync_directory,
+    _rename_noreplace,
     _validate_relative_path,
     _validate_run_id,
     sha256_file,
@@ -70,10 +71,8 @@ def publish_inventory(
     if actual != expected:
         raise RuntimeError("staged output inventory changed before publication")
     destination = layout.outputs / run_id
-    if destination.exists() or destination.is_symlink():
-        raise FileExistsError("accepted output directory already exists")
     try:
-        os.rename(staging, destination)
+        _rename_noreplace(staging, destination)
     except FileExistsError as error:
         raise FileExistsError("accepted output directory already exists") from error
     except OSError as error:

@@ -10,7 +10,7 @@ from intelligence.config import RuntimeConfig
 from intelligence.registry import PRODUCTION_REGISTRY, RegisteredCommand, Registry
 from intelligence.runtime import IntelligenceRuntime
 from intelligence.state import State
-from intelligence.state_schema import upgrade
+from intelligence.state_schema import bootstrap, upgrade, verify_connection
 
 
 def test_wal_empty_registry_and_default_off(tmp_path: Path) -> None:
@@ -116,6 +116,67 @@ def test_newer_schema_is_rejected_on_reopen(tmp_path: Path) -> None:
         State(tmp_path)
 
 
+def test_nonempty_metadata_less_database_is_rejected_unchanged(tmp_path: Path) -> None:
+    """A database without admission metadata is not silently adopted or repaired."""
+    layout = workspace_layout(tmp_path)
+    connection = sqlite3.connect(layout.state_database)
+    connection.execute("CREATE TABLE unrelated (value TEXT NOT NULL)")
+    connection.execute("INSERT INTO unrelated(value) VALUES('unchanged')")
+    connection.commit()
+    before = layout.state_database.read_bytes()
+    connection.close()
+    with pytest.raises(RuntimeError, match="metadata"):
+        State(tmp_path)
+    assert layout.state_database.read_bytes() == before
+
+
+def test_malformed_current_schema_is_rejected_before_repair(tmp_path: Path) -> None:
+    """A v7 database missing required runtime tables is rejected unchanged."""
+    layout = workspace_layout(tmp_path)
+    connection = sqlite3.connect(layout.state_database)
+    connection.executescript(
+        """
+        CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO metadata(key, value) VALUES('schema_version', '7');
+        CREATE TABLE runs (id TEXT PRIMARY KEY, command TEXT NOT NULL);
+        """
+    )
+    connection.commit()
+    before = layout.state_database.read_bytes()
+    connection.close()
+    with pytest.raises(RuntimeError, match="incomplete"):
+        State(tmp_path)
+    assert layout.state_database.read_bytes() == before
+
+
+def test_fresh_schema_creation_rolls_back_mid_create_failure(tmp_path: Path) -> None:
+    """A failed fresh DDL sequence leaves no partial metadata-less schema behind."""
+    layout = workspace_layout(tmp_path)
+    connection = sqlite3.connect(layout.state_database, isolation_level=None)
+
+    def deny_final_table(
+        action: int, first: str | None, second: str | None, database: str | None, source: str | None
+    ) -> int:
+        del second, database, source
+        if action == sqlite3.SQLITE_CREATE_TABLE and first == "accepted_outputs":
+            return sqlite3.SQLITE_DENY
+        return sqlite3.SQLITE_OK
+
+    connection.set_authorizer(deny_final_table)
+    try:
+        with pytest.raises(sqlite3.DatabaseError):
+            bootstrap(connection, verify_connection, None)
+    finally:
+        connection.set_authorizer(None)
+    assert (
+        connection.execute(
+            "SELECT name FROM sqlite_master WHERE name NOT LIKE 'sqlite_%'"
+        ).fetchall()
+        == []
+    )
+    connection.close()
+
+
 def test_legacy_v1_manifest_reopens_and_verifies_in_backup(tmp_path: Path) -> None:
     """Prior schema-v1 evidence with empty limits remains readable and exportable."""
     state = State(tmp_path)
@@ -184,6 +245,41 @@ def test_schema_v4_state_migrates_admission_limits_column(tmp_path: Path) -> Non
         assert "limits_json" in columns
     finally:
         reopened.close()
+
+
+def test_pre_v6_active_migration_waits_for_trusted_epoch(tmp_path: Path) -> None:
+    """Legacy active rows remain unchanged when no trusted epoch is available."""
+    layout = workspace_layout(tmp_path)
+    connection = sqlite3.connect(layout.state_database, isolation_level=None)
+    connection.executescript(
+        """
+        CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO metadata(key, value) VALUES('schema_version', '4');
+        CREATE TABLE runs (
+            id TEXT PRIMARY KEY, command TEXT NOT NULL, state TEXT NOT NULL,
+            fence INTEGER NOT NULL, created_at REAL NOT NULL, heartbeat_at REAL,
+            cancellation_requested INTEGER NOT NULL DEFAULT 0, recovery_reason TEXT,
+            manifest_json TEXT, publishing_inventory_json TEXT, started_at REAL,
+            ended_at REAL
+        );
+        INSERT INTO runs(id, command, state, fence, created_at, heartbeat_at)
+        VALUES('legacy-active', 'reviewed', 'running', 1, 1, 1);
+        """
+    )
+    try:
+        with pytest.raises(RuntimeError, match="trusted runtime epoch"):
+            upgrade(connection, 4, None)
+        assert (
+            connection.execute(
+                "SELECT value FROM metadata WHERE key = 'schema_version'"
+            ).fetchone()[0]
+            == "4"
+        )
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(runs)")}
+        assert "runtime_epoch" not in columns
+        assert "execution_may_be_alive" not in columns
+    finally:
+        connection.close()
 
 
 def test_schema_v6_active_run_migration_keeps_execution_fence(tmp_path: Path) -> None:
