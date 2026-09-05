@@ -9,7 +9,12 @@ import src.repositories.neo4j.crm as crm_module
 from src.graph.converters import GraphRecord, GraphValue
 from src.graph.queries.crm import GET_PERSON_BITRIX_DEAL_SCOPE, GET_PERSON_CRM_DEAL_METRICS
 from src.repositories.neo4j.crm import Neo4jCrmDealMetricsRepository
-from src.types_crm import CrmDealEntityBreakdown, CrmDealStageCount, PersonCrmDealMetrics
+from src.types_crm import (
+    BitrixDealScope,
+    CrmDealEntityBreakdown,
+    CrmDealStageCount,
+    PersonCrmDealMetrics,
+)
 
 
 class _Record:
@@ -71,8 +76,26 @@ def test_scope_is_effective_active_bounded_instance_scoped_and_uses_portal_deal_
     assert "coalesce(link.is_active, true) = true" in GET_PERSON_BITRIX_DEAL_SCOPE
     assert "sr.source_entity_type = 'deal'" in GET_PERSON_BITRIX_DEAL_SCOPE
     assert "sr.source_entity_id IS NOT NULL" in GET_PERSON_BITRIX_DEAL_SCOPE
-    assert "RETURN DISTINCT sr.source_entity_id AS deal_id" in GET_PERSON_BITRIX_DEAL_SCOPE
+    assert "WITH DISTINCT sr.source_entity_id AS deal_id" in GET_PERSON_BITRIX_DEAL_SCOPE
+    assert "ORDER BY deal_id" in GET_PERSON_BITRIX_DEAL_SCOPE
+    assert "LIMIT $deal_limit_plus_one" in GET_PERSON_BITRIX_DEAL_SCOPE
+    assert "RETURN [value IN collect(deal_id) WHERE value IS NOT NULL] AS deal_ids" in (
+        GET_PERSON_BITRIX_DEAL_SCOPE
+    )
+    assert "RETURN person.person_id AS canonical_person_id, source_authorized, deal_ids" in (
+        GET_PERSON_BITRIX_DEAL_SCOPE
+    )
     assert "coalesce(canonical, p) AS person" in GET_PERSON_BITRIX_DEAL_SCOPE
+    assert "BitrixSourceInstance" in GET_PERSON_BITRIX_DEAL_SCOPE
+    assert "registered_source:SourceSystem" in GET_PERSON_BITRIX_DEAL_SCOPE
+    assert "collect(DISTINCT instance) AS instances" in GET_PERSON_BITRIX_DEAL_SCOPE
+    assert (
+        "collect(DISTINCT registered_source) AS registered_sources" in GET_PERSON_BITRIX_DEAL_SCOPE
+    )
+    assert "registration_count = 1" in GET_PERSON_BITRIX_DEAL_SCOPE
+    assert "OPTIONAL MATCH (instance)-[registration:INSTANCE_OF]" in GET_PERSON_BITRIX_DEAL_SCOPE
+    assert "instances[0].status = 'active'" in GET_PERSON_BITRIX_DEAL_SCOPE
+    assert "registered_sources[0].is_active = true" in GET_PERSON_BITRIX_DEAL_SCOPE
 
 
 @pytest.mark.anyio
@@ -157,6 +180,7 @@ async def test_scope_dedupes_sorts_caps_and_reports_extra_row(
 ) -> None:
     row: GraphRecord = {
         "canonical_person_id": "canonical-1",
+        "source_authorized": True,
         "deal_ids": ["20", "10", "10", "30"],
     }
     session = _Session([_Record(row)])
@@ -171,6 +195,7 @@ async def test_scope_dedupes_sorts_caps_and_reports_extra_row(
     assert scope.deal_ids == ("10", "20")
     assert scope.resolved_deal_count == 3
     assert scope.deal_limit_exhausted is True
+    assert scope.source_authorized is True
     assert session.calls == [
         (
             GET_PERSON_BITRIX_DEAL_SCOPE,
@@ -181,3 +206,106 @@ async def test_scope_dedupes_sorts_caps_and_reports_extra_row(
             },
         )
     ]
+
+
+@pytest.mark.anyio
+async def test_scope_preserves_existing_person_without_deals(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    row: GraphRecord = {
+        "canonical_person_id": "person-1",
+        "source_authorized": True,
+        "deal_ids": [],
+    }
+    session = _Session([_Record(row)])
+    _install(monkeypatch, session)
+
+    scope = await Neo4jCrmDealMetricsRepository().resolve_bitrix_deal_scope(
+        "person-1", "bitrix-primary", 2
+    )
+
+    assert scope == BitrixDealScope(
+        canonical_person_id="person-1",
+        deal_ids=(),
+        resolved_deal_count=0,
+        deal_limit_exhausted=False,
+        source_authorized=True,
+    )
+
+
+@pytest.mark.anyio
+async def test_scope_fails_closed_for_malformed_authoritative_deal_id(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _Session(
+        [
+            _Record(
+                {
+                    "canonical_person_id": "person-1",
+                    "source_authorized": True,
+                    "deal_ids": ["10", "01"],
+                }
+            )
+        ]
+    )
+    _install(monkeypatch, session)
+
+    scope = await Neo4jCrmDealMetricsRepository().resolve_bitrix_deal_scope(
+        "person-1", "bitrix-primary", 10
+    )
+
+    assert scope is not None
+    assert scope.scope_valid is False
+    assert scope.deal_ids == ("10",)
+
+
+@pytest.mark.anyio
+async def test_scope_returns_existing_person_when_active_source_authority_is_unavailable(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _Session(
+        [
+            _Record(
+                {
+                    "canonical_person_id": "person-1",
+                    "source_authorized": False,
+                    "deal_ids": [],
+                }
+            )
+        ]
+    )
+    _install(monkeypatch, session)
+
+    scope = await Neo4jCrmDealMetricsRepository().resolve_bitrix_deal_scope(
+        "person-1", "bitrix-primary", 10
+    )
+
+    assert scope is not None
+    assert scope.deal_ids == ()
+    assert scope.source_authorized is False
+
+
+@pytest.mark.anyio
+async def test_scope_fails_closed_when_graph_returns_non_list_deal_ids(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    session = _Session(
+        [
+            _Record(
+                {
+                    "canonical_person_id": "person-1",
+                    "source_authorized": True,
+                    "deal_ids": "10",
+                }
+            )
+        ]
+    )
+    _install(monkeypatch, session)
+
+    scope = await Neo4jCrmDealMetricsRepository().resolve_bitrix_deal_scope(
+        "person-1", "bitrix-primary", 10
+    )
+
+    assert scope is not None
+    assert scope.scope_valid is False
+    assert scope.deal_ids == ()

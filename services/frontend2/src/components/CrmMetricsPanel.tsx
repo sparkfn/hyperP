@@ -6,6 +6,7 @@ import ChatBubbleOutline from "@mui/icons-material/ChatBubbleOutline";
 import Handshake from "@mui/icons-material/Handshake";
 import PhoneInTalk from "@mui/icons-material/PhoneInTalk";
 import WorkOutline from "@mui/icons-material/WorkOutline";
+import Button from "@mui/material/Button";
 import React, { useEffect, useMemo, useState, type ReactElement } from "react";
 
 import { bffFetch, BffError } from "@/lib/api-client";
@@ -71,6 +72,15 @@ function displayDate(value: string | null): string {
   return value ?? "—";
 }
 
+function isLaterTimestamp(candidate: string | null, baseline: string | null): boolean {
+  if (candidate === null) return false;
+  const candidateAt = Date.parse(candidate);
+  if (!Number.isFinite(candidateAt)) return false;
+  if (baseline === null) return true;
+  const baselineAt = Date.parse(baseline);
+  return !Number.isFinite(baselineAt) || candidateAt > baselineAt;
+}
+
 function composeMetrics(
   deals: PersonCrmDealMetrics,
   activity: PersonCrmActivityMetrics | undefined,
@@ -78,6 +88,8 @@ function composeMetrics(
 ): CombinedCrmMetrics {
   const completeActivity = activity?.status === "complete" ? activity : null;
   const aggregate = activity?.status === "complete" || activity?.status === "partial" ? activity : null;
+  const liveIsNewest = completeActivity !== null
+    && isLaterTimestamp(completeActivity.last_activity_at, deals.last_graph_crm_touch_at);
   return {
     ...deals,
     entity_breakdown: deals.entity_breakdown,
@@ -94,8 +106,12 @@ function composeMetrics(
     recent_30d_daily_call_counts: completeActivity?.recent_30d_daily_call_counts ?? [],
     recent_30d_activity_change_pct: completeActivity?.recent_30d_activity_change_pct ?? null,
     recent_30d_call_change_pct: completeActivity?.recent_30d_call_change_pct ?? null,
-    last_crm_touch_at: completeActivity?.last_activity_at ?? deals.last_graph_crm_touch_at,
-    last_crm_touch_at_display: completeActivity?.last_activity_at_display ?? deals.last_graph_crm_touch_at_display,
+    last_crm_touch_at: liveIsNewest
+      ? completeActivity.last_activity_at
+      : deals.last_graph_crm_touch_at,
+    last_crm_touch_at_display: liveIsNewest
+      ? completeActivity.last_activity_at_display
+      : deals.last_graph_crm_touch_at_display,
     days_since_last_crm_touch: null,
     days_since_last_activity: null,
     activity_status: activity === undefined
@@ -159,7 +175,11 @@ export default function CrmMetricsPanel({
       <section className={styles.overviewSection} aria-label="CRM overview">
         <CrmMetricCards metrics={metrics} />
       </section>
-      <LiveActivityStatus metrics={metrics} activity={activityQuery.data} />
+      <LiveActivityStatus
+        metrics={metrics}
+        activity={activityQuery.data}
+        onRetry={() => { void activityQuery.refetch(); }}
+      />
       <CrmBreakdowns metrics={metrics} />
       <CrmRecency metrics={metrics} />
     </div>
@@ -169,9 +189,11 @@ export default function CrmMetricsPanel({
 function LiveActivityStatus({
   metrics,
   activity,
+  onRetry,
 }: {
   metrics: CombinedCrmMetrics;
   activity: PersonCrmActivityMetrics | undefined;
+  onRetry: () => void;
 }): ReactElement {
   const freshness = activity === undefined
     ? null
@@ -188,11 +210,23 @@ function LiveActivityStatus({
     ? ""
     : " Incomplete activity series are not charted.";
   return (
-    <p className={styles.breakdownEmpty} role="status">
-      Live activity {metrics.activity_status}
-      {metrics.activity_reason ? `: ${metrics.activity_reason}` : ""}.
-      {metadata}{incomplete}
-    </p>
+    <div className={styles.breakdownEmpty} role="status">
+      <span>
+        Live activity {metrics.activity_status}
+        {metrics.activity_reason ? `: ${metrics.activity_reason}` : ""}.
+        {metadata}{incomplete}
+      </span>
+      {metrics.activity_status === "unavailable" ? (
+        <Button
+          size="small"
+          variant="outlined"
+          onClick={onRetry}
+          aria-label="Retry live activity metrics"
+        >
+          Retry live activity
+        </Button>
+      ) : null}
+    </div>
   );
 }
 

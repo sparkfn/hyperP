@@ -2,8 +2,12 @@
 
 from __future__ import annotations
 
-from pydantic import Field
+import re
+
+from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+_BITRIX_SOURCE_INSTANCE_SLUG = re.compile(r"[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?")
 
 
 class AppConfig(BaseSettings):
@@ -76,6 +80,14 @@ class AppConfig(BaseSettings):
     bitrix_activity_source_instance: str = Field(
         default="bitrix-primary", alias="BITRIX_ACTIVITY_SOURCE_INSTANCE"
     )
+
+    @field_validator("bitrix_activity_source_instance")
+    @classmethod
+    def validate_bitrix_activity_source_instance(cls, value: str) -> str:
+        if _BITRIX_SOURCE_INSTANCE_SLUG.fullmatch(value) is None:
+            raise ValueError("must be a canonical non-secret slug of 1 to 64 characters")
+        return value
+
     bitrix_activity_timeout_seconds: float = Field(
         default=5.0, ge=0.1, le=30.0, alias="BITRIX_ACTIVITY_TIMEOUT_SECONDS"
     )

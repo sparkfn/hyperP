@@ -19,8 +19,11 @@ from src.types_crm import (
 
 
 class _DealRepo:
-    def __init__(self, metrics: PersonCrmDealMetrics | None) -> None:
+    def __init__(
+        self, metrics: PersonCrmDealMetrics | None, scope: BitrixDealScope | None = None
+    ) -> None:
         self.metrics = metrics
+        self.scope = scope
         self.scope_calls: list[tuple[str, str, int]] = []
 
     async def get_person_crm_deal_metrics(self, person_id: str) -> PersonCrmDealMetrics | None:
@@ -32,6 +35,8 @@ class _DealRepo:
         self.scope_calls.append((person_id, source_instance, deal_limit))
         if self.metrics is None:
             return None
+        if self.scope is not None:
+            return self.scope
         return BitrixDealScope(
             canonical_person_id="canonical-1",
             deal_ids=("10",),
@@ -142,6 +147,27 @@ async def test_split_routes_return_404_for_missing_person(suffix: str) -> None:
 
 
 @pytest.mark.anyio
+async def test_activity_route_keeps_existing_zero_deal_scope_without_missing_person() -> None:
+    scope = BitrixDealScope(
+        canonical_person_id="canonical-1",
+        deal_ids=(),
+        resolved_deal_count=0,
+        deal_limit_exhausted=False,
+        source_authorized=False,
+    )
+    deal_repo = _DealRepo(PersonCrmDealMetrics(deal_count=0), scope)
+    activity_repo = _ActivityRepo(_complete())
+    transport = ASGITransport(app=_app(deal_repo, activity_repo))
+
+    async with AsyncClient(transport=transport, base_url="http://testserver") as client:
+        response = await client.get("/v1/persons/person-1/crm/activity-metrics")
+
+    assert response.status_code == 200
+    assert activity_repo.scopes == [scope]
+    assert response.json()["data"]["status"] == "complete"
+
+
+@pytest.mark.anyio
 async def test_split_routes_enforce_persons_read_scope() -> None:
     app = _app(_DealRepo(PersonCrmDealMetrics()), _ActivityRepo(_complete()))
     app.dependency_overrides[get_current_user_or_oauth_client] = _oauth_without_scope
@@ -162,9 +188,11 @@ def test_openapi_has_exact_split_operation_ids_and_no_combined_route() -> None:
     schema = app.openapi()
 
     assert "/v1/persons/{person_id}/crm/metrics" not in schema["paths"]
-    assert schema["paths"]["/v1/persons/{person_id}/crm/deal-metrics"]["get"][
-        "operationId"
-    ] == "get_person_crm_deal_metrics"
-    assert schema["paths"]["/v1/persons/{person_id}/crm/activity-metrics"]["get"][
-        "operationId"
-    ] == "get_person_crm_activity_metrics"
+    assert (
+        schema["paths"]["/v1/persons/{person_id}/crm/deal-metrics"]["get"]["operationId"]
+        == "get_person_crm_deal_metrics"
+    )
+    assert (
+        schema["paths"]["/v1/persons/{person_id}/crm/activity-metrics"]["get"]["operationId"]
+        == "get_person_crm_activity_metrics"
+    )

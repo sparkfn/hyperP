@@ -277,7 +277,7 @@ export interface paths {
         };
         /**
          * Get bounded live Bitrix CRM activity metrics for a person
-         * @description Performs only bounded owner-filtered request-time Bitrix reads for the person's effective-active deal IDs. Complete is exact (including zero); partial values are lower bounds; unavailable has no aggregates. No raw payload, content, history persistence, or portal-wide scan is permitted.
+         * @description Performs only bounded owner-filtered request-time Bitrix reads for the person's effective-active deal IDs. Complete is exact (including zero); partial values are lower bounds; unavailable has no aggregates. No raw payload, content, history persistence, or portal-wide scan is permitted. The configured source instance must be active and unambiguously registered to the active bitrix_chat source or the safe unavailable reason is source_unavailable. Each owner batch freezes its positive upper activity ID and uses ordered positive-ID keyset pages under one shared concurrency and monotonic elapsed deadline; approved transient upstream failures retry only within that same request and deadline budget.
          */
         get: operations["get_person_crm_activity_metrics"];
         put?: never;
@@ -1328,7 +1328,7 @@ export interface components {
             recent_30d_call_change_pct: number | null;
         };
         /** @enum {string} */
-        CrmActivityFailureReason: "not_configured" | "deal_limit" | "request_limit" | "page_limit" | "row_limit" | "elapsed_limit" | "non_advancing_pagination" | "rate_limited" | "timeout" | "upstream_error" | "malformed_response";
+        CrmActivityFailureReason: "not_configured" | "source_unavailable" | "deal_limit" | "request_limit" | "page_limit" | "row_limit" | "elapsed_limit" | "non_advancing_pagination" | "rate_limited" | "timeout" | "upstream_error" | "malformed_response";
         PersonCrmActivityMetricsUnavailable: {
             /**
              * @description discriminator enum property added by openapi-typescript

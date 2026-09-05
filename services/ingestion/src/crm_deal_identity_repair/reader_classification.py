@@ -79,7 +79,8 @@ _AUDIT_READERS: Final[frozenset[str]] = frozenset(
 )
 
 _AUTHORITATIVE_READERS: Final[frozenset[str]] = frozenset(
-    """api/graph/queries/crm.py:GET_PERSON_CRM_METRICS
+    """api/graph/queries/crm.py:GET_PERSON_BITRIX_DEAL_SCOPE
+api/graph/queries/crm.py:GET_PERSON_CRM_DEAL_METRICS
 api/graph/queries/graph.py:_QUERY_BODY
 api/graph/queries/crm.py:_daily_buckets
 api/graph/queries/entities.py:LIST_ENTITIES

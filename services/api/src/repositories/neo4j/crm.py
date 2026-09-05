@@ -41,6 +41,13 @@ def _daily_counts(row: GraphRecord, key: str) -> list[int]:
     return (counts + [0] * 30)[:30]
 
 
+def _positive_id(value: GraphValue) -> str | None:
+    text = to_optional_str(value)
+    if text is None or not text.isascii() or not text.isdecimal() or text.startswith("0"):
+        return None
+    return text
+
+
 def _metrics(row: GraphRecord) -> PersonCrmDealMetrics:
     first_deal = to_iso_or_none(row.get("first_deal_at"))
     last_deal = to_iso_or_none(row.get("last_deal_at"))
@@ -123,10 +130,13 @@ class Neo4jCrmDealMetricsRepository:
         row = record_to_dict(record.keys(), list(record.values()))
         raw_ids = row.get("deal_ids")
         identifiers: set[str] = set()
+        scope_valid = isinstance(raw_ids, list)
         if isinstance(raw_ids, list):
             for value in raw_ids:
-                identifier = to_optional_str(value)
-                if identifier:
+                identifier = _positive_id(value)
+                if identifier is None:
+                    scope_valid = False
+                else:
                     identifiers.add(identifier)
         ids = tuple(sorted(identifiers))
         return BitrixDealScope(
@@ -134,4 +144,6 @@ class Neo4jCrmDealMetricsRepository:
             deal_ids=ids[:deal_limit],
             resolved_deal_count=len(ids),
             deal_limit_exhausted=len(ids) > deal_limit,
+            source_authorized=bool(row.get("source_authorized", False)),
+            scope_valid=scope_valid,
         )

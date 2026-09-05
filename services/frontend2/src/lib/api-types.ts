@@ -315,6 +315,7 @@ export interface PersonCrmActivityMetricsUnavailable extends CrmActivityMetricSh
 }
 export type CrmActivityFailureReason =
   | "not_configured"
+  | "source_unavailable"
   | "deal_limit"
   | "request_limit"
   | "page_limit"

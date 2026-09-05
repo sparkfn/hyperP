@@ -57,6 +57,7 @@ class CrmCallClassificationCount(BaseModel):
 
 CrmActivityFailureReason = Literal[
     "not_configured",
+    "source_unavailable",
     "deal_limit",
     "request_limit",
     "page_limit",
@@ -137,3 +138,5 @@ class BitrixDealScope(BaseModel):
     deal_ids: tuple[str, ...]
     resolved_deal_count: int
     deal_limit_exhausted: bool
+    source_authorized: bool = True
+    scope_valid: bool = True
