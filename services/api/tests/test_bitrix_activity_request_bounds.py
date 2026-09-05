@@ -117,6 +117,15 @@ def test_source_instance_configuration_rejects_noncanonical_or_secret_like_value
             _config(BITRIX_ACTIVITY_SOURCE_INSTANCE=value)
 
 
+def test_canonical_provider_call_markers_preserve_ingestion_substring_semantics() -> None:
+    kind = BitrixCrmActivityRepository._activity_kind
+
+    assert kind("3", "CALLBACK", None) == "call"
+    assert kind("3", "phonecall", None) == "call"
+    assert kind("3", "calendar", None) == "activity_type_3"
+    assert kind("3", "call/$bad", None) == "activity_type_3"
+
+
 @pytest.mark.anyio
 async def test_empty_valid_scope_is_complete_zero_without_authority_or_network_io() -> None:
     async def no_network(_: dict[str, object]) -> httpx.Response:
@@ -246,7 +255,7 @@ async def test_non_call_provider_normalization_precedes_type_id() -> None:
 async def test_activity_kind_and_call_classification_are_canonical_closed_values() -> None:
     async def handler(body: dict[str, object]) -> httpx.Response:
         if _is_freeze(body):
-            return httpx.Response(200, json={"result": [{"ID": "5"}]})
+            return httpx.Response(200, json={"result": [{"ID": "6"}]})
         return httpx.Response(
             200,
             json={
@@ -256,6 +265,7 @@ async def test_activity_kind_and_call_classification_are_canonical_closed_values
                     _activity("3", kind="3", provider_type_id="task/$bad"),
                     _activity("4", direction="not-a-direction", completed="maybe"),
                     _activity("5", kind="3", provider_id="IMOPENLINES_SESSION"),
+                    _activity("6", kind="3", provider_id="CALLBACK", direction="outbound"),
                 ]
             },
         )
@@ -273,6 +283,7 @@ async def test_activity_kind_and_call_classification_are_canonical_closed_values
         "unknown",
     ]
     assert [(item.classification, item.count) for item in result.call_classification_breakdown] == [
+        ("outgoing_completed", 1),
         ("outgoing_incomplete", 1),
         ("unknown_unknown", 1),
     ]

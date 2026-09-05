@@ -449,8 +449,7 @@ class BitrixCrmActivityRepository:
         provider = cls._normalize_identifier(provider_id)
         provider_type_text = cls._normalize_identifier(provider_type)
         raw_type_text = cls._normalize_fragment(raw_type)
-        provider_tokens = (*provider.split("_"), *provider_type_text.split("_"))
-        if raw_type_text in {"2", "call"} or "call" in provider_tokens:
+        if raw_type_text in {"2", "call"} or "call" in provider or "call" in provider_type_text:
             return "call"
         if provider == "imopenlines_session":
             return "openlines_session"
