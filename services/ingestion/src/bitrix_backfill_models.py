@@ -506,9 +506,14 @@ class TailVerification:
     predecessor_frozen: bool
     historical_streams: tuple[BitrixStreamKey, ...]
     expected_streams: tuple[BitrixStreamKey, ...]
+    historical_actual_streams: tuple[BitrixStreamKey, ...]
     actual_streams: tuple[BitrixStreamKey, ...]
+    historical_cadence_run_count: int
+    historical_cadence_complete: bool
     cadence_run_count: int
     cadence_complete: bool
+    historical_successor_coverage_count: int
+    historical_coverage_complete: bool
     successor_coverage_count: int
     coverage_complete: bool
 

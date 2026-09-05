@@ -120,9 +120,18 @@ def test_tail_verification_filters_historical_activities_but_retains_visibility(
                         "openlines_conversations",
                     ],
                     "expected_streams": ["crm_deals", "openlines_conversations"],
+                    "historical_actual_streams": [
+                        "crm_deals",
+                        "crm_activities",
+                        "openlines_conversations",
+                    ],
                     "actual_streams": ["crm_deals", "openlines_conversations"],
+                    "historical_cadence_run_count": 3,
+                    "historical_cadence_complete": False,
                     "cadence_run_count": 2,
                     "cadence_complete": True,
+                    "historical_successor_coverage_count": 4,
+                    "historical_coverage_complete": False,
                     "successor_coverage_count": 2,
                     "coverage_complete": True,
                 }
@@ -143,10 +152,26 @@ def test_tail_verification_filters_historical_activities_but_retains_visibility(
         "openlines_conversations",
     )
     assert verification.expected_streams == ("crm_deals", "openlines_conversations")
+    assert verification.historical_actual_streams == (
+        "crm_deals",
+        "crm_activities",
+        "openlines_conversations",
+    )
     assert verification.actual_streams == ("crm_deals", "openlines_conversations")
+    assert verification.historical_cadence_run_count == 3
+    assert verification.historical_cadence_complete is False
+    assert verification.historical_successor_coverage_count == 4
+    assert verification.historical_coverage_complete is False
     assert verification.passed is True
     assert "inventory.executed_stream_keys AS historical_streams" in VERIFY_BITRIX_SUCCESSOR_TAIL
     assert (
         "[stream_key IN inventory.executed_stream_keys WHERE stream_key <> 'crm_activities']"
         in VERIFY_BITRIX_SUCCESSOR_TAIL
     )
+    assert "collect({logical: logical, stream_key: relation.stream_key}) AS run_bindings" in (
+        VERIFY_BITRIX_SUCCESSOR_TAIL
+    )
+    assert "binding.stream_key IN expected_streams" in VERIFY_BITRIX_SUCCESSOR_TAIL
+    assert "coverage.stream_key IN expected_streams" in VERIFY_BITRIX_SUCCESSOR_TAIL
+    assert "historical_actual_streams" in VERIFY_BITRIX_SUCCESSOR_TAIL
+    assert "historical_successor_coverage_count" in VERIFY_BITRIX_SUCCESSOR_TAIL
