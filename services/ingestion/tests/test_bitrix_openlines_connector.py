@@ -745,7 +745,7 @@ def test_connector_attributes_inaccessible_recent_messages_without_upstream_text
     assert watermark.committed is None
 
 
-def test_incremental_api_emits_deal_history_call_and_chat_activity_references(
+def test_incremental_api_emits_deal_and_chat_activity_provenance_without_history_or_call(
     monkeypatch: MonkeyPatch,
 ) -> None:
     from src.connectors.bitrix_openlines.models import CrmActivity, CrmContact, CrmDeal
@@ -840,19 +840,10 @@ def test_incremental_api_emits_deal_history_call_and_chat_activity_references(
 
     records = list(connector.fetch_records())
 
-    assert [record["record_type"] for record in records] == [
-        "crm_deal",
-        "crm_history",
-        "crm_history",
-        "call",
-        "conversation",
-    ]
+    assert [record["record_type"] for record in records] == ["crm_deal", "conversation"]
     assert records[0]["identifiers"][0]["source_instance_id"] == "bitrix-primary"
-    assert records[2]["raw_payload"]["crm_activity_id"] == "901"
-    assert records[1]["raw_payload"]["bitrix_chat_id_numeric"] == 77
-    assert records[3]["raw_payload"]["duration_seconds"] == 300
-    assert "parent_ref" not in records[4]
-    assert records[4]["raw_payload"]["crm_activity_ids"] == ["900"]
+    assert "parent_ref" not in records[1]
+    assert records[1]["raw_payload"]["crm_activity_ids"] == ["900"]
 
 
 def test_non_incremental_api_does_not_request_crm_enrichment(
@@ -883,7 +874,7 @@ def test_non_incremental_api_does_not_request_crm_enrichment(
     assert [record["record_type"] for record in connector.fetch_records()] == []
 
 
-def test_stale_chat_still_emits_new_crm_history_without_running_chat_extraction(
+def test_stale_chat_does_not_emit_retired_crm_history_without_chat_extraction(
     monkeypatch: MonkeyPatch,
 ) -> None:
     from src.connectors.bitrix_openlines.models import CrmActivity, CrmDeal
@@ -947,14 +938,8 @@ def test_stale_chat_still_emits_new_crm_history_without_running_chat_extraction(
 
     records = list(connector.fetch_records())
 
-    assert [record["record_type"] for record in records] == [
-        "crm_deal",
-        "crm_history",
-        "call",
-    ]
+    assert [record["record_type"] for record in records] == ["crm_deal"]
     assert records[0]["identifiers"] == []
-    assert records[1]["source_record_id"] == "bitrix-crm-history-902"
-    assert records[2]["source_record_id"] == "bitrix-call-902"
 
 
 def test_incremental_crm_emits_when_every_openlines_channel_is_excluded() -> None:
@@ -1015,23 +1000,14 @@ def test_incremental_crm_emits_when_every_openlines_channel_is_excluded() -> Non
 
     records = list(connector.fetch_records())
 
-    assert [record["record_type"] for record in records] == [
-        "crm_deal",
-        "crm_history",
-        "call",
-    ]
+    assert [record["record_type"] for record in records] == ["crm_deal"]
     assert records[0]["source_record_id"] == "bitrix-crm-deal-701"
     assert records[0]["entity_key"] == "speedzone"
-    assert records[1]["source_record_id"] == "bitrix-crm-history-990"
-    assert records[1]["raw_payload"]["bitrix_chat_id_numeric"] is None
-    assert records[2]["source_record_id"] == "bitrix-call-990"
     assert connector._counters.crm_deals_scanned == 1
-    assert connector._counters.crm_activities_scanned == 1
-    assert connector._counters.crm_activities_skipped_missing_deal == 0
     assert connector._counters.chats_skipped_by_config == 0
 
 
-def test_incremental_crm_assigns_each_deal_and_activity_to_its_category_entity() -> None:
+def test_incremental_crm_assigns_each_deal_to_its_category_entity() -> None:
     from src.connectors.bitrix_openlines.models import CrmActivity, CrmDeal
 
     class MultiEntityCrmClient(StubClient):
@@ -1107,13 +1083,10 @@ def test_incremental_crm_assigns_each_deal_and_activity_to_its_category_entity()
     assert [(record["record_type"], record["entity_key"]) for record in records] == [
         ("crm_deal", "eko"),
         ("crm_deal", "speedzone"),
-        ("crm_history", "eko"),
-        ("crm_history", "speedzone"),
-        ("call", "speedzone"),
     ]
 
 
-def test_incremental_crm_skips_excluded_categories_and_their_activities() -> None:
+def test_incremental_crm_skips_excluded_categories_without_activity_scan() -> None:
     from src.connectors.bitrix_openlines.models import CrmActivity, CrmDeal
 
     class MixedCategoryCrmClient(StubClient):
@@ -1197,12 +1170,9 @@ def test_incremental_crm_skips_excluded_categories_and_their_activities() -> Non
 
     assert [(record["record_type"], record["entity_key"]) for record in records] == [
         ("crm_deal", "speedzone"),
-        ("crm_history", "speedzone"),
     ]
     assert connector._counters.crm_deals_skipped_excluded_category == 1
     assert connector._counters.crm_deals_skipped_missing_category == 1
-    assert connector._counters.crm_activities_skipped_excluded_deal == 2
-    assert connector._counters.crm_activities_skipped_missing_deal == 0
 
 
 def test_incremental_crm_passes_the_source_scope_and_defensively_skips_bad_response(
@@ -1273,7 +1243,7 @@ def test_incremental_crm_passes_the_source_scope_and_defensively_skips_bad_respo
 
     assert [record["source_record_id"] for record in records] == ["bitrix-crm-deal-701"]
     assert client.requested_categories == ("2",)
-    assert client.activity_requests == 1
+    assert client.activity_requests == 0
     assert connector._counters.crm_categories_requested == 1
     assert connector._counters.crm_deal_api_pages == 1
     assert connector._counters.crm_deals_returned == 2
@@ -1468,7 +1438,7 @@ def test_conversation_preserves_multiple_crm_activity_links(
     assert records[0]["record_hash"] == compute_hash(hash_payload)
 
 
-def test_duplicate_crm_deal_discovery_scans_activities_once() -> None:
+def test_duplicate_crm_deal_discovery_does_not_scan_retired_activities() -> None:
     from src.connectors.bitrix_openlines.models import CrmActivity, CrmDeal
 
     class DuplicateDealClient(StubClient):
@@ -1509,7 +1479,7 @@ def test_duplicate_crm_deal_discovery_scans_activities_once() -> None:
     records = list(connector.fetch_records())
 
     assert [record["source_record_id"] for record in records] == ["bitrix-crm-deal-701"]
-    assert client.activity_scans == 1
+    assert client.activity_scans == 0
 
 
 def test_conversation_only_mode_does_not_request_crm_records() -> None:

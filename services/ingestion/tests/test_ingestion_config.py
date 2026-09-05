@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
+import src.ingestion_config as ingestion_config
 from src.exclusion_config import ExclusionFile
 from src.ingestion_config import (
     BitrixOpenLinesConfig,
@@ -31,6 +32,38 @@ def test_bitrix_openlines_defaults_select_safe_channel_types() -> None:
             "instagram",
         ]
     )
+
+
+def test_crm_activity_ingestion_is_permanently_retired_and_not_digest_selected(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    path = tmp_path / "ingestion-config.json"
+    path.write_text(
+        json.dumps({"bitrix_openlines": {"crm_activity_ingestion_status": "enabled"}}),
+        encoding="utf-8",
+    )
+    with pytest.raises(ValueError, match="Invalid ingestion config JSON"):
+        load_ingestion_config(str(path))
+
+    config = BitrixOpenLinesConfig()
+    assert config.crm_activity_ingestion_status == "retired"
+    captured: list[object] = []
+    original_dumps = ingestion_config.json.dumps
+
+    def capture_dumps(value: object, *args: object, **kwargs: object) -> str:
+        captured.append(value)
+        return original_dumps(value, *args, **kwargs)
+
+    monkeypatch.setattr(ingestion_config.json, "dumps", capture_dumps)
+    bitrix_configuration_digest(config, ())
+
+    assert len(captured) == 1
+    digest_input = captured[0]
+    assert isinstance(digest_input, dict)
+    digest_config = digest_input["config"]
+    assert isinstance(digest_config, dict)
+    assert "crm_activity_ingestion_status" not in digest_config
 
 
 def test_legacy_explicit_category_digest_reconstructs_accepted_gate_evidence() -> None:

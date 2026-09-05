@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import cast
 
 import pytest
+from celery.exceptions import Reject
 from pytest import MonkeyPatch
 from src import tasks
 from src.bitrix_backfill_models import GenerationRunContext, KnownOwnerMembershipSet
@@ -108,6 +109,33 @@ def _fence() -> FenceContext:
         fencing_token=1,
         attempt_generation=1,
     )
+
+
+def test_retired_activity_delivery_rejects_before_every_side_effect(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    for name in (
+        "get_settings",
+        "setup_logging",
+        "_initialize_graph_under_lock",
+        "_source_lock_keys",
+    ):
+        monkeypatch.setattr(
+            tasks,
+            name,
+            lambda *_args, name=name, **_kwargs: pytest.fail(name),
+        )
+    with pytest.raises(Reject, match="permanently retired") as exc_info:
+        tasks.run_ingestion_task.run(
+            "bitrix_chat",
+            mode="backfill",
+            bitrix_execution_stream="crm_activities",
+            idempotency_key="legacy-activity",
+            bitrix_source_window={"upper_activity_id": "9", "owner_artifact_id": None},
+        )
+
+    assert type(exc_info.value) is Reject
+    assert exc_info.value.requeue is False
 
 
 def test_split_helper_uses_one_control_plane_run_and_passes_execution_context(

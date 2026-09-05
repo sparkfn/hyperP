@@ -168,7 +168,10 @@ def test_allocation_rejects_an_unbound_configuration_digest_before_mutation(
         "src.bitrix_backfill_control.get_ingestion_config",
         lambda: SimpleNamespace(bitrix_openlines=runtime_config),
     )
-    manifest = SimpleNamespace(minimum_fence_image_digest="sha256:image")
+    manifest = SimpleNamespace(
+        minimum_fence_image_digest="sha256:image",
+        validate_new_operational_manifest=lambda: None,
+    )
 
     with pytest.raises(ValueError, match="must include CRM categories"):
         control.allocate(
@@ -362,7 +365,10 @@ def test_legacy_explicit_category_digest_rejects_changed_mapping_evidence(
 def test_active_successor_retry_returns_the_confirmed_canvas_without_redispatch(
     monkeypatch: MonkeyPatch,
 ) -> None:
-    manifest = SimpleNamespace(digest="sha256:inventory")
+    manifest = SimpleNamespace(
+        digest="sha256:inventory",
+        validate_new_operational_manifest=lambda: None,
+    )
     repository = Mock()
     repository.get_generation.side_effect = [
         SimpleNamespace(status="accepted", configuration_digest="sha256:runtime"),
@@ -437,9 +443,7 @@ def test_predecessor_freeze_is_generation_scoped() -> None:
     assert "collect(DISTINCT coverage.stream_key) AS coverage_streams" in (
         VERIFY_BITRIX_SUCCESSOR_TAIL
     )
-    assert "NOT coverage.disposition IN ['conflict', 'failed']" in (
-        VERIFY_BITRIX_SUCCESSOR_TAIL
-    )
+    assert "NOT coverage.disposition IN ['conflict', 'failed']" in (VERIFY_BITRIX_SUCCESSOR_TAIL)
     assert "coverage.disposition NOT IN" not in VERIFY_BITRIX_SUCCESSOR_TAIL
     assert "collect(coverage)" not in VERIFY_BITRIX_SUCCESSOR_TAIL
     assert "old_streams" not in VERIFY_BITRIX_SUCCESSOR_TAIL

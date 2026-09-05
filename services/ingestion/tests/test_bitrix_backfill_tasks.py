@@ -48,7 +48,7 @@ def _entry(stream_key: BitrixStreamKey) -> BackfillInventoryEntry:
     )
 
 
-def test_corrective_canvas_orders_deals_before_activities_with_stable_ids() -> None:
+def test_corrective_canvas_filters_historical_activities_with_stable_ids() -> None:
     canvas = build_generation_canvas(
         generation_id="corrective-1",
         boundary_digest="sha256:boundary",
@@ -58,10 +58,7 @@ def test_corrective_canvas_orders_deals_before_activities_with_stable_ids() -> N
     assert isinstance(canvas, _chain)
     tasks: tuple[Signature, ...] = tuple(canvas.tasks)
 
-    assert [task.kwargs["bitrix_execution_stream"] for task in tasks] == [
-        "crm_deals",
-        "crm_activities",
-    ]
+    assert [task.kwargs["bitrix_execution_stream"] for task in tasks] == ["crm_deals"]
     assert tasks[0].options["task_id"] == corrective_task_id(
         "corrective-1",
         "crm_deals",
@@ -91,10 +88,10 @@ def test_live_canvas_allows_deal_only_when_activities_are_reviewed_excluded() ->
     )
 
 
-def test_canvas_rejects_activity_without_deal() -> None:
+def test_canvas_rejects_historical_activity_only_inventory() -> None:
     import pytest
 
-    with pytest.raises(ValueError, match="requires deals first"):
+    with pytest.raises(ValueError, match="no operational stream"):
         build_generation_canvas(
             generation_id="successor-1",
             boundary_digest="sha256:boundary",
@@ -136,6 +133,7 @@ def test_scheduled_live_canvas_marks_every_delayed_step_as_cancellable() -> None
         scheduled_dispatch=True,
     )
 
+    assert [task.kwargs["bitrix_execution_stream"] for task in canvas.tasks] == ["crm_deals"]
     assert all(task.kwargs["scheduled_dispatch"] is True for task in canvas.tasks)
 
 

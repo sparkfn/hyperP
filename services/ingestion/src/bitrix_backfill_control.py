@@ -20,7 +20,7 @@ from src.bitrix_backfill_models import (
     QualificationResult,
     RollbackStatus,
 )
-from src.bitrix_ingestion_models import BitrixStreamKey
+from src.bitrix_ingestion_models import BitrixStreamKey, is_operational_bitrix_stream
 from src.config import get_settings
 from src.connectors.bitrix_stage_history.artifact_runtime import (
     ArtifactStoreConfiguration,
@@ -172,6 +172,7 @@ class BitrixBackfillControl:
         source_contract_uuid: str,
         boundary_digest: str,
     ) -> bool:
+        manifest.validate_new_operational_manifest()
         from src.bitrix_backfill_models import GenerationProvenance
 
         if image_digest != manifest.minimum_fence_image_digest:
@@ -214,7 +215,7 @@ class BitrixBackfillControl:
             generation_id=generation_id,
             boundary_digest=state.boundary_digest,
             configuration_digest=state.configuration_digest,
-            entries=manifest.executable_entries,
+            entries=manifest.operational_entries,
             control_instance_id=state.control_instance_id,
             publication_reservation=reservation,
             publication_gate=gate,
@@ -255,11 +256,18 @@ class BitrixBackfillControl:
         resumable = [
             run for run in runs if run.logical_status in {"paused_with_checkpoint", "failed"}
         ]
-        if not resumable:
+        operational_resumable = [
+            run for run in resumable if is_operational_bitrix_stream(run.stream_key)
+        ]
+        if not operational_resumable:
+            if resumable:
+                raise RuntimeError(
+                    "generation has no operational paused or failed child run to resume"
+                )
             raise RuntimeError("generation has no paused or failed child run")
         manifest = self._manifest_for(generation_id)
-        inventory_streams = {entry.stream_key for entry in manifest.executable_entries}
-        if any(run.stream_key not in inventory_streams for run in resumable):
+        inventory_streams = {entry.stream_key for entry in manifest.operational_entries}
+        if any(run.stream_key not in inventory_streams for run in operational_resumable):
             raise RuntimeError("resumable child runs do not match the generation inventory")
         resume_generation = (
             max(
@@ -278,7 +286,7 @@ class BitrixBackfillControl:
             generation_id=generation_id,
             boundary_digest=state.boundary_digest,
             configuration_digest=state.configuration_digest,
-            entries=manifest.executable_entries,
+            entries=manifest.operational_entries,
             resume_generation=resume_generation,
             task_kind="live" if successor_resume else "corrective",
             occurrence=occurrence,
@@ -292,15 +300,18 @@ class BitrixBackfillControl:
         if state.status not in {"backfilling", "reconciling"}:
             raise RuntimeError("reconcile requires a backfilling or reconciling generation")
         manifest = self._manifest_for(generation_id)
-        expected_streams = {entry.stream_key for entry in manifest.executable_entries}
+        expected_streams = {entry.stream_key for entry in manifest.operational_entries}
         runs = self._repository.list_child_runs(generation_id)
         completed = {
-            run.stream_key for run in runs if run.logical_status in _TERMINAL_CHILD_STATUSES
+            run.stream_key
+            for run in runs
+            if is_operational_bitrix_stream(run.stream_key)
+            and run.logical_status in _TERMINAL_CHILD_STATUSES
         }
         if completed != expected_streams:
             raise RuntimeError("corrective child runs are incomplete or do not match inventory")
         evidence: list[dict[str, JsonValue]] = []
-        for entry in manifest.executable_entries:
+        for entry in manifest.operational_entries:
             reconciliation = self._repository.reconcile_coverage(
                 generation_id=generation_id,
                 stream_key=entry.stream_key,
@@ -318,7 +329,7 @@ class BitrixBackfillControl:
         digest = _digest_text("coverage-reconciliation", encoded)
         self._repository.record_reconciliation(
             generation_id,
-            stream_keys=tuple(entry.stream_key for entry in manifest.executable_entries),
+            stream_keys=tuple(entry.stream_key for entry in manifest.operational_entries),
             reconciliation_digest=digest,
             actor=actor,
         )
@@ -426,6 +437,8 @@ class BitrixBackfillControl:
     ) -> str:
         from src.bitrix_backfill_tasks import dispatch_generation_canvas
 
+        manifest.validate_new_operational_manifest()
+
         corrective = self._repository.get_generation(corrective_generation_id)
         if corrective.status != "accepted":
             raise RuntimeError("only an accepted corrective generation can activate a successor")
@@ -487,7 +500,7 @@ class BitrixBackfillControl:
             generation_id=successor_generation_id,
             boundary_digest=successor.boundary_digest,
             configuration_digest=successor.configuration_digest,
-            entries=manifest.executable_entries,
+            entries=manifest.operational_entries,
             task_kind="live",
             occurrence=occurrence,
             control_instance_id=successor.control_instance_id,
