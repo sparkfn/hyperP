@@ -1,5 +1,20 @@
 # Bitrix Open Lines API Ingestion Design
 
+## CRM activity graph-ingestion retirement
+
+As of the #388 cutover, `crm_activity_ingestion_status` is permanently
+`"retired"`; it is an operator-visible status, not a re-enable switch. Normal,
+scheduled, corrective, backfill, queued, and manual Neo4j ingestion may emit
+CRM deals and selected Open Lines conversations, but may not create CRM
+activity-family `crm_history` or companion `call` records. Open Lines may still
+use activity IDs to discover a conversation and retain those IDs as immutable
+conversation provenance. Existing graph activity/call data and historical
+manifests, checkpoints, and evidence are read-only and untouched.
+
+When activity presentation must remain available, deploy #387 before activating
+this cutover. Worker quiescence and queue inspection are separate live
+operations; deploy #388 before enabling or resuming scheduling.
+
 Date: 20 July 2026
 
 ## Goal

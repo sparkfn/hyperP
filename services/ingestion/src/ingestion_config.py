@@ -44,6 +44,7 @@ class LlmConfig:
 
 
 StandaloneCrmIdentityKind = Literal["contact", "lead", "company"]
+CrmActivityIngestionStatus = Literal["retired"]
 
 BitrixOpenLinesChannelType = Literal[
     "whatsapp_business_api",
@@ -77,6 +78,7 @@ class BitrixOpenLinesConfig:
     incremental_overlap_seconds: int = 300
     recent_page_size: int = 50
     source_instance_id: str | None = None
+    crm_activity_ingestion_status: CrmActivityIngestionStatus = "retired"
     standalone_crm_identity_enabled: bool = False
     standalone_crm_identity_schedule_enabled: bool = False
     standalone_crm_identity_kinds: list[StandaloneCrmIdentityKind] = field(
@@ -382,6 +384,9 @@ def _bitrix_openlines_config(raw: JsonValue, *, path: Path) -> BitrixOpenLinesCo
             raise ValueError(f"Invalid ingestion config JSON: {path}") from exc
     if standalone_crm_identity_enabled and source_instance_id is None:
         raise ValueError(f"Invalid ingestion config JSON: {path}")
+    activity_status = raw.get("crm_activity_ingestion_status", "retired")
+    if activity_status != "retired":
+        raise ValueError(f"Invalid ingestion config JSON: {path}")
     standalone_schedule_enabled = raw.get("standalone_crm_identity_schedule_enabled", False)
     if not isinstance(standalone_schedule_enabled, bool):
         raise ValueError(f"Invalid ingestion config JSON: {path}")
@@ -389,6 +394,7 @@ def _bitrix_openlines_config(raw: JsonValue, *, path: Path) -> BitrixOpenLinesCo
         raise ValueError(f"Invalid ingestion config JSON: {path}")
     identity_config = BitrixOpenLinesConfig(
         source_instance_id=source_instance_id,
+        crm_activity_ingestion_status="retired",
         included_channel_types=included_types,
         included_config_ids=_config_ids(raw.get("included_config_ids"), path=path),
         excluded_config_ids=_config_ids(raw.get("excluded_config_ids"), path=path),
@@ -794,6 +800,7 @@ def bitrix_configuration_digest(
     # The standalone identity writer is a separate deployment gate, not part of
     # the deal/activity source-selection contract represented by this digest.
     for standalone_key in (
+        "crm_activity_ingestion_status",
         "standalone_crm_identity_enabled",
         "standalone_crm_identity_schedule_enabled",
         "standalone_crm_identity_kinds",

@@ -36,7 +36,12 @@ from src.bitrix_backfill_models import (
     known_owner_refresh_checkpoint,
 )
 from src.bitrix_deal_scope_reconciliation import refresh_known_owner_set
-from src.bitrix_ingestion_models import BitrixStreamKey, ExecutionContext, FenceContext
+from src.bitrix_ingestion_models import (
+    CRM_ACTIVITY_INGESTION_RETIRED_REASON,
+    BitrixStreamKey,
+    ExecutionContext,
+    FenceContext,
+)
 from src.celery_app import LIFECYCLE_QUEUE, celery_app
 from src.config import get_settings
 from src.connectors.whatsadmin_api.credentials import WHATSADMIN_ENTITIES
@@ -370,6 +375,8 @@ def _run_split_bitrix_ingestion(
     control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> IngestionSummary:
     """Create, claim, fence, execute, and terminate one canonical split attempt."""
+    if stream_key == "crm_activities":
+        raise ValueError(CRM_ACTIVITY_INGESTION_RETIRED_REASON)
     if stream_key == "crm_stage_history":
         raise ValueError("stage history uses dedicated source-free replay tasks")
     execution_stream: LegacyBitrixExecutionStream = stream_key
@@ -1418,6 +1425,11 @@ def run_ingestion_task(
     control_instance_id: str | None = None,
 ) -> IngestionSummary:
     """Run a single ingestion under the cluster-wide concurrency cap."""
+    if source_key == "bitrix_chat" and bitrix_execution_stream == "crm_activities":
+        logger.warning(
+            "Rejected retired Bitrix activity delivery before side effects disposition=retired"
+        )
+        raise Reject(CRM_ACTIVITY_INGESTION_RETIRED_REASON, requeue=False)
     if source_key == "bitrix_crm_identity":
         raise StandaloneCrmCensusContextRequiredError(
             "standalone Bitrix CRM identity must be dispatched by a frozen census child"

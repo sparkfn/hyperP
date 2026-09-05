@@ -70,23 +70,17 @@ def test_deployment_examples_forward_bitrix_openlines_api_configuration() -> Non
         assert f"{name}=" in ingestion_env
 
 
-def test_connector_factory_selects_dormant_bitrix_crm_streams(
+def test_connector_factory_rejects_retired_bitrix_activity_stream(
     monkeypatch: MonkeyPatch,
 ) -> None:
     deal_connector = StubConnector()
-    activity_connector = StubConnector()
     captured: dict[str, dict[str, object]] = {}
 
     def create_deal(**parameters: object) -> StubConnector:
         captured["deal"] = parameters
         return deal_connector
 
-    def create_activity(**parameters: object) -> StubConnector:
-        captured["activity"] = parameters
-        return activity_connector
-
     monkeypatch.setattr(main, "create_bitrix_crm_deal_connector", create_deal)
-    monkeypatch.setattr(main, "create_bitrix_crm_activity_connector", create_activity)
 
     assert (
         main.get_connector(
@@ -103,31 +97,13 @@ def test_connector_factory_selects_dormant_bitrix_crm_streams(
         )
         is deal_connector
     )
-    assert (
-        main.get_connector(
-            "bitrix_chat",
-            mode="api",
-            bitrix_execution_stream="crm_activities",
-            bitrix_source_window={
-                "upper_activity_id": "1200",
-                "owner_artifact_id": None,
-            },
-            bitrix_max_calls=101,
-            bitrix_deadline_monotonic=201.0,
-        )
-        is activity_connector
-    )
+    with pytest.raises(ValueError, match="permanently retired"):
+        main.get_connector("bitrix_chat", mode="api", bitrix_execution_stream="crm_activities")
     assert captured["deal"] == {
         "upper_deal_id": 900,
         "last_deal_id": None,
         "max_request_count": 100,
         "deadline_monotonic": 200.0,
-    }
-    assert captured["activity"] == {
-        "upper_activity_id": 1200,
-        "last_activity_id": None,
-        "max_request_count": 101,
-        "deadline_monotonic": 201.0,
     }
 
 
@@ -205,6 +181,24 @@ def test_split_openlines_backfill_accepts_a_fence_aware_checkpoint_store(
     )
     assert captured["checkpoint_store"] is checkpoint_store
     assert captured["include_crm_records"] is False
+
+
+def test_direct_activity_run_rejects_before_graph_or_runtime_access(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    for name in ("initialize_ingestion_graph", "get_settings", "Neo4jClient", "get_connector"):
+        monkeypatch.setattr(
+            main,
+            name,
+            lambda *_args, name=name, **_kwargs: pytest.fail(name),
+        )
+
+    with pytest.raises(RuntimeError, match="permanently retired"):
+        main.run_ingestion(
+            "bitrix_chat",
+            mode="backfill",
+            bitrix_execution_stream="crm_activities",
+        )
 
 
 @pytest.mark.parametrize(

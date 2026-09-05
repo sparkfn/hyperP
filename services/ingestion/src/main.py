@@ -15,11 +15,13 @@ import httpx
 from neo4j import ManagedTransaction
 from redis import Redis
 
-from src.bitrix_ingestion_models import ExecutionContext
+from src.bitrix_ingestion_models import (
+    CRM_ACTIVITY_INGESTION_RETIRED_REASON,
+    ExecutionContext,
+)
 from src.config import get_settings
 from src.connectors.base import SourceConnector
 from src.connectors.bitrix import BitrixChatConnector
-from src.connectors.bitrix_crm.activity_connector import BitrixCrmActivityConnector
 from src.connectors.bitrix_crm.deal_connector import BitrixCrmDealConnector
 from src.connectors.bitrix_openlines.client import BitrixOpenLinesClient
 from src.connectors.bitrix_openlines.connector import BitrixOpenLinesConnector
@@ -106,8 +108,6 @@ from src.pipeline_addresses import ingest_address_record
 from src.pipeline_crm import (
     ingest_call_record,
     ingest_crm_history_record,
-    link_conversation_to_crm_history,
-    link_crm_history_to_existing_conversations,
 )
 from src.pipeline_references import ingest_reference_record
 from src.pipeline_sales import (
@@ -138,7 +138,7 @@ _BEARER_IN_FAILURE = re.compile(
 BitrixExecutionStream = Literal[
     "legacy",
     "crm_deals",
-    "crm_activities",
+    "crm_activities",  # historical task payload compatibility; always rejected.
     "openlines_conversations",
 ]
 _BITRIX_EXECUTION_STREAMS = frozenset(
@@ -475,30 +475,6 @@ class StandaloneCrmCensusContextRequiredError(ValueError):
     """Raised before standalone identity code can bypass bounded census dispatch."""
 
 
-def create_bitrix_crm_activity_connector(
-    *,
-    upper_activity_id: int,
-    last_activity_id: int | None,
-    max_request_count: int | None = None,
-    deadline_monotonic: float | None = None,
-) -> BitrixCrmActivityConnector:
-    """Create the dormant independent CRM-activity stream connector."""
-    settings = get_settings()
-    client = BitrixOpenLinesClient(
-        base_url=settings.bitrix_openlines_api_base_url.get_secret_value(),
-        timeout_seconds=settings.bitrix_openlines_api_timeout_seconds,
-        max_attempts=settings.bitrix_openlines_api_max_attempts,
-        request_delay_seconds=settings.bitrix_openlines_api_request_delay_seconds,
-        max_request_count=max_request_count,
-        deadline_monotonic=deadline_monotonic,
-    )
-    return BitrixCrmActivityConnector(
-        client,
-        upper_activity_id=upper_activity_id,
-        last_activity_id=last_activity_id,
-    )
-
-
 def create_bitrix_known_owner_client(
     *,
     max_request_count: int | None = None,
@@ -591,6 +567,8 @@ def get_connector(
             raise ValueError("bitrix_execution_stream is only valid for bitrix_chat ingestion")
         if bitrix_execution_stream not in _BITRIX_EXECUTION_STREAMS:
             raise ValueError(f"Unsupported Bitrix execution stream {bitrix_execution_stream!r}")
+        if bitrix_execution_stream == "crm_activities":
+            raise ValueError(CRM_ACTIVITY_INGESTION_RETIRED_REASON)
     if source_key == "bitrix_chat" and mode in {"api", "backfill"}:
         if bitrix_execution_stream == "crm_deals":
             return create_bitrix_crm_deal_connector(
@@ -601,19 +579,6 @@ def get_connector(
                 last_deal_id=_optional_checkpoint_cursor_id(
                     bitrix_checkpoint_cursor,
                     "last_deal_id",
-                ),
-                max_request_count=bitrix_max_calls,
-                deadline_monotonic=bitrix_deadline_monotonic,
-            )
-        if bitrix_execution_stream == "crm_activities":
-            return create_bitrix_crm_activity_connector(
-                upper_activity_id=_required_source_window_id(
-                    bitrix_source_window,
-                    "upper_activity_id",
-                ),
-                last_activity_id=_optional_checkpoint_cursor_id(
-                    bitrix_checkpoint_cursor,
-                    "last_activity_id",
                 ),
                 max_request_count=bitrix_max_calls,
                 deadline_monotonic=bitrix_deadline_monotonic,
@@ -844,25 +809,14 @@ def _process_record(
     control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> IngestResult:
     """Route a single envelope to the correct ingestion pipeline."""
-    fence_context = execution_context.fence_context if execution_context is not None else None
     if envelope.record_type == RecordType.CRM_HISTORY:
-        result = ingest_crm_history_record(
+        return ingest_crm_history_record(
             client,
             envelope,
             ingest_run_id=ingest_run_id,
             execution_context=execution_context,
             control_instance_id=control_instance_id,
         )
-        if execution_context is None and result.source_record_pk is not None and not result.dropped:
-            link_crm_history_to_existing_conversations(
-                client,
-                envelope,
-                result.source_record_pk,
-                fence_context=(
-                    execution_context.fence_context if execution_context is not None else None
-                ),
-            )
-        return result
     if envelope.record_type == RecordType.CALL:
         return ingest_call_record(
             client,
@@ -882,36 +836,10 @@ def _process_record(
         return ingest_reference_record(client, envelope, ingest_run_id=ingest_run_id)
     if _is_address_only_source(envelope.source_system):
         return ingest_address_record(client, envelope, ingest_run_id=ingest_run_id)
-    result = pipeline.ingest(
+    return pipeline.ingest(
         envelope,
         ingest_run_id=ingest_run_id,
         exclusion_context=exclusion_context,
-    )
-    if (
-        envelope.record_type == RecordType.CONVERSATION
-        and result.source_record_pk is not None
-        and not result.dropped
-        and _has_crm_activity_references(envelope)
-    ):
-        linked = execution_context is not None or link_conversation_to_crm_history(
-            client,
-            envelope,
-            result.source_record_pk,
-            fence_context=fence_context,
-        )
-        if not linked:
-            logger.warning(
-                "Conversation %s was persisted without a matching CRM history item",
-                envelope.source_record_id,
-            )
-    return result
-
-
-def _has_crm_activity_references(envelope: SourceRecordEnvelope) -> bool:
-    """Return whether a conversation carries one or more CRM activity IDs."""
-    activity_ids = envelope.raw_payload.get("crm_activity_ids")
-    return isinstance(activity_ids, list) and any(
-        isinstance(activity_id, str) and activity_id for activity_id in activity_ids
     )
 
 
@@ -1099,6 +1027,8 @@ def run_ingestion(
     control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> IngestionSummary:
     """Execute one ingestion run end-to-end."""
+    if bitrix_execution_stream == "crm_activities":
+        raise RuntimeError(CRM_ACTIVITY_INGESTION_RETIRED_REASON)
     if source_key == "bitrix_crm_identity":
         raise StandaloneCrmCensusContextRequiredError(
             "standalone Bitrix CRM identity must be dispatched by a frozen census child"

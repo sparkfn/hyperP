@@ -29,6 +29,9 @@ CRM_DEALS_STREAM: BitrixStreamKey = "crm_deals"
 CRM_ACTIVITIES_STREAM: BitrixStreamKey = "crm_activities"
 OPENLINES_CONVERSATIONS_STREAM: BitrixStreamKey = "openlines_conversations"
 CRM_STAGE_HISTORY_STREAM: BitrixStreamKey = "crm_stage_history"
+CRM_ACTIVITY_INGESTION_RETIRED_REASON = (
+    "Bitrix CRM activity and companion-call Neo4j ingestion is permanently retired"
+)
 BITRIX_STREAM_KEYS: frozenset[BitrixStreamKey] = frozenset(
     {
         CRM_DEALS_STREAM,
@@ -37,8 +40,16 @@ BITRIX_STREAM_KEYS: frozenset[BitrixStreamKey] = frozenset(
         CRM_STAGE_HISTORY_STREAM,
     }
 )
+BITRIX_OPERATIONAL_STREAM_KEYS: frozenset[BitrixStreamKey] = frozenset(
+    {CRM_DEALS_STREAM, OPENLINES_CONVERSATIONS_STREAM}
+)
 
 _HISTORY_KIND_PATTERN = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+
+
+def is_operational_bitrix_stream(stream_key: BitrixStreamKey) -> bool:
+    """Return whether a stream may create new Neo4j source records."""
+    return stream_key in BITRIX_OPERATIONAL_STREAM_KEYS
 
 
 @dataclass(frozen=True)

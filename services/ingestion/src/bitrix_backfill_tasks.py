@@ -9,7 +9,7 @@ from celery import chain
 from celery.canvas import Signature
 
 from src.bitrix_backfill_models import BackfillInventoryEntry
-from src.bitrix_ingestion_models import BitrixStreamKey
+from src.bitrix_ingestion_models import BitrixStreamKey, is_operational_bitrix_stream
 from src.celery_app import INGESTION_QUEUE, celery_app
 from src.crm_deal_identity_repair.control_models import RepairPublicationReservation
 from src.source_instances import (
@@ -70,22 +70,28 @@ def build_generation_canvas(
     scheduled_dispatch: bool = False,
     control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
 ) -> Signature:
-    """Build a strict deals -> activities -> optional Open Lines chain."""
+    """Build an operational deals/Open Lines chain from immutable inventory."""
     control_instance_id = effective_control_instance_id(control_instance_id)
-    executable = [entry for entry in entries if entry.executes]
+    executable = [
+        entry
+        for entry in entries
+        if entry.executes and is_operational_bitrix_stream(entry.stream_key)
+    ]
     if any(entry.stream_key == "crm_stage_history" for entry in executable):
         raise ValueError("stage history cannot join a Bitrix backfill generation canvas")
-    order = {"crm_deals": 0, "crm_activities": 1, "openlines_conversations": 2}
+    if not executable:
+        raise ValueError("generation canvas has no operational stream to publish")
+    order = {"crm_deals": 0, "openlines_conversations": 1}
     executable.sort(key=lambda entry: order[entry.stream_key])
     streams = [entry.stream_key for entry in executable]
     valid_orders = (
         ["crm_deals"],
-        ["crm_deals", "crm_activities"],
-        ["crm_deals", "crm_activities", "openlines_conversations"],
+        ["openlines_conversations"],
+        ["crm_deals", "openlines_conversations"],
     )
     if streams not in valid_orders:
         raise ValueError(
-            "generation canvas requires deals first; activities may be reviewed-excluded"
+            "generation canvas requires only operational deals and optional Open Lines streams"
         )
     if len(set(streams)) != len(streams):
         raise ValueError("generation canvas accepts one executable entry per stream")

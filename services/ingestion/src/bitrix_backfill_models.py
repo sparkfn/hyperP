@@ -7,7 +7,7 @@ import json
 from dataclasses import dataclass
 from typing import Literal
 
-from src.bitrix_ingestion_models import BitrixStreamKey
+from src.bitrix_ingestion_models import BitrixStreamKey, is_operational_bitrix_stream
 from src.models import JsonValue
 from src.resumable import CheckpointDescriptor
 from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID, effective_control_instance_id
@@ -392,16 +392,6 @@ class BackfillInventoryManifest:
         gap_ids = [entry.gap_id for entry in self.entries]
         if len(set(gap_ids)) != len(gap_ids):
             raise ValueError("inventory gap IDs must be unique")
-        executed = [entry.stream_key for entry in self.entries if entry.executes]
-        if "crm_deals" not in executed:
-            raise ValueError("inventory must execute the deal stream")
-        if "crm_activities" in executed and executed.index("crm_deals") > executed.index(
-            "crm_activities"
-        ):
-            raise ValueError("deal inventory must precede activity inventory")
-        activity_entries = [entry for entry in self.entries if entry.stream_key == "crm_activities"]
-        if not activity_entries:
-            raise ValueError("inventory must review the activity stream")
 
     @property
     def canonical_json(self) -> str:
@@ -425,6 +415,28 @@ class BackfillInventoryManifest:
     @property
     def executable_entries(self) -> tuple[BackfillInventoryEntry, ...]:
         return tuple(entry for entry in self.entries if entry.executes)
+
+    @property
+    def operational_entries(self) -> tuple[BackfillInventoryEntry, ...]:
+        """Return entries that may be republished after the activity retirement boundary."""
+        return tuple(
+            entry
+            for entry in self.entries
+            if entry.executes and is_operational_bitrix_stream(entry.stream_key)
+        )
+
+    def validate_new_operational_manifest(self) -> None:
+        """Reject new inventories that would make the retired activity stream executable."""
+        activity_entries = [entry for entry in self.entries if entry.stream_key == "crm_activities"]
+        if not activity_entries or any(entry.executes for entry in activity_entries):
+            raise ValueError("new inventory must retain a reviewed retired activity exclusion")
+        if any(
+            entry.reviewed_exclusion is None or "retired" not in entry.reviewed_exclusion.lower()
+            for entry in activity_entries
+        ):
+            raise ValueError("new inventory must explicitly record the retired activity exclusion")
+        if not self.operational_entries:
+            raise ValueError("new inventory must execute CRM deals or Open Lines conversations")
 
 
 @dataclass(frozen=True)

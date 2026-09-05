@@ -2,11 +2,18 @@
 
 from __future__ import annotations
 
+import sys
+from types import SimpleNamespace
+from typing import cast
+
 import pytest
 from _test_helpers import NullContext, TaskSettings
 from celery.exceptions import Reject
 from pytest import MonkeyPatch
+from src.bitrix_backfill_models import BackfillInventoryEntry, BackfillInventoryManifest
+from src.bitrix_ingestion_models import BitrixStreamKey
 from src.ingestion_config import IngestionConfig, ScheduledIngestionConfig
+from src.models import JsonValue
 
 
 def test_manual_group_dispatch_defaults_to_full_extraction() -> None:
@@ -303,3 +310,125 @@ def test_active_bitrix_successor_replaces_legacy_weekly_dispatch(
 
     assert result["workflow_task_id"] == "split-workflow"
     assert result["status"] == "queued"
+
+
+def test_successor_filters_executable_historical_activity_before_probing_or_publication(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src import scheduled_ingestion_tasks as tasks
+
+    # The control module is Linux-oriented because artifact evidence uses
+    # advisory file locks.  This test exercises no artifact filesystem path.
+    monkeypatch.setitem(
+        sys.modules,
+        "fcntl",
+        SimpleNamespace(LOCK_EX=0, LOCK_UN=0, flock=lambda *_args: None),
+    )
+
+    def entry(stream_key: BitrixStreamKey) -> BackfillInventoryEntry:
+        windows: dict[str, dict[str, JsonValue]] = {
+            "crm_deals": {
+                "upper_deal_id": "900",
+                "included_category_digest": "sha256:categories",
+                "owner_artifact_id": None,
+            },
+            "crm_activities": {"upper_activity_id": "1200", "owner_artifact_id": None},
+            "openlines_conversations": {
+                "discovery_boundary_digest": "sha256:discovery",
+                "selected_config_digest": "sha256:selection",
+            },
+        }
+        return BackfillInventoryEntry(
+            gap_id=f"gap-{stream_key}",
+            stream_key=stream_key,
+            bounded_population=10,
+            current_count=0,
+            source_basis="frozen historical inventory",
+            expected_repair="replay bounded rows",
+            replay_mode="strict_keyset",
+            source_window=windows[stream_key],
+            completion_equation="coverage equals bounded population",
+            max_calls=10,
+            max_rows=10,
+            max_runtime_seconds=10,
+            max_storage_bytes=10,
+            max_lock_seconds=10,
+            max_lag_seconds=10,
+            rollback_path="restore",
+        )
+
+    manifest = BackfillInventoryManifest(
+        source_key="bitrix_chat",
+        reviewed_by="operator@example.test",
+        backup_id="backup",
+        backup_restore_evidence_digest="sha256:restore",
+        minimum_fence_image_digest="sha256:image",
+        legacy_dispatch_paused=True,
+        predecessor_quiescent=True,
+        entries=(entry("crm_deals"), entry("crm_activities"), entry("openlines_conversations")),
+    )
+    closes: list[str] = []
+
+    class Graph:
+        def __init__(self, _settings: object) -> None:
+            pass
+
+        def execute_read(self, _reader: object) -> tuple[str, str, str, str]:
+            return ("successor-1", "sha256:config", manifest.canonical_json, "legacy-default")
+
+        def close(self) -> None:
+            closes.append("graph")
+
+    class ReservationRepository:
+        def __init__(self, _graph: object) -> None:
+            pass
+
+        def prepare_publication(self, *_args: object) -> object:
+            return object()
+
+    class Source:
+        def close(self) -> None:
+            closes.append("source")
+
+    published_entries: tuple[BackfillInventoryEntry, ...] | None = None
+
+    def dispatch(**kwargs: object) -> str:
+        nonlocal published_entries
+        entries = kwargs["entries"]
+        assert isinstance(entries, tuple)
+        published_entries = cast(tuple[BackfillInventoryEntry, ...], entries)
+        return "workflow-1"
+
+    monkeypatch.setattr(tasks, "Neo4jClient", Graph)
+    monkeypatch.setattr(tasks, "get_settings", lambda: object())
+    monkeypatch.setattr(
+        tasks,
+        "get_ingestion_config",
+        lambda: SimpleNamespace(bitrix_openlines=SimpleNamespace(included_crm_category_ids=["1"])),
+    )
+    monkeypatch.setattr(tasks, "admit_configured_bitrix_control", lambda *_args: None)
+    monkeypatch.setattr(
+        "src.graph.crm_deal_identity_repair_control.CrmDealRepairControlRepository",
+        ReservationRepository,
+    )
+    monkeypatch.setattr("src.main.create_bitrix_known_owner_client", Source)
+    monkeypatch.setattr(
+        "src.connectors.bitrix_stage_history.deal_probe.freeze_deal_upper_id",
+        lambda _source, categories: (
+            901 if categories == ("1",) else pytest.fail("wrong categories")
+        ),
+    )
+    monkeypatch.setattr(
+        "src.bitrix_backfill_tasks.dispatch_generation_canvas",
+        dispatch,
+    )
+
+    assert tasks._dispatch_active_bitrix_successor("2026-09-05") == "workflow-1"
+    assert published_entries is not None
+    assert [entry.stream_key for entry in published_entries] == [
+        "crm_deals",
+        "openlines_conversations",
+    ]
+    assert published_entries[0].source_window is not None
+    assert published_entries[0].source_window["upper_deal_id"] == 901
+    assert closes == ["graph", "source", "graph"]

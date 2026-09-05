@@ -20,6 +20,7 @@
   },
   "bitrix_openlines": {
     "source_instance_id": null,
+    "crm_activity_ingestion_status": "retired",
     "included_channel_types": [
       "whatsapp_business_api",
       "facebook_direct",

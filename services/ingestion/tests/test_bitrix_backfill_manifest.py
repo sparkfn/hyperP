@@ -58,7 +58,7 @@ def _manifest(entries: tuple[BackfillInventoryEntry, ...]) -> BackfillInventoryM
     )
 
 
-def test_manifest_requires_deals_before_activities_and_has_stable_digest() -> None:
+def test_historical_manifest_remains_readable_but_has_operational_view() -> None:
     manifest = _manifest((_entry("crm_deals"), _entry("crm_activities")))
 
     assert manifest.digest == manifest.digest
@@ -67,9 +67,12 @@ def test_manifest_requires_deals_before_activities_and_has_stable_digest() -> No
         "crm_deals",
         "crm_activities",
     ]
+    assert [entry.stream_key for entry in manifest.operational_entries] == ["crm_deals"]
+    with pytest.raises(ValueError, match="retired activity exclusion"):
+        manifest.validate_new_operational_manifest()
 
 
-def test_manifest_rejects_missing_prerequisites_or_reversed_stream_order() -> None:
+def test_manifest_rejects_missing_prerequisites_but_preserves_historical_order() -> None:
     with pytest.raises(ValueError, match="quiescent"):
         BackfillInventoryManifest(
             source_key="bitrix_chat",
@@ -81,8 +84,7 @@ def test_manifest_rejects_missing_prerequisites_or_reversed_stream_order() -> No
             predecessor_quiescent=True,
             entries=(_entry("crm_deals"), _entry("crm_activities")),
         )
-    with pytest.raises(ValueError, match="precede"):
-        _manifest((_entry("crm_activities"), _entry("crm_deals")))
+    assert _manifest((_entry("crm_activities"), _entry("crm_deals"))).digest
 
 
 def test_manifest_allows_reviewed_activity_exclusion_for_partial_successor() -> None:
@@ -103,11 +105,37 @@ def test_manifest_allows_reviewed_activity_exclusion_for_partial_successor() -> 
         max_lock_seconds=0,
         max_lag_seconds=0,
         rollback_path="not dispatched",
-        reviewed_exclusion="Deferred under the reviewed partial-completion waiver.",
+        reviewed_exclusion="Permanently retired after the reviewed activity-ingestion cutover.",
     )
     manifest = _manifest((_entry("crm_deals"), activity))
 
     assert [entry.stream_key for entry in manifest.executable_entries] == ["crm_deals"]
+    manifest.validate_new_operational_manifest()
+
+
+def test_new_manifest_requires_activity_exclusion_to_name_retirement() -> None:
+    activity = BackfillInventoryEntry(
+        gap_id="deferred-activities",
+        stream_key="crm_activities",
+        bounded_population=100,
+        current_count=0,
+        source_basis="explicit partial-completion waiver",
+        expected_repair="tracked by the scoped follow-up issue",
+        replay_mode="excluded",
+        source_window=None,
+        completion_equation="all deferred activity units remain owned by the follow-up",
+        max_calls=0,
+        max_rows=0,
+        max_runtime_seconds=0,
+        max_storage_bytes=0,
+        max_lock_seconds=0,
+        max_lag_seconds=0,
+        rollback_path="not dispatched",
+        reviewed_exclusion="Deferred under the reviewed partial-completion waiver.",
+    )
+
+    with pytest.raises(ValueError, match="explicitly record the retired"):
+        _manifest((_entry("crm_deals"), activity)).validate_new_operational_manifest()
 
 
 def test_fixed_keyset_inventory_entry_is_executable_with_a_pinned_window() -> None:

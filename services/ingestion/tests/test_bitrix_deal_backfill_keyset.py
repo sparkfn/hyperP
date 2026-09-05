@@ -1,15 +1,12 @@
-"""Restart-safe split deal and activity connector traversal tests."""
+"""Restart-safe split deal connector traversal tests."""
 
 from __future__ import annotations
 
 from collections.abc import Collection
 from datetime import UTC, datetime
 
-from src.connectors.bitrix_crm.activity_connector import BitrixCrmActivityConnector
 from src.connectors.bitrix_crm.deal_connector import BitrixCrmDealConnector
 from src.connectors.bitrix_openlines.models import (
-    CrmActivity,
-    CrmActivityCapabilityPage,
     CrmContact,
     CrmDeal,
     CrmDealCapabilityItem,
@@ -79,42 +76,6 @@ class _DealClient:
         pass
 
 
-class _ActivityClient:
-    def __init__(self, *, is_call: bool = False) -> None:
-        self.lower_bounds: list[int | None] = []
-        self.is_call = is_call
-
-    def list_crm_activity_capability_page(
-        self,
-        *,
-        greater_than_id: int | None,
-        less_than_or_equal_to_id: int,
-        order_direction: str = "ASC",
-    ) -> CrmActivityCapabilityPage:
-        assert less_than_or_equal_to_id == 11
-        assert order_direction == "ASC"
-        self.lower_bounds.append(greater_than_id)
-        activity = CrmActivity(
-            id="11",
-            owner_type="2",
-            owner_id="9",
-            history_kind="call" if self.is_call else "email",
-            subject=None,
-            observed_at=datetime(2026, 8, 8, tzinfo=UTC),
-            start_at=None,
-            end_at=None,
-            duration_seconds=None,
-            direction=None,
-            outcome=None,
-            is_call=self.is_call,
-            raw_payload={"ID": "11", "OWNER_ID": "9"},
-        )
-        return CrmActivityCapabilityPage((activity,), 1, None, None)
-
-    def close(self) -> None:
-        pass
-
-
 def test_deal_connector_resumes_exclusive_keyset_cursor() -> None:
     client = _DealClient()
     config = BitrixOpenLinesConfig(
@@ -157,47 +118,3 @@ def test_deal_connector_returns_empty_for_an_exhausted_frozen_window() -> None:
 
     assert list(connector.fetch_records()) == []
     assert client.lower_bounds == []
-
-
-def test_activity_connector_resumes_exclusive_keyset_cursor() -> None:
-    client = _ActivityClient()
-    connector = BitrixCrmActivityConnector(
-        client,
-        upper_activity_id=11,
-        last_activity_id=10,
-    )
-
-    records = list(connector.fetch_records())
-
-    assert client.lower_bounds == [10]
-    assert records[0]["source_record_id"] == "bitrix-crm-history-11"
-
-
-def test_activity_connector_returns_empty_for_an_exhausted_frozen_window() -> None:
-    client = _ActivityClient()
-    connector = BitrixCrmActivityConnector(
-        client,
-        upper_activity_id=11,
-        last_activity_id=11,
-    )
-
-    assert list(connector.fetch_records()) == []
-    assert client.lower_bounds == []
-
-
-def test_call_activity_marks_history_as_non_terminal_until_call_commits() -> None:
-    connector = BitrixCrmActivityConnector(
-        _ActivityClient(is_call=True),
-        upper_activity_id=11,
-        last_activity_id=10,
-    )
-
-    records = list(connector.fetch_records())
-
-    assert [record["source_record_id"] for record in records] == [
-        "bitrix-crm-history-11",
-        "bitrix-call-11",
-    ]
-    raw_payload = records[0]["raw_payload"]
-    assert isinstance(raw_payload, dict)
-    assert raw_payload["has_call_record"] is True

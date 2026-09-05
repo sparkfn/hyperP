@@ -309,3 +309,15 @@ Reports contain only `operation`, `state`, `request_digest`, and `receipt_digest
 are evidence identifiers, not credentials. Stop immediately on any validation failure, preserve the
 quiesce/fence state, investigate the immutable evidence, then use exact replay only after the
 external discrepancy is resolved. This document does not authorize live execution.
+
+# Bitrix CRM activity retirement
+
+`bitrix_openlines.crm_activity_ingestion_status` is permanently `retired`.
+It reports that Neo4j CRM activity and companion-call ingestion cannot be
+enabled. Scheduled ingestion remains default-off. Successor and corrective
+publication filters historical manifests to CRM-deal and Open Lines entries;
+activity entries remain inspectable evidence only. Activity-ID-based Open Lines
+discovery and `crm_activity_ids` provenance remain supported, but they do not
+write or update historical activity evidence. Deploy #387 before activating
+#388 when activity presentation must be preserved; queue quiescence and
+inspection are separate live work.

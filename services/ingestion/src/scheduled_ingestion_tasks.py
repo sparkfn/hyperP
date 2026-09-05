@@ -15,6 +15,7 @@ from celery.canvas import Signature
 from neo4j import ManagedTransaction
 from pydantic import TypeAdapter
 
+from src.bitrix_ingestion_models import CRM_ACTIVITY_INGESTION_RETIRED_REASON
 from src.celery_app import INGESTION_QUEUE, celery_app
 from src.config import get_settings
 from src.graph.bitrix_source_instances import admit_configured_bitrix_control
@@ -114,7 +115,6 @@ def _dispatch_active_bitrix_successor(occurrence: str) -> str | None:
     """Publish one fresh bounded split cadence when cutover is active."""
     from src.bitrix_backfill_control import _manifest_from_payload
     from src.bitrix_backfill_tasks import dispatch_generation_canvas
-    from src.connectors.bitrix_crm.activity_probe import freeze_activity_upper_id
     from src.connectors.bitrix_stage_history.deal_probe import freeze_deal_upper_id
     from src.main import create_bitrix_known_owner_client
 
@@ -155,25 +155,26 @@ def _dispatch_active_bitrix_successor(occurrence: str) -> str | None:
         )
         payload = TypeAdapter(dict[str, JsonValue]).validate_json(manifest_json)
         manifest = _manifest_from_payload(payload)
+        if any(
+            entry.stream_key == "crm_activities" and entry.executes for entry in manifest.entries
+        ):
+            logger.warning(
+                "Omitted historical Bitrix activity stream from successor publication "
+                "disposition=retired reason=%s",
+                CRM_ACTIVITY_INGESTION_RETIRED_REASON,
+            )
         categories = tuple(get_ingestion_config().bitrix_openlines.included_crm_category_ids)
-        executable = manifest.executable_entries
+        executable = manifest.operational_entries
         refresh_deals = any(
             entry.stream_key == "crm_deals" and entry.replay_mode != "fixed_keyset"
             for entry in executable
         )
-        refresh_activities = any(
-            entry.stream_key == "crm_activities" and entry.replay_mode != "fixed_keyset"
-            for entry in executable
-        )
         upper_deal_id = None
-        upper_activity_id = None
-        if refresh_deals or refresh_activities:
+        if refresh_deals:
             source = create_bitrix_known_owner_client()
             try:
                 if refresh_deals:
                     upper_deal_id = freeze_deal_upper_id(source, categories)
-                if refresh_activities:
-                    upper_activity_id = freeze_activity_upper_id(source)
             finally:
                 source.close()
         entries = []
@@ -183,10 +184,6 @@ def _dispatch_active_bitrix_successor(occurrence: str) -> str | None:
             if entry.stream_key == "crm_deals" and refresh_deals:
                 assert upper_deal_id is not None
                 window["upper_deal_id"] = upper_deal_id
-                window["owner_artifact_id"] = None
-            elif entry.stream_key == "crm_activities" and refresh_activities:
-                assert upper_activity_id is not None
-                window["upper_activity_id"] = upper_activity_id
                 window["owner_artifact_id"] = None
             entries.append(replace(entry, source_window=window))
             windows.append(window)
