@@ -165,8 +165,8 @@ def neo4j_driver() -> Iterator[Driver]:
     host = urlparse(uri).hostname
     service_host = os.getenv("HYPERP_NEO4J_CONTROL_MIGRATION_TEST_SERVICE_HOST")
     allowed_hosts = {"localhost", "127.0.0.1", "::1"}
-    if service_host == "neo4j":
-        allowed_hosts.add("neo4j")
+    if service_host:
+        allowed_hosts.add(service_host)
     if host not in allowed_hosts:
         pytest.fail(
             "control migration test requires an explicitly configured disposable Neo4j host"
