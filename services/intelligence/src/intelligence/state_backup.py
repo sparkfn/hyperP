@@ -17,6 +17,7 @@ from intelligence.state_schema import SCHEMA_VERSION
 
 BACKUP_SCHEMA_VERSION = 1
 LEGACY_STATE_SCHEMA_VERSION = 4
+LEGACY_STATE_SCHEMA_VERSIONS = frozenset({4, 5, 6})
 
 
 def create_backup(
@@ -77,7 +78,10 @@ def verify_backup_bundle(backup: Path) -> None:
         raise ValueError("backup bundle manifest is missing or unsafe")
     snapshot, evidence, state_schema_version = _read_backup_manifest(manifest_path)
     _verify_inventory_item(backup, snapshot)
-    _verify_backup_database(backup / "state.sqlite3")
+    actual_schema, columns = _verify_backup_database(backup / "state.sqlite3")
+    if actual_schema != state_schema_version:
+        raise ValueError("backup envelope schema does not match snapshot schema")
+    _validate_schema_columns(actual_schema, columns)
     for item in evidence:
         _verify_inventory_item(backup, item)
     _assert_bundle_contents(backup, evidence)
@@ -105,14 +109,97 @@ def _backup_database(
             reader.close()
 
 
-def _verify_backup_database(backup: Path) -> None:
+def _verify_backup_database(backup: Path) -> tuple[int, frozenset[str]]:
     if backup.is_symlink() or not backup.is_file():
         raise ValueError("backup must be a regular file")
     connection = sqlite3.connect(f"file:{backup}?mode=ro&immutable=1", uri=True)
     try:
         _verify_connection(connection)
+        row = connection.execute(
+            "SELECT value FROM metadata WHERE key = 'schema_version'"
+        ).fetchone()
+        if row is None:
+            raise ValueError("backup schema metadata is missing")
+        try:
+            schema_version = int(row[0])
+        except (TypeError, ValueError) as error:
+            raise ValueError("backup schema metadata is invalid") from error
+        columns = frozenset(str(item[1]) for item in connection.execute("PRAGMA table_info(runs)"))
+        return schema_version, columns
     finally:
         connection.close()
+
+
+def _validate_schema_columns(schema_version: int, columns: frozenset[str]) -> None:
+    expected = {
+        4: {
+            "id",
+            "command",
+            "state",
+            "fence",
+            "created_at",
+            "heartbeat_at",
+            "cancellation_requested",
+            "recovery_reason",
+            "manifest_json",
+            "publishing_inventory_json",
+            "started_at",
+            "ended_at",
+        },
+        5: {
+            "id",
+            "command",
+            "state",
+            "fence",
+            "created_at",
+            "heartbeat_at",
+            "cancellation_requested",
+            "recovery_reason",
+            "manifest_json",
+            "publishing_inventory_json",
+            "started_at",
+            "ended_at",
+            "limits_json",
+        },
+        6: {
+            "id",
+            "command",
+            "state",
+            "fence",
+            "created_at",
+            "heartbeat_at",
+            "cancellation_requested",
+            "recovery_reason",
+            "manifest_json",
+            "publishing_inventory_json",
+            "started_at",
+            "ended_at",
+            "limits_json",
+            "runtime_epoch",
+            "cleanup_unresolved",
+        },
+        SCHEMA_VERSION: {
+            "id",
+            "command",
+            "state",
+            "fence",
+            "created_at",
+            "heartbeat_at",
+            "cancellation_requested",
+            "recovery_reason",
+            "manifest_json",
+            "publishing_inventory_json",
+            "started_at",
+            "ended_at",
+            "limits_json",
+            "runtime_epoch",
+            "cleanup_unresolved",
+            "execution_may_be_alive",
+        },
+    }
+    required = expected.get(schema_version)
+    if required is None or columns != required:
+        raise ValueError("backup snapshot runs schema is invalid")
 
 
 def _verify_connection(connection: sqlite3.Connection) -> None:
@@ -196,7 +283,7 @@ def _read_backup_manifest(
     state_schema_version: int
     if set(raw) == {"schema_version", "state_snapshot", "evidence"}:
         version = raw.get("schema_version")
-        if version not in {LEGACY_STATE_SCHEMA_VERSION, 5}:
+        if version not in LEGACY_STATE_SCHEMA_VERSIONS:
             raise ValueError("backup bundle schema is invalid")
         state_schema_version = int(version)
     elif set(raw) == {
@@ -292,8 +379,8 @@ def _verify_bundle_evidence(
             raise ValueError("backup accepted output belongs to a non-completed run")
         expected_evidence: set[Path] = set()
         columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(runs)")}
-        if state_schema_version == 5 and "limits_json" not in columns:
-            raise ValueError("schema-5 backup snapshot is missing persisted limits")
+        if state_schema_version in {5, 6} and "limits_json" not in columns:
+            raise ValueError("schema backup snapshot is missing persisted limits")
         limits_column = ", limits_json" if "limits_json" in columns else ""
         rows = connection.execute(
             f"SELECT id, command{limits_column} FROM runs WHERE state = 'completed' ORDER BY id"

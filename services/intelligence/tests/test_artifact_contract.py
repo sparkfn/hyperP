@@ -214,6 +214,7 @@ def test_manifest_strict_expected_limits_and_end_time_are_enforced(tmp_path: Pat
             "max_output_bytes": 2,
             "max_runtime_seconds": 3,
             "max_output_entries": 4,
+            "unexpected": 5,
         },
     ),
 )

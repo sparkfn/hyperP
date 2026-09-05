@@ -52,6 +52,7 @@ class Run:
     limits: tuple[tuple[str, int], ...] = ()
     runtime_epoch: str | None = None
     cleanup_unresolved: bool = False
+    execution_may_be_alive: bool = False
 
 
 @dataclass(frozen=True)

@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from intelligence import runtime as runtime_module
+from intelligence import state_schema
 from intelligence.artifacts import workspace_layout
 from intelligence.runtime import CleanupUnresolvedError
 from test_corrections import (
@@ -156,6 +157,30 @@ def test_cleanup_unresolved_recovery_requires_new_runtime_epoch(
         assert recreated.active_run() is None
     finally:
         recreated.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="PID namespace identity is a Linux contract")
+def test_unknown_runtime_epoch_fails_closed_for_unsafe_recovery(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Failure to read trusted namespace identity cannot authorize recovery."""
+    monkeypatch.setattr(
+        state_schema.Path,
+        "read_text",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(OSError("stat unavailable")),
+    )
+    state = state_schema.current_runtime_epoch
+    assert state() is None
+    from intelligence.state import State
+
+    durable = State(tmp_path)
+    run = durable.create_mutating_run("reviewed")
+    durable.connection.execute("UPDATE mutation_lock SET heartbeat_at = 0")
+    try:
+        with pytest.raises(RuntimeError, match="execution-domain"):
+            durable.recover_stale(run.run_id, "unknown epoch", 1)
+    finally:
+        durable.close()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="process groups are a POSIX contract")

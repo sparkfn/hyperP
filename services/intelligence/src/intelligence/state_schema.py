@@ -8,18 +8,21 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 ConnectionVerifier = Callable[[sqlite3.Connection], None]
 
 
-def current_runtime_epoch() -> str:
-    """Return a stable execution-domain identity across CLI execs in one container."""
+def current_runtime_epoch() -> str | None:
+    """Return a trusted PID-namespace identity, or None when it cannot be proven."""
     try:
         raw = Path("/proc/1/stat").read_text(encoding="utf-8")
         fields = raw.rsplit(")", 1)[1].split()
-        return f"pid1-start:{fields[19]}"
-    except (OSError, IndexError, ValueError):
-        return f"parent-process:{os.getppid()}"
+        namespace = os.readlink("/proc/self/ns/pid")
+        if not namespace or len(fields) <= 19:
+            return None
+        return f"{namespace}:pid1-start:{fields[19]}"
+    except (OSError, IndexError, UnicodeDecodeError, ValueError):
+        return None
 
 
 def verify_connection(connection: sqlite3.Connection) -> None:
@@ -73,7 +76,8 @@ def bootstrap(connection: sqlite3.Connection, verify_connection: ConnectionVerif
             cancellation_requested INTEGER NOT NULL DEFAULT 0, recovery_reason TEXT,
             manifest_json TEXT, publishing_inventory_json TEXT, started_at REAL, ended_at REAL,
             limits_json TEXT, runtime_epoch TEXT,
-            cleanup_unresolved INTEGER NOT NULL DEFAULT 0
+            cleanup_unresolved INTEGER NOT NULL DEFAULT 0,
+            execution_may_be_alive INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS mutation_lock (
             singleton INTEGER PRIMARY KEY CHECK(singleton = 1), run_id TEXT,
@@ -103,7 +107,7 @@ def bootstrap(connection: sqlite3.Connection, verify_connection: ConnectionVerif
 
 def upgrade(connection: sqlite3.Connection, version: int) -> None:
     """Apply the bounded in-place schema upgrade path."""
-    if version < 1 or version > 5:
+    if version < 1 or version > 6:
         raise RuntimeError("Intelligence state schema is unsupported")
     columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(runs)")}
     for name in (
@@ -114,6 +118,7 @@ def upgrade(connection: sqlite3.Connection, version: int) -> None:
         "limits_json",
         "runtime_epoch",
         "cleanup_unresolved",
+        "execution_may_be_alive",
     ):
         if name not in columns:
             default = " INTEGER NOT NULL DEFAULT 0" if name == "cancellation_requested" else " REAL"
@@ -124,6 +129,8 @@ def upgrade(connection: sqlite3.Connection, version: int) -> None:
             if name == "runtime_epoch":
                 default = " TEXT"
             if name == "cleanup_unresolved":
+                default = " INTEGER NOT NULL DEFAULT 0"
+            if name == "execution_may_be_alive":
                 default = " INTEGER NOT NULL DEFAULT 0"
             connection.execute(f"ALTER TABLE runs ADD COLUMN {name}{default}")
     connection.execute(
