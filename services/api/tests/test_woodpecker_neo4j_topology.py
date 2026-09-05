@@ -12,6 +12,16 @@ import yaml
 
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 _SHARD_STEP_NAME = re.compile(r"neo4j-[a-z0-9-]+-checks")
+_NEO4J_SERVICE_SETTINGS = {
+    "NEO4J_PLUGINS": "[]",
+    "NEO4J_server_http_enabled": "false",
+    "NEO4J_server_bolt_thread__pool_min__size": "2",
+    "NEO4J_server_bolt_thread__pool_max__size": "2",
+    "NEO4J_server_memory_pagecache_scan__prefetchers": "1",
+    "NEO4J_server_memory_heap_initial__size": "128m",
+    "NEO4J_server_memory_heap_max__size": "384m",
+    "NEO4J_server_memory_pagecache_size": "128m",
+}
 
 _NEO4J_SHARDS = {
     "projection": {
@@ -203,10 +213,9 @@ def test_woodpecker_neo4j_shards_are_complete_isolated_and_parity_checked() -> N
             assert service.get("image") == "neo4j:5.26-community"
             assert isinstance(environment, dict)
             service_environment = cast(dict[str, object], environment)
-            assert service_environment.get("NEO4J_PLUGINS") == "[]"
-            assert service_environment.get("NEO4J_server_memory_heap_initial__size") == "128m"
-            assert service_environment.get("NEO4J_server_memory_heap_max__size") == "384m"
-            assert service_environment.get("NEO4J_server_memory_pagecache_size") == "128m"
+            assert {
+                key: value for key, value in service_environment.items() if key != "NEO4J_AUTH"
+            } == _NEO4J_SERVICE_SETTINGS
             auth = service_environment.get("NEO4J_AUTH")
             assert isinstance(auth, str) and auth.startswith("neo4j/")
             password = auth.removeprefix("neo4j/")
