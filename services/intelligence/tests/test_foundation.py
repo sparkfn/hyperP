@@ -182,3 +182,73 @@ def test_schema_v4_state_migrates_admission_limits_column(tmp_path: Path) -> Non
         assert "limits_json" in columns
     finally:
         reopened.close()
+
+
+def test_schema_v6_active_run_migration_keeps_execution_fence(tmp_path: Path) -> None:
+    """A pre-v7 active run remains unsafe until a trusted epoch changes."""
+    layout = workspace_layout(tmp_path)
+    epoch = "legacy-container"
+    connection = sqlite3.connect(layout.state_database)
+    connection.executescript(
+        """
+        CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO metadata(key, value) VALUES('schema_version', '6');
+        CREATE TABLE runs (
+            id TEXT PRIMARY KEY, command TEXT NOT NULL, state TEXT NOT NULL,
+            fence INTEGER NOT NULL, created_at REAL NOT NULL, heartbeat_at REAL,
+            cancellation_requested INTEGER NOT NULL DEFAULT 0, recovery_reason TEXT,
+            manifest_json TEXT, publishing_inventory_json TEXT, started_at REAL,
+            ended_at REAL, limits_json TEXT, runtime_epoch TEXT,
+            cleanup_unresolved INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE mutation_lock (
+            singleton INTEGER PRIMARY KEY CHECK(singleton = 1), run_id TEXT,
+            fence INTEGER NOT NULL DEFAULT 0, heartbeat_at REAL
+        );
+        CREATE TABLE accepted_outputs (
+            relative_path TEXT PRIMARY KEY, run_id TEXT NOT NULL,
+            sha256 TEXT NOT NULL, byte_count INTEGER NOT NULL
+        );
+        """
+    )
+    connection.execute(
+        "INSERT INTO mutation_lock(singleton, run_id, fence, heartbeat_at) "
+        "VALUES(1, 'legacy-active', 1, 0)"
+    )
+    connection.execute(
+        "INSERT INTO runs(id, command, state, fence, created_at, heartbeat_at, "
+        "cancellation_requested, limits_json, runtime_epoch, cleanup_unresolved) "
+        "VALUES('legacy-active', 'reviewed', 'running', 1, 1, 0, 0, ?, ?, 0)",
+        (
+            json.dumps(
+                {
+                    "max_log_bytes": 1000,
+                    "max_output_bytes": 1000,
+                    "max_output_entries": 10,
+                    "max_runtime_seconds": 10,
+                },
+                sort_keys=True,
+                separators=(",", ":"),
+            ),
+            epoch,
+        ),
+    )
+    connection.commit()
+    connection.close()
+
+    migrated = State(tmp_path, runtime_epoch=epoch)
+    try:
+        run = migrated.inspect("legacy-active")
+        assert run is not None and run.execution_may_be_alive
+        with pytest.raises(RuntimeError, match="execution-domain"):
+            migrated.recover_stale("legacy-active", "same epoch", 1)
+    finally:
+        migrated.close()
+
+    recreated = State(tmp_path, runtime_epoch="recreated-container")
+    try:
+        recreated.recover_stale("legacy-active", "container recreated", 1)
+        recovered = recreated.inspect("legacy-active")
+        assert recovered is not None and recovered.state == "stale_recovered"
+    finally:
+        recreated.close()

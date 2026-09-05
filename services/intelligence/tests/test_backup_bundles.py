@@ -137,6 +137,34 @@ def test_actual_v5_old_envelope_bundle_remains_verifiable(tmp_path: Path) -> Non
         state.close()
 
 
+def test_actual_v6_versioned_envelope_remains_verifiable(tmp_path: Path) -> None:
+    """Backups from the immediately preceding versioned envelope remain readable."""
+    state, bundle, _ = _bundle(tmp_path)
+    legacy = tmp_path / "versioned-v6.bundle"
+    shutil.copytree(bundle, legacy)
+    snapshot = legacy / "state.sqlite3"
+    connection = sqlite3.connect(snapshot)
+    try:
+        connection.execute("ALTER TABLE runs DROP COLUMN execution_may_be_alive")
+        connection.execute("UPDATE metadata SET value = '6' WHERE key = 'schema_version'")
+        connection.commit()
+    finally:
+        connection.close()
+    manifest_path = legacy / "manifest.json"
+    manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    manifest["state_schema_version"] = 6
+    manifest["state_snapshot"] = {
+        "path": "state.sqlite3",
+        "sha256": sha256_file(snapshot),
+        "byte_count": snapshot.stat().st_size,
+    }
+    manifest_path.write_text(canonical_json(manifest), encoding="utf-8")
+    try:
+        state.verify_backup(legacy)
+    finally:
+        state.close()
+
+
 def test_bundle_survives_state_reopen(tmp_path: Path) -> None:
     """Backup verification does not depend on the creating SQLite connection."""
     state, bundle, _ = _bundle(tmp_path)

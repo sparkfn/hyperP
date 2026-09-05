@@ -29,6 +29,7 @@ def scan_staged_outputs(
     scan_staged_usage(workspace, run_id, maximum_bytes, maximum_entries)
     total = 0
     inventory: list[OutputInventory] = []
+    seen_inodes: set[tuple[int, int]] = set()
     for candidate in sorted(staging.rglob("*"), key=lambda path: path.as_posix()):
         relative = candidate.relative_to(staging)
         _validate_relative_path(relative)
@@ -39,6 +40,12 @@ def scan_staged_outputs(
             continue
         if not stat.S_ISREG(metadata.st_mode):
             raise ValueError("staged outputs must contain regular files only")
+        if metadata.st_nlink != 1:
+            raise ValueError("staged outputs must not contain hard links")
+        inode = (metadata.st_dev, metadata.st_ino)
+        if inode in seen_inodes:
+            raise ValueError("staged outputs must not contain duplicate file inodes")
+        seen_inodes.add(inode)
         byte_count = metadata.st_size
         total += byte_count
         if byte_count > maximum_bytes or total > maximum_bytes:
@@ -137,6 +144,8 @@ def scan_staged_usage(
                         continue
                     if not stat.S_ISREG(metadata.st_mode):
                         raise ValueError("staged outputs must contain regular files only")
+                    if metadata.st_nlink != 1:
+                        raise ValueError("staged outputs must not contain hard links")
                     total_bytes += metadata.st_size
                     if total_bytes > maximum_bytes:
                         raise RuntimeError("staged outputs exceed configured byte limit")

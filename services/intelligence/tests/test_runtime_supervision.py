@@ -10,6 +10,7 @@ from pathlib import Path
 from threading import Thread
 
 import pytest
+from intelligence import runtime as runtime_module
 from intelligence.artifacts import workspace_layout
 from intelligence.config import RuntimeConfig
 from intelligence.registry import Cancelled, CommandHandler, RegisteredCommand, Registry
@@ -51,6 +52,12 @@ def abrupt_survivor_handler(directory: Path, cancelled: Cancelled) -> None:
         time.sleep(0.01)
 
 
+def never_ready_child(handler: CommandHandler, staging: Path, ready: object) -> None:
+    """Simulate a child that starts but never proves process-group readiness."""
+    del handler, staging, ready
+    time.sleep(30)
+
+
 def abrupt_supervisor(workspace: str) -> None:
     """Run a real supervisor until the test kills this process abruptly."""
     runtime = _runtime(Path(workspace), abrupt_survivor_handler, timeout=30)
@@ -63,6 +70,101 @@ def _runtime(tmp_path: Path, handler: CommandHandler, timeout: int = 5) -> Intel
         RuntimeConfig(tmp_path, mutations_enabled=True, max_runtime_seconds=timeout),
         Registry((command,)),
     )
+
+
+def test_staging_setup_failure_terminalizes_without_live_fence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Admission setup failures prove quiescence because no child was launched."""
+    runtime = _runtime(tmp_path, success_handler)
+    original_mkdir = Path.mkdir
+    staging_root = runtime.state.layout.staging
+
+    def fail_run_staging(path: Path, *args: object, **kwargs: object) -> None:
+        if path.parent == staging_root:
+            raise OSError("injected staging allocation failure")
+        original_mkdir(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "mkdir", fail_run_staging)
+    try:
+        with pytest.raises(OSError, match="allocation"):
+            runtime.run("approved")
+        run_id = str(runtime.state.connection.execute("SELECT id FROM runs").fetchone()[0])
+        run = runtime.state.inspect(run_id)
+        assert run is not None and run.state == "failed"
+        assert not run.execution_may_be_alive
+        assert runtime.state.active_run() is None
+        assert runtime.health().healthy
+    finally:
+        runtime.close()
+
+
+def test_initial_log_failure_terminalizes_without_live_fence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A failed admission log append cannot strand a lock for an unlaunched run."""
+    runtime = _runtime(tmp_path, success_handler)
+
+    def fail_log(*args: object, **kwargs: object) -> None:
+        raise OSError("injected initial log failure")
+
+    monkeypatch.setattr(runtime_module, "append_run_log", fail_log)
+    try:
+        with pytest.raises(OSError, match="initial log"):
+            runtime.run("approved")
+        run_id = str(runtime.state.connection.execute("SELECT id FROM runs").fetchone()[0])
+        run = runtime.state.inspect(run_id)
+        assert run is not None and run.state == "failed"
+        assert not run.execution_may_be_alive
+        assert runtime.state.active_run() is None
+        assert runtime.health().healthy
+    finally:
+        runtime.close()
+
+
+def test_real_readiness_timeout_retains_liveness_fence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A started child with no readiness proof becomes cleanup-unresolved."""
+    runtime = _runtime(tmp_path, success_handler)
+    monkeypatch.setattr(runtime_module, "_child_entry", never_ready_child)
+    monkeypatch.setattr(runtime_module, "_READY_TIMEOUT_SECONDS", 0.1)
+    try:
+        with pytest.raises(runtime_module.CleanupUnresolvedError, match="readiness"):
+            runtime.run("approved")
+        run_id = str(runtime.state.connection.execute("SELECT id FROM runs").fetchone()[0])
+        run = runtime.state.inspect(run_id)
+        assert run is not None and run.state == "running"
+        assert run.execution_may_be_alive and run.cleanup_unresolved
+        assert runtime.state.active_run() is not None
+        assert not runtime.health().healthy
+    finally:
+        runtime.close()
+
+
+def test_unproven_start_readiness_retains_liveness_fence(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A classified partial-start failure cannot terminalize or release the lock."""
+    runtime = _runtime(tmp_path, success_handler)
+
+    def fail_start(_handler: CommandHandler, _staging: Path) -> object:
+        raise runtime_module.CleanupUnresolvedError("readiness was not proven")
+
+    monkeypatch.setattr(runtime_module, "_start_command", fail_start)
+    try:
+        with pytest.raises(runtime_module.CleanupUnresolvedError, match="readiness"):
+            runtime.run("approved")
+        run_id = str(runtime.state.connection.execute("SELECT id FROM runs").fetchone()[0])
+        run = runtime.state.inspect(run_id)
+        assert run is not None and run.state == "running"
+        assert run.execution_may_be_alive and run.cleanup_unresolved
+        assert runtime.state.active_run() is not None
+        assert not runtime.health().healthy
+        with pytest.raises(RuntimeError, match="already active"):
+            runtime.state.create_mutating_run("blocked")
+    finally:
+        runtime.close()
 
 
 def test_spawn_success_publishes_output_and_terminal_evidence(tmp_path: Path) -> None:
