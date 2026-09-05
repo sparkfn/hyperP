@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from time import monotonic
@@ -44,6 +45,8 @@ _TransientEnvelopeCode = Literal[
     "service_unavailable",
     "temporary_error",
 ]
+_NORMALIZED_IDENTIFIER = re.compile(r"[a-z][a-z0-9_]{0,63}\Z")
+_NORMALIZED_FRAGMENT = re.compile(r"[a-z0-9_]{1,63}\Z")
 
 
 class BitrixCrmActivityRepository:
@@ -80,28 +83,17 @@ class BitrixCrmActivityRepository:
             if cached is not None:
                 return cached[2].model_copy(update={"cache_disposition": "hit"})
             flight = self._inflight.get(key)
-            if flight is not None and flight.task.done():
-                self._inflight.pop(key, None)
-                flight = None
             created = flight is None
             if flight is None:
                 task = asyncio.create_task(self._read(scope, fetched))
                 flight = _Flight(task=task)
                 self._inflight[key] = flight
-
-                def completed_callback(
-                    completed: asyncio.Task[PersonCrmActivityMetrics],
-                    cache_key: str = key,
-                ) -> None:
-                    self._schedule_finish(cache_key, completed)
-
-                task.add_done_callback(completed_callback)
             flight.waiters += 1
 
         try:
             result = await asyncio.shield(flight.task)
             if isinstance(result, PersonCrmActivityMetricsComplete):
-                await self._cache_complete(key, result)
+                await self._publish_complete(key, flight, result)
             if not created:
                 return result.model_copy(update={"cache_disposition": "coalesced"})
             return result
@@ -114,21 +106,21 @@ class BitrixCrmActivityRepository:
             if current is not flight:
                 return
             flight.waiters -= 1
-            if flight.waiters == 0 and not flight.task.done():
+            if flight.waiters == 0:
                 self._inflight.pop(key, None)
-                flight.task.cancel()
+                if not flight.task.done():
+                    flight.task.cancel()
 
-    def _schedule_finish(self, key: str, task: asyncio.Task[PersonCrmActivityMetrics]) -> None:
-        asyncio.create_task(self._finish_flight(key, task))
-
-    async def _cache_complete(self, key: str, result: PersonCrmActivityMetricsComplete) -> None:
+    async def _publish_complete(
+        self,
+        key: str,
+        flight: _Flight,
+        result: PersonCrmActivityMetricsComplete,
+    ) -> None:
+        """Atomically publish a completed result before releasing its flight."""
         async with self._lock:
-            self._store_complete_locked(key, result)
-
-    async def _finish_flight(self, key: str, task: asyncio.Task[PersonCrmActivityMetrics]) -> None:
-        async with self._lock:
-            current = self._inflight.get(key)
-            if current is not None and current.task is task:
+            if self._inflight.get(key) is flight:
+                self._store_complete_locked(key, result)
                 self._inflight.pop(key, None)
 
     def _store_complete_locked(self, key: str, result: PersonCrmActivityMetricsComplete) -> None:
@@ -210,6 +202,12 @@ class BitrixCrmActivityRepository:
             result = data.get("result")
             if not isinstance(result, list):
                 raise ReadError("malformed_response")
+            continuation_error: ReadError | None = None
+            try:
+                continuation = self._continuation_offset(data.get("next"))
+            except ReadError as error:
+                continuation = None
+                continuation_error = error
             page_ids: list[str] = []
             for raw in result:
                 self._check_deadline(deadline)
@@ -223,12 +221,14 @@ class BitrixCrmActivityRepository:
                     raise ReadError("non_advancing_pagination")
                 page_ids.append(activity.activity_id)
                 await state.add(activity)
+            if continuation_error is not None:
+                raise continuation_error
             if not page_ids:
                 raise ReadError("non_advancing_pagination")
             next_cursor = page_ids[-1]
             if cursor is not None and int(next_cursor) <= int(cursor):
                 raise ReadError("non_advancing_pagination")
-            if data.get("next") is None:
+            if continuation is None:
                 return
             cursor = next_cursor
 
@@ -416,21 +416,6 @@ class BitrixCrmActivityRepository:
         return Activity(identifier, kind, classification, event_at)
 
     @staticmethod
-    def _activity_kind(raw_type: object, provider_id: object, provider_type: object) -> str:
-        provider = provider_id.strip() if isinstance(provider_id, str) else ""
-        provider_type_text = provider_type.strip() if isinstance(provider_type, str) else ""
-        provider_markers = f"{provider} {provider_type_text}".upper()
-        if raw_type in (2, "2", "CALL", "call") or "CALL" in provider_markers:
-            return "call"
-        if provider.upper() == "IMOPENLINES_SESSION":
-            return "openlines_session"
-        if provider_type_text:
-            return provider_type_text.lower()
-        if raw_type is not None and str(raw_type).strip():
-            return f"activity_type_{str(raw_type).strip().lower()}"
-        return "activity"
-
-    @staticmethod
     def _positive_id(value: object) -> str | None:
         if isinstance(value, bool) or not isinstance(value, (str, int)):
             return None
@@ -440,10 +425,71 @@ class BitrixCrmActivityRepository:
         return text
 
     @staticmethod
-    def _call_classification(raw: dict[object, object]) -> str:
-        direction = str(raw.get("DIRECTION") or "unknown").strip().lower()
-        completed = raw.get("COMPLETED")
-        completion = "completed" if completed in ("Y", "y", True, 1, "1") else "unknown"
+    def _continuation_offset(value: object) -> int | None:
+        if value is None:
+            return None
+        if isinstance(value, bool) or not isinstance(value, int) or value <= 0:
+            raise ReadError("malformed_response")
+        return value
+
+    @staticmethod
+    def _normalize_fragment(value: object) -> str:
+        if isinstance(value, bool) or not isinstance(value, (str, int)):
+            return "unknown"
+        normalized = "_".join(str(value).strip().lower().replace("-", " ").split())
+        return normalized if _NORMALIZED_FRAGMENT.fullmatch(normalized) else "unknown"
+
+    @classmethod
+    def _normalize_identifier(cls, value: object) -> str:
+        normalized = cls._normalize_fragment(value)
+        return normalized if _NORMALIZED_IDENTIFIER.fullmatch(normalized) else "unknown"
+
+    @classmethod
+    def _activity_kind(cls, raw_type: object, provider_id: object, provider_type: object) -> str:
+        provider = cls._normalize_identifier(provider_id)
+        provider_type_text = cls._normalize_identifier(provider_type)
+        raw_type_text = cls._normalize_fragment(raw_type)
+        provider_tokens = (*provider.split("_"), *provider_type_text.split("_"))
+        if raw_type_text in {"2", "call"} or "call" in provider_tokens:
+            return "call"
+        if provider == "imopenlines_session":
+            return "openlines_session"
+        if isinstance(provider_type, str) and provider_type.strip():
+            return provider_type_text
+        if raw_type_text == "unknown":
+            return "unknown"
+        return cls._normalize_identifier(f"activity_type_{raw_type_text}")
+
+    @staticmethod
+    def _call_direction(value: object) -> Literal["incoming", "outgoing", "unknown"]:
+        if isinstance(value, bool) or not isinstance(value, (str, int)):
+            return "unknown"
+        normalized = str(value).strip().lower()
+        if normalized in {"1", "incoming", "inbound"}:
+            return "incoming"
+        if normalized in {"2", "outgoing", "outbound"}:
+            return "outgoing"
+        return "unknown"
+
+    @staticmethod
+    def _call_completion(value: object) -> Literal["completed", "incomplete", "unknown"]:
+        if value is True or value == 1:
+            return "completed"
+        if value is False or value == 0:
+            return "incomplete"
+        if not isinstance(value, str):
+            return "unknown"
+        normalized = value.strip().lower()
+        if normalized in {"y", "1"}:
+            return "completed"
+        if normalized in {"n", "0"}:
+            return "incomplete"
+        return "unknown"
+
+    @classmethod
+    def _call_classification(cls, raw: dict[object, object]) -> str:
+        direction = cls._call_direction(raw.get("DIRECTION"))
+        completion = cls._call_completion(raw.get("COMPLETED"))
         return f"{direction}_{completion}"
 
     def _incomplete(

@@ -10,8 +10,8 @@ import httpx
 import pytest
 from pydantic import ValidationError
 from src.config import AppConfig
-from src.repositories.bitrix.activity import BitrixCrmActivityRepository
-from src.types_crm import BitrixDealScope
+from src.repositories.bitrix.activity import BitrixCrmActivityRepository, _Flight
+from src.types_crm import BitrixDealScope, PersonCrmActivityMetricsComplete
 
 ResponseHandler = Callable[[dict[str, object]], Awaitable[httpx.Response]]
 
@@ -67,6 +67,8 @@ def _activity(
     kind: str = "2",
     provider_id: str | None = None,
     provider_type_id: str | None = None,
+    direction: object = "inbound",
+    completed: object = "Y",
 ) -> dict[str, object]:
     return {
         "ID": identifier,
@@ -78,8 +80,8 @@ def _activity(
         "START_TIME": timestamp,
         "CREATED": "2026-08-01T08:00:00Z",
         "LAST_UPDATED": "2026-09-02T08:00:00Z",
-        "DIRECTION": "inbound",
-        "COMPLETED": "Y",
+        "DIRECTION": direction,
+        "COMPLETED": completed,
     }
 
 
@@ -104,7 +106,13 @@ def _assert_owner_scope(body: dict[str, object], owners: list[str]) -> None:
 
 
 def test_source_instance_configuration_rejects_noncanonical_or_secret_like_values() -> None:
-    for value in ("UPPER", "bitrix_primary", " bitrix-primary", "token-like-value-"):
+    for value in (
+        "UPPER",
+        "bitrix_primary",
+        " bitrix-primary",
+        "token-like-value-",
+        "legacy-default",
+    ):
         with pytest.raises(ValidationError):
             _config(BITRIX_ACTIVITY_SOURCE_INSTANCE=value)
 
@@ -175,7 +183,7 @@ async def test_requests_are_metadata_only_owner_scoped_and_keyset_ordered() -> N
 async def test_complete_dedupes_overlapping_keyset_rows_and_normalizes_kinds() -> None:
     pages = iter(
         (
-            {"result": [_activity("1"), _activity("1"), _activity("2", kind="3")], "next": "x"},
+            {"result": [_activity("1"), _activity("1"), _activity("2", kind="3")], "next": 1},
             {
                 "result": [
                     _activity("2", kind="3"),
@@ -235,6 +243,42 @@ async def test_non_call_provider_normalization_precedes_type_id() -> None:
 
 
 @pytest.mark.anyio
+async def test_activity_kind_and_call_classification_are_canonical_closed_values() -> None:
+    async def handler(body: dict[str, object]) -> httpx.Response:
+        if _is_freeze(body):
+            return httpx.Response(200, json={"result": [{"ID": "5"}]})
+        return httpx.Response(
+            200,
+            json={
+                "result": [
+                    _activity("1", direction=2, completed="N"),
+                    _activity("2", kind="3", provider_type_id="Task Queue-XL"),
+                    _activity("3", kind="3", provider_type_id="task/$bad"),
+                    _activity("4", direction="not-a-direction", completed="maybe"),
+                    _activity("5", kind="3", provider_id="IMOPENLINES_SESSION"),
+                ]
+            },
+        )
+
+    async with _client(handler) as client:
+        result = await BitrixCrmActivityRepository(
+            _config(), client
+        ).get_person_crm_activity_metrics(_scope("10"))
+
+    assert result.status == "complete"
+    assert [item.history_kind for item in result.activity_kind_breakdown] == [
+        "call",
+        "openlines_session",
+        "task_queue_xl",
+        "unknown",
+    ]
+    assert [(item.classification, item.count) for item in result.call_classification_breakdown] == [
+        ("outgoing_incomplete", 1),
+        ("unknown_unknown", 1),
+    ]
+
+
+@pytest.mark.anyio
 async def test_malformed_or_wrong_owner_is_unavailable_before_safe_lower_bound() -> None:
     async def handler(body: dict[str, object]) -> httpx.Response:
         if _is_freeze(body):
@@ -259,7 +303,7 @@ async def test_failure_after_accepted_rows_is_partial_lower_bound() -> None:
         filters = body["filter"]
         assert isinstance(filters, dict)
         if ">ID" not in filters:
-            return httpx.Response(200, json={"result": [_activity("1")], "next": "ignored"})
+            return httpx.Response(200, json={"result": [_activity("1")], "next": 1})
         return httpx.Response(200, json={"result": [{"ID": "bad"}]})
 
     async with _client(handler) as client:
@@ -290,7 +334,7 @@ async def test_finite_request_page_and_row_ceilings(
             return httpx.Response(200, json={"result": [{"ID": "3"}]})
         return httpx.Response(
             200,
-            json={"result": [_activity("1"), _activity("2")], "next": "ignored"},
+            json={"result": [_activity("1"), _activity("2")], "next": 1},
         )
 
     async with _client(handler) as client:
@@ -482,7 +526,7 @@ async def test_keyset_rejects_rows_below_cursor_and_never_uses_offset_pagination
         filters = body["filter"]
         assert isinstance(filters, dict)
         if ">ID" not in filters:
-            return httpx.Response(200, json={"result": [_activity("2")], "next": "ignored"})
+            return httpx.Response(200, json={"result": [_activity("2")], "next": 1})
         return httpx.Response(200, json={"result": [_activity("1"), _activity("3")]})
 
     async with _client(handler) as client:
@@ -570,6 +614,72 @@ async def test_complete_only_cache_retains_fetched_at_and_is_bounded() -> None:
     assert cached.cache_disposition == "hit"
     assert cached.fetched_at == first.fetched_at
     assert calls == 3
+
+
+@pytest.mark.anyio
+async def test_completed_flight_is_retained_until_atomic_cache_publication(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    page_calls = 0
+    publication_calls = 0
+    publication_started = asyncio.Event()
+    second_waiter_ready = asyncio.Event()
+    allow_publication = asyncio.Event()
+
+    async def handler(body: dict[str, object]) -> httpx.Response:
+        nonlocal page_calls
+        if _is_freeze(body):
+            return httpx.Response(200, json={"result": [{"ID": "1"}]})
+        page_calls += 1
+        return httpx.Response(200, json={"result": [_activity("1")]})
+
+    async with _client(handler) as client:
+        repository = BitrixCrmActivityRepository(_config(), client)
+        original_publish = repository._publish_complete
+
+        async def delayed_publish(
+            key: str,
+            flight: _Flight,
+            result: PersonCrmActivityMetricsComplete,
+        ) -> None:
+            nonlocal publication_calls
+            publication_calls += 1
+            publication_started.set()
+            if publication_calls == 2:
+                second_waiter_ready.set()
+            await allow_publication.wait()
+            await original_publish(key, flight, result)
+
+        monkeypatch.setattr(repository, "_publish_complete", delayed_publish)
+        first = asyncio.create_task(repository.get_person_crm_activity_metrics(_scope("10")))
+        await publication_started.wait()
+        second = asyncio.create_task(repository.get_person_crm_activity_metrics(_scope("10")))
+        await second_waiter_ready.wait()
+        assert page_calls == 1
+        allow_publication.set()
+        first_result, second_result = await asyncio.gather(first, second)
+
+    assert first_result.status == second_result.status == "complete"
+    assert second_result.cache_disposition == "coalesced"
+    assert page_calls == 1
+
+
+@pytest.mark.anyio
+@pytest.mark.parametrize("continuation", [True, {}, [], "1", 0, -1, 1.0])
+async def test_malformed_next_continuation_fails_safe(continuation: object) -> None:
+    async def handler(body: dict[str, object]) -> httpx.Response:
+        if _is_freeze(body):
+            return httpx.Response(200, json={"result": [{"ID": "1"}]})
+        return httpx.Response(200, json={"result": [_activity("1")], "next": continuation})
+
+    async with _client(handler) as client:
+        result = await BitrixCrmActivityRepository(
+            _config(), client
+        ).get_person_crm_activity_metrics(_scope("10"))
+
+    assert result.status == "partial"
+    assert result.failure_reason == "malformed_response"
+    assert result.activity_count == 1
 
 
 @pytest.mark.anyio

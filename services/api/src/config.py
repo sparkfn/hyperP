@@ -84,7 +84,7 @@ class AppConfig(BaseSettings):
     @field_validator("bitrix_activity_source_instance")
     @classmethod
     def validate_bitrix_activity_source_instance(cls, value: str) -> str:
-        if _BITRIX_SOURCE_INSTANCE_SLUG.fullmatch(value) is None:
+        if value == "legacy-default" or _BITRIX_SOURCE_INSTANCE_SLUG.fullmatch(value) is None:
             raise ValueError("must be a canonical non-secret slug of 1 to 64 characters")
         return value
 
