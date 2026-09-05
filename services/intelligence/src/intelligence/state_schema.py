@@ -8,8 +8,18 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 ConnectionVerifier = Callable[[sqlite3.Connection], None]
+
+
+def current_runtime_epoch() -> str:
+    """Return a stable execution-domain identity across CLI execs in one container."""
+    try:
+        raw = Path("/proc/1/stat").read_text(encoding="utf-8")
+        fields = raw.rsplit(")", 1)[1].split()
+        return f"pid1-start:{fields[19]}"
+    except (OSError, IndexError, ValueError):
+        return f"parent-process:{os.getppid()}"
 
 
 def verify_connection(connection: sqlite3.Connection) -> None:
@@ -62,7 +72,8 @@ def bootstrap(connection: sqlite3.Connection, verify_connection: ConnectionVerif
             fence INTEGER NOT NULL, created_at REAL NOT NULL, heartbeat_at REAL,
             cancellation_requested INTEGER NOT NULL DEFAULT 0, recovery_reason TEXT,
             manifest_json TEXT, publishing_inventory_json TEXT, started_at REAL, ended_at REAL,
-            limits_json TEXT
+            limits_json TEXT, runtime_epoch TEXT,
+            cleanup_unresolved INTEGER NOT NULL DEFAULT 0
         );
         CREATE TABLE IF NOT EXISTS mutation_lock (
             singleton INTEGER PRIMARY KEY CHECK(singleton = 1), run_id TEXT,
@@ -92,7 +103,7 @@ def bootstrap(connection: sqlite3.Connection, verify_connection: ConnectionVerif
 
 def upgrade(connection: sqlite3.Connection, version: int) -> None:
     """Apply the bounded in-place schema upgrade path."""
-    if version < 1 or version > 4:
+    if version < 1 or version > 5:
         raise RuntimeError("Intelligence state schema is unsupported")
     columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(runs)")}
     for name in (
@@ -101,6 +112,8 @@ def upgrade(connection: sqlite3.Connection, version: int) -> None:
         "started_at",
         "ended_at",
         "limits_json",
+        "runtime_epoch",
+        "cleanup_unresolved",
     ):
         if name not in columns:
             default = " INTEGER NOT NULL DEFAULT 0" if name == "cancellation_requested" else " REAL"
@@ -108,6 +121,10 @@ def upgrade(connection: sqlite3.Connection, version: int) -> None:
                 default = " TEXT"
             if name == "limits_json":
                 default = " TEXT"
+            if name == "runtime_epoch":
+                default = " TEXT"
+            if name == "cleanup_unresolved":
+                default = " INTEGER NOT NULL DEFAULT 0"
             connection.execute(f"ALTER TABLE runs ADD COLUMN {name}{default}")
     connection.execute(
         "UPDATE metadata SET value = ? WHERE key = 'schema_version'", (str(SCHEMA_VERSION),)

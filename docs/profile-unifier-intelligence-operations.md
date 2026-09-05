@@ -46,3 +46,12 @@ empty or three-key limit objects, normalizing the missing entry limit to its doc
 Effective limits are persisted at run admission and reused for stale recovery and backup
 verification. Any handler-created or corrupt manifest is quarantined under
 `runs/rejected-manifests/` without being read or followed.
+
+If process-group cleanup cannot be proven, the run remains active and health becomes unhealthy;
+ordinary heartbeat age is not sufficient to recover it. Recovery is permitted only after a
+trusted execution-domain boundary: the runtime records the container's stable PID 1 start epoch,
+which is shared by CLI execs in that container and changes when the container is recreated. A
+same-container operator command therefore cannot bypass unresolved cleanup. Legacy migrated runs
+with no persisted limits emit schema-v1 evidence with empty limits rather than fabricated defaults.
+Backup bundles use an independent format version and continue to verify pre-v5 schema-4 bundles
+whose snapshots lack persisted limits.

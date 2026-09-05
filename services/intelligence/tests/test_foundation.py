@@ -177,7 +177,7 @@ def test_schema_v4_state_migrates_admission_limits_column(tmp_path: Path) -> Non
             "SELECT value FROM metadata WHERE key = 'schema_version'"
         ).fetchone()[0]
         columns = {str(row[1]) for row in reopened.connection.execute("PRAGMA table_info(runs)")}
-        assert version == "5"
+        assert version == "6"
         assert "limits_json" in columns
     finally:
         reopened.close()

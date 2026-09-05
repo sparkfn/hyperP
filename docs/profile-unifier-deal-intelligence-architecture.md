@@ -26,6 +26,8 @@ discovery, raw environment, or arbitrary arguments are admitted or persisted.
 
 Mutations are disabled by default. An active healthy lock cannot be recovered. A stale lock makes
 health fail until an operator explicitly supplies its exact run identifier and recovery reason.
+If process-group cleanup is unresolved, health fails immediately and stale recovery requires a
+different trusted container execution epoch; same-container CLI execs cannot bypass that fence.
 Terminal records remain durable; no cleanup, pruning, or restore is included.
 
 ## Artifact and backup contract
@@ -35,8 +37,9 @@ an immutable no-replace path in the same volume. Terminal manifests are canonica
 timestamps, effective safe limits, reason, output inventory, and a checksummed run-log reference;
 they never contain credentials or raw environment. A backup is an atomic no-replace bundle holding
 an SQLite online snapshot plus copies and checksummed inventory of completed-run manifests and
-accepted output evidence. Operators must verify and export a bundle off-volume by an approved
-external process.
+accepted output evidence. The bundle format is versioned independently from the live SQLite
+schema and verifies legacy schema-4 snapshots without `limits_json`. Operators must verify and
+export a bundle off-volume by an approved external process.
 
 ## Deployment contract
 

@@ -105,12 +105,57 @@ def test_unresolved_group_cleanup_keeps_lock_for_stale_recovery(
             runtime.run("reviewed")
         run_id = str(runtime.state.connection.execute("SELECT id FROM runs").fetchone()[0])
         run = runtime.state.inspect(run_id)
-        assert run is not None and run.state == "running"
+        assert run is not None and run.state == "running" and run.cleanup_unresolved
         assert runtime.state.active_run() is not None
+        assert not runtime.health().healthy
+        marker = workspace_layout(tmp_path).staging / run_id / "successful-descendant-survived"
+        time.sleep(0.2)
+        with pytest.raises(RuntimeError, match="already active"):
+            runtime.state.create_mutating_run("another")
         runtime.state.connection.execute("UPDATE mutation_lock SET heartbeat_at = 0")
+        time.sleep(1.0)
+        assert marker.is_file()
+        with pytest.raises(RuntimeError, match="execution-domain"):
+            runtime.state.recover_stale(run_id, "same domain", 1)
         assert not runtime.health().healthy
     finally:
         runtime.close()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="process groups are a POSIX contract")
+def test_cleanup_unresolved_recovery_requires_new_runtime_epoch(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Only a simulated container recreation can recover unresolved cleanup."""
+    runtime = _runtime(tmp_path, successful_descendant_handler, timeout=5)
+
+    def fail_quiescence(_process: object) -> None:
+        raise CleanupUnresolvedError("injected quiescence failure")
+
+    monkeypatch.setattr(runtime_module, "_quiesce_process_group", fail_quiescence)
+    try:
+        with pytest.raises(CleanupUnresolvedError):
+            runtime.run("reviewed")
+        run_id = str(runtime.state.connection.execute("SELECT id FROM runs").fetchone()[0])
+        runtime.state.connection.execute("UPDATE mutation_lock SET heartbeat_at = 0")
+    finally:
+        runtime.close()
+    from intelligence.state import State
+
+    same_epoch = State(tmp_path)
+    try:
+        with pytest.raises(RuntimeError, match="execution-domain"):
+            same_epoch.recover_stale(run_id, "same domain", 1)
+    finally:
+        same_epoch.close()
+    recreated = State(tmp_path, runtime_epoch="recreated-container")
+    try:
+        recreated.recover_stale(run_id, "container recreated", 1)
+        recovered = recreated.inspect(run_id)
+        assert recovered is not None and recovered.state == "stale_recovered"
+        assert recreated.active_run() is None
+    finally:
+        recreated.close()
 
 
 @pytest.mark.skipif(os.name == "nt", reason="process groups are a POSIX contract")

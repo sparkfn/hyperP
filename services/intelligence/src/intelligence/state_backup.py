@@ -15,6 +15,9 @@ from intelligence.models import OutputInventory, RunLogInventory, WorkspaceLayou
 from intelligence.state_publication import _validate_output
 from intelligence.state_schema import SCHEMA_VERSION
 
+BACKUP_SCHEMA_VERSION = 1
+LEGACY_STATE_SCHEMA_VERSION = 4
+
 
 def create_backup(
     layout: WorkspaceLayout, database_path: Path, connection: sqlite3.Connection, destination: Path
@@ -39,7 +42,8 @@ def create_backup(
                 shutil.copyfile(source, target)
                 inventory.append(_inventory_item(target, f"evidence/{relative.as_posix()}"))
             manifest = {
-                "schema_version": SCHEMA_VERSION,
+                "backup_schema_version": BACKUP_SCHEMA_VERSION,
+                "state_schema_version": SCHEMA_VERSION,
                 "state_snapshot": _inventory_item(snapshot, "state.sqlite3"),
                 "evidence": inventory,
             }
@@ -71,13 +75,13 @@ def verify_backup_bundle(backup: Path) -> None:
     manifest_path = backup / "manifest.json"
     if manifest_path.is_symlink() or not manifest_path.is_file():
         raise ValueError("backup bundle manifest is missing or unsafe")
-    snapshot, evidence = _read_backup_manifest(manifest_path)
+    snapshot, evidence, state_schema_version = _read_backup_manifest(manifest_path)
     _verify_inventory_item(backup, snapshot)
     _verify_backup_database(backup / "state.sqlite3")
     for item in evidence:
         _verify_inventory_item(backup, item)
     _assert_bundle_contents(backup, evidence)
-    _verify_bundle_evidence(backup, evidence)
+    _verify_bundle_evidence(backup, evidence, state_schema_version)
 
 
 def _backup_database(
@@ -182,14 +186,32 @@ def _write_backup_manifest(path: Path, manifest: dict[str, object]) -> None:
 
 def _read_backup_manifest(
     manifest_path: Path,
-) -> tuple[dict[object, object], tuple[dict[object, object], ...]]:
+) -> tuple[dict[object, object], tuple[dict[object, object], ...], int]:
     try:
         raw = json.loads(manifest_path.read_text(encoding="utf-8"))
     except (OSError, json.JSONDecodeError) as error:
         raise ValueError("backup bundle manifest is invalid") from error
-    if not isinstance(raw, dict) or set(raw) != {"schema_version", "state_snapshot", "evidence"}:
+    if not isinstance(raw, dict):
         raise ValueError("backup bundle schema is invalid")
-    if raw.get("schema_version") != SCHEMA_VERSION:
+    state_schema_version: int
+    if set(raw) == {"schema_version", "state_snapshot", "evidence"}:
+        version = raw.get("schema_version")
+        if version not in {LEGACY_STATE_SCHEMA_VERSION, 5}:
+            raise ValueError("backup bundle schema is invalid")
+        state_schema_version = int(version)
+    elif set(raw) == {
+        "backup_schema_version",
+        "state_schema_version",
+        "state_snapshot",
+        "evidence",
+    }:
+        if (
+            raw.get("backup_schema_version") != BACKUP_SCHEMA_VERSION
+            or raw.get("state_schema_version") != SCHEMA_VERSION
+        ):
+            raise ValueError("backup bundle schema is invalid")
+        state_schema_version = SCHEMA_VERSION
+    else:
         raise ValueError("backup bundle schema is invalid")
     snapshot, evidence = raw.get("state_snapshot"), raw.get("evidence")
     if not isinstance(snapshot, dict) or not isinstance(evidence, list):
@@ -204,7 +226,7 @@ def _read_backup_manifest(
         if not isinstance(path, str) or not path.startswith("evidence/"):
             raise ValueError("backup evidence inventory path is invalid")
         items.append(item)
-    return snapshot, tuple(items)
+    return snapshot, tuple(items), state_schema_version
 
 
 def _verify_inventory_item(root: Path, item: dict[object, object]) -> None:
@@ -256,7 +278,9 @@ def _assert_bundle_contents(backup: Path, evidence: Sequence[dict[object, object
         raise ValueError("backup bundle contains missing or extra evidence")
 
 
-def _verify_bundle_evidence(backup: Path, inventory: Sequence[dict[object, object]]) -> None:
+def _verify_bundle_evidence(
+    backup: Path, inventory: Sequence[dict[object, object]], state_schema_version: int
+) -> None:
     connection = sqlite3.connect(f"file:{backup / 'state.sqlite3'}?mode=ro&immutable=1", uri=True)
     connection.row_factory = sqlite3.Row
     try:
@@ -267,8 +291,12 @@ def _verify_bundle_evidence(backup: Path, inventory: Sequence[dict[object, objec
         if invalid is not None:
             raise ValueError("backup accepted output belongs to a non-completed run")
         expected_evidence: set[Path] = set()
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(runs)")}
+        if state_schema_version == 5 and "limits_json" not in columns:
+            raise ValueError("schema-5 backup snapshot is missing persisted limits")
+        limits_column = ", limits_json" if "limits_json" in columns else ""
         rows = connection.execute(
-            "SELECT id, command, limits_json FROM runs WHERE state = 'completed' ORDER BY id"
+            f"SELECT id, command{limits_column} FROM runs WHERE state = 'completed' ORDER BY id"
         )
         for row in rows:
             run_id = str(row["id"])
@@ -284,7 +312,8 @@ def _verify_bundle_evidence(backup: Path, inventory: Sequence[dict[object, objec
                 _validate_output(item)
             manifest = backup / "evidence" / "manifests" / f"{run_id}.json"
             expected_evidence.add(Path("evidence") / "manifests" / f"{run_id}.json")
-            _verify_run_manifest(manifest, run_id, str(row["command"]), outputs, row["limits_json"])
+            limits_json = None if state_schema_version == 4 else row["limits_json"]
+            _verify_run_manifest(manifest, run_id, str(row["command"]), outputs, limits_json)
             if outputs:
                 output_root = backup / "evidence" / "outputs" / run_id
                 expected = {

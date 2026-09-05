@@ -50,6 +50,8 @@ class Run:
     started_at: float | None = None
     ended_at: float | None = None
     limits: tuple[tuple[str, int], ...] = ()
+    runtime_epoch: str | None = None
+    cleanup_unresolved: bool = False
 
 
 @dataclass(frozen=True)

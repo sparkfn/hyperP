@@ -43,6 +43,7 @@ from intelligence.state_publication import (
 )
 from intelligence.state_schema import (
     bootstrap,
+    current_runtime_epoch,
     migrate_legacy_database,
     path_exists_safe,
     verify_connection,
@@ -56,9 +57,10 @@ _TERMINAL: frozenset[str] = frozenset(
 class State:
     """Foundation-owned durable state. Callers must close the instance."""
 
-    def __init__(self, workspace: Path) -> None:
+    def __init__(self, workspace: Path, runtime_epoch: str | None = None) -> None:
         self.layout = workspace_layout(workspace)
         self.workspace = self.layout.root
+        self.runtime_epoch = runtime_epoch or current_runtime_epoch()
         migrate_legacy_database(
             self.workspace,
             self.layout.state_directory,
@@ -106,8 +108,9 @@ class State:
             fence = int(row[0])
             self.connection.execute(
                 "INSERT INTO runs(id, command, state, fence, created_at, heartbeat_at, started_at, "
-                "limits_json) VALUES(?, ?, 'running', ?, ?, ?, ?, ?)",
-                (run_id, command, fence, now, now, now, limits_json),
+                "limits_json, runtime_epoch, cleanup_unresolved) "
+                "VALUES(?, ?, 'running', ?, ?, ?, ?, ?, ?, 0)",
+                (run_id, command, fence, now, now, now, limits_json, self.runtime_epoch),
             )
             self.connection.execute("COMMIT")
         except BaseException:
@@ -122,7 +125,18 @@ class State:
             now,
             started_at=now,
             limits=tuple(sorted(effective_limits.items())),
+            runtime_epoch=self.runtime_epoch,
         )
+
+    def mark_cleanup_unresolved(self, run: Run) -> None:
+        """Persist that process-group quiescence was not proven, without releasing the lock."""
+        changed = self.connection.execute(
+            "UPDATE runs SET cleanup_unresolved = 1 WHERE id = ? AND fence = ? "
+            "AND state IN ('running', 'publishing')",
+            (run.run_id, run.fence),
+        ).rowcount
+        if changed != 1:
+            raise RuntimeError("cannot persist unresolved cleanup state")
 
     def verify_fence(self, run: Run) -> None:
         """Reject mutation or publication by an owner whose durable fence was lost."""
@@ -292,6 +306,9 @@ class State:
                 raise RuntimeError("mutation lock fence does not match the run")
             if run.state not in {"queued", "running", "publishing"}:
                 raise RuntimeError("requested run is not recoverable")
+            if run.cleanup_unresolved:
+                if run.runtime_epoch is None or run.runtime_epoch == self.runtime_epoch:
+                    raise RuntimeError("unsafe cleanup requires a trusted execution-domain change")
             recovery_state: TerminalRunState = "stale_recovered"
             recovery_outputs: tuple[OutputInventory, ...] = ()
             recovery_reason: str | None = cleaned
@@ -335,7 +352,8 @@ class State:
                 reason=recovery_reason,
                 created_at=run.created_at,
                 started_at=run.started_at,
-                limits=dict(run.limits) or DEFAULT_MANIFEST_LIMITS,
+                limits=dict(run.limits) if run.limits else {},
+                legacy_unknown_limits=not bool(run.limits),
                 run_log=run_log_inventory(self.workspace, run.run_id),
             )
             if recovery_state == "completed":
