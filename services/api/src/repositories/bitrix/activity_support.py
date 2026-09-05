@@ -80,11 +80,7 @@ class ReadState:
 
 def _daily_series(items: list[Activity], fetched: datetime) -> list[int]:
     return [
-        sum(
-            1
-            for item in items
-            if (fetched.date() - item.event_at.date()).days == 29 - index
-        )
+        sum(1 for item in items if (fetched.date() - item.event_at.date()).days == 29 - index)
         for index in range(30)
     ]
 

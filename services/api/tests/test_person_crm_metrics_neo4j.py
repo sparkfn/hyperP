@@ -15,7 +15,7 @@ from uuid import uuid4
 
 import pytest
 from neo4j import Driver, GraphDatabase
-from src.graph.queries.crm import GET_PERSON_CRM_METRICS
+from src.graph.queries.crm import GET_PERSON_CRM_DEAL_METRICS
 from src.graph.queries.persons import COUNT_PERSON_TIMELINE, GET_PERSON_TIMELINE
 from src.graph.queries.review import ACTIVATE_PENDING_REVIEW_RECORD
 
@@ -62,7 +62,7 @@ def neo4j_driver() -> Iterator[_TestGraph]:
         driver.close()
 
 
-def test_metrics_query_uses_projected_stage_with_persisted_json_payload(
+def test_deal_metrics_query_uses_projected_stage_and_excludes_live_activity_records(
     neo4j_driver: _TestGraph,
 ) -> None:
     """A JSON-string payload must not be dereferenced as a Cypher map."""
@@ -100,26 +100,19 @@ def test_metrics_query_uses_projected_stage_with_persisted_json_payload(
             test_run_id=neo4j_driver.run_id,
         ).consume()
         row = session.run(
-            GET_PERSON_CRM_METRICS,
+            GET_PERSON_CRM_DEAL_METRICS,
             person_id="person-1",
             as_of_at="2026-08-20T00:00:00+00:00",
         ).single(strict=True)
 
     assert row["deal_count"] == 1
-    assert row["activity_count"] == 1
     assert row["recent_30d_deal_count"] == 1
-    assert row["recent_30d_activity_count"] == 1
     assert row["deal_stage_breakdown"] == [{"stage_id": "C2:WON", "count": 1}]
-    assert row["activity_kind_breakdown"] == [
-        {
-            "history_kind": "email",
-            "count": 1,
-            "last_event_at": row["last_activity_at"],
-        }
-    ]
-    assert row["days_since_last_crm_touch"] == 0
+    assert row["conversation_count"] == 0
+    assert sum(row["deal_daily_counts"]) == 1
+    assert sum(row["conversation_daily_counts"]) == 0
+    assert row["last_graph_crm_touch_at"] == row["last_deal_at"]
     assert row["days_since_last_deal"] == 30
-    assert row["days_since_last_activity"] == 0
 
 
 def test_review_activation_does_not_materialize_knows_from_retired_declarer_link(
