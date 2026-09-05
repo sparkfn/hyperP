@@ -140,7 +140,10 @@ def _create_current_schema(connection: sqlite3.Connection) -> None:
     try:
         for statement in statements:
             connection.execute(statement)
-        connection.execute("INSERT INTO metadata(key, value) VALUES('schema_version', '7')")
+        connection.execute(
+            "INSERT INTO metadata(key, value) VALUES('schema_version', ?)",
+            (str(SCHEMA_VERSION),),
+        )
         connection.execute("COMMIT")
     except BaseException:
         connection.execute("ROLLBACK")
@@ -267,6 +270,7 @@ def upgrade(connection: sqlite3.Connection, version: int, runtime_epoch: str | N
         connection.execute(
             "INSERT OR REPLACE INTO metadata(key, value) VALUES('legacy_schema_migration', '1')"
         )
+        _validate_current_schema(connection, require_constraints=False)
         connection.execute("COMMIT")
     except BaseException:
         connection.execute("ROLLBACK")
