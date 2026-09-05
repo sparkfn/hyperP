@@ -1,7 +1,7 @@
 // @vitest-environment jsdom
 
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import React from "react";
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -164,5 +164,56 @@ describe("CrmMetricsPanel split reads", () => {
     expect(screen.getAllByText("0 all time")).toHaveLength(2);
     expect(screen.getAllByLabelText(/^Activities:/).length).toBeGreaterThan(0);
     await waitFor(() => expect(onTotalLoaded).toHaveBeenLastCalledWith(3));
+  });
+
+  it("retries only unavailable live activity while preserving graph content", async () => {
+    let dealFetches = 0;
+    let activityFetches = 0;
+    const fetchMock = vi.fn((url: string, init?: RequestInit) => {
+      expect(init?.signal).toBeInstanceOf(AbortSignal);
+      if (url.includes("deal-metrics")) {
+        dealFetches += 1;
+        return Promise.resolve(response(deals));
+      }
+      activityFetches += 1;
+      return activityFetches === 1
+        ? Promise.reject(new TypeError("network failed"))
+        : Promise.resolve(response(unavailable));
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    renderPanel();
+
+    const retry = await screen.findByRole("button", { name: "Retry live activity metrics" });
+    expect(screen.getByText("2 all time")).toBeTruthy();
+    fireEvent.click(retry);
+
+    await waitFor(() => expect(activityFetches).toBe(2));
+    expect(dealFetches).toBe(1);
+    expect(screen.getByText("2 all time")).toBeTruthy();
+  });
+
+  it("uses chronological timestamps when graph touch is newer than complete live data", async () => {
+    const graphNewer: PersonCrmDealMetrics = {
+      ...deals,
+      last_graph_crm_touch_at: "2026-09-05T00:00:00-07:00",
+      last_graph_crm_touch_at_display: "Graph newest",
+    };
+    const complete = aggregate("complete");
+    if (complete.status !== "complete") throw new Error("complete fixture expected");
+    const liveOlder: PersonCrmActivityMetrics = {
+      ...complete,
+      last_activity_at: "2026-09-05T06:00:00+00:00",
+      last_activity_at_display: "Live older",
+    };
+    vi.stubGlobal("fetch", vi.fn((url: string) => Promise.resolve(
+      response(url.includes("deal-metrics") ? graphNewer : liveOlder),
+    )));
+
+    renderPanel();
+
+    const lastCrm = await screen.findByText("Graph newest");
+    expect(lastCrm.parentElement?.textContent).toContain("Last CRM: Graph newest");
+    expect(screen.getByText("Live older")).toBeTruthy();
   });
 });

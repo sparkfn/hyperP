@@ -692,6 +692,18 @@ responses include one of the documented typed failure reasons. The endpoint neve
 returns or retains raw activity content, never performs a portal-wide read, and does
 not persist data or feed Intelligence.
 
+The configured source instance is a canonical non-secret slug and must be an active,
+unambiguous registered `BitrixSourceInstance` for the active `bitrix_chat` source;
+otherwise the live result is `unavailable` with `source_unavailable`. For each
+owner batch, the server freezes an owner-scoped maximum positive activity ID and
+then uses ordered positive-ID keyset pages (`>ID`, `<=ID`, `ID ASC`). This is the
+deterministic basis for a `complete` result during concurrent portal mutation.
+The configured request, page, row, shared-concurrency, and monotonic elapsed bounds
+apply to the freeze request, retries, limiter wait, and HTTP I/O. Transient 429/5xx,
+transport, timeout, and approved Bitrix error-envelope failures may retry only within
+the same attempts, request budget, and deadline; non-retryable failures remain safe
+typed unavailable or partial results.
+
 Both split operations require `persons:read`, return the standard response envelope,
 and return `person_not_found` for an unknown person. The former combined
 `/crm/metrics` route is removed.

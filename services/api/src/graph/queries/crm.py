@@ -82,13 +82,28 @@ GET_PERSON_BITRIX_DEAL_SCOPE = f"""
 MATCH (p:Person {{person_id: $person_id}})
 OPTIONAL MATCH (p)-[:MERGED_INTO]->(canonical:Person)
 WITH coalesce(canonical, p) AS person
+OPTIONAL MATCH (instance:BitrixSourceInstance {{
+  source_key: 'bitrix_chat', source_instance_id: $source_instance
+}})
+OPTIONAL MATCH (instance)-[registration:INSTANCE_OF]->(registered_source:SourceSystem)
+WITH person, collect(DISTINCT instance) AS instances,
+     collect(DISTINCT registered_source) AS registered_sources,
+     count(registration) AS registration_count
+WITH person,
+     size(instances) = 1 AND instances[0].status = 'active'
+       AND size(registered_sources) = 1 AND registration_count = 1
+       AND registered_sources[0].source_key = 'bitrix_chat'
+       AND registered_sources[0].is_active = true AS source_authorized
 CALL (person) {{
-  MATCH (sr:SourceRecord {{record_type: 'crm_deal'}})-[link:LINKED_TO]->(person)
+  OPTIONAL MATCH (sr:SourceRecord {{record_type: 'crm_deal'}})-[link:LINKED_TO]->(person)
   WHERE {_LINK_ACTIVE} AND {_LIFECYCLE} AND {_ACTIVITY_FAMILY} AND {_BITRIX}
     AND sr.source_instance_id = $source_instance
     AND sr.source_entity_type = 'deal'
     AND sr.source_entity_id IS NOT NULL
-  RETURN DISTINCT sr.source_entity_id AS deal_id ORDER BY deal_id LIMIT $deal_limit_plus_one
+  WITH DISTINCT sr.source_entity_id AS deal_id
+  ORDER BY deal_id
+  LIMIT $deal_limit_plus_one
+  RETURN [value IN collect(deal_id) WHERE value IS NOT NULL] AS deal_ids
 }}
-RETURN person.person_id AS canonical_person_id, collect(deal_id) AS deal_ids
+RETURN person.person_id AS canonical_person_id, source_authorized, deal_ids
 """

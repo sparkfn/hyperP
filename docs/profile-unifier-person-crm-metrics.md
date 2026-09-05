@@ -67,6 +67,13 @@ the deal ceiling was exceeded without scanning or sending an unbounded owner set
 Bitrix. In that case live metrics are `unavailable` with `deal_limit` and no Bitrix
 I/O occurs.
 
+Before it authorizes a live read, the configured non-secret source-instance slug
+must resolve to exactly one active `BitrixSourceInstance` and exactly one
+`INSTANCE_OF` relationship to the active `bitrix_chat` source system. Missing,
+disabled, or ambiguous registration returns `unavailable` with `source_unavailable`.
+An existing Person with no effective-active scoped deals still resolves to an empty
+scope and therefore a confirmed complete zero; it is not treated as a missing Person.
+
 Graph metric subqueries keep deals and conversations isolated so cardinality does
 not multiply. Daily series count distinct records, not distinct timestamps. Entity
 authority prefers `OWNED_BY` and falls back to the source system's `OPERATED_BY`
@@ -84,6 +91,12 @@ The adapter selects metadata only: identifiers, owner fields, activity type,
 timestamp candidates, direction, completion, provider, and result status. It never
 selects or retains subject, description, comments, recordings, attachments, or raw
 payloads.
+
+For a non-empty owner batch, the adapter first freezes the maximum positive activity
+ID with an owner-scoped descending metadata request. It then reads ascending positive
+IDs using `>ID` and `<=ID` keyset filters and an explicit `ID ASC` order. The frozen
+upper bound makes a `complete` result deterministic despite later portal inserts;
+overlapping rows are deduplicated, while decreasing or non-advancing keys fail safe.
 
 The event timestamp uses this precedence:
 
@@ -111,7 +124,11 @@ Configuration provides hard ceilings for:
 
 Shared counters reserve request, page, and row budget under an async lock before the
 corresponding work, so concurrent batches cannot overshoot a ceiling. Retries consume
-the same request budget. Non-integer, boolean, repeated, or non-advancing cursors are
+the same request budget. A repository-wide concurrency limiter covers all owner
+batches, and both limiter acquisition and HTTP I/O are bounded by one monotonic hard
+elapsed deadline. Approved transient timeouts, transport failures, HTTP 429/5xx, and
+safe transient Bitrix error envelopes retry only while attempts, request budget, and
+that deadline remain. Non-integer, boolean, repeated, or non-advancing cursors are
 rejected.
 
 A failure after at least one validated activity produces `partial`; a failure before
