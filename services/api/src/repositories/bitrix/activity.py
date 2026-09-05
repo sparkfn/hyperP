@@ -36,6 +36,7 @@ class _Flight:
     task: asyncio.Task[PersonCrmActivityMetrics]
     waiters: int = 0
 
+
 class BitrixCrmActivityRepository:
     """Read approved aggregate metadata without retaining upstream payloads."""
 
@@ -98,14 +99,10 @@ class BitrixCrmActivityRepository:
                 self._inflight.pop(key, None)
                 flight.task.cancel()
 
-    def _schedule_finish(
-        self, key: str, task: asyncio.Task[PersonCrmActivityMetrics]
-    ) -> None:
+    def _schedule_finish(self, key: str, task: asyncio.Task[PersonCrmActivityMetrics]) -> None:
         asyncio.create_task(self._finish_flight(key, task))
 
-    async def _finish_flight(
-        self, key: str, task: asyncio.Task[PersonCrmActivityMetrics]
-    ) -> None:
+    async def _finish_flight(self, key: str, task: asyncio.Task[PersonCrmActivityMetrics]) -> None:
         async with self._lock:
             if not task.cancelled():
                 try:
@@ -118,9 +115,7 @@ class BitrixCrmActivityRepository:
             if current is not None and current.task is task:
                 self._inflight.pop(key, None)
 
-    def _store_complete_locked(
-        self, key: str, result: PersonCrmActivityMetricsComplete
-    ) -> None:
+    def _store_complete_locked(self, key: str, result: PersonCrmActivityMetricsComplete) -> None:
         if self._config.bitrix_activity_cache_ttl_seconds == 0:
             return
         self._purge_expired_locked()
@@ -140,9 +135,7 @@ class BitrixCrmActivityRepository:
             if value[0] <= now:
                 self._cache.pop(key, None)
 
-    async def _read(
-        self, scope: BitrixDealScope, fetched: datetime
-    ) -> PersonCrmActivityMetrics:
+    async def _read(self, scope: BitrixDealScope, fetched: datetime) -> PersonCrmActivityMetrics:
         budget = Budget(
             self._config.bitrix_activity_max_requests,
             self._config.bitrix_activity_max_pages,
@@ -340,7 +333,11 @@ class BitrixCrmActivityRepository:
         if not activities:
             return self._unavailable_with_budget(scope, fetched, budget, reason)
         payload = aggregate_activity_metrics(
-            scope, fetched, budget, activities, "miss",
+            scope,
+            fetched,
+            budget,
+            activities,
+            "miss",
             self._config.bitrix_activity_source_instance,
         )
         payload.update({"truncated": True, "failure_reason": reason})
@@ -356,7 +353,11 @@ class BitrixCrmActivityRepository:
     ) -> PersonCrmActivityMetricsComplete:
         return PersonCrmActivityMetricsComplete.model_validate(
             aggregate_activity_metrics(
-                scope, fetched, budget, activities, cache,
+                scope,
+                fetched,
+                budget,
+                activities,
+                cache,
                 self._config.bitrix_activity_source_instance,
             )
         )
@@ -412,6 +413,5 @@ class BitrixCrmActivityRepository:
     def _cache_key(self, scope: BitrixDealScope) -> str:
         digest = hashlib.sha256(",".join(sorted(scope.deal_ids)).encode()).hexdigest()
         return (
-            f"{self._config.bitrix_activity_source_instance}:"
-            f"{scope.canonical_person_id}:{digest}"
+            f"{self._config.bitrix_activity_source_instance}:{scope.canonical_person_id}:{digest}"
         )
