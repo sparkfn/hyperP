@@ -32,14 +32,6 @@ services:
       NEO4J_server_memory_heap_initial__size: 128m
       NEO4J_server_memory_heap_max__size: 384m
       NEO4J_server_memory_pagecache_size: 128m
-  - name: neo4j-ledger-api
-    image: neo4j:5.26-community
-    environment:
-      NEO4J_AUTH: neo4j/ci-ledger-api
-      NEO4J_PLUGINS: "[]"
-      NEO4J_server_memory_heap_initial__size: 128m
-      NEO4J_server_memory_heap_max__size: 384m
-      NEO4J_server_memory_pagecache_size: 128m
   - name: neo4j-ledger-310
     image: neo4j:5.26-community
     environment:
@@ -48,10 +40,10 @@ services:
       NEO4J_server_memory_heap_initial__size: 128m
       NEO4J_server_memory_heap_max__size: 384m
       NEO4J_server_memory_pagecache_size: 128m
-  - name: neo4j-census-migration
+  - name: neo4j-census-migration-api
     image: neo4j:5.26-community
     environment:
-      NEO4J_AUTH: neo4j/ci-census-migration
+      NEO4J_AUTH: neo4j/ci-census-migration-api
       NEO4J_PLUGINS: "[]"
       NEO4J_server_memory_heap_initial__size: 128m
       NEO4J_server_memory_heap_max__size: 384m
@@ -109,7 +101,7 @@ steps:
       - uv sync --frozen --no-dev --package hyperp-intelligence
 
   # Keep the real Neo4j compilation/execution gate aligned with PR validation.
-  # Five isolated services retain the complete real-query gate on every main push.
+  # Four isolated services retain the complete real-query gate on every main push.
   # MAIN shards are unconditional; only PR shards have approved path exclusions.
   - name: neo4j-projection-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
@@ -128,31 +120,6 @@ steps:
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_projection_repository_neo4j.py -q
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_activation_neo4j.py -q
 
-  - name: neo4j-ledger-api-checks
-    image: ghcr.io/astral-sh/uv:python3.12-bookworm
-    depends_on: []
-    environment:
-      UV_PROJECT_ENVIRONMENT: .venv-neo4j-ledger-api-checks
-      PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-neo4j-ledger-api-checks"
-      PYTHONDONTWRITEBYTECODE: "1"
-      HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_URI: bolt://neo4j-ledger-api:7687
-      HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_USER: neo4j
-      HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_PASSWORD: ci-ledger-api
-      HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_SERVICE_HOST: neo4j-ledger-api
-      HYPERP_NEO4J_CRM_METRICS_TEST_URI: bolt://neo4j-ledger-api:7687
-      HYPERP_NEO4J_CRM_METRICS_TEST_USER: neo4j
-      HYPERP_NEO4J_CRM_METRICS_TEST_PASSWORD: ci-ledger-api
-      HYPERP_NEO4J_CRM_METRICS_TEST_SERVICE_HOST: neo4j-ledger-api
-      HYPERP_NEO4J_PERSON_LIST_TEST_URI: bolt://neo4j-ledger-api:7687
-      HYPERP_NEO4J_PERSON_LIST_TEST_USER: neo4j
-      HYPERP_NEO4J_PERSON_LIST_TEST_PASSWORD: ci-ledger-api
-      HYPERP_NEO4J_PERSON_LIST_TEST_SERVICE_HOST: neo4j-ledger-api
-      HYPERP_NEO4J_PERSON_LIST_TEST_ALLOW_SCHEMA_MUTATION: "1"
-    commands:
-      - uv sync --frozen
-      - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_URI --user-env HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_USER --password-env HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_PASSWORD --timeout-seconds 90
-      - uv run --package profile-unifier-api pytest services/api/tests/test_person_identifiers_neo4j.py services/api/tests/test_person_crm_metrics_neo4j.py services/api/tests/test_persons_list_neo4j_234.py services/api/tests/test_persons_list_possible_match_neo4j.py services/api/tests/test_persons_list_plan_neo4j.py services/api/tests/test_identity_link_revisions_neo4j.py -q
-
   - name: neo4j-ledger-310-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
     depends_on: []
@@ -169,40 +136,54 @@ steps:
       - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_URI --user-env HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_USER --password-env HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_PASSWORD --timeout-seconds 90
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_deal_identity_repair_ledger_neo4j.py -k 'test_310_' -q
 
-  - name: neo4j-census-migration-checks
+  - name: neo4j-census-migration-api-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
     depends_on: []
     environment:
-      UV_PROJECT_ENVIRONMENT: .venv-neo4j-census-migration-checks
-      PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-neo4j-census-migration-checks"
+      UV_PROJECT_ENVIRONMENT: .venv-neo4j-census-migration-api-checks
+      PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-neo4j-census-migration-api-checks"
       PYTHONDONTWRITEBYTECODE: "1"
-      HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_URI: bolt://neo4j-census-migration:7687
+      HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_URI: bolt://neo4j-census-migration-api:7687
+      HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_USER: neo4j
+      HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_PASSWORD: ci-census-migration-api
+      HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_SERVICE_HOST: neo4j-census-migration-api
+      HYPERP_NEO4J_CRM_METRICS_TEST_URI: bolt://neo4j-census-migration-api:7687
+      HYPERP_NEO4J_CRM_METRICS_TEST_USER: neo4j
+      HYPERP_NEO4J_CRM_METRICS_TEST_PASSWORD: ci-census-migration-api
+      HYPERP_NEO4J_CRM_METRICS_TEST_SERVICE_HOST: neo4j-census-migration-api
+      HYPERP_NEO4J_PERSON_LIST_TEST_URI: bolt://neo4j-census-migration-api:7687
+      HYPERP_NEO4J_PERSON_LIST_TEST_USER: neo4j
+      HYPERP_NEO4J_PERSON_LIST_TEST_PASSWORD: ci-census-migration-api
+      HYPERP_NEO4J_PERSON_LIST_TEST_SERVICE_HOST: neo4j-census-migration-api
+      HYPERP_NEO4J_PERSON_LIST_TEST_ALLOW_SCHEMA_MUTATION: "1"
+      HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_URI: bolt://neo4j-census-migration-api:7687
       HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_USER: neo4j
-      HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_PASSWORD: ci-census-migration
-      HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_SERVICE_HOST: neo4j-census-migration
-      HYPERP_NEO4J_LOYALTY_POINTS_TEST_URI: bolt://neo4j-census-migration:7687
+      HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_PASSWORD: ci-census-migration-api
+      HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_SERVICE_HOST: neo4j-census-migration-api
+      HYPERP_NEO4J_LOYALTY_POINTS_TEST_URI: bolt://neo4j-census-migration-api:7687
       HYPERP_NEO4J_LOYALTY_POINTS_TEST_USER: neo4j
-      HYPERP_NEO4J_LOYALTY_POINTS_TEST_PASSWORD: ci-census-migration
-      HYPERP_NEO4J_LOYALTY_POINTS_TEST_SERVICE_HOST: neo4j-census-migration
-      HYPERP_NEO4J_CRM_DEAL_COUNT_TEST_URI: bolt://neo4j-census-migration:7687
+      HYPERP_NEO4J_LOYALTY_POINTS_TEST_PASSWORD: ci-census-migration-api
+      HYPERP_NEO4J_LOYALTY_POINTS_TEST_SERVICE_HOST: neo4j-census-migration-api
+      HYPERP_NEO4J_CRM_DEAL_COUNT_TEST_URI: bolt://neo4j-census-migration-api:7687
       HYPERP_NEO4J_CRM_DEAL_COUNT_TEST_USER: neo4j
-      HYPERP_NEO4J_CRM_DEAL_COUNT_TEST_PASSWORD: ci-census-migration
-      HYPERP_NEO4J_CRM_DEAL_COUNT_TEST_SERVICE_HOST: neo4j-census-migration
-      HYPERP_NEO4J_CONTROL_MIGRATION_TEST_URI: bolt://neo4j-census-migration:7687
+      HYPERP_NEO4J_CRM_DEAL_COUNT_TEST_PASSWORD: ci-census-migration-api
+      HYPERP_NEO4J_CRM_DEAL_COUNT_TEST_SERVICE_HOST: neo4j-census-migration-api
+      HYPERP_NEO4J_CONTROL_MIGRATION_TEST_URI: bolt://neo4j-census-migration-api:7687
       HYPERP_NEO4J_CONTROL_MIGRATION_TEST_USER: neo4j
-      HYPERP_NEO4J_CONTROL_MIGRATION_TEST_PASSWORD: ci-census-migration
-      HYPERP_NEO4J_CONTROL_MIGRATION_TEST_SERVICE_HOST: neo4j-census-migration
-      HYPERP_NEO4J_STANDALONE_CRM_CENSUS_TEST_URI: bolt://neo4j-census-migration:7687
+      HYPERP_NEO4J_CONTROL_MIGRATION_TEST_PASSWORD: ci-census-migration-api
+      HYPERP_NEO4J_CONTROL_MIGRATION_TEST_SERVICE_HOST: neo4j-census-migration-api
+      HYPERP_NEO4J_STANDALONE_CRM_CENSUS_TEST_URI: bolt://neo4j-census-migration-api:7687
       HYPERP_NEO4J_STANDALONE_CRM_CENSUS_TEST_USER: neo4j
-      HYPERP_NEO4J_STANDALONE_CRM_CENSUS_TEST_PASSWORD: ci-census-migration
-      HYPERP_NEO4J_STANDALONE_CRM_CENSUS_TEST_SERVICE_HOST: neo4j-census-migration
-      HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_URI: bolt://neo4j-census-migration:7687
+      HYPERP_NEO4J_STANDALONE_CRM_CENSUS_TEST_PASSWORD: ci-census-migration-api
+      HYPERP_NEO4J_STANDALONE_CRM_CENSUS_TEST_SERVICE_HOST: neo4j-census-migration-api
+      HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_URI: bolt://neo4j-census-migration-api:7687
       HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_USER: neo4j
-      HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD: ci-census-migration
-      HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_SERVICE_HOST: neo4j-census-migration
+      HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD: ci-census-migration-api
+      HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_SERVICE_HOST: neo4j-census-migration-api
     commands:
       - uv sync --frozen
       - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_URI --user-env HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_USER --password-env HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_PASSWORD --timeout-seconds 90
+      - uv run --package profile-unifier-api pytest services/api/tests/test_person_identifiers_neo4j.py services/api/tests/test_person_crm_metrics_neo4j.py services/api/tests/test_persons_list_neo4j_234.py services/api/tests/test_persons_list_possible_match_neo4j.py services/api/tests/test_persons_list_plan_neo4j.py services/api/tests/test_identity_link_revisions_neo4j.py -q
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_person_completeness_migration_neo4j.py services/ingestion/tests/test_loyalty_points_migration_neo4j.py services/ingestion/tests/test_crm_deal_count_migration_neo4j.py services/ingestion/tests/test_ingestion_control_instance_migration_neo4j.py -q
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_standalone_crm_census_neo4j.py -q
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_standalone_crm_lane_a_schema_neo4j.py -q
