@@ -311,19 +311,25 @@ def test_actual_v4_active_rows_emit_unknown_limit_evidence(tmp_path: Path, run_s
     )
     connection.commit()
     connection.close()
-    state = State(tmp_path, runtime_epoch="recreated-container")
+    first = State(tmp_path, runtime_epoch="legacy-container")
     try:
-        run = state.inspect("legacy-active")
+        run = first.inspect("legacy-active")
         assert run is not None and run.execution_may_be_alive
-        state.mark_execution_quiescent(run)
-        state.recover_stale("legacy-active", "v4 recovery", 1)
+        with pytest.raises(RuntimeError, match="execution-domain"):
+            first.recover_stale("legacy-active", "same epoch", 1)
+    finally:
+        first.close()
+
+    recreated = State(tmp_path, runtime_epoch="recreated-container")
+    try:
+        recreated.recover_stale("legacy-active", "v4 recovery", 1)
         evidence = json.loads(
-            (state.layout.manifests / "legacy-active.json").read_text(encoding="utf-8")
+            (recreated.layout.manifests / "legacy-active.json").read_text(encoding="utf-8")
         )
         assert evidence["schema_version"] == 1
         assert evidence["limits"] == {}
     finally:
-        state.close()
+        recreated.close()
 
 
 def test_recovery_log_cap_uses_persisted_admission_limit(tmp_path: Path) -> None:

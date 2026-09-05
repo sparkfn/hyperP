@@ -6,6 +6,7 @@ import multiprocessing
 import os
 import signal
 import time
+from multiprocessing.process import BaseProcess
 from pathlib import Path
 from threading import Thread
 
@@ -118,6 +119,38 @@ def test_initial_log_failure_terminalizes_without_live_fence(
         assert not run.execution_may_be_alive
         assert runtime.state.active_run() is None
         assert runtime.health().healthy
+    finally:
+        runtime.close()
+
+
+def test_post_start_generic_failure_retains_lock_when_cleanup_is_uncertain(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """A real started child cannot be terminalized after cleanup proof fails."""
+    runtime = _runtime(tmp_path, uncooperative_handler, timeout=10)
+    original_stop = runtime_module._stop_child
+
+    def fail_wait(*args: object, **kwargs: object) -> tuple[str, str]:
+        del args, kwargs
+        raise RuntimeError("injected post-start failure")
+
+    def fail_after_cleanup(process: BaseProcess, *, group_ready: bool = True) -> None:
+        original_stop(process, group_ready=group_ready)
+        raise OSError("injected cleanup uncertainty")
+
+    monkeypatch.setattr(runtime, "_wait_for_command", fail_wait)
+    monkeypatch.setattr(runtime_module, "_stop_child", fail_after_cleanup)
+    try:
+        with pytest.raises(RuntimeError, match="post-start"):
+            runtime.run("approved")
+        run_id = str(runtime.state.connection.execute("SELECT id FROM runs").fetchone()[0])
+        run = runtime.state.inspect(run_id)
+        assert run is not None and run.state == "running"
+        assert run.execution_may_be_alive and run.cleanup_unresolved
+        assert runtime.state.active_run() is not None
+        assert not runtime.health().healthy
+        with pytest.raises(RuntimeError, match="already active"):
+            runtime.state.create_mutating_run("blocked")
     finally:
         runtime.close()
 

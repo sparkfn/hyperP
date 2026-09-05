@@ -10,6 +10,7 @@ from intelligence.config import RuntimeConfig
 from intelligence.registry import PRODUCTION_REGISTRY, RegisteredCommand, Registry
 from intelligence.runtime import IntelligenceRuntime
 from intelligence.state import State
+from intelligence.state_schema import upgrade
 
 
 def test_wal_empty_registry_and_default_off(tmp_path: Path) -> None:
@@ -132,6 +133,7 @@ def test_legacy_v1_manifest_reopens_and_verifies_in_backup(tmp_path: Path) -> No
         "run_log": None,
     }
     (state.layout.outputs / run.run_id).mkdir(parents=True)
+    state.mark_execution_quiescent(run)
     state.terminal(run, "completed", legacy)
     manifest_path = state.layout.manifests / f"{run.run_id}.json"
     manifest_path.write_text(canonical_json(legacy), encoding="utf-8")
@@ -252,3 +254,57 @@ def test_schema_v6_active_run_migration_keeps_execution_fence(tmp_path: Path) ->
         assert recovered is not None and recovered.state == "stale_recovered"
     finally:
         recreated.close()
+
+
+def test_terminalization_requires_durable_quiescence_proof(tmp_path: Path) -> None:
+    """State refuses both ordinary terminal paths while execution may be alive."""
+    state = State(tmp_path)
+    run = state.create_mutating_run("test")
+    try:
+        with pytest.raises(RuntimeError, match="quiescence"):
+            state.terminal(run, "failed", {})
+        state.begin_publishing(run, ())
+        with pytest.raises(RuntimeError, match="quiescence"):
+            state.complete_publication(run, (), {})
+        current = state.inspect(run.run_id)
+        assert current is not None and current.state == "publishing"
+        assert state.active_run() is not None
+    finally:
+        state.close()
+
+
+def test_schema_upgrade_rolls_back_partial_safety_backfill(tmp_path: Path) -> None:
+    """A failed migration cannot leave new columns without their safety backfills."""
+    layout = workspace_layout(tmp_path)
+    connection = sqlite3.connect(layout.state_database, isolation_level=None)
+    connection.executescript(
+        """
+        CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO metadata(key, value) VALUES('schema_version', '6');
+        CREATE TABLE runs (
+            id TEXT PRIMARY KEY, command TEXT NOT NULL, state TEXT NOT NULL,
+            fence INTEGER NOT NULL, created_at REAL NOT NULL, heartbeat_at REAL,
+            cancellation_requested INTEGER NOT NULL DEFAULT 0, recovery_reason TEXT,
+            manifest_json TEXT, publishing_inventory_json TEXT, started_at REAL,
+            ended_at REAL, limits_json TEXT, runtime_epoch TEXT,
+            cleanup_unresolved INTEGER NOT NULL DEFAULT 0
+        );
+        INSERT INTO runs(id, command, state, fence, created_at, heartbeat_at)
+        VALUES('legacy-active', 'reviewed', 'running', 1, 1, 0);
+        CREATE TRIGGER reject_migration_backfill BEFORE UPDATE ON runs
+        BEGIN SELECT RAISE(ABORT, 'injected migration failure'); END;
+        """
+    )
+    try:
+        with pytest.raises(sqlite3.IntegrityError, match="injected migration failure"):
+            upgrade(connection, 6, "legacy-container")
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(runs)")}
+        assert "execution_may_be_alive" not in columns
+        assert (
+            connection.execute(
+                "SELECT value FROM metadata WHERE key = 'schema_version'"
+            ).fetchone()[0]
+            == "6"
+        )
+    finally:
+        connection.close()

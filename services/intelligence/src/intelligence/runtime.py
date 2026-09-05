@@ -81,6 +81,7 @@ class IntelligenceRuntime:
         staging = self.state.layout.staging / run.run_id
         started = time.monotonic()
         process_start_attempted = False
+        process: BaseProcess | None = None
         try:
             staging.mkdir(mode=0o700, parents=True, exist_ok=False)
             self._log(run, "started", {})
@@ -125,8 +126,25 @@ class IntelligenceRuntime:
             self.state.mark_cleanup_unresolved(run)
             raise
         except BaseException:
+            current = self.state.inspect(run.run_id)
+            if current is not None and current.state in {
+                "completed",
+                "failed",
+                "cancelled",
+                "timed_out",
+                "stale_recovered",
+            }:
+                raise
             if not process_start_attempted:
                 self.state.mark_execution_quiescent(run)
+            elif process is None:
+                self.state.mark_cleanup_unresolved(run)
+            else:
+                try:
+                    _stop_child(process)
+                    self.state.mark_execution_quiescent(run)
+                except BaseException:
+                    self.state.mark_cleanup_unresolved(run)
             terminal_state = self._terminal_state(run.run_id, started, failed=True)
             self._finish_if_possible(run, terminal_state, "runtime_error")
             raise
@@ -329,18 +347,22 @@ def _start_command(handler: CommandHandler, staging: Path) -> BaseProcess:
         process.start()
     except BaseException as error:
         _abort_unready_child(process, error)
-    child_ready.close()
     try:
+        try:
+            child_ready.close()
+        except BaseException as error:
+            _abort_unready_child(process, error)
         if not parent_ready.poll(_READY_TIMEOUT_SECONDS):
             raise RuntimeError("reviewed child did not establish its process group")
         if not bool(parent_ready.recv()):
             raise RuntimeError("reviewed child failed before readiness")
-    except (EOFError, OSError) as error:
-        _abort_unready_child(process, error)
     except BaseException as error:
         _abort_unready_child(process, error)
     finally:
-        parent_ready.close()
+        try:
+            parent_ready.close()
+        except BaseException as error:
+            _abort_unready_child(process, error)
     return process
 
 
