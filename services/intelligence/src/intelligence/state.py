@@ -70,10 +70,14 @@ class State:
         self.path = self.layout.state_database
         self.connection = sqlite3.connect(self.path, isolation_level=None)
         self.connection.row_factory = sqlite3.Row
-        self.connection.execute("PRAGMA journal_mode=WAL")
-        self.connection.execute("PRAGMA foreign_keys=ON")
-        self.connection.execute("PRAGMA busy_timeout=5000")
-        bootstrap(self.connection, verify_connection, self.runtime_epoch)
+        try:
+            bootstrap(self.connection, verify_connection, self.runtime_epoch)
+            self.connection.execute("PRAGMA journal_mode=WAL")
+            self.connection.execute("PRAGMA foreign_keys=ON")
+            self.connection.execute("PRAGMA busy_timeout=5000")
+        except BaseException:
+            self.connection.close()
+            raise
 
     path_exists_safe = staticmethod(path_exists_safe)
 

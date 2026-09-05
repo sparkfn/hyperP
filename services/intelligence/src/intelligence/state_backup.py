@@ -11,6 +11,7 @@ from collections.abc import Sequence
 from pathlib import Path
 
 from intelligence.artifacts import MANIFEST_LIMIT_KEYS, canonical_json, read_manifest, sha256_file
+from intelligence.artifacts_core import _rename_noreplace
 from intelligence.models import OutputInventory, RunLogInventory, WorkspaceLayout
 from intelligence.state_publication import _validate_output
 from intelligence.state_schema import SCHEMA_VERSION
@@ -54,9 +55,7 @@ def create_backup(
         except BaseException:
             connection.execute("ROLLBACK")
             raise
-        if final.exists() or final.is_symlink():
-            raise FileExistsError("backup bundle already exists")
-        os.rename(temporary, final)
+        _rename_noreplace(temporary, final)
         if os.name != "nt":
             descriptor = os.open(final.parent, os.O_RDONLY)
             try:
