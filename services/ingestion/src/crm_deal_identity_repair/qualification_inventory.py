@@ -71,8 +71,8 @@ def validate_artifact_count_boundary(
     negative_count: int,
 ) -> None:
     population_counts = _population_counts(manifest.metadata["population_counts"])
-    counts = canonical_json_object(
-        manifest.provenance.counts_json.encode("utf-8"), "repair artifact provenance counts"
+    counts = canonical_json_text_object(
+        manifest.provenance.counts_json, "repair artifact provenance counts"
     )
     expected_counts: dict[str, JsonValue] = {
         "inventory_rows": inventory_row_count,
@@ -124,6 +124,18 @@ def canonical_json_object(content: bytes, label: str) -> dict[str, JsonValue]:
     except json.JSONDecodeError as exc:
         raise RuntimeError(label + " is unreadable") from exc
     if not isinstance(value, dict) or canonical_json_bytes(value) != content:
+        raise RuntimeError(label + " is not canonical")
+    return _json_value_object(value, label)
+
+
+def canonical_json_text_object(content: str, label: str) -> dict[str, JsonValue]:
+    """Decode strict canonical JSON text whose enclosing contract omits a newline."""
+    try:
+        value: object = json.loads(content)
+    except json.JSONDecodeError as exc:
+        raise RuntimeError(label + " is unreadable") from exc
+    canonical = canonical_json_bytes(value)[:-1] if isinstance(value, dict) else b""
+    if not isinstance(value, dict) or canonical != content.encode("utf-8"):
         raise RuntimeError(label + " is not canonical")
     return _json_value_object(value, label)
 

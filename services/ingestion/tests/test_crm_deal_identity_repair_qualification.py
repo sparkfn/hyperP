@@ -13,6 +13,7 @@ from src.connectors.bitrix_stage_history.artifact_manifest import (
     ArtifactFileDigest,
     ArtifactManifest,
     canonical_json_bytes,
+    parse_manifest_bytes,
 )
 from src.connectors.bitrix_stage_history.artifact_provenance import ArtifactProvenance
 from src.crm_deal_identity_repair.digests import inventory_digest_from_bytes, object_digest
@@ -167,8 +168,10 @@ def _manifest(
                 "inventory_mode": "graph_only_read_only",
                 "source_system": "bitrix_chat",
             }
-        ).decode(),
-        counts_json=canonical_json_bytes({"inventory_rows": 2, **_POPULATION_COUNTS}).decode(),
+        ).decode().removesuffix("\n"),
+        counts_json=canonical_json_bytes(
+            {"inventory_rows": 2, **_POPULATION_COUNTS}
+        ).decode().removesuffix("\n"),
         total_bytes=sum(len(content) for content in documents.values()),
     )
     return ArtifactManifest(
@@ -250,6 +253,32 @@ def test_qualification_accepts_authenticated_canonical_boundary(tmp_path: Path) 
         verified.eligible_unit_count,
         verified.negative_control_count,
     ) == (("pk-1", "pk-2"), 1, 1)
+
+
+def test_qualification_accepts_serialized_manifest_provenance(tmp_path: Path) -> None:
+    manifest = _manifest(tmp_path)
+    round_tripped = parse_manifest_bytes(canonical_json_bytes(manifest.to_dict()))
+
+    verified = _verify(round_tripped)
+
+    assert verified.inventory_source_record_pks == ("pk-1", "pk-2")
+    assert not round_tripped.provenance.restricted_boundaries_json.endswith("\n")
+    assert not round_tripped.provenance.counts_json.endswith("\n")
+
+
+@pytest.mark.parametrize("field", ("restricted_boundaries_json", "counts_json"))
+def test_qualification_rejects_noncanonical_provenance_text(
+    tmp_path: Path, field: str
+) -> None:
+    manifest = parse_manifest_bytes(canonical_json_bytes(_manifest(tmp_path).to_dict()))
+    provenance = manifest.provenance
+    invalid_provenance = replace(
+        provenance,
+        **{field: " " + getattr(provenance, field)},
+    )
+
+    with pytest.raises(RuntimeError, match="provenance.*is not canonical"):
+        _verify(replace(manifest, provenance=invalid_provenance))
 
 
 def test_qualification_accepts_contiguous_partitioned_inventory(tmp_path: Path) -> None:

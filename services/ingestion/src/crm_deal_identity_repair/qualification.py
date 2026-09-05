@@ -17,6 +17,7 @@ from src.crm_deal_identity_repair.execution_models import (
 )
 from src.crm_deal_identity_repair.qualification_inventory import (
     canonical_json_object,
+    canonical_json_text_object,
     inventory_source_record_pks_from_lines,
     validate_artifact_count_boundary,
 )
@@ -197,8 +198,8 @@ def _validate_authenticated_manifest(
     )
     if actual != expected:
         raise RuntimeError("repair artifact provenance does not match qualification boundary")
-    restricted_boundaries = canonical_json_object(
-        provenance.restricted_boundaries_json.encode("utf-8"),
+    restricted_boundaries = canonical_json_text_object(
+        provenance.restricted_boundaries_json,
         "repair artifact restricted-boundaries provenance",
     )
     if restricted_boundaries != _RESTRICTED_BOUNDARY:
