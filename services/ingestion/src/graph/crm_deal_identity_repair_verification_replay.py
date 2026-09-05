@@ -50,6 +50,19 @@ from src.graph.queries import crm_deal_identity_repair_verification as queries
 from src.models import JsonValue
 
 
+def _canonical_acknowledged_disposition_values(
+    values: list[Mapping[str, JsonValue]],
+) -> list[Mapping[str, JsonValue]]:
+    """Order persisted dispositions exactly as the committing path does."""
+    return sorted(
+        values,
+        key=lambda value: (
+            required_str(value, "subject_kind"),
+            required_str(value, "subject_stable_id"),
+        ),
+    )
+
+
 def replay_acknowledged_verification(
     tx: ManagedTransaction,
     command: RepairVerificationCommand,
@@ -67,7 +80,13 @@ def replay_acknowledged_verification(
     if row is None:
         raise RepairVerificationDriftError("acknowledged verification request differs")
     verification_values = mapping(row, "verification")
-    disposition_values = list_mappings(row, "dispositions")
+    # Cypher collect() has no ordering guarantee. The committing path derives
+    # its digest from canonical_details(), which orders by this same stable
+    # subject key before persistence. Reapply that ordering on the read-only
+    # replay path before deriving the digest from acknowledged records.
+    disposition_values = _canonical_acknowledged_disposition_values(
+        list_mappings(row, "dispositions")
+    )
     verification = verification_from_properties(verification_values)
     dispositions = tuple(disposition_from_properties(value) for value in disposition_values)
     outbox_values = mapping(row, "outbox")

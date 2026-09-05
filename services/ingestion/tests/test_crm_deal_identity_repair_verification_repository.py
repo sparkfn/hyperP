@@ -8,10 +8,12 @@ from src.graph.crm_deal_identity_repair_verification import (
     CrmDealIdentityRepairVerificationRepository,
 )
 from src.graph.crm_deal_identity_repair_verification_replay import (
+    _canonical_acknowledged_disposition_values,
     _validate_replayed_person_dispositions,
     replay_acknowledged_verification,
 )
 from src.graph.queries import crm_deal_identity_repair_verification as queries
+from src.models import JsonValue
 
 
 def test_repository_has_one_managed_write_boundary_and_no_dispatch() -> None:
@@ -91,6 +93,22 @@ def test_acknowledged_replay_rederives_state_without_write_helpers() -> None:
     assert "mark_profile_analysis_dirty" not in source
     assert "append_identity_link_revisions" not in source
     assert "build_person_details" in inspect.getsource(_validate_replayed_person_dispositions)
+
+
+def test_acknowledged_replay_canonicalizes_unordered_dispositions_before_digesting() -> None:
+    unordered: list[dict[str, JsonValue]] = [
+        {"subject_kind": "person", "subject_stable_id": "person-z"},
+        {"subject_kind": "context", "subject_stable_id": "context-a"},
+        {"subject_kind": "person", "subject_stable_id": "person-a"},
+    ]
+
+    canonical = _canonical_acknowledged_disposition_values(unordered)
+
+    assert [(item["subject_kind"], item["subject_stable_id"]) for item in canonical] == [
+        ("context", "context-a"),
+        ("person", "person-a"),
+        ("person", "person-z"),
+    ]
 
 
 def test_cas_loser_can_only_route_to_exact_acknowledged_read_only_replay() -> None:

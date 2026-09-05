@@ -19,23 +19,17 @@ _NEO4J_SHARDS = {
         "families": ("HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST",),
         "readiness_family": "HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST",
     },
-    "ledger-api": {
-        "service": "neo4j-ledger-api",
-        "families": (
-            "HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST",
-            "HYPERP_NEO4J_CRM_METRICS_TEST",
-            "HYPERP_NEO4J_PERSON_LIST_TEST",
-        ),
-        "readiness_family": "HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST",
-    },
     "ledger-310": {
         "service": "neo4j-ledger-310",
         "families": ("HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST",),
         "readiness_family": "HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST",
     },
-    "census-migration": {
-        "service": "neo4j-census-migration",
+    "census-migration-api": {
+        "service": "neo4j-census-migration-api",
         "families": (
+            "HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST",
+            "HYPERP_NEO4J_CRM_METRICS_TEST",
+            "HYPERP_NEO4J_PERSON_LIST_TEST",
             "HYPERP_NEO4J_PERSON_COMPLETENESS_TEST",
             "HYPERP_NEO4J_LOYALTY_POINTS_TEST",
             "HYPERP_NEO4J_CRM_DEAL_COUNT_TEST",
@@ -234,14 +228,14 @@ def test_woodpecker_neo4j_shards_are_complete_isolated_and_parity_checked() -> N
             )
             assert shard_environment.get("PYTHONDONTWRITEBYTECODE") == "1"
             assert shard_environment.get("HYPERP_NEO4J_PERSON_LIST_TEST_ALLOW_SCHEMA_MUTATION") == (
-                "1" if shard == "ledger-api" else None
+                "1" if shard == "census-migration-api" else None
             )
             expected_neo4j_keys = {
                 f"{family}_{suffix}"
                 for family in contract["families"]
                 for suffix in ("URI", "USER", "PASSWORD", "SERVICE_HOST")
             }
-            if shard == "ledger-api":
+            if shard == "census-migration-api":
                 expected_neo4j_keys.add("HYPERP_NEO4J_PERSON_LIST_TEST_ALLOW_SCHEMA_MUTATION")
             actual_neo4j_keys = {
                 key for key in shard_environment if key.startswith("HYPERP_NEO4J_")
@@ -266,8 +260,8 @@ def test_woodpecker_neo4j_shards_are_complete_isolated_and_parity_checked() -> N
             else:
                 assert "when" not in step
 
-        assert len({environment["UV_PROJECT_ENVIRONMENT"] for environment in environments}) == 5
-        assert len({environment["PYTEST_ADDOPTS"] for environment in environments}) == 5
+        assert len({environment["UV_PROJECT_ENVIRONMENT"] for environment in environments}) == 4
+        assert len({environment["PYTEST_ADDOPTS"] for environment in environments}) == 4
         manifests[workflow_name] = _neo4j_manifest(steps)
         rendered = str(workflow).lower()
         prohibited_terms = (
