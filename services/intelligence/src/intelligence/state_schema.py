@@ -65,7 +65,11 @@ def path_exists_safe(path: Path) -> bool:
     return path.exists() and not path.is_symlink() and path.is_file()
 
 
-def bootstrap(connection: sqlite3.Connection, verify_connection: ConnectionVerifier) -> None:
+def bootstrap(
+    connection: sqlite3.Connection,
+    verify_connection: ConnectionVerifier,
+    runtime_epoch: str | None,
+) -> None:
     """Create or migrate the durable schema and establish the singleton lock row."""
     connection.executescript(
         """
@@ -100,47 +104,65 @@ def bootstrap(connection: sqlite3.Connection, verify_connection: ConnectionVerif
     if version > SCHEMA_VERSION:
         raise RuntimeError("Intelligence state was created by a newer schema")
     if version < SCHEMA_VERSION:
-        upgrade(connection, version)
+        upgrade(connection, version, runtime_epoch)
     connection.execute("INSERT OR IGNORE INTO mutation_lock(singleton) VALUES(1)")
     verify_connection(connection)
 
 
-def upgrade(connection: sqlite3.Connection, version: int) -> None:
-    """Apply the bounded in-place schema upgrade path."""
+def upgrade(connection: sqlite3.Connection, version: int, runtime_epoch: str | None) -> None:
+    """Apply the bounded in-place schema upgrade path transactionally."""
     if version < 1 or version > 6:
         raise RuntimeError("Intelligence state schema is unsupported")
-    columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(runs)")}
-    added_execution_fence = "execution_may_be_alive" not in columns
-    for name in (
-        "cancellation_requested",
-        "publishing_inventory_json",
-        "started_at",
-        "ended_at",
-        "limits_json",
-        "runtime_epoch",
-        "cleanup_unresolved",
-        "execution_may_be_alive",
-    ):
-        if name not in columns:
-            default = " INTEGER NOT NULL DEFAULT 0" if name == "cancellation_requested" else " REAL"
-            if name == "publishing_inventory_json":
-                default = " TEXT"
-            if name == "limits_json":
-                default = " TEXT"
-            if name == "runtime_epoch":
-                default = " TEXT"
-            if name == "cleanup_unresolved":
-                default = " INTEGER NOT NULL DEFAULT 0"
-            if name == "execution_may_be_alive":
-                default = " INTEGER NOT NULL DEFAULT 0"
-            connection.execute(f"ALTER TABLE runs ADD COLUMN {name}{default}")
-    if added_execution_fence:
-        # Historical supervisors had no durable quiescence proof. Active rows
-        # remain fenced until a trusted epoch change is proven.
+    connection.execute("BEGIN IMMEDIATE")
+    try:
+        columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(runs)")}
+        added_runtime_epoch = "runtime_epoch" not in columns
+        added_execution_fence = "execution_may_be_alive" not in columns
+        for name in (
+            "cancellation_requested",
+            "publishing_inventory_json",
+            "started_at",
+            "ended_at",
+            "limits_json",
+            "runtime_epoch",
+            "cleanup_unresolved",
+            "execution_may_be_alive",
+        ):
+            if name not in columns:
+                default = (
+                    " INTEGER NOT NULL DEFAULT 0" if name == "cancellation_requested" else " REAL"
+                )
+                if name == "publishing_inventory_json":
+                    default = " TEXT"
+                if name == "limits_json":
+                    default = " TEXT"
+                if name == "runtime_epoch":
+                    default = " TEXT"
+                if name == "cleanup_unresolved":
+                    default = " INTEGER NOT NULL DEFAULT 0"
+                if name == "execution_may_be_alive":
+                    default = " INTEGER NOT NULL DEFAULT 0"
+                connection.execute(f"ALTER TABLE runs ADD COLUMN {name}{default}")
+        if added_runtime_epoch and runtime_epoch is not None:
+            # Pre-v6 rows had no epoch. This is only a baseline, not a quiescence
+            # proof; a later different trusted epoch is still required for recovery.
+            connection.execute(
+                "UPDATE runs SET runtime_epoch = ? "
+                "WHERE runtime_epoch IS NULL AND state IN ('queued', 'running', 'publishing')",
+                (runtime_epoch,),
+            )
+        if added_execution_fence:
+            # Historical supervisors had no durable quiescence proof. Active rows
+            # remain fenced until a trusted epoch change is proven.
+            connection.execute(
+                "UPDATE runs SET execution_may_be_alive = 1 "
+                "WHERE state IN ('queued', 'running', 'publishing')"
+            )
         connection.execute(
-            "UPDATE runs SET execution_may_be_alive = 1 "
-            "WHERE state IN ('queued', 'running', 'publishing')"
+            "UPDATE metadata SET value = ? WHERE key = 'schema_version'",
+            (str(SCHEMA_VERSION),),
         )
-    connection.execute(
-        "UPDATE metadata SET value = ? WHERE key = 'schema_version'", (str(SCHEMA_VERSION),)
-    )
+        connection.execute("COMMIT")
+    except BaseException:
+        connection.execute("ROLLBACK")
+        raise

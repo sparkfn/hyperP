@@ -73,7 +73,7 @@ class State:
         self.connection.execute("PRAGMA journal_mode=WAL")
         self.connection.execute("PRAGMA foreign_keys=ON")
         self.connection.execute("PRAGMA busy_timeout=5000")
-        bootstrap(self.connection, verify_connection)
+        bootstrap(self.connection, verify_connection, self.runtime_epoch)
 
     path_exists_safe = staticmethod(path_exists_safe)
 
@@ -238,7 +238,9 @@ class State:
         self.connection.execute("BEGIN IMMEDIATE")
         try:
             current = self.connection.execute(
-                "SELECT state, manifest_json FROM runs WHERE id = ?", (run.run_id,)
+                "SELECT state, manifest_json, execution_may_be_alive, cleanup_unresolved "
+                "FROM runs WHERE id = ?",
+                (run.run_id,),
             ).fetchone()
             if current is None:
                 raise RuntimeError("run is missing")
@@ -247,6 +249,8 @@ class State:
                     self.connection.execute("COMMIT")
                     return
                 raise RuntimeError("terminal run already has different immutable evidence")
+            if bool(current["execution_may_be_alive"]) or bool(current["cleanup_unresolved"]):
+                raise RuntimeError("execution quiescence is required before terminalization")
             self.verify_fence(run)
             if state == "completed":
                 for item in outputs:
