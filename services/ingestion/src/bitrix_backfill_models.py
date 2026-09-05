@@ -504,6 +504,7 @@ class TailVerification:
     corrective_status: str
     successor_status: str
     predecessor_frozen: bool
+    historical_streams: tuple[BitrixStreamKey, ...]
     expected_streams: tuple[BitrixStreamKey, ...]
     actual_streams: tuple[BitrixStreamKey, ...]
     cadence_run_count: int
