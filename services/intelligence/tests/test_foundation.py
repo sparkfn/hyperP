@@ -30,6 +30,7 @@ def test_lock_fence_cancel_recovery_and_reopen(tmp_path: Path) -> None:
         second.create_mutating_run("other")
     first.cancel(run.run_id)
     assert first.is_cancelled(run.run_id)
+    first.mark_execution_quiescent(run)
     first.connection.execute("UPDATE mutation_lock SET heartbeat_at = 0")
     assert not second.health(1).healthy
     second.recover_stale(run.run_id, "operator confirmed crash", 1)
@@ -177,7 +178,7 @@ def test_schema_v4_state_migrates_admission_limits_column(tmp_path: Path) -> Non
             "SELECT value FROM metadata WHERE key = 'schema_version'"
         ).fetchone()[0]
         columns = {str(row[1]) for row in reopened.connection.execute("PRAGMA table_info(runs)")}
-        assert version == "6"
+        assert version == "7"
         assert "limits_json" in columns
     finally:
         reopened.close()

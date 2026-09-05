@@ -275,6 +275,7 @@ def _stale_publishing(
     (staging / "result.json").write_text("{}", encoding="utf-8")
     inventory = scan_staged_outputs(workspace, run.run_id, 100)
     state.begin_publishing(run, inventory)
+    state.mark_execution_quiescent(run)
     if publish:
         publish_inventory(workspace, run.run_id, inventory, 100)
     state.connection.execute("UPDATE mutation_lock SET heartbeat_at = 0 WHERE singleton = 1")
@@ -292,6 +293,7 @@ def test_publishing_is_an_explicit_non_cancellable_commit_point(tmp_path: Path) 
                 second.cancel(run.run_id)
         finally:
             second.close()
+        state.mark_execution_quiescent(run)
         state.connection.execute("UPDATE mutation_lock SET heartbeat_at = 0")
         state.recover_stale(run.run_id, "operator recovery", 1)
         recovered = state.inspect(run.run_id)
@@ -388,8 +390,11 @@ def test_cross_process_mutation_lock_is_exclusive(tmp_path: Path) -> None:
         assert result.get(timeout=2) == "blocked"
     finally:
         result.close()
+        owner.mark_execution_quiescent(run)
         owner.connection.execute(
             "UPDATE mutation_lock SET heartbeat_at = 0 WHERE run_id = ?", (run.run_id,)
         )
+    try:
         owner.recover_stale(run.run_id, "cleanup", 1)
+    finally:
         owner.close()

@@ -53,6 +53,7 @@ def _row_to_run(row: sqlite3.Row) -> Run:
         limits,
         None if row["runtime_epoch"] is None else str(row["runtime_epoch"]),
         bool(row["cleanup_unresolved"]),
+        bool(row["execution_may_be_alive"]),
     )
 
 

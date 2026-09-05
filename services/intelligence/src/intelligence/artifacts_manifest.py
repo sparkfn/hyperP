@@ -272,9 +272,11 @@ def _normalize_manifest_limits(value: object, schema_version: object) -> dict[st
     legacy_three_key_limits = frozenset(
         {"max_log_bytes", "max_output_bytes", "max_runtime_seconds"}
     )
+    legacy_four_key_limits = frozenset(MANIFEST_LIMIT_KEYS)
     if schema_version == LEGACY_MANIFEST_SCHEMA_VERSION and set(value) not in {
         frozenset(),
         legacy_three_key_limits,
+        legacy_four_key_limits,
     }:
         raise ValueError("terminal manifest limits are invalid")
     normalized = dict(DEFAULT_MANIFEST_LIMITS)

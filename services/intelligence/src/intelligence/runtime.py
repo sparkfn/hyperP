@@ -169,9 +169,11 @@ class IntelligenceRuntime:
             while process.is_alive():
                 if self.state.is_cancelled(run.run_id):
                     _stop_child(process)
+                    self.state.mark_execution_quiescent(run)
                     return "cancelled", "cancellation_requested"
                 if time.monotonic() - started >= self.config.max_runtime_seconds:
                     _stop_child(process)
+                    self.state.mark_execution_quiescent(run)
                     return "timed_out", "runtime_limit_exceeded"
                 try:
                     scan_staged_usage(
@@ -182,9 +184,11 @@ class IntelligenceRuntime:
                     )
                 except RuntimeError:
                     _stop_child(process)
+                    self.state.mark_execution_quiescent(run)
                     return "failed", "output_limit_exceeded"
                 except ValueError:
                     _stop_child(process)
+                    self.state.mark_execution_quiescent(run)
                     return "failed", "unsafe_staged_output"
                 self.state.heartbeat(run)
                 time.sleep(0.1)
@@ -197,6 +201,7 @@ class IntelligenceRuntime:
                 raise CleanupUnresolvedError(
                     "reviewed child process group cleanup failed"
                 ) from error
+            self.state.mark_execution_quiescent(run)
             return (
                 ("completed", "completed")
                 if process.exitcode == 0
@@ -208,8 +213,10 @@ class IntelligenceRuntime:
             try:
                 if process.is_alive():
                     _stop_child(process)
+                    self.state.mark_execution_quiescent(run)
                 else:
                     _quiesce_process_group(process)
+                    self.state.mark_execution_quiescent(run)
             except CleanupUnresolvedError:
                 raise
             except BaseException as cleanup_error:

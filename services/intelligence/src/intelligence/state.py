@@ -108,8 +108,8 @@ class State:
             fence = int(row[0])
             self.connection.execute(
                 "INSERT INTO runs(id, command, state, fence, created_at, heartbeat_at, started_at, "
-                "limits_json, runtime_epoch, cleanup_unresolved) "
-                "VALUES(?, ?, 'running', ?, ?, ?, ?, ?, ?, 0)",
+                "limits_json, runtime_epoch, cleanup_unresolved, execution_may_be_alive) "
+                "VALUES(?, ?, 'running', ?, ?, ?, ?, ?, ?, 0, 1)",
                 (run_id, command, fence, now, now, now, limits_json, self.runtime_epoch),
             )
             self.connection.execute("COMMIT")
@@ -126,7 +126,18 @@ class State:
             started_at=now,
             limits=tuple(sorted(effective_limits.items())),
             runtime_epoch=self.runtime_epoch,
+            execution_may_be_alive=True,
         )
+
+    def mark_execution_quiescent(self, run: Run) -> None:
+        """Clear the admission liveness fence only after process-group proof succeeds."""
+        changed = self.connection.execute(
+            "UPDATE runs SET execution_may_be_alive = 0 WHERE id = ? AND fence = ? "
+            "AND state IN ('running', 'publishing')",
+            (run.run_id, run.fence),
+        ).rowcount
+        if changed != 1:
+            raise RuntimeError("cannot persist execution quiescence proof")
 
     def mark_cleanup_unresolved(self, run: Run) -> None:
         """Persist that process-group quiescence was not proven, without releasing the lock."""
@@ -306,8 +317,12 @@ class State:
                 raise RuntimeError("mutation lock fence does not match the run")
             if run.state not in {"queued", "running", "publishing"}:
                 raise RuntimeError("requested run is not recoverable")
-            if run.cleanup_unresolved:
-                if run.runtime_epoch is None or run.runtime_epoch == self.runtime_epoch:
+            if run.execution_may_be_alive or run.cleanup_unresolved:
+                if (
+                    self.runtime_epoch is None
+                    or run.runtime_epoch is None
+                    or run.runtime_epoch == self.runtime_epoch
+                ):
                     raise RuntimeError("unsafe cleanup requires a trusted execution-domain change")
             recovery_state: TerminalRunState = "stale_recovered"
             recovery_outputs: tuple[OutputInventory, ...] = ()

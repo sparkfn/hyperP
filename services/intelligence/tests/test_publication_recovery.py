@@ -33,6 +33,7 @@ def _orphan_publishing_run(
     (staging / "result.json").write_text("{}", encoding="utf-8")
     inventory = scan_staged_outputs(tmp_path, run.run_id, 100)
     state.begin_publishing(run, inventory)
+    state.mark_execution_quiescent(run)
     if publish:
         publish_inventory(tmp_path, run.run_id, inventory, 100)
     if release_lock:
@@ -258,6 +259,7 @@ def test_unknown_limits_recovery_evidence_does_not_claim_defaults(tmp_path: Path
     state = State(tmp_path)
     run = state.create_mutating_run("approved")
     state.connection.execute("UPDATE runs SET limits_json = NULL WHERE id = ?", (run.run_id,))
+    state.mark_execution_quiescent(run)
     (state.layout.manifests / f"{run.run_id}.json").unlink(missing_ok=True)
     state.connection.execute("UPDATE mutation_lock SET heartbeat_at = 0 WHERE singleton = 1")
     state.close()

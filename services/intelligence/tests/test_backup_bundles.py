@@ -59,7 +59,7 @@ def test_bundle_contains_snapshot_manifest_and_accepted_evidence(tmp_path: Path)
 
 def test_actual_v4_bundle_snapshot_remains_verifiable(tmp_path: Path) -> None:
     """The pre-v5 bundle envelope and snapshot format remain directly supported."""
-    state, bundle, _ = _bundle(tmp_path)
+    state, bundle, run_id = _bundle(tmp_path)
     legacy = tmp_path / "legacy-v4.bundle"
     shutil.copytree(bundle, legacy)
     snapshot = legacy / "state.sqlite3"
@@ -68,11 +68,27 @@ def test_actual_v4_bundle_snapshot_remains_verifiable(tmp_path: Path) -> None:
         connection.execute("ALTER TABLE runs DROP COLUMN limits_json")
         connection.execute("ALTER TABLE runs DROP COLUMN runtime_epoch")
         connection.execute("ALTER TABLE runs DROP COLUMN cleanup_unresolved")
+        connection.execute("ALTER TABLE runs DROP COLUMN execution_may_be_alive")
         connection.execute("UPDATE metadata SET value = '4' WHERE key = 'schema_version'")
         connection.commit()
     finally:
         connection.close()
     bundle_manifest = json.loads((legacy / "manifest.json").read_text(encoding="utf-8"))
+    evidence_manifest_path = legacy / "evidence" / "manifests" / f"{run_id}.json"
+    evidence_manifest = json.loads(evidence_manifest_path.read_text(encoding="utf-8"))
+    evidence_manifest["schema_version"] = 1
+    evidence_manifest["limits"] = {
+        "max_log_bytes": 1_000_000,
+        "max_output_bytes": 100_000_000,
+        "max_output_entries": 10_000,
+        "max_runtime_seconds": 3_600,
+    }
+    evidence_manifest_path.write_text(canonical_json(evidence_manifest), encoding="utf-8")
+    for item in bundle_manifest["evidence"]:
+        if item["path"] == f"evidence/manifests/{run_id}.json":
+            item["sha256"] = sha256_file(evidence_manifest_path)
+            item["byte_count"] = evidence_manifest_path.stat().st_size
+            break
     legacy_manifest = {
         "schema_version": 4,
         "state_snapshot": {
@@ -99,6 +115,7 @@ def test_actual_v5_old_envelope_bundle_remains_verifiable(tmp_path: Path) -> Non
     try:
         connection.execute("ALTER TABLE runs DROP COLUMN runtime_epoch")
         connection.execute("ALTER TABLE runs DROP COLUMN cleanup_unresolved")
+        connection.execute("ALTER TABLE runs DROP COLUMN execution_may_be_alive")
         connection.execute("UPDATE metadata SET value = '5' WHERE key = 'schema_version'")
         connection.commit()
     finally:
@@ -193,6 +210,20 @@ def test_bundle_cross_checks_snapshot_state_against_manifest_evidence(tmp_path: 
         }
         manifest_path.write_text(canonical_json(manifest), encoding="utf-8")
         with pytest.raises(ValueError, match="manifest|evidence"):
+            state.verify_backup(bundle)
+    finally:
+        state.close()
+
+
+def test_bundle_rejects_outer_schema_relabeling(tmp_path: Path) -> None:
+    """The envelope state label must match the verified SQLite metadata schema."""
+    state, bundle, _ = _bundle(tmp_path)
+    try:
+        manifest_path = bundle / "manifest.json"
+        manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+        manifest["state_schema_version"] = 4
+        manifest_path.write_text(canonical_json(manifest), encoding="utf-8")
+        with pytest.raises(ValueError, match="schema"):
             state.verify_backup(bundle)
     finally:
         state.close()
