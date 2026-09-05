@@ -1,6 +1,6 @@
 import type { NextResponse } from "next/server";
 
-import type { PersonCrmMetrics } from "@/lib/api-types";
+import type { PersonCrmDealMetrics } from "@/lib/api-types";
 import { proxyToApi } from "@/lib/proxy";
 
 export const dynamic = "force-dynamic";
@@ -14,8 +14,8 @@ export async function GET(
   context: RouteContext,
 ): Promise<NextResponse> {
   const { personId } = await context.params;
-  return proxyToApi<PersonCrmMetrics>(
-    `/persons/${encodeURIComponent(personId)}/crm/metrics`,
+  return proxyToApi<PersonCrmDealMetrics>(
+    `/persons/${encodeURIComponent(personId)}/crm/deal-metrics`,
     { signal: request.signal },
   );
 }

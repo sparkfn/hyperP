@@ -235,52 +235,100 @@ export interface CrmDealStageCount {
   count: number;
 }
 
-export interface CrmEntityBreakdown {
+export interface CrmDealEntityBreakdown {
   entity_key: string;
   entity_display_name: string | null;
   deal_count: number;
-  activity_count: number;
   conversation_count: number;
 }
 
-export interface PersonCrmMetrics {
+export interface PersonCrmDealMetrics {
   deal_count: number;
   deal_stage_breakdown: CrmDealStageCount[];
   first_deal_at: string | null;
   first_deal_at_display: string | null;
   last_deal_at: string | null;
   last_deal_at_display: string | null;
+  conversation_count: number;
+  recent_30d_deal_count: number;
+  recent_30d_conversation_count: number;
+  last_conversation_at: string | null;
+  last_conversation_at_display: string | null;
+  last_graph_crm_touch_at: string | null;
+  last_graph_crm_touch_at_display: string | null;
+  days_since_last_deal: number | null;
+  recent_30d_daily_deal_counts: number[];
+  recent_30d_daily_conversation_counts: number[];
+  recent_30d_deal_change_pct: number | null;
+  recent_30d_conversation_change_pct: number | null;
+  entity_breakdown: CrmDealEntityBreakdown[];
+}
+
+export interface CrmCallClassificationCount {
+  classification: string;
+  count: number;
+}
+export interface CrmActivityMetricShared {
+  source: "bitrix_crm_activity";
+  source_instance: string;
+  fetched_at: string;
+  fetched_at_display: string | null;
+  cache_disposition: "miss" | "hit" | "coalesced" | "disabled";
+  truncated: boolean;
+  queried_deal_count: number;
+  resolved_deal_count: number;
+  request_count: number;
+  page_count: number;
+  row_count: number;
+}
+export interface PersonCrmActivityMetricsComplete extends CrmActivityMetricShared {
+  status: "complete";
+  completeness: "complete";
+  truncated: false;
+  failure_reason: null;
   activity_count: number;
   call_count: number;
-  conversation_count: number;
   activity_kind_breakdown: CrmActivityKindCount[];
+  call_classification_breakdown: CrmCallClassificationCount[];
   first_activity_at: string | null;
   first_activity_at_display: string | null;
   last_activity_at: string | null;
   last_activity_at_display: string | null;
-  entity_breakdown: CrmEntityBreakdown[];
-  recent_30d_deal_count: number;
   recent_30d_activity_count: number;
   recent_30d_call_count: number;
-  recent_30d_conversation_count: number;
-  last_crm_touch_at: string | null;
-  last_crm_touch_at_display: string | null;
-  days_since_last_crm_touch: number | null;
-  days_since_last_deal: number | null;
-  days_since_last_activity: number | null;
-  // 30-day daily trend series (oldest → newest, UTC midnight buckets).
-  // Always length 30; days with no events are 0.
-  recent_30d_daily_deal_counts: number[];
   recent_30d_daily_activity_counts: number[];
   recent_30d_daily_call_counts: number[];
-  recent_30d_daily_conversation_counts: number[];
-  // Percentage change vs the prior 30-day window, rounded to int.
-  // null when the prior window is empty (no division by zero in the UI).
-  recent_30d_deal_change_pct: number | null;
   recent_30d_activity_change_pct: number | null;
   recent_30d_call_change_pct: number | null;
-  recent_30d_conversation_change_pct: number | null;
 }
+export interface PersonCrmActivityMetricsPartial extends Omit<PersonCrmActivityMetricsComplete, "status" | "completeness" | "failure_reason" | "truncated"> {
+  status: "partial";
+  completeness: "partial";
+  truncated: true;
+  failure_reason: CrmActivityFailureReason;
+}
+export interface PersonCrmActivityMetricsUnavailable extends CrmActivityMetricShared {
+  status: "unavailable";
+  completeness: "unavailable";
+  truncated: false;
+  failure_reason: CrmActivityFailureReason;
+}
+export type CrmActivityFailureReason =
+  | "not_configured"
+  | "deal_limit"
+  | "request_limit"
+  | "page_limit"
+  | "row_limit"
+  | "elapsed_limit"
+  | "non_advancing_pagination"
+  | "rate_limited"
+  | "timeout"
+  | "upstream_error"
+  | "malformed_response";
+export type PersonCrmActivityMetrics =
+  | PersonCrmActivityMetricsComplete
+  | PersonCrmActivityMetricsPartial
+  | PersonCrmActivityMetricsUnavailable;
 
 export interface EntitySummary {
   entity_key: string;

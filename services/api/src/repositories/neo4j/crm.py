@@ -1,4 +1,4 @@
-"""Neo4j implementation of CrmMetricsRepository."""
+"""Neo4j implementation of split CRM deal metrics and live scope resolution."""
 
 from __future__ import annotations
 
@@ -14,141 +14,124 @@ from src.graph.converters import (
     to_optional_int,
     to_optional_str,
 )
-from src.graph.queries.crm import GET_PERSON_CRM_METRICS
+from src.graph.queries.crm import GET_PERSON_BITRIX_DEAL_SCOPE, GET_PERSON_CRM_DEAL_METRICS
 from src.types_crm import (
-    CrmActivityKindCount,
+    BitrixDealScope,
+    CrmDealEntityBreakdown,
     CrmDealStageCount,
-    CrmEntityBreakdown,
-    PersonCrmMetrics,
+    PersonCrmDealMetrics,
 )
 
 from ._utils import record_to_dict
 
 
-def _as_dicts(rows: GraphValue) -> list[GraphRecord]:
-    """Return map rows from a Neo4j list while discarding null sentinels."""
-    if not isinstance(rows, list):
-        return []
-    return [row for row in rows if isinstance(row, dict)]
+def _rows(value: GraphValue) -> list[GraphRecord]:
+    return [item for item in value if isinstance(item, dict)] if isinstance(value, list) else []
 
 
-def _to_kind_count(row: GraphRecord) -> CrmActivityKindCount:
-    last_event_at = to_iso_or_none(row.get("last_event_at"))
-    return CrmActivityKindCount(
-        history_kind=to_optional_str(row.get("history_kind")) or "unknown",
-        count=to_int(row.get("count")),
-        last_event_at=last_event_at,
-        last_event_at_display=_display_or_none(last_event_at),
-    )
+def _display_date(value: str | None) -> str | None:
+    return format_display_date(value) if value is not None else None
 
 
-def _to_stage_count(row: GraphRecord) -> CrmDealStageCount:
-    return CrmDealStageCount(
-        stage_id=to_optional_str(row.get("stage_id")),
-        count=to_int(row.get("count")),
-    )
-
-
-def _to_entity_breakdown(row: GraphRecord) -> CrmEntityBreakdown:
-    return CrmEntityBreakdown(
-        entity_key=to_optional_str(row.get("entity_key")) or "",
-        entity_display_name=to_optional_str(row.get("entity_display_name")),
-        deal_count=to_int(row.get("deal_count")),
-        activity_count=to_int(row.get("activity_count")),
-        conversation_count=to_int(row.get("conversation_count")),
-    )
-
-
-def _utc_now() -> datetime:
-    """Return the one UTC timestamp used by a CRM metrics query."""
-    return datetime.now(UTC)
-
-
-def _display_or_none(value: str | None) -> str | None:
-    if value is None:
-        return None
-    return format_display_date(value) or None
-
-
-def _display_datetime_or_none(value: str | None) -> str | None:
-    if value is None:
-        return None
-    return format_display_datetime(value) or None
-
-
-def _to_daily_counts(row: GraphRecord, key: str) -> list[int]:
-    """Coerce a Neo4j list-of-int to a length-30 list, padding with zeros.
-
-    Some buckets may be missing or the list may be shorter than 30 if a query
-    returns a partial window; we always return 30 values so the UI can render
-    a fixed-size sparkline.
-    """
+def _daily_counts(row: GraphRecord, key: str) -> list[int]:
     raw = row.get(key)
     if not isinstance(raw, list):
         return [0] * 30
-    counts = [to_int(item) for item in raw]
-    if len(counts) >= 30:
-        return counts[:30]
-    return counts + [0] * (30 - len(counts))
+    counts = [to_int(value) for value in raw]
+    return (counts + [0] * 30)[:30]
 
 
-def _to_metrics(row: GraphRecord) -> PersonCrmMetrics:
-    first_deal_at = to_iso_or_none(row.get("first_deal_at"))
-    last_deal_at = to_iso_or_none(row.get("last_deal_at"))
-    first_activity_at = to_iso_or_none(row.get("first_activity_at"))
-    last_activity_at = to_iso_or_none(row.get("last_activity_at"))
-    last_crm_touch_at = to_iso_or_none(row.get("last_crm_touch_at"))
-    return PersonCrmMetrics(
+def _metrics(row: GraphRecord) -> PersonCrmDealMetrics:
+    first_deal = to_iso_or_none(row.get("first_deal_at"))
+    last_deal = to_iso_or_none(row.get("last_deal_at"))
+    last_conversation = to_iso_or_none(row.get("last_conversation_at"))
+    last_touch = to_iso_or_none(row.get("last_graph_crm_touch_at"))
+    stages = [
+        CrmDealStageCount(
+            stage_id=to_optional_str(item.get("stage_id")), count=to_int(item.get("count"))
+        )
+        for item in _rows(row.get("deal_stage_breakdown"))
+    ]
+    entities = [
+        CrmDealEntityBreakdown(
+            entity_key=to_optional_str(item.get("entity_key")) or "",
+            entity_display_name=to_optional_str(item.get("entity_display_name")),
+            deal_count=to_int(item.get("deal_count")),
+            conversation_count=to_int(item.get("conversation_count")),
+        )
+        for item in _rows(row.get("entity_breakdown"))
+    ]
+    prior_deals = to_int(row.get("prior_30d_deal_count"))
+    recent_deals = to_int(row.get("recent_30d_deal_count"))
+    prior_conversations = to_int(row.get("prior_30d_conversation_count"))
+    recent_conversations = to_int(row.get("recent_30d_conversation_count"))
+    return PersonCrmDealMetrics(
         deal_count=to_int(row.get("deal_count")),
-        deal_stage_breakdown=[
-            _to_stage_count(stage) for stage in _as_dicts(row.get("deal_stage_breakdown"))
-        ],
-        first_deal_at=first_deal_at,
-        first_deal_at_display=_display_or_none(first_deal_at),
-        last_deal_at=last_deal_at,
-        last_deal_at_display=_display_or_none(last_deal_at),
-        activity_count=to_int(row.get("activity_count")),
-        call_count=to_int(row.get("call_count")),
+        deal_stage_breakdown=stages,
+        first_deal_at=first_deal,
+        first_deal_at_display=_display_date(first_deal),
+        last_deal_at=last_deal,
+        last_deal_at_display=_display_date(last_deal),
         conversation_count=to_int(row.get("conversation_count")),
-        activity_kind_breakdown=[
-            _to_kind_count(kind) for kind in _as_dicts(row.get("activity_kind_breakdown"))
-        ],
-        first_activity_at=first_activity_at,
-        first_activity_at_display=_display_or_none(first_activity_at),
-        last_activity_at=last_activity_at,
-        last_activity_at_display=_display_or_none(last_activity_at),
-        entity_breakdown=[
-            _to_entity_breakdown(entity) for entity in _as_dicts(row.get("entity_breakdown"))
-        ],
-        recent_30d_deal_count=to_int(row.get("recent_30d_deal_count")),
-        recent_30d_activity_count=to_int(row.get("recent_30d_activity_count")),
-        recent_30d_call_count=to_int(row.get("recent_30d_call_count")),
-        recent_30d_conversation_count=to_int(row.get("recent_30d_conversation_count")),
-        last_crm_touch_at=last_crm_touch_at,
-        last_crm_touch_at_display=_display_datetime_or_none(last_crm_touch_at),
-        days_since_last_crm_touch=to_optional_int(row.get("days_since_last_crm_touch")),
+        last_conversation_at=last_conversation,
+        last_conversation_at_display=_display_date(last_conversation),
+        recent_30d_deal_count=recent_deals,
+        recent_30d_conversation_count=recent_conversations,
+        recent_30d_daily_deal_counts=_daily_counts(row, "deal_daily_counts"),
+        recent_30d_daily_conversation_counts=_daily_counts(row, "conversation_daily_counts"),
+        recent_30d_deal_change_pct=None
+        if prior_deals == 0
+        else round((recent_deals - prior_deals) * 100 / prior_deals),
+        recent_30d_conversation_change_pct=None
+        if prior_conversations == 0
+        else round((recent_conversations - prior_conversations) * 100 / prior_conversations),
+        last_graph_crm_touch_at=last_touch,
+        last_graph_crm_touch_at_display=format_display_datetime(last_touch) if last_touch else None,
         days_since_last_deal=to_optional_int(row.get("days_since_last_deal")),
-        days_since_last_activity=to_optional_int(row.get("days_since_last_activity")),
-        recent_30d_daily_deal_counts=_to_daily_counts(row, "deal_daily_counts"),
-        recent_30d_daily_activity_counts=_to_daily_counts(row, "activity_daily_counts"),
-        recent_30d_daily_call_counts=_to_daily_counts(row, "call_daily_counts"),
-        recent_30d_daily_conversation_counts=_to_daily_counts(row, "conversation_daily_counts"),
-        recent_30d_deal_change_pct=to_optional_int(row.get("deal_change_pct")),
-        recent_30d_activity_change_pct=to_optional_int(row.get("activity_change_pct")),
-        recent_30d_call_change_pct=to_optional_int(row.get("call_change_pct")),
-        recent_30d_conversation_change_pct=to_optional_int(row.get("conversation_change_pct")),
+        entity_breakdown=entities,
     )
 
 
-class Neo4jCrmMetricsRepository:
-    async def get_person_crm_metrics(self, person_id: str) -> PersonCrmMetrics | None:
-        as_of_at = _utc_now().astimezone(UTC).isoformat()
+class Neo4jCrmDealMetricsRepository:
+    async def get_person_crm_deal_metrics(self, person_id: str) -> PersonCrmDealMetrics | None:
         async with get_session() as session:
             result = await session.run(
-                GET_PERSON_CRM_METRICS, person_id=person_id, as_of_at=as_of_at
+                GET_PERSON_CRM_DEAL_METRICS,
+                person_id=person_id,
+                as_of_at=datetime.now(UTC).isoformat(),
+            )
+            record = await result.single()
+        return (
+            None
+            if record is None
+            else _metrics(record_to_dict(record.keys(), list(record.values())))
+        )
+
+    async def resolve_bitrix_deal_scope(
+        self, person_id: str, source_instance: str, deal_limit: int
+    ) -> BitrixDealScope | None:
+        async with get_session() as session:
+            result = await session.run(
+                GET_PERSON_BITRIX_DEAL_SCOPE,
+                person_id=person_id,
+                source_instance=source_instance,
+                deal_limit_plus_one=deal_limit + 1,
             )
             record = await result.single()
         if record is None:
             return None
         row = record_to_dict(record.keys(), list(record.values()))
-        return _to_metrics(row)
+        raw_ids = row.get("deal_ids")
+        identifiers: set[str] = set()
+        if isinstance(raw_ids, list):
+            for value in raw_ids:
+                identifier = to_optional_str(value)
+                if identifier:
+                    identifiers.add(identifier)
+        ids = tuple(sorted(identifiers))
+        return BitrixDealScope(
+            canonical_person_id=to_optional_str(row.get("canonical_person_id")) or person_id,
+            deal_ids=ids[:deal_limit],
+            resolved_deal_count=len(ids),
+            deal_limit_exhausted=len(ids) > deal_limit,
+        )
