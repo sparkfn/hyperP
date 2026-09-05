@@ -582,6 +582,7 @@ class BitrixBackfillRepository:
                 corrective_status=_required_str(record["corrective_status"], "corrective_status"),
                 successor_status=_required_str(record["successor_status"], "successor_status"),
                 predecessor_frozen=record["predecessor_frozen"] is True,
+                historical_streams=_stream_key_tuple(record["historical_streams"]),
                 expected_streams=_stream_key_tuple(record["expected_streams"]),
                 actual_streams=_stream_key_tuple(record["actual_streams"]),
                 cadence_run_count=_non_negative_int(record, "cadence_run_count"),

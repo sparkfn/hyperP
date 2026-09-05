@@ -801,7 +801,10 @@ MATCH (successor)-[:USES_INVENTORY]->(inventory:BitrixBackfillInventory)
 OPTIONAL MATCH (successor)-[relation:HAS_LOGICAL_RUN]->(logical:IngestionLogicalRun {
   control_instance_id: $control_instance_id
 })
-WITH corrective, successor, old_relations, inventory.executed_stream_keys AS expected_streams,
+WITH corrective, successor, old_relations,
+     inventory.executed_stream_keys AS historical_streams,
+     [stream_key IN inventory.executed_stream_keys WHERE stream_key <> 'crm_activities']
+       AS expected_streams,
      collect(logical) AS live_runs,
      [key IN collect(relation.stream_key) WHERE key IS NOT NULL | key]
        AS actual_streams
@@ -809,7 +812,7 @@ OPTIONAL MATCH (successor)-[:HAS_COVERAGE]->(coverage:BitrixBackfillCoverage {
   control_instance_id: $control_instance_id,
   generation_id: successor.generation_id
 })
-WITH corrective, successor, old_relations, expected_streams, live_runs, actual_streams,
+WITH corrective, successor, old_relations, historical_streams, expected_streams, live_runs, actual_streams,
      count(coverage) AS successor_coverage_count,
      count(CASE WHEN coverage.terminal = true
        AND NOT coverage.disposition IN ['conflict', 'failed'] THEN 1 END)
@@ -820,6 +823,7 @@ RETURN corrective.status AS corrective_status,
        size(old_relations) > 0
          AND all(relation IN old_relations WHERE relation.status = 'superseded')
          AS predecessor_frozen,
+       historical_streams,
        expected_streams,
        actual_streams,
        size(live_runs) AS cadence_run_count,

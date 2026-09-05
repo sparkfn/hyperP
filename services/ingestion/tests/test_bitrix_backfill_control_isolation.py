@@ -15,6 +15,7 @@ from src.graph.queries.bitrix_backfill import (
     ATTACH_BACKFILL_LOGICAL_RUN,
     GET_ACTIVE_BITRIX_SUCCESSOR_SCHEDULE,
     UPSERT_BITRIX_BACKFILL_COVERAGE,
+    VERIFY_BITRIX_SUCCESSOR_TAIL,
 )
 
 T = TypeVar("T")
@@ -97,3 +98,55 @@ def test_topology_queries_require_the_control_namespace() -> None:
         GET_ACTIVE_BITRIX_SUCCESSOR_SCHEDULE,
     ):
         assert "$control_instance_id" in query
+
+
+def test_tail_verification_filters_historical_activities_but_retains_visibility() -> None:
+    class TailTransaction:
+        def run(self, query: str, **parameters: object) -> _Result:
+            assert query == VERIFY_BITRIX_SUCCESSOR_TAIL
+            assert parameters == {
+                "control_instance_id": "legacy-default",
+                "corrective_generation_id": "corrective-1",
+                "successor_generation_id": "successor-1",
+            }
+            return _Result(
+                {
+                    "corrective_status": "accepted",
+                    "successor_status": "active",
+                    "predecessor_frozen": True,
+                    "historical_streams": [
+                        "crm_deals",
+                        "crm_activities",
+                        "openlines_conversations",
+                    ],
+                    "expected_streams": ["crm_deals", "openlines_conversations"],
+                    "actual_streams": ["crm_deals", "openlines_conversations"],
+                    "cadence_run_count": 2,
+                    "cadence_complete": True,
+                    "successor_coverage_count": 2,
+                    "coverage_complete": True,
+                }
+            )
+
+    class TailClient:
+        def execute_read(self, work: Callable[[TailTransaction], T]) -> T:
+            return work(TailTransaction())
+
+    verification = BitrixBackfillRepository(cast(Neo4jClient, TailClient())).verify_tail(
+        corrective_generation_id="corrective-1",
+        successor_generation_id="successor-1",
+    )
+
+    assert verification.historical_streams == (
+        "crm_deals",
+        "crm_activities",
+        "openlines_conversations",
+    )
+    assert verification.expected_streams == ("crm_deals", "openlines_conversations")
+    assert verification.actual_streams == ("crm_deals", "openlines_conversations")
+    assert verification.passed is True
+    assert "inventory.executed_stream_keys AS historical_streams" in VERIFY_BITRIX_SUCCESSOR_TAIL
+    assert (
+        "[stream_key IN inventory.executed_stream_keys WHERE stream_key <> 'crm_activities']"
+        in VERIFY_BITRIX_SUCCESSOR_TAIL
+    )
