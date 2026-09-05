@@ -5,7 +5,7 @@
 # Inspect via:  wpci home pipeline last sparkfn/hyperP --branch <pr-branch>
 #
 # Executor: local Woodpecker (docker backend, untrusted repo — no host volumes/socket).
-# Most tests are mock/fake-based. Four isolated disposable Neo4j 5.26 services shard
+# Most tests are mock/fake-based. Five isolated disposable Neo4j 5.26 services shard
 # the always-executed query compilation gate for database-specific Cypher coverage.
 #
 # SYNC NOTE: the python-checks step below is deliberately duplicated in .woodpecker/main.yaml
@@ -28,6 +28,14 @@ services:
     image: neo4j:5.26-community
     environment:
       NEO4J_AUTH: neo4j/ci-ledger-api
+      NEO4J_PLUGINS: "[]"
+      NEO4J_server_memory_heap_initial__size: 128m
+      NEO4J_server_memory_heap_max__size: 384m
+      NEO4J_server_memory_pagecache_size: 128m
+  - name: neo4j-ledger-310
+    image: neo4j:5.26-community
+    environment:
+      NEO4J_AUTH: neo4j/ci-ledger-310
       NEO4J_PLUGINS: "[]"
       NEO4J_server_memory_heap_initial__size: 128m
       NEO4J_server_memory_heap_max__size: 384m
@@ -92,7 +100,7 @@ steps:
 
   # Compile and execute sharded real-Neo4j query suites against the production major/minor.
   # This is an untrusted-workflow service boundary: no Docker socket, host volume, or secret.
-  # Four isolated services keep shard cleanup, schema mutation, and locking independent.
+  # Five isolated services keep shard cleanup, schema mutation, and locking independent.
   # PR-only docs/frontend changes skip every real-Neo4j shard; mixed changes still run them.
   - name: neo4j-projection-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
@@ -112,6 +120,7 @@ steps:
             - services/frontend2/**
     commands:
       - uv sync --frozen
+      - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_URI --user-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_USER --password-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD --timeout-seconds 90
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_projection_repository_neo4j.py -q
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_activation_neo4j.py -q
 
@@ -135,10 +144,6 @@ steps:
       HYPERP_NEO4J_PERSON_LIST_TEST_PASSWORD: ci-ledger-api
       HYPERP_NEO4J_PERSON_LIST_TEST_SERVICE_HOST: neo4j-ledger-api
       HYPERP_NEO4J_PERSON_LIST_TEST_ALLOW_SCHEMA_MUTATION: "1"
-      HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_URI: bolt://neo4j-ledger-api:7687
-      HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_USER: neo4j
-      HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_PASSWORD: ci-ledger-api
-      HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_SERVICE_HOST: neo4j-ledger-api
     when:
       - path:
           exclude:
@@ -146,7 +151,28 @@ steps:
             - services/frontend2/**
     commands:
       - uv sync --frozen
+      - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_URI --user-env HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_USER --password-env HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST_PASSWORD --timeout-seconds 90
       - uv run --package profile-unifier-api pytest services/api/tests/test_person_identifiers_neo4j.py services/api/tests/test_person_crm_metrics_neo4j.py services/api/tests/test_persons_list_neo4j_234.py services/api/tests/test_persons_list_possible_match_neo4j.py services/api/tests/test_persons_list_plan_neo4j.py services/api/tests/test_identity_link_revisions_neo4j.py -q
+
+  - name: neo4j-ledger-310-checks
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm
+    depends_on: []
+    environment:
+      UV_PROJECT_ENVIRONMENT: .venv-neo4j-ledger-310-checks
+      PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-neo4j-ledger-310-checks"
+      PYTHONDONTWRITEBYTECODE: "1"
+      HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_URI: bolt://neo4j-ledger-310:7687
+      HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_USER: neo4j
+      HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_PASSWORD: ci-ledger-310
+      HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_SERVICE_HOST: neo4j-ledger-310
+    when:
+      - path:
+          exclude:
+            - docs/**
+            - services/frontend2/**
+    commands:
+      - uv sync --frozen
+      - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_URI --user-env HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_USER --password-env HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_PASSWORD --timeout-seconds 90
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_deal_identity_repair_ledger_neo4j.py -k 'test_310_' -q
 
   - name: neo4j-census-migration-checks
@@ -187,6 +213,7 @@ steps:
             - services/frontend2/**
     commands:
       - uv sync --frozen
+      - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_URI --user-env HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_USER --password-env HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_PASSWORD --timeout-seconds 90
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_person_completeness_migration_neo4j.py services/ingestion/tests/test_loyalty_points_migration_neo4j.py services/ingestion/tests/test_crm_deal_count_migration_neo4j.py services/ingestion/tests/test_ingestion_control_instance_migration_neo4j.py -q
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_standalone_crm_census_neo4j.py -q
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_standalone_crm_lane_a_schema_neo4j.py -q
@@ -215,6 +242,7 @@ steps:
             - services/frontend2/**
     commands:
       - uv sync --frozen
+      - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_URI --user-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_USER --password-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD --timeout-seconds 90
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_preparation.py services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_lifecycle.py services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_freshness_integrity.py services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_strictness.py -q
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_deal_identity_repair_ledger_neo4j.py -k 'not test_310_' -q
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_deal_identity_repair_mutation_neo4j.py -q
