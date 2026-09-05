@@ -15,8 +15,8 @@ _SHARD_STEP_NAME = re.compile(r"neo4j-[a-z0-9-]+-checks")
 _NEO4J_SERVICE_SETTINGS = {
     "NEO4J_PLUGINS": "[]",
     "NEO4J_server_http_enabled": "false",
-    "NEO4J_server_bolt_thread__pool_min__size": "2",
-    "NEO4J_server_bolt_thread__pool_max__size": "2",
+    "NEO4J_server_bolt_thread__pool__min__size": "2",
+    "NEO4J_server_bolt_thread__pool__max__size": "2",
     "NEO4J_server_memory_heap_initial__size": "128m",
     "NEO4J_server_memory_heap_max__size": "384m",
     "NEO4J_server_memory_pagecache_size": "128m",
