@@ -584,9 +584,18 @@ class BitrixBackfillRepository:
                 predecessor_frozen=record["predecessor_frozen"] is True,
                 historical_streams=_stream_key_tuple(record["historical_streams"]),
                 expected_streams=_stream_key_tuple(record["expected_streams"]),
+                historical_actual_streams=_stream_key_tuple(record["historical_actual_streams"]),
                 actual_streams=_stream_key_tuple(record["actual_streams"]),
+                historical_cadence_run_count=_non_negative_int(
+                    record, "historical_cadence_run_count"
+                ),
+                historical_cadence_complete=record["historical_cadence_complete"] is True,
                 cadence_run_count=_non_negative_int(record, "cadence_run_count"),
                 cadence_complete=record["cadence_complete"] is True,
+                historical_successor_coverage_count=_non_negative_int(
+                    record, "historical_successor_coverage_count"
+                ),
+                historical_coverage_complete=record["historical_coverage_complete"] is True,
                 successor_coverage_count=_non_negative_int(record, "successor_coverage_count"),
                 coverage_complete=record["coverage_complete"] is True,
             )

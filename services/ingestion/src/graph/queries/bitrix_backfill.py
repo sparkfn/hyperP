@@ -805,19 +805,37 @@ WITH corrective, successor, old_relations,
      inventory.executed_stream_keys AS historical_streams,
      [stream_key IN inventory.executed_stream_keys WHERE stream_key <> 'crm_activities']
        AS expected_streams,
-     collect(logical) AS live_runs,
-     [key IN collect(relation.stream_key) WHERE key IS NOT NULL | key]
-       AS actual_streams
+     collect({logical: logical, stream_key: relation.stream_key}) AS run_bindings
+WITH corrective, successor, old_relations, historical_streams, expected_streams,
+     [binding IN run_bindings WHERE binding.logical IS NOT NULL | binding.logical]
+       AS historical_live_runs,
+     [binding IN run_bindings WHERE binding.stream_key IS NOT NULL | binding.stream_key]
+       AS historical_actual_streams,
+     [binding IN run_bindings
+       WHERE binding.logical IS NOT NULL AND binding.stream_key IN expected_streams
+       | binding.logical] AS live_runs,
+     [binding IN run_bindings
+       WHERE binding.stream_key IS NOT NULL AND binding.stream_key IN expected_streams
+       | binding.stream_key] AS actual_streams
 OPTIONAL MATCH (successor)-[:HAS_COVERAGE]->(coverage:BitrixBackfillCoverage {
   control_instance_id: $control_instance_id,
   generation_id: successor.generation_id
 })
-WITH corrective, successor, old_relations, historical_streams, expected_streams, live_runs, actual_streams,
-     count(coverage) AS successor_coverage_count,
+WITH corrective, successor, old_relations, historical_streams, expected_streams,
+     historical_live_runs, historical_actual_streams, live_runs, actual_streams,
+     count(coverage) AS historical_successor_coverage_count,
      count(CASE WHEN coverage.terminal = true
        AND NOT coverage.disposition IN ['conflict', 'failed'] THEN 1 END)
+       AS historical_acceptable_coverage_count,
+     collect(DISTINCT coverage.stream_key) AS historical_coverage_streams,
+     count(CASE WHEN coverage.stream_key IN expected_streams THEN 1 END)
+       AS successor_coverage_count,
+     count(CASE WHEN coverage.terminal = true
+       AND coverage.stream_key IN expected_streams
+       AND NOT coverage.disposition IN ['conflict', 'failed'] THEN 1 END)
        AS acceptable_coverage_count,
-     collect(DISTINCT coverage.stream_key) AS coverage_streams
+     collect(DISTINCT CASE WHEN coverage.stream_key IN expected_streams THEN coverage.stream_key END)
+       AS coverage_streams
 RETURN corrective.status AS corrective_status,
        successor.status AS successor_status,
        size(old_relations) > 0
@@ -825,10 +843,18 @@ RETURN corrective.status AS corrective_status,
          AS predecessor_frozen,
        historical_streams,
        expected_streams,
+       historical_actual_streams,
        actual_streams,
+       size(historical_live_runs) AS historical_cadence_run_count,
+       all(run IN historical_live_runs WHERE run.status IN ['completed', 'completed_with_errors'])
+         AS historical_cadence_complete,
        size(live_runs) AS cadence_run_count,
        all(run IN live_runs WHERE run.status IN ['completed', 'completed_with_errors'])
          AS cadence_complete,
+       historical_successor_coverage_count,
+       historical_acceptable_coverage_count = historical_successor_coverage_count
+         AND all(expected IN historical_streams WHERE expected IN historical_coverage_streams)
+         AS historical_coverage_complete,
        successor_coverage_count,
        acceptable_coverage_count = successor_coverage_count
          AND all(expected IN expected_streams WHERE expected IN coverage_streams)
