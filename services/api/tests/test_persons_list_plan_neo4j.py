@@ -82,15 +82,18 @@ def _validate_planner_target(uri: str) -> None:
     parsed = urlparse(uri)
     service_host = os.getenv("HYPERP_NEO4J_PERSON_LIST_TEST_SERVICE_HOST")
     loopback = parsed.hostname in {"localhost", "127.0.0.1", "::1"}
-    canonical_ci_service = (
-        parsed.hostname == "neo4j" and parsed.port == 7687 and service_host == "neo4j"
+    configured_ci_service = (
+        service_host is not None
+        and service_host != ""
+        and parsed.hostname == service_host
+        and parsed.port == 7687
     )
     if parsed.scheme != "bolt":
         pytest.fail("Planner regression test requires a direct Bolt URI")
     if parsed.username is not None or parsed.password is not None:
         pytest.fail("Planner regression test URI must not contain user information")
-    if not loopback and not canonical_ci_service:
-        pytest.fail("Planner schema mutation is restricted to loopback or canonical CI Neo4j")
+    if not loopback and not configured_ci_service:
+        pytest.fail("Planner schema mutation is restricted to loopback or its configured CI Neo4j")
     if parsed.path not in {"", "/"} or parsed.query or parsed.fragment:
         pytest.fail("Planner regression test URI must not select a database or include options")
 

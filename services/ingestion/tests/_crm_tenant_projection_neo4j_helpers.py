@@ -97,8 +97,9 @@ def neo4j_driver() -> Iterator[Driver]:
     if uri is None or password is None:
         pytest.skip("disposable standalone CRM Lane A Neo4j database is not configured")
     allowed_hosts = {"localhost", "127.0.0.1", "::1"}
-    if os.getenv("HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_SERVICE_HOST") == "neo4j":
-        allowed_hosts.add("neo4j")
+    service_host = os.getenv("HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_SERVICE_HOST")
+    if service_host:
+        allowed_hosts.add(service_host)
     if urlparse(uri).hostname not in allowed_hosts:
         pytest.fail("projection Neo4j tests require an explicitly disposable Neo4j host")
     driver = GraphDatabase.driver(
