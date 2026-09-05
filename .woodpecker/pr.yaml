@@ -53,6 +53,19 @@ steps:
       - uv sync --frozen --group training
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests
 
+  - name: intelligence-checks
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm
+    depends_on: []
+    environment:
+      UV_PROJECT_ENVIRONMENT: .venv-intelligence-checks
+      PYTHONDONTWRITEBYTECODE: "1"
+    commands:
+      - uv sync --frozen --group dev
+      - uv run --package hyperp-intelligence ruff format --check services/intelligence/src services/intelligence/tests
+      - uv run --package hyperp-intelligence ruff check services/intelligence/src services/intelligence/tests
+      - uv run --package hyperp-intelligence mypy --strict services/intelligence/src
+      - uv run --package hyperp-intelligence pytest services/intelligence/tests -q
+
   # Compile and execute the optimized identifier query against the production
   # Neo4j major/minor. This is a service container on the untrusted workflow
   # network; it does not require a Docker socket, host volume, or repository secret.

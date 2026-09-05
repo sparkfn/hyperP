@@ -1,0 +1,33 @@
+# Profile Unifier Intelligence Operations
+
+## Scope
+
+Intelligence is one CLI-only container and one `intelligence-data` volume. It has no HTTP port,
+sidecar, scheduler, database service, dependency on HyperP services, or production domain jobs.
+
+## Safe defaults
+
+The container starts idle. `INTELLIGENCE_MUTATIONS_ENABLED=false` is the default and production
+registry is empty. Later reviewed code may register bounded reviewed handlers in a parent-supervised
+child process; operators cannot
+supply an executable, shell fragment, environment capture, or plugin path.
+
+## Commands
+
+Use `intelligence status`, `health`, `run NAME`, `inspect RUN_ID`, `cancel RUN_ID`,
+`recover-stale RUN_ID --reason TEXT`, `backup NAME`, and `verify-backup NAME`. Status reports the
+default-off mutation control, allowlisted names, health/recovery reason, and a safe active-run
+summary. Inspect reports the safe terminal record and accepted-output inventory. Backup names are
+single safe names, not paths or `.sqlite3` snapshots. A bundle is atomic/no-replace and contains a
+SQLite online snapshot plus checksummed copies of completed-run manifests and accepted outputs;
+verify it before exporting a copy off-volume. There is no restore or pruning command.
+
+## Persistence and recovery
+
+SQLite uses WAL and the named volume contains `state/`, `staging/`, `runs/manifests/`,
+`runs/logs/`, `outputs/`, and `backups/`. Terminal run evidence is immutable canonical JSON; each
+bounded secret-free NDJSON log has timestamps, severity, command/run identity, safe details, and a
+checksum recorded in its terminal manifest. Removing/recreating only the Intelligence container
+preserves the volume. Do not remove the volume. Restore, pruning, automatic cleanup, schedules,
+and live execution are excluded. Future reviewed work remains default-off and bounded because the
+parent terminates its spawned child on timeout or durable cancellation.
