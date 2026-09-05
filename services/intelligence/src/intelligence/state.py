@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import json
 import sqlite3
 import time
 import uuid
@@ -13,6 +12,8 @@ from typing import cast
 from intelligence import state_queries
 from intelligence.artifacts import (
     canonical_json,
+    quarantine_manifest,
+    read_manifest,
     run_log_inventory,
     workspace_layout,
     write_manifest,
@@ -224,11 +225,13 @@ class State:
             ).rowcount
             if changed != 1:
                 raise RuntimeError("run fence was lost before terminalization")
-            self.connection.execute(
+            changed = self.connection.execute(
                 "UPDATE mutation_lock SET run_id = NULL, heartbeat_at = NULL "
                 "WHERE singleton = 1 AND run_id = ? AND fence = ?",
                 (run.run_id, run.fence),
-            )
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("run fence was lost before lock release")
             self.connection.execute("COMMIT")
         except BaseException:
             self.connection.execute("ROLLBACK")
@@ -255,7 +258,7 @@ class State:
         self.connection.execute("BEGIN IMMEDIATE")
         try:
             row = self.connection.execute(
-                "SELECT run_id, heartbeat_at FROM mutation_lock WHERE singleton = 1"
+                "SELECT run_id, heartbeat_at, fence FROM mutation_lock WHERE singleton = 1"
             ).fetchone()
             if row is None or row["run_id"] != run_id or row["heartbeat_at"] is None:
                 raise RuntimeError("requested run does not own the mutation lock")
@@ -267,6 +270,10 @@ class State:
             if run_row is None:
                 raise RuntimeError("requested run is missing")
             run = _row_to_run(run_row)
+            if int(row["fence"]) != run.fence:
+                raise RuntimeError("mutation lock fence does not match the run")
+            if run.state not in {"queued", "running", "publishing"}:
+                raise RuntimeError("requested run is not recoverable")
             recovery_state: TerminalRunState = "stale_recovered"
             recovery_outputs: tuple[OutputInventory, ...] = ()
             recovery_reason: str | None = cleaned
@@ -285,28 +292,21 @@ class State:
                     recovery_reason = None
             manifest_path = self.layout.manifests / f"{run_id}.json"
             existing: dict[str, object] | None = None
-            if (
-                manifest_path.exists()
-                and not manifest_path.is_symlink()
-                and manifest_path.is_file()
-            ):
-                parsed = json.loads(manifest_path.read_text(encoding="utf-8"))
-                expected_outputs = [
-                    {
-                        "byte_count": item.byte_count,
-                        "path": item.relative_path,
-                        "sha256": item.sha256,
-                    }
-                    for item in sorted(recovery_outputs, key=lambda item: item.relative_path)
-                ]
-                if (
-                    isinstance(parsed, dict)
-                    and parsed.get("run_id") == run_id
-                    and parsed.get("command") == run.command
-                    and parsed.get("state") == recovery_state
-                    and parsed.get("outputs") == expected_outputs
-                ):
-                    existing = parsed
+            if manifest_path.exists() or manifest_path.is_symlink():
+                try:
+                    existing = read_manifest(
+                        manifest_path,
+                        expected_run_id=run_id,
+                        expected_command=run.command,
+                        expected_state=recovery_state,
+                        expected_outputs=recovery_outputs,
+                        expected_reason=recovery_reason,
+                        expected_created_at=run.created_at,
+                        expected_started_at=run.started_at,
+                        expected_run_log=run_log_inventory(self.workspace, run.run_id),
+                    )
+                except (OSError, ValueError):
+                    quarantine_manifest(self.workspace, run_id)
             manifest = existing or write_manifest(
                 self.workspace,
                 run.run_id,
@@ -328,18 +328,22 @@ class State:
                     )
             else:
                 self.connection.execute("DELETE FROM accepted_outputs WHERE run_id = ?", (run_id,))
-            self.connection.execute(
+            changed = self.connection.execute(
                 "UPDATE runs SET state = ?, recovery_reason = ?, "
                 "manifest_json = ?, ended_at = ? "
                 "WHERE id = ? AND state NOT IN "
                 "('completed', 'failed', 'cancelled', 'timed_out', 'stale_recovered')",
                 (recovery_state, recovery_reason, canonical_json(manifest), time.time(), run_id),
-            )
-            self.connection.execute(
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("stale run transition was fenced out")
+            changed = self.connection.execute(
                 "UPDATE mutation_lock SET run_id = NULL, heartbeat_at = NULL "
                 "WHERE singleton = 1 AND run_id = ? AND fence = ?",
                 (run_id, run.fence),
-            )
+            ).rowcount
+            if changed != 1:
+                raise RuntimeError("stale lock release was fenced out")
             self.connection.execute("COMMIT")
         except BaseException:
             self.connection.execute("ROLLBACK")

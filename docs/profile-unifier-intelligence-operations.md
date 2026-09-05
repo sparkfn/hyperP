@@ -37,5 +37,5 @@ checksum recorded in its terminal manifest. Removing/recreating only the Intelli
 preserves the volume. Do not remove the volume. Restore, pruning, automatic cleanup, schedules,
 and live execution are excluded. Future reviewed work remains default-off and bounded because the
 parent starts each handler in a private process session, suppresses raw child stdout/stderr,
-monitors aggregate staged bytes while it runs, and terminates the whole process group on timeout
-or durable cancellation.
+monitors aggregate staged bytes and entry count while it runs, and terminates the whole
+process group on timeout or durable cancellation.
