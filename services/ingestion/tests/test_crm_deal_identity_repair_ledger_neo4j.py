@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import os
 import time
-from collections.abc import Callable, Iterator
+from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
 from datetime import UTC, datetime
@@ -21,7 +21,7 @@ from typing import TypeVar, cast
 from urllib.parse import urlparse
 
 import pytest
-from neo4j import Driver, GraphDatabase, ManagedTransaction, Session
+from neo4j import Driver, GraphDatabase, ManagedTransaction, Record, Session
 from src.crm_deal_identity_repair.allocation import AllocationPlan
 from src.crm_deal_identity_repair.control_models import (
     RepairControlRequest,
@@ -103,6 +103,41 @@ def _drop_repair_schema(driver: Driver) -> None:
             session.run(f"DROP INDEX {name} IF EXISTS").consume()
 
 
+def _repair_schema_is_exact(driver: Driver) -> bool:
+    columns = "name, type, entityType, labelsOrTypes, properties"
+    with driver.session() as session:
+        constraints = {
+            str(row["name"]): row
+            for row in session.run(f"SHOW CONSTRAINTS YIELD {columns} RETURN {columns}")
+        }
+        indexes = {
+            str(row["name"]): row
+            for row in session.run(f"SHOW INDEXES YIELD {columns} RETURN {columns}")
+        }
+    return _schema_definitions_are_exact(constraints, REQUIRED_CONSTRAINTS, "UNIQUENESS") and (
+        _schema_definitions_are_exact(indexes, REQUIRED_INDEXES, "RANGE")
+    )
+
+
+def _schema_definitions_are_exact(
+    definitions: Mapping[str, Record],
+    required: Mapping[str, tuple[str, tuple[str, ...]]],
+    expected_type: str,
+) -> bool:
+    for name, (node_label, properties) in required.items():
+        definition = definitions.get(name)
+        if definition is None:
+            return False
+        if (
+            definition["type"] != expected_type
+            or definition["entityType"] != "NODE"
+            or tuple(definition["labelsOrTypes"]) != (node_label,)
+            or tuple(definition["properties"]) != properties
+        ):
+            return False
+    return True
+
+
 def _clear_repair_metadata(driver: Driver) -> None:
     labels = (
         "CrmDealRepairRun",
@@ -157,7 +192,7 @@ def _clear_repair_metadata(driver: Driver) -> None:
         ).consume()
 
 
-@pytest.fixture
+@pytest.fixture(scope="session")
 def neo4j_driver() -> Iterator[Driver]:
     uri = os.getenv("HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_URI")
     user = os.getenv("HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_USER")
@@ -172,7 +207,6 @@ def neo4j_driver() -> Iterator[Driver]:
         pytest.fail("CRM repair ledger tests require an explicitly disposable Neo4j host")
     driver = GraphDatabase.driver(uri, auth=(user, password))
     connected = False
-    prepared = False
     try:
         for _ in range(15):
             try:
@@ -185,16 +219,36 @@ def neo4j_driver() -> Iterator[Driver]:
             pytest.fail("disposable CRM repair ledger Neo4j database did not become ready")
         _clear_repair_metadata(driver)
         _drop_repair_schema(driver)
-        prepared = True
+        _repository(driver)
+        _clear_repair_metadata(driver)
         yield driver
     finally:
         try:
-            if prepared:
-                _clear_repair_metadata(driver)
             if connected:
-                _drop_repair_schema(driver)
+                try:
+                    _clear_repair_metadata(driver)
+                finally:
+                    _drop_repair_schema(driver)
         finally:
             driver.close()
+
+
+@pytest.fixture(autouse=True)
+def _reset_neo4j_ledger_test_state(request: pytest.FixtureRequest) -> Iterator[None]:
+    """Keep fixture data isolated while retaining static schema for the session."""
+    if "neo4j_driver" not in request.fixturenames:
+        yield
+        return
+
+    driver = request.getfixturevalue("neo4j_driver")
+    _clear_repair_metadata(driver)
+    try:
+        yield
+    finally:
+        _clear_repair_metadata(driver)
+        if not _repair_schema_is_exact(driver):
+            _drop_repair_schema(driver)
+            _repository(driver)
 
 
 def _client(driver: Driver) -> _Client:
