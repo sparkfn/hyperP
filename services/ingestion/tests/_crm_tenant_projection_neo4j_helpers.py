@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import os
 from collections.abc import Callable, Iterator
-from contextlib import contextmanager
+from contextlib import contextmanager, suppress
 from dataclasses import dataclass
 from typing import TypeVar, cast
 from urllib.parse import urlparse
@@ -26,6 +26,9 @@ from src.crm_tenant_projection_models import (
 )
 from src.graph import crm_tenant_projection as projection_graph
 from src.graph.client import Neo4jClient
+from src.graph.queries.standalone_crm_census import (
+    CREATE_STANDALONE_CRM_CENSUS_CONSTRAINTS,
+)
 from src.graph.queries.standalone_crm_lane_a_contracts import (
     CREATE_STANDALONE_CRM_LANE_A_CONSTRAINTS,
 )
@@ -58,6 +61,10 @@ _CONSTRAINTS = tuple(
     statement
     for statement in CREATE_STANDALONE_CRM_LANE_A_CONSTRAINTS
     if "crm_tenant_" in statement or "crm_company_membership_" in statement
+) + tuple(
+    statement
+    for statement in CREATE_STANDALONE_CRM_CENSUS_CONSTRAINTS
+    if "standalone_crm_checkpoint_unique" in statement
 )
 
 
@@ -90,8 +97,10 @@ class _Client:
             return session.execute_write(work)
 
 
-@pytest.fixture
-def neo4j_driver() -> Iterator[Driver]:
+_module_driver: Driver | None = None
+
+
+def _open_schema_driver() -> Driver:
     uri = os.getenv("HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_URI")
     password = os.getenv("HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD")
     if uri is None or password is None:
@@ -105,27 +114,85 @@ def neo4j_driver() -> Iterator[Driver]:
     driver = GraphDatabase.driver(
         uri, auth=(os.getenv("HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_USER", "neo4j"), password)
     )
-    setup_complete = False
     try:
         driver.verify_connectivity()
         _reset(driver)
-        with driver.session() as session:
-            for statement in _CONSTRAINTS:
-                session.run(statement).consume()
-        setup_complete = True
-        yield driver
-    finally:
-        if setup_complete:
+        _create_schema(driver)
+    except BaseException:
+        with suppress(Exception):
             _reset(driver)
+        driver.close()
+        raise
+    return driver
+
+
+def _close_schema_driver() -> None:
+    global _module_driver
+    driver = _module_driver
+    _module_driver = None
+    if driver is None:
+        return
+    try:
+        _reset(driver)
+    finally:
         driver.close()
 
 
+def _module_schema_driver(request: pytest.FixtureRequest) -> Driver:
+    global _module_driver
+    if _module_driver is None:
+        _module_driver = _open_schema_driver()
+        try:
+            request.node.parent.addfinalizer(_close_schema_driver)
+        except BaseException:
+            _close_schema_driver()
+            raise
+    return _module_driver
+
+
+@pytest.fixture
+def neo4j_driver(request: pytest.FixtureRequest) -> Iterator[Driver]:
+    driver = _module_schema_driver(request)
+    _clear_data(driver)
+    try:
+        yield driver
+    finally:
+        try:
+            _clear_data(driver)
+        finally:
+            _restore_schema(driver)
+
+
 def _reset(driver: Driver) -> None:
+    _drop_schema(driver)
+    _clear_data(driver)
+
+
+def _create_schema(driver: Driver) -> None:
+    with driver.session() as session:
+        for statement in _CONSTRAINTS:
+            session.run(statement).consume()
+
+
+def _restore_schema(driver: Driver) -> None:
+    with driver.session() as session:
+        existing_names = set(session.run("SHOW CONSTRAINTS YIELD name RETURN name").value("name"))
+        existing_names.update(session.run("SHOW INDEXES YIELD name RETURN name").value("name"))
+        for statement in _CONSTRAINTS:
+            if statement.split()[2] not in existing_names:
+                session.run(statement).consume()
+
+
+def _drop_schema(driver: Driver) -> None:
     with driver.session() as session:
         for statement in _CONSTRAINTS:
             name = statement.split()[2]
             kind = "CONSTRAINT" if "CONSTRAINT" in statement else "INDEX"
             session.run(f"DROP {kind} {name} IF EXISTS").consume()
+
+
+def _clear_data(driver: Driver) -> None:
+    with driver.session() as session:
         session.run(
             "MATCH (node) WHERE any(label IN labels(node) WHERE label IN $labels) "
             "DETACH DELETE node",
