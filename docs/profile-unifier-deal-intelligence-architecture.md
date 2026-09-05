@@ -19,8 +19,9 @@ evaluation, schedules, or live execution, or change HyperP API/frontend/ingestio
 The `intelligence` CLI owns a WAL-mode SQLite database, schema version, runs, cancellation,
 accepted-output registration, a durable exclusive mutation lock, heartbeat, monotonically
 increasing fence, terminal manifests, and backups. A production registry is empty. A reviewed
-handler runs only in a parent-supervised spawned child process: the parent enforces cancellation
-and the configured runtime bound by terminating that child. No executable, shell input, plugin
+handler runs only in a parent-supervised spawned child process/session: the parent enforces
+cancellation, aggregate staging limits, and the configured runtime bound by terminating the whole
+group. Raw child stdout/stderr is suppressed. No executable, shell input, plugin
 discovery, raw environment, or arbitrary arguments are admitted or persisted.
 
 Mutations are disabled by default. An active healthy lock cannot be recovered. A stale lock makes

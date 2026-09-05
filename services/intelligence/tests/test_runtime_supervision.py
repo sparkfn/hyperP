@@ -40,7 +40,7 @@ def cancellation_handler(directory: Path, cancelled: Cancelled) -> None:
         time.sleep(0.01)
 
 
-def _runtime(tmp_path: Path, handler: CommandHandler, timeout: int = 1) -> IntelligenceRuntime:
+def _runtime(tmp_path: Path, handler: CommandHandler, timeout: int = 5) -> IntelligenceRuntime:
     command = RegisteredCommand("approved", True, handler, {})
     return IntelligenceRuntime(
         RuntimeConfig(tmp_path, mutations_enabled=True, max_runtime_seconds=timeout),
@@ -83,7 +83,7 @@ def test_spawn_failure_terminalizes_failed(tmp_path: Path) -> None:
 
 def test_spawn_timeout_terminates_uncooperative_handler(tmp_path: Path) -> None:
     """Configured timeout is parent-enforced even when handler never returns."""
-    runtime = _runtime(tmp_path, uncooperative_handler)
+    runtime = _runtime(tmp_path, uncooperative_handler, timeout=1)
     started = time.monotonic()
     run_id = runtime.run("approved")
     assert time.monotonic() - started < 4
@@ -107,9 +107,9 @@ def test_second_connection_cancellation_terminates_child(tmp_path: Path) -> None
         finally:
             runtime.close()
 
+    observer = State(tmp_path)
     worker = Thread(target=invoke)
     worker.start()
-    observer = State(tmp_path)
     try:
         deadline = time.monotonic() + 5
         active = observer.active_run()

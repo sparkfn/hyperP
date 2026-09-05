@@ -33,8 +33,8 @@ is sales. Built on Neo4j for native graph traversal.
 - [Sales Prediction Feasibility Discovery](./docs/profile-unifier-sales-prediction-discovery.md)
 - [CRM History Authority Contract](./docs/profile-unifier-crm-history-authority.md)
 - [Person CRM Metrics Design](./docs/profile-unifier-person-crm-metrics.md)
-- [Intelligence Runtime Architecture](./docs/profile-unifier-deal-intelligence-architecture.md)
-- [Intelligence Operations](./docs/profile-unifier-intelligence-operations.md)
+- [Intelligence Runtime Architecture (single-container foundation)](./docs/profile-unifier-deal-intelligence-architecture.md)
+- [Intelligence Operations and Recovery](./docs/profile-unifier-intelligence-operations.md)
 - [CRM-deal Identity Remediation Inventory](./docs/profile-unifier-crm-deal-identity-remediation.md)
 
 ## Recommended Reading Order
@@ -57,8 +57,9 @@ is sales. Built on Neo4j for native graph traversal.
 16. Sales Prediction Feasibility Discovery
 17. CRM History Authority Contract
 18. Person CRM Metrics Design
-19. Deal Intelligence Architecture
-20. CRM-deal Identity Remediation Inventory
+19. Intelligence Runtime Architecture (single-container foundation)
+20. Intelligence Operations and Recovery
+21. CRM-deal Identity Remediation Inventory
 
 ## Current Scope
 
