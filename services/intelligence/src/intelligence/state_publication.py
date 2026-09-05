@@ -51,6 +51,8 @@ def _row_to_run(row: sqlite3.Row) -> Run:
         None if row["started_at"] is None else float(row["started_at"]),
         None if row["ended_at"] is None else float(row["ended_at"]),
         limits,
+        None if row["runtime_epoch"] is None else str(row["runtime_epoch"]),
+        bool(row["cleanup_unresolved"]),
     )
 
 

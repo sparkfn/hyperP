@@ -120,6 +120,7 @@ class IntelligenceRuntime:
             self._finish(run, "completed", published, None, publication=True)
             return run.run_id
         except CleanupUnresolvedError:
+            self.state.mark_cleanup_unresolved(run)
             raise
         except BaseException:
             terminal_state = self._terminal_state(run.run_id, started, failed=True)
@@ -271,6 +272,7 @@ class IntelligenceRuntime:
                 "max_runtime_seconds": self.config.max_runtime_seconds,
             },
             run_log=run_log_inventory(self.config.workspace, run.run_id),
+            legacy_unknown_limits=not bool(run.limits),
         )
 
     def _precreated_manifest_exists(self, run_id: str) -> bool:
@@ -281,12 +283,14 @@ class IntelligenceRuntime:
         return True
 
     def _log(self, run: Run, event: str, details: dict[str, str]) -> None:
+        limits = dict(run.limits)
+        maximum = limits.get("max_log_bytes", self.config.max_log_bytes)
         append_run_log(
             self.config.workspace,
             run.run_id,
             event,
             details,
-            self.config.max_log_bytes,
+            maximum,
             command=run.command,
         )
 

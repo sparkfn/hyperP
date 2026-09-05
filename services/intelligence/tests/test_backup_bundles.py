@@ -57,6 +57,69 @@ def test_bundle_contains_snapshot_manifest_and_accepted_evidence(tmp_path: Path)
         state.close()
 
 
+def test_actual_v4_bundle_snapshot_remains_verifiable(tmp_path: Path) -> None:
+    """The pre-v5 bundle envelope and snapshot format remain directly supported."""
+    state, bundle, _ = _bundle(tmp_path)
+    legacy = tmp_path / "legacy-v4.bundle"
+    shutil.copytree(bundle, legacy)
+    snapshot = legacy / "state.sqlite3"
+    connection = sqlite3.connect(snapshot)
+    try:
+        connection.execute("ALTER TABLE runs DROP COLUMN limits_json")
+        connection.execute("ALTER TABLE runs DROP COLUMN runtime_epoch")
+        connection.execute("ALTER TABLE runs DROP COLUMN cleanup_unresolved")
+        connection.execute("UPDATE metadata SET value = '4' WHERE key = 'schema_version'")
+        connection.commit()
+    finally:
+        connection.close()
+    bundle_manifest = json.loads((legacy / "manifest.json").read_text(encoding="utf-8"))
+    legacy_manifest = {
+        "schema_version": 4,
+        "state_snapshot": {
+            "path": "state.sqlite3",
+            "sha256": sha256_file(snapshot),
+            "byte_count": snapshot.stat().st_size,
+        },
+        "evidence": bundle_manifest["evidence"],
+    }
+    (legacy / "manifest.json").write_text(canonical_json(legacy_manifest), encoding="utf-8")
+    try:
+        state.verify_backup(legacy)
+    finally:
+        state.close()
+
+
+def test_actual_v5_old_envelope_bundle_remains_verifiable(tmp_path: Path) -> None:
+    """Head cb589a9 old-envelope v5 bundles remain verifiable after schema v6."""
+    state, bundle, _ = _bundle(tmp_path)
+    legacy = tmp_path / "legacy-v5.bundle"
+    shutil.copytree(bundle, legacy)
+    snapshot = legacy / "state.sqlite3"
+    connection = sqlite3.connect(snapshot)
+    try:
+        connection.execute("ALTER TABLE runs DROP COLUMN runtime_epoch")
+        connection.execute("ALTER TABLE runs DROP COLUMN cleanup_unresolved")
+        connection.execute("UPDATE metadata SET value = '5' WHERE key = 'schema_version'")
+        connection.commit()
+    finally:
+        connection.close()
+    bundle_manifest = json.loads((legacy / "manifest.json").read_text(encoding="utf-8"))
+    legacy_manifest = {
+        "schema_version": 5,
+        "state_snapshot": {
+            "path": "state.sqlite3",
+            "sha256": sha256_file(snapshot),
+            "byte_count": snapshot.stat().st_size,
+        },
+        "evidence": bundle_manifest["evidence"],
+    }
+    (legacy / "manifest.json").write_text(canonical_json(legacy_manifest), encoding="utf-8")
+    try:
+        state.verify_backup(legacy)
+    finally:
+        state.close()
+
+
 def test_bundle_survives_state_reopen(tmp_path: Path) -> None:
     """Backup verification does not depend on the creating SQLite connection."""
     state, bundle, _ = _bundle(tmp_path)

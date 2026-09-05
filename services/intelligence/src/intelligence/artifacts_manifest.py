@@ -65,6 +65,7 @@ def write_manifest(
     ended_at: float | None = None,
     limits: Mapping[str, int] | None = None,
     run_log: RunLogInventory | None = None,
+    legacy_unknown_limits: bool = False,
 ) -> dict[str, object]:
     """Write one canonical secret-free terminal manifest, accepting identical retries."""
     _validate_run_id(run_id)
@@ -73,8 +74,11 @@ def write_manifest(
         _validate_public_text(reason, "manifest reason")
     all_outputs = tuple(outputs) if outputs else (() if output is None else (output,))
     now = time.time() if ended_at is None else ended_at
+    schema_version = (
+        LEGACY_MANIFEST_SCHEMA_VERSION if legacy_unknown_limits else MANIFEST_SCHEMA_VERSION
+    )
     value: dict[str, object] = {
-        "schema_version": MANIFEST_SCHEMA_VERSION,
+        "schema_version": schema_version,
         "run_id": run_id,
         "command": command,
         "created_at": created_at if created_at is not None else now,
@@ -85,7 +89,9 @@ def write_manifest(
         else now,
         "ended_at": now,
         "state": state,
-        "limits": dict(sorted((limits or DEFAULT_MANIFEST_LIMITS).items())),
+        "limits": dict(
+            sorted(({} if legacy_unknown_limits else limits or DEFAULT_MANIFEST_LIMITS).items())
+        ),
         "outputs": [
             {"byte_count": item.byte_count, "path": item.relative_path, "sha256": item.sha256}
             for item in sorted(all_outputs, key=lambda item: item.relative_path)

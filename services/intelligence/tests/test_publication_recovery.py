@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
 
 import pytest
@@ -12,6 +13,7 @@ from intelligence.artifacts import (
     publish_inventory,
     scan_staged_outputs,
     sha256_file,
+    workspace_layout,
     write_manifest,
 )
 from intelligence.config import RuntimeConfig
@@ -247,6 +249,111 @@ def test_legacy_v1_custom_limits_reused_during_lock_free_startup(tmp_path: Path)
             )["limits"]
             == legacy["limits"]
         )
+    finally:
+        runtime.close()
+
+
+def test_unknown_limits_recovery_evidence_does_not_claim_defaults(tmp_path: Path) -> None:
+    """A migrated active row emits explicit schema-v1 unknown-limit evidence."""
+    state = State(tmp_path)
+    run = state.create_mutating_run("approved")
+    state.connection.execute("UPDATE runs SET limits_json = NULL WHERE id = ?", (run.run_id,))
+    (state.layout.manifests / f"{run.run_id}.json").unlink(missing_ok=True)
+    state.connection.execute("UPDATE mutation_lock SET heartbeat_at = 0 WHERE singleton = 1")
+    state.close()
+    recreated = State(tmp_path, runtime_epoch="recreated-container")
+    try:
+        recreated.recover_stale(run.run_id, "v4 recovery", 1)
+        evidence = json.loads(
+            (recreated.layout.manifests / f"{run.run_id}.json").read_text(encoding="utf-8")
+        )
+        assert evidence["schema_version"] == 1
+        assert evidence["limits"] == {}
+    finally:
+        recreated.close()
+
+
+@pytest.mark.parametrize("run_state", ("running", "publishing"))
+def test_actual_v4_active_rows_emit_unknown_limit_evidence(tmp_path: Path, run_state: str) -> None:
+    """Real schema-v4 active rows recover without fabricating effective limits."""
+    layout = workspace_layout(tmp_path)
+    connection = sqlite3.connect(layout.state_database)
+    connection.executescript(
+        """
+        CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO metadata(key, value) VALUES('schema_version', '4');
+        CREATE TABLE runs (
+            id TEXT PRIMARY KEY, command TEXT NOT NULL, state TEXT NOT NULL,
+            fence INTEGER NOT NULL, created_at REAL NOT NULL, heartbeat_at REAL,
+            cancellation_requested INTEGER NOT NULL DEFAULT 0, recovery_reason TEXT,
+            manifest_json TEXT, publishing_inventory_json TEXT, started_at REAL, ended_at REAL
+        );
+        CREATE TABLE mutation_lock (
+            singleton INTEGER PRIMARY KEY CHECK(singleton = 1), run_id TEXT,
+            fence INTEGER NOT NULL DEFAULT 0, heartbeat_at REAL
+        );
+        CREATE TABLE accepted_outputs (
+            relative_path TEXT PRIMARY KEY, run_id TEXT NOT NULL,
+            sha256 TEXT NOT NULL, byte_count INTEGER NOT NULL
+        );
+        """,
+    )
+    connection.execute(
+        "INSERT INTO mutation_lock(singleton, run_id, fence, heartbeat_at) "
+        "VALUES(1, 'legacy-active', 1, 0)"
+    )
+    connection.execute(
+        "INSERT INTO runs(id, command, state, fence, created_at, heartbeat_at, started_at, "
+        "publishing_inventory_json) VALUES(?, 'approved', ?, 1, 1, 0, 1, ?)",
+        ("legacy-active", run_state, "[]" if run_state == "publishing" else None),
+    )
+    connection.commit()
+    connection.close()
+    state = State(tmp_path, runtime_epoch="recreated-container")
+    try:
+        state.recover_stale("legacy-active", "v4 recovery", 1)
+        evidence = json.loads(
+            (state.layout.manifests / "legacy-active.json").read_text(encoding="utf-8")
+        )
+        assert evidence["schema_version"] == 1
+        assert evidence["limits"] == {}
+    finally:
+        state.close()
+
+
+def test_recovery_log_cap_uses_persisted_admission_limit(tmp_path: Path) -> None:
+    """Startup reconciliation does not replace a small admitted log cap with config."""
+    state = State(tmp_path)
+    run = state.create_mutating_run(
+        "approved",
+        {
+            "max_log_bytes": 350,
+            "max_output_bytes": 1000,
+            "max_output_entries": 10,
+            "max_runtime_seconds": 30,
+        },
+    )
+    (state.layout.staging / run.run_id).mkdir()
+    (state.layout.staging / run.run_id / "result.json").write_text("{}", encoding="utf-8")
+    inventory = scan_staged_outputs(tmp_path, run.run_id, 1000)
+    state.begin_publishing(run, inventory)
+    state.connection.execute("UPDATE mutation_lock SET run_id = NULL, heartbeat_at = NULL")
+    from intelligence.artifacts import append_run_log
+
+    append_run_log(
+        tmp_path,
+        run.run_id,
+        "padding",
+        {"value": "x" * 260},
+        350,
+        command=run.command,
+    )
+    state.close()
+    runtime = IntelligenceRuntime(RuntimeConfig(tmp_path, max_log_bytes=10_000), Registry())
+    try:
+        log_path = runtime.state.layout.logs / f"{run.run_id}.ndjson"
+        assert log_path.stat().st_size <= 350
+        assert runtime.state.inspect(run.run_id) is not None
     finally:
         runtime.close()
 

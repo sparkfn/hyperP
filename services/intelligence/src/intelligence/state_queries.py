@@ -61,6 +61,8 @@ def health(
         return Health(True, None)
     if current is None:
         return Health(False, "mutation lock owner is corrupt")
+    if current.cleanup_unresolved:
+        return Health(False, "cleanup-unresolved execution requires container recreation")
     if any(str(item["id"]) != current.run_id for item in publishing):
         return Health(False, "unresolved orphaned publication requires reconciliation")
     heartbeat = row["heartbeat_at"]
