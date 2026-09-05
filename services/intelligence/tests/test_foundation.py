@@ -282,6 +282,49 @@ def test_pre_v6_active_migration_waits_for_trusted_epoch(tmp_path: Path) -> None
         connection.close()
 
 
+def test_malformed_legacy_migration_rolls_back_everything(tmp_path: Path) -> None:
+    """A legacy migration validation failure cannot strand a partially upgraded DB."""
+    layout = workspace_layout(tmp_path)
+    connection = sqlite3.connect(layout.state_database, isolation_level=None)
+    connection.executescript(
+        """
+        CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO metadata(key, value) VALUES('schema_version', '6');
+        CREATE TABLE runs (
+            id TEXT PRIMARY KEY, command TEXT NOT NULL, state TEXT NOT NULL,
+            fence INTEGER NOT NULL, created_at REAL NOT NULL, heartbeat_at REAL,
+            cancellation_requested INTEGER NOT NULL DEFAULT 0, recovery_reason TEXT,
+            manifest_json TEXT, publishing_inventory_json TEXT, started_at REAL,
+            ended_at REAL, limits_json TEXT, runtime_epoch TEXT,
+            cleanup_unresolved INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE mutation_lock (
+            singleton INTEGER PRIMARY KEY CHECK(singleton = 1), run_id TEXT,
+            fence INTEGER NOT NULL DEFAULT 0, heartbeat_at REAL
+        );
+        """
+    )
+    before = layout.state_database.read_bytes()
+    connection.close()
+    with pytest.raises(RuntimeError, match="incomplete"):
+        State(tmp_path, runtime_epoch="trusted-epoch")
+    assert layout.state_database.read_bytes() == before
+    check = sqlite3.connect(layout.state_database)
+    try:
+        assert (
+            check.execute("SELECT value FROM metadata WHERE key = 'schema_version'").fetchone()[0]
+            == "6"
+        )
+        assert (
+            check.execute("SELECT 1 FROM metadata WHERE key = 'legacy_schema_migration'").fetchone()
+            is None
+        )
+        columns = {str(row[1]) for row in check.execute("PRAGMA table_info(runs)")}
+        assert "execution_may_be_alive" not in columns
+    finally:
+        check.close()
+
+
 def test_schema_v6_active_run_migration_keeps_execution_fence(tmp_path: Path) -> None:
     """A pre-v7 active run remains unsafe until a trusted epoch changes."""
     layout = workspace_layout(tmp_path)
