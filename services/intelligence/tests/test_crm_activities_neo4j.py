@@ -244,15 +244,33 @@ def test_reference_fanout_preflight_rejects_each_bounded_reference_type_without_
               source_instance_id: $source_instance, record_type: 'crm_history',
               lifecycle_status: 'active', history_family: 'activity'
             })-[:FROM_SOURCE]->(source)
-            CREATE (child_parent_a:SourceRecord {fixture_id: $fixture_id})
-            CREATE (child_parent_b:SourceRecord {fixture_id: $fixture_id})
-            CREATE (child_parent_c:SourceRecord {fixture_id: $fixture_id})
+            CREATE (child_parent_a:SourceRecord {fixture_id: $fixture_id,
+              source_record_pk: 'child-parent-a-' + $fixture_id,
+              source_instance_id: $source_instance,
+              source_record_id: 'child-parent-a', record_type: 'crm_history'})
+            CREATE (child_parent_b:SourceRecord {fixture_id: $fixture_id,
+              source_record_pk: 'child-parent-b-' + $fixture_id,
+              source_instance_id: $source_instance,
+              source_record_id: 'child-parent-b', record_type: 'crm_history'})
+            CREATE (child_parent_c:SourceRecord {fixture_id: $fixture_id,
+              source_record_pk: 'child-parent-c-' + $fixture_id,
+              source_instance_id: $source_instance,
+              source_record_id: 'child-parent-c', record_type: 'crm_history'})
             CREATE (child)-[:CHILD_OF]->(child_parent_a)
             CREATE (child)-[:CHILD_OF]->(child_parent_b)
             CREATE (child)-[:CHILD_OF]->(child_parent_c)
-            CREATE (details_parent_a:SourceRecord {fixture_id: $fixture_id})
-            CREATE (details_parent_b:SourceRecord {fixture_id: $fixture_id})
-            CREATE (details_parent_c:SourceRecord {fixture_id: $fixture_id})
+            CREATE (details_parent_a:SourceRecord {fixture_id: $fixture_id,
+              source_record_pk: 'details-parent-a-' + $fixture_id,
+              source_instance_id: $source_instance,
+              source_record_id: 'details-parent-a', record_type: 'crm_history'})
+            CREATE (details_parent_b:SourceRecord {fixture_id: $fixture_id,
+              source_record_pk: 'details-parent-b-' + $fixture_id,
+              source_instance_id: $source_instance,
+              source_record_id: 'details-parent-b', record_type: 'crm_history'})
+            CREATE (details_parent_c:SourceRecord {fixture_id: $fixture_id,
+              source_record_pk: 'details-parent-c-' + $fixture_id,
+              source_instance_id: $source_instance,
+              source_record_id: 'details-parent-c', record_type: 'crm_history'})
             CREATE (details)-[:DETAILS_HISTORY_ITEM]->(details_parent_a)
             CREATE (details)-[:DETAILS_HISTORY_ITEM]->(details_parent_b)
             CREATE (details)-[:DETAILS_HISTORY_ITEM]->(details_parent_c)

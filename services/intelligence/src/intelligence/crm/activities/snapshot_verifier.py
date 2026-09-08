@@ -232,8 +232,11 @@ def _inventory_paths(snapshot: Path) -> set[Path]:
 
 
 def _json_object(path: Path, field: str) -> Mapping[str, object]:
-    raw = path.read_bytes()
-    value = _object(_read_json(path), field)
+    try:
+        raw = path.read_bytes()
+        value = _object(_read_json(path), field)
+    except FileNotFoundError as error:
+        raise ValueError(f"{field} is missing") from error
     if raw != canonical_json(dict(value)).encode("utf-8"):
         raise ValueError("snapshot JSON is not canonical")
     return value

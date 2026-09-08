@@ -30,10 +30,11 @@ def candidate_history(
         return ()
     names: list[str] = []
     try:
-        for path in sorted(root.iterdir(), key=lambda item: item.name):
+        for path in root.iterdir():
             budget.add_entry()
             if path.name.startswith(prefix):
                 names.append(path.name)
+        names.sort()
     except OSError as error:
         raise ValueError("candidate history could not be read") from error
     values: list[tuple[str, dict[str, object]]] = []

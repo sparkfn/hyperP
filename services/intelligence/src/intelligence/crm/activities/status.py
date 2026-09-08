@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sqlite3
 from collections.abc import Mapping
 from dataclasses import dataclass
 from pathlib import Path
@@ -37,7 +38,7 @@ from intelligence.crm.activities.models import (
     validate_snapshot_id,
 )
 from intelligence.models import OutputInventory, Run
-from intelligence.state import State
+from intelligence.state_readonly import ReadOnlyState
 
 _MANIFEST_KEYS = {
     "schema_version",
@@ -62,6 +63,16 @@ class StateReader(Protocol):
     def accepted_outputs(self, run_id: str) -> tuple[OutputInventory, ...]: ...
 
 
+class _UnavailableState:
+    def inspect(self, run_id: str) -> Run | None:
+        del run_id
+        return None
+
+    def accepted_outputs(self, run_id: str) -> tuple[OutputInventory, ...]:
+        del run_id
+        return ()
+
+
 @dataclass(frozen=True)
 class _StatusConfig:
     workspace: Path
@@ -84,15 +95,30 @@ def status(
     root = checkpoint_root(workspace, checkpoint_id)
     if root is None:
         return {"checkpoint_id": checkpoint_id, "state": "absent"}
-    owned_state = state is None
-    reader: StateReader = State(workspace) if state is None else state
+    reader, state_store = _state_reader(workspace, state)
     try:
-        return _status_from_root(workspace, checkpoint_id, root, limits, reader)
+        return _status_from_root(
+            workspace,
+            checkpoint_id,
+            root,
+            limits,
+            reader,
+            state_store,
+        )
     finally:
-        if owned_state:
-            if not isinstance(reader, State):
-                raise AssertionError("owned status State has an invalid type")
+        if isinstance(reader, ReadOnlyState):
             reader.close()
+
+
+def _state_reader(workspace: Path, state: StateReader | None) -> tuple[StateReader, str]:
+    if state is not None:
+        return state, "provided"
+    try:
+        return ReadOnlyState.open(workspace), "available"
+    except FileNotFoundError:
+        return _UnavailableState(), "absent"
+    except (OSError, ValueError, sqlite3.Error):
+        return _UnavailableState(), "incompatible"
 
 
 def _status_from_root(
@@ -101,6 +127,7 @@ def _status_from_root(
     root: Path,
     limits: ReadLimits,
     state: StateReader,
+    state_store: str,
 ) -> dict[str, object]:
     budget = ReadBudget(limits)
     state_value = _state(_required(root, "checkpoint.json", budget))
@@ -138,6 +165,7 @@ def _status_from_root(
         "snapshot_id": None if manifest is None else manifest.get("snapshot_id"),
         "source_instance_id": source_instance,
         "state": state_value,
+        "state_store": state_store,
         "boundary_digest": None if boundary is None else boundary.digest,
         "disposition_counts": _outcome_counts(outcomes),
         "duplicate_delivery_count": 0,
