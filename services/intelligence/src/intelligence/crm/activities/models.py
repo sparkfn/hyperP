@@ -3,10 +3,9 @@
 from __future__ import annotations
 
 import hashlib
-import json
 import re
-from dataclasses import asdict, dataclass
-from typing import Literal, cast
+from dataclasses import dataclass
+from typing import Literal
 
 from intelligence.artifacts import canonical_json
 
@@ -75,7 +74,17 @@ class ArchiveRequest:
             raise ValueError("archive limits are outside approved bounds")
 
     def as_public_dict(self) -> dict[str, object]:
-        return asdict(self)
+        return {
+            "snapshot_id": self.snapshot_id,
+            "source_instance_id": self.source_instance_id,
+            "source_key": self.source_key,
+            "page_size": self.page_size,
+            "max_rows": self.max_rows,
+            "max_pages": self.max_pages,
+            "database_identity": self.database_identity,
+            "selection_contract_version": self.selection_contract_version,
+            "max_references_per_record": self.max_references_per_record,
+        }
 
 
 @dataclass(frozen=True)
@@ -210,18 +219,42 @@ class ArchiveRecord:
     def reference_fingerprint(self) -> str:
         return sha256_json(
             {
-                "stored_parent": asdict(self.stored_parent),
-                "child_parents": [asdict(item) for item in self.child_parents],
-                "details_parents": [asdict(item) for item in self.details_parents],
-                "people": [asdict(item) for item in self.people],
+                "stored_parent": _parent_dict(self.stored_parent),
+                "child_parents": [_parent_dict(item) for item in self.child_parents],
+                "details_parents": [_parent_dict(item) for item in self.details_parents],
+                "people": [_person_dict(item) for item in self.people],
                 "user_capabilities": list(self.user_capabilities),
             }
         )
 
     def as_dict(self) -> dict[str, object]:
-        payload = cast(dict[str, object], json.loads(canonical_json(asdict(self))))
-        payload["reference_fingerprint"] = self.reference_fingerprint()
-        return payload
+        return {
+            "source_record_pk": self.source_record_pk,
+            "source_record_id": self.source_record_id,
+            "source_record_version": self.source_record_version,
+            "source_version_key": self.source_version_key,
+            "record_hash": self.record_hash,
+            "source_instance_id": self.source_instance_id,
+            "source_key": self.source_key,
+            "record_type": self.record_type,
+            "lifecycle_status": self.lifecycle_status,
+            "history_family": self.history_family,
+            "history_kind": self.history_kind,
+            "history_source": self.history_source,
+            "projection_version": self.projection_version,
+            "projection_source": self.projection_source,
+            "event_at": self.event_at,
+            "observed_at": self.observed_at,
+            "available_at": self.available_at,
+            "stored_parent": _parent_dict(self.stored_parent),
+            "child_parents": [_parent_dict(item) for item in self.child_parents],
+            "details_parents": [_parent_dict(item) for item in self.details_parents],
+            "people": [_person_dict(item) for item in self.people],
+            "user_capabilities": list(self.user_capabilities),
+            "ingested_at": self.ingested_at,
+            "link_status": self.link_status,
+            "reference_fingerprint": self.reference_fingerprint(),
+        }
 
     def digest(self) -> str:
         return sha256_json(self.as_dict())
@@ -273,7 +306,8 @@ class SealedBoundary:
                 "source_key": self.request.source_key,
                 "database_identity": self.request.database_identity,
                 "selection_contract_version": self.request.selection_contract_version,
-                "entries": [asdict(item) for item in self.entries],
+                "max_references_per_record": self.request.max_references_per_record,
+                "entries": [_boundary_entry_dict(item) for item in self.entries],
             }
         )
 
@@ -285,7 +319,7 @@ class SealedBoundary:
         return {
             "schema_version": self.schema_version,
             "request": self.request.as_public_dict(),
-            "entries": [asdict(item) for item in self.entries],
+            "entries": [_boundary_entry_dict(item) for item in self.entries],
             "digest": self.digest,
         }
 
@@ -306,3 +340,32 @@ class Disposition:
             if self.reason_code is None:
                 raise ValueError("non-accepted disposition requires a reason")
             _id(self.reason_code, "disposition reason")
+
+
+def _parent_dict(reference: ParentReference) -> dict[str, str | None]:
+    return {
+        "source_record_pk": reference.source_record_pk,
+        "source_instance_id": reference.source_instance_id,
+        "source_record_id": reference.source_record_id,
+        "record_type": reference.record_type,
+        "relationship": reference.relationship,
+        "source_system": reference.source_system,
+    }
+
+
+def _person_dict(reference: PersonReference) -> dict[str, str | None]:
+    return {
+        "person_id": reference.person_id,
+        "status": reference.status,
+        "revision": reference.revision,
+        "association_source_record_pk": reference.association_source_record_pk,
+    }
+
+
+def _boundary_entry_dict(entry: BoundaryEntry) -> dict[str, str]:
+    return {
+        "source_record_pk": entry.source_record_pk,
+        "record_type": entry.record_type,
+        "record_digest": entry.record_digest,
+        "reference_fingerprint": entry.reference_fingerprint,
+    }

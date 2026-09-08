@@ -8,6 +8,14 @@ from typing import Literal
 
 from intelligence.artifacts_staging import scan_staged_outputs
 from intelligence.crm.activities import checkpoints
+from intelligence.crm.activities.acceptance import (
+    AcceptanceDescriptor,
+    PublicationPointer,
+    publication_candidate,
+    publication_candidate_name,
+    publication_descriptor,
+    write_publication_descriptor,
+)
 from intelligence.crm.activities.bounded import ReadLimits
 from intelligence.crm.activities.checkpoint_limits import CheckpointLimits
 from intelligence.crm.activities.config import CrmActivitiesConfig
@@ -23,6 +31,7 @@ from intelligence.crm.activities.models import (
 )
 from intelligence.crm.activities.reconciliation import capture, seal, verify_boundary, verify_page
 from intelligence.crm.activities.verification import verify_accepted
+from intelligence.models import OutputInventory
 from intelligence.registry import Cancelled, RegisteredCommand, Registry
 from intelligence.repositories.neo4j.crm_activities import Neo4jCrmActivitiesRepository
 from intelligence.repositories.protocols.crm_activities import CrmActivitiesRepository
@@ -59,10 +68,9 @@ def registry(
 
 
 def verification_registry(
-    checkpoint_id: str,
-    snapshot_id: str,
-    accepted_run_id: str,
-    accepted_manifest_digest: str,
+    descriptor: AcceptanceDescriptor,
+    pointer: PublicationPointer,
+    trusted_accepted_outputs: tuple[OutputInventory, ...],
     checkpoint_limits: CheckpointLimits,
     input_limits: ReadLimits,
     output_maximum_bytes: int,
@@ -70,10 +78,9 @@ def verification_registry(
 ) -> Registry:
     handler = partial(
         _verify_handler,
-        checkpoint_id,
-        snapshot_id,
-        accepted_run_id,
-        accepted_manifest_digest,
+        descriptor,
+        pointer,
+        trusted_accepted_outputs,
         checkpoint_limits,
         input_limits,
         output_maximum_bytes,
@@ -86,7 +93,7 @@ def verification_registry(
         {
             "domain": "crm_activities",
             "operation": "verify",
-            "snapshot_id": snapshot_id,
+            "snapshot_id": descriptor.snapshot_id,
         },
     )
     return Registry((command,))
@@ -121,7 +128,8 @@ def _archive_handler(
             {"outcomes": outcome_values, "digest": sha256_json(outcome_values)},
             limits,
         )
-        _write_checkpoint_pages(checkpoint, boundary, records, outcomes, limits, cancelled)
+        cursor = checkpoints.resume_cursor(checkpoint, request, boundary, limits)
+        _write_checkpoint_pages(checkpoint, boundary, records, outcomes, cursor, limits, cancelled)
         verify_boundary(repository, boundary)
         manifest = write_snapshot(run_staging, boundary, records, outcomes)
         checkpoints.write_evidence(checkpoint, "accepted-manifest.json", manifest, limits)
@@ -131,19 +139,27 @@ def _archive_handler(
             config.max_checkpoint_bytes,
             config.max_checkpoint_entries,
         )
+        snapshot_inventory = tuple(
+            item
+            for item in inventory
+            if item.relative_path.startswith(f"snapshots/crm/activities/{manifest['snapshot_id']}/")
+        )
+        descriptor = publication_descriptor(
+            request.snapshot_id,
+            request,
+            boundary.digest,
+            run_staging.name,
+            f"crm_activities_{operation}",
+            str(manifest["snapshot_id"]),
+            str(manifest["digest"]),
+            str(manifest["cleanup_identity_digest"]),
+            snapshot_inventory,
+        )
+        pointer = write_publication_descriptor(run_staging, descriptor)
         checkpoints.write_evidence(
             checkpoint,
-            "publication-candidate.json",
-            {
-                "checkpoint_id": request.snapshot_id,
-                "request": request.as_public_dict(),
-                "boundary_digest": boundary.digest,
-                "run_id": run_staging.name,
-                "snapshot_id": manifest["snapshot_id"],
-                "manifest_digest": manifest["digest"],
-                "cleanup_identity_digest": manifest["cleanup_identity_digest"],
-                "inventory": [item.__dict__ for item in inventory],
-            },
+            publication_candidate_name(run_staging.name),
+            publication_candidate(pointer),
             limits,
         )
         checkpoints.complete(checkpoint, boundary.digest, _page_count(boundary), limits)
@@ -159,8 +175,7 @@ def _boundary_or_capture(
     limits: CheckpointLimits,
     cancelled: Cancelled,
 ) -> SealedBoundary:
-    boundary_path = root / "boundary.json"
-    if boundary_path.exists() or boundary_path.is_symlink():
+    if not checkpoints.boundary_capture_allowed(root, limits):
         boundary = parse_boundary(checkpoints.load_boundary(root, limits))
         if boundary.request != request:
             raise RuntimeError("resume request conflicts with sealed boundary configuration")
@@ -213,13 +228,17 @@ def _write_checkpoint_pages(
     boundary: SealedBoundary,
     records: tuple[ArchiveRecord, ...],
     outcomes: tuple[Disposition, ...],
+    cursor: int,
     limits: CheckpointLimits,
     cancelled: Cancelled,
 ) -> None:
     record_by_id = {item.source_record_pk: item for item in records}
     outcome_by_id = {item.source_record_pk: item for item in outcomes}
     for ordinal, offset in enumerate(
-        range(0, len(boundary.entries), boundary.request.page_size), start=1
+        range(
+            cursor * boundary.request.page_size, len(boundary.entries), boundary.request.page_size
+        ),
+        start=cursor + 1,
     ):
         _cancelled(cancelled)
         entries = boundary.entries[offset : offset + boundary.request.page_size]
@@ -248,10 +267,9 @@ def _cancelled(cancelled: Cancelled) -> None:
 
 
 def _verify_handler(
-    checkpoint_id: str,
-    snapshot_id: str,
-    accepted_run_id: str,
-    accepted_manifest_digest: str,
+    descriptor: AcceptanceDescriptor,
+    pointer: PublicationPointer,
+    trusted_accepted_outputs: tuple[OutputInventory, ...],
     checkpoint_limits: CheckpointLimits,
     input_limits: ReadLimits,
     output_maximum_bytes: int,
@@ -262,10 +280,9 @@ def _verify_handler(
     _cancelled(cancelled)
     verify_accepted(
         run_staging,
-        checkpoint_id,
-        accepted_run_id,
-        snapshot_id,
-        accepted_manifest_digest,
+        descriptor,
+        pointer,
+        trusted_accepted_outputs,
         input_limits=input_limits,
         output_maximum_bytes=output_maximum_bytes,
         output_maximum_entries=output_maximum_entries,

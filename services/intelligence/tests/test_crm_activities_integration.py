@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import json
+
 from intelligence.crm.activities.model_parsing import record_from_mapping
 from intelligence.crm.activities.models import ArchiveRequest, BoundaryEntry, sha256_json
 from intelligence.crm.activities.reconciliation import seal
@@ -50,12 +52,26 @@ def _row(link_status: str) -> dict[str, object]:
 
 
 def test_json_codec_round_trip_keeps_person_association_and_link_status() -> None:
-    original = record_from_mapping(_row("linked"))
-    round_trip = record_from_mapping(original.as_dict())
+    row = _row("linked")
+    row["people"] = tuple(row["people"])
+    row["user_capabilities"] = ("view", "archive")
+    original = record_from_mapping(row)
+    encoded = json.dumps(original.as_dict(), sort_keys=True)
+    round_trip = record_from_mapping(json.loads(encoded))
     assert round_trip == original
     assert round_trip.digest() == original.digest()
+    assert round_trip.reference_fingerprint() == original.reference_fingerprint()
     assert round_trip.people[0].association_source_record_pk == "record-a"
     assert round_trip.link_status == "linked"
+    assert round_trip.as_dict()["people"] == [
+        {
+            "person_id": "person-a",
+            "status": "active",
+            "revision": "3",
+            "association_source_record_pk": "record-a",
+        }
+    ]
+    assert round_trip.user_capabilities == ("archive", "view")
 
 
 def test_boundary_changes_for_database_contract_and_link_status_drift() -> None:
@@ -63,6 +79,13 @@ def test_boundary_changes_for_database_contract_and_link_status_drift() -> None:
     second = record_from_mapping(_row("pending_review"))
     first_request = ArchiveRequest("checkpoint-a", "bitrix-primary", database_identity="db-one")
     second_request = ArchiveRequest("checkpoint-a", "bitrix-primary", database_identity="db-two")
+    third_request = ArchiveRequest(
+        "checkpoint-a",
+        "bitrix-primary",
+        selection_contract_version="crm-activities-selection-v3",
+        max_references_per_record=101,
+    )
     assert seal((first,), first_request).digest != seal((first,), second_request).digest
+    assert seal((first,), first_request).digest != seal((first,), third_request).digest
     assert BoundaryEntry.from_record(first) != BoundaryEntry.from_record(second)
     assert sha256_json(first.as_dict()) == first.digest()

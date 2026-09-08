@@ -128,13 +128,35 @@ PREFLIGHT_REFERENCE_FANOUT = f"""
 MATCH (record:SourceRecord {{source_instance_id: $source_instance_id}})
       -[:FROM_SOURCE]->(:SourceSystem {{source_key: $source_key}})
 WHERE {_ADMITTED_ACTIVITY_OR_CALL}
-WITH record,
-     COUNT {{ MATCH (record)-[:CHILD_OF]->(:SourceRecord) }} AS child_parent_count,
-     COUNT {{ MATCH (record)-[:DETAILS_HISTORY_ITEM]->(:SourceRecord) }} AS details_parent_count,
-     COUNT {{
-       MATCH (record)-[link:LINKED_TO]->(:Person)
-       WHERE coalesce(link.is_active, true) = true
-     }} AS active_person_count
+CALL (record) {{
+  MATCH (record)-[:CHILD_OF]->(child_parent:SourceRecord)
+  OPTIONAL MATCH (child_parent)-[:FROM_SOURCE]->(child_source:SourceSystem)
+  WITH DISTINCT child_parent.source_record_pk AS source_record_pk,
+       child_parent.source_instance_id AS source_instance_id,
+       child_parent.source_record_id AS source_record_id,
+       child_parent.record_type AS record_type,
+       child_source.source_key AS source_system
+  RETURN count(*) AS child_parent_count
+}}
+CALL (record) {{
+  MATCH (record)-[:DETAILS_HISTORY_ITEM]->(details_parent:SourceRecord)
+  OPTIONAL MATCH (details_parent)-[:FROM_SOURCE]->(details_source:SourceSystem)
+  WITH DISTINCT details_parent.source_record_pk AS source_record_pk,
+       details_parent.source_instance_id AS source_instance_id,
+       details_parent.source_record_id AS source_record_id,
+       details_parent.record_type AS record_type,
+       details_source.source_key AS source_system
+  RETURN count(*) AS details_parent_count
+}}
+CALL (record) {{
+  MATCH (record)-[link:LINKED_TO]->(person:Person)
+  WHERE coalesce(link.is_active, true) = true
+  WITH DISTINCT person.person_id AS person_id,
+       person.status AS status,
+       toString(person.revision) AS revision,
+       link.source_record_pk AS source_record_pk
+  RETURN count(*) AS active_person_count
+}}
 WHERE child_parent_count > $max_references_per_record
    OR details_parent_count > $max_references_per_record
    OR active_person_count > $max_references_per_record

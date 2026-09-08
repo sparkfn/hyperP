@@ -9,8 +9,10 @@ from pathlib import Path
 
 def has_link_or_reparse(metadata: os.stat_result) -> bool:
     """Return whether lstat metadata denotes a link or Windows reparse point."""
-    attributes = getattr(metadata, "st_file_attributes", 0)
-    reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    raw_attributes = getattr(metadata, "st_file_attributes", 0)
+    attributes = raw_attributes if isinstance(raw_attributes, int) else 0
+    raw_reparse = getattr(stat, "FILE_ATTRIBUTE_REPARSE_POINT", 0)
+    reparse = raw_reparse if isinstance(raw_reparse, int) else 0
     return stat.S_ISLNK(metadata.st_mode) or bool(attributes & reparse)
 
 

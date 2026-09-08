@@ -181,6 +181,12 @@ def test_reference_fanout_query_is_closed_read_only_and_untruncated() -> None:
     assert "CHILD_OF" in PREFLIGHT_REFERENCE_FANOUT
     assert "DETAILS_HISTORY_ITEM" in PREFLIGHT_REFERENCE_FANOUT
     assert "coalesce(link.is_active, true) = true" in PREFLIGHT_REFERENCE_FANOUT
+    assert "child_parent)-[:FROM_SOURCE]->(child_source:SourceSystem)" in PREFLIGHT_REFERENCE_FANOUT
+    assert (
+        "details_parent)-[:FROM_SOURCE]->(details_source:SourceSystem)"
+        in PREFLIGHT_REFERENCE_FANOUT
+    )
+    assert "WITH DISTINCT" in PREFLIGHT_REFERENCE_FANOUT
     assert "limit" not in lower
     for forbidden in ("raw_payload", "create", "merge", "set", "delete"):
         assert forbidden not in lower

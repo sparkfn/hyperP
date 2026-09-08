@@ -6,7 +6,7 @@ import json
 import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 
 from intelligence.artifacts import canonical_json
 from intelligence.crm.activities.models import validate_snapshot_id
@@ -90,6 +90,39 @@ def accepted_snapshot(workspace: Path, run_id: str, snapshot_id: str) -> Path:
     return current
 
 
+def read_published_evidence(
+    workspace: Path,
+    run_id: str,
+    relative_path: str,
+    budget: ReadBudget,
+) -> tuple[dict[str, object], bytes]:
+    """Read canonical published JSON through fixed safe output ancestors."""
+    if not _safe_output_path(relative_path):
+        raise ValueError("published evidence path is unsafe")
+    _run_id(run_id)
+    parts = PurePosixPath(relative_path).parts
+    current = workspace
+    _required_directory(current, "workspace")
+    for component, label in (("outputs", "workspace outputs"), (run_id, "published run output")):
+        current = current / component
+        _required_directory(current, label)
+    for component in parts[:-1]:
+        current = current / component
+        _required_directory(current, "published evidence directory")
+    path = current / parts[-1]
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError as error:
+        raise ValueError("published evidence is missing") from error
+    _regular_file(metadata, "published evidence")
+    budget.add_entry()
+    raw = _read_bounded(path, metadata, budget, "published evidence")
+    value = _json_object(raw, "published evidence")
+    if raw != canonical_json(value).encode("utf-8"):
+        raise ValueError("published evidence is noncanonical")
+    return value, raw
+
+
 def read_evidence(root: Path, name: str, budget: ReadBudget) -> dict[str, object] | None:
     """Read one optional canonical checkpoint JSON object inside the fixed root."""
     if Path(name).name != name or not name.endswith(".json"):
@@ -131,6 +164,13 @@ def verify_snapshot_input(snapshot: Path, limits: ReadLimits) -> None:
     """Bound unsafe verification input before the strict artifact verifier parses it."""
     _required_directory(snapshot, "accepted activity snapshot")
     budget = ReadBudget(limits)
+    selected_count = _selected_count(snapshot, budget)
+    row_ceiling = max(limits.maximum_rows, selected_count * _ROWS_PER_SELECTED_RECORD)
+    budget = ReadBudget(
+        ReadLimits(limits.maximum_bytes, limits.maximum_entries, row_ceiling),
+        bytes_read=budget.bytes_read,
+        entries_read=budget.entries_read,
+    )
     pending = [snapshot]
     while pending:
         directory = pending.pop()
@@ -139,6 +179,8 @@ def verify_snapshot_input(snapshot: Path, limits: ReadLimits) -> None:
         except OSError as error:
             raise ValueError("accepted activity snapshot could not be inspected") from error
         for candidate in children:
+            if candidate == snapshot / "manifest.json":
+                continue
             budget.add_entry()
             metadata = candidate.lstat()
             if has_link_or_reparse(metadata):
@@ -149,6 +191,25 @@ def verify_snapshot_input(snapshot: Path, limits: ReadLimits) -> None:
             _regular_file(metadata, "accepted activity snapshot")
             raw = _read_bounded(candidate, metadata, budget, "accepted activity snapshot")
             _count_snapshot_rows(_json_object(raw, "accepted activity snapshot"), budget)
+
+
+_ROWS_PER_SELECTED_RECORD = 6
+
+
+def _selected_count(snapshot: Path, budget: ReadBudget) -> int:
+    path = snapshot / "manifest.json"
+    try:
+        metadata = path.lstat()
+    except FileNotFoundError as error:
+        raise ValueError("accepted activity snapshot is missing its manifest") from error
+    _regular_file(metadata, "accepted activity snapshot")
+    budget.add_entry()
+    raw = _read_bounded(path, metadata, budget, "accepted activity snapshot")
+    value = _json_object(raw, "manifest")
+    selected = value.get("selected_count")
+    if not isinstance(selected, int) or isinstance(selected, bool) or selected < 0:
+        raise ValueError("accepted activity snapshot manifest selected count is invalid")
+    return selected
 
 
 def _count_snapshot_rows(value: Mapping[str, object], budget: ReadBudget) -> None:
@@ -189,6 +250,23 @@ def _json_object(raw: bytes, label: str) -> dict[str, object]:
     if not isinstance(value, dict):
         raise ValueError(f"{label} must be an object")
     return dict(value)
+
+
+def _safe_output_path(value: str) -> bool:
+    path = PurePosixPath(value)
+    return (
+        value not in {"", ".", ".."}
+        and "\\" not in value
+        and not path.is_absolute()
+        and ".." not in path.parts
+        and path.as_posix() == value
+        and path.suffix == ".json"
+    )
+
+
+def _run_id(value: str) -> None:
+    if not value or value in {".", ".."} or "/" in value or "\\" in value:
+        raise ValueError("published run identity is unsafe")
 
 
 def _directory_or_absent(path: Path, label: str) -> bool:
