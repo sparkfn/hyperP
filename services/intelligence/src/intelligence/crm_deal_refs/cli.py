@@ -7,6 +7,7 @@ import json
 from functools import partial
 from pathlib import Path
 
+from intelligence.crm_deal_refs.checkpoints import require_confined_directory
 from intelligence.crm_deal_refs.commands import (
     ExtractRequest,
     ResumeRequest,
@@ -16,9 +17,11 @@ from intelligence.crm_deal_refs.commands import (
 )
 from intelligence.crm_deal_refs.export import (
     read_boundary,
-    verified_snapshot_inventory,
+    snapshot_registered_inventory,
+    snapshot_regular_sizes,
     verify_snapshot,
 )
+from intelligence.crm_deal_refs.export_support import validate_checkpoint_limits
 from intelligence.crm_deal_refs.models import (
     MAX_PAGE_SIZE,
     MAX_RECORDS,
@@ -58,8 +61,8 @@ def run_crm_deal_refs(arguments: argparse.Namespace, runtime: IntelligenceRuntim
         return _run_resume(runtime, run_id)
     root = accepted_snapshot_root(runtime.config.workspace, run_id)
     if action == "verify":
-        _require_accepted_output(runtime, run_id, root)
-        print(json.dumps(verify_snapshot(root), sort_keys=True))
+        result = _require_accepted_output(runtime, run_id, root)
+        print(json.dumps(result, sort_keys=True))
         return 0
     return _run_status(runtime, run_id, root)
 
@@ -105,21 +108,29 @@ def _run_status(runtime: IntelligenceRuntime, run_id: str, root: Path) -> int:
         print(json.dumps(None))
         return 0
     partial_root = runtime.config.workspace / "staging" / run_id / "snapshots" / "crm" / "deal-refs"
-    evidence_root = root if root.is_dir() and not root.is_symlink() else partial_root
-    checkpoint = evidence_root / "checkpoint.json"
     accepted = _accepted_status(runtime, run_id, root)
     progress: dict[str, object] | None = None
-    if checkpoint.is_file() and not checkpoint.is_symlink():
-        try:
-            boundary = read_boundary(evidence_root / "boundary.json")
-            parsed = read_checkpoint(checkpoint, canonical_digest(json_value(boundary)))
-            progress = {
-                "completed": parsed.completed,
-                "deal_records": parsed.deal_records,
-                "identity_records": parsed.identity_records,
-            }
-        except (OSError, ValueError):
-            progress = {"unsafe": True}
+    try:
+        evidence_root = _existing_confined_root(runtime.config.workspace, root)
+        if evidence_root is None:
+            evidence_root = _existing_confined_root(runtime.config.workspace, partial_root)
+    except ValueError:
+        evidence_root = None
+        progress = {"unsafe": True}
+    if evidence_root is not None:
+        checkpoint = evidence_root / "checkpoint.json"
+        if checkpoint.is_file() and not checkpoint.is_symlink():
+            try:
+                boundary = read_boundary(evidence_root / "boundary.json")
+                parsed = read_checkpoint(checkpoint, canonical_digest(json_value(boundary)))
+                validate_checkpoint_limits(boundary, parsed)
+                progress = {
+                    "completed": parsed.completed,
+                    "deal_records": parsed.deal_records,
+                    "identity_records": parsed.identity_records,
+                }
+            except (OSError, ValueError):
+                progress = {"unsafe": True}
     print(
         json.dumps(
             {
@@ -165,23 +176,32 @@ def _run_with(runtime: IntelligenceRuntime, command: RegisteredCommand) -> str:
         scoped.close()
 
 
-def _require_accepted_output(runtime: IntelligenceRuntime, run_id: str, root: Path) -> None:
+def _require_accepted_output(
+    runtime: IntelligenceRuntime, run_id: str, root: Path
+) -> dict[str, object]:
     run = runtime.state.inspect(run_id)
     outputs = runtime.state.accepted_outputs(run_id)
     if run is None or run.state != "completed" or not outputs:
         raise ValueError("verify requires an accepted CRM deal-reference output")
     if run.command not in {"crm_deal_refs_extract", "crm_deal_refs_resume"}:
         raise ValueError("verify requires a CRM deal-reference command")
-    if not root.is_dir() or root.is_symlink():
-        raise ValueError("accepted CRM deal-reference output is unavailable")
+    require_confined_directory(runtime.config.workspace, root)
     prefix = f"outputs/{run_id}/snapshots/crm/deal-refs/"
+    registered_sizes = {(item.relative_path, item.byte_count) for item in outputs}
+    actual_sizes = {(f"{prefix}{path}", size) for path, size in snapshot_regular_sizes(root)}
+    if len(registered_sizes) != len(outputs) or actual_sizes != registered_sizes:
+        raise ValueError("accepted CRM deal-reference inventory does not match output")
+    if any(not item.relative_path.startswith(prefix) for item in outputs):
+        raise ValueError("accepted CRM deal-reference inventory path is invalid")
+    expected = tuple(sorted((path.removeprefix(prefix), size) for path, size in registered_sizes))
     actual = {
         (f"{prefix}{path}", digest, size)
-        for path, digest, size in verified_snapshot_inventory(root)
+        for path, digest, size in snapshot_registered_inventory(root, expected)
     }
     registered = {(item.relative_path, item.sha256, item.byte_count) for item in outputs}
     if actual != registered:
         raise ValueError("accepted CRM deal-reference inventory does not match output")
+    return verify_snapshot(root)
 
 
 def _safe_run_id(value: str) -> str:
@@ -198,3 +218,12 @@ def _accepted_status(runtime: IntelligenceRuntime, run_id: str, root: Path) -> b
     except (OSError, ValueError):
         return False
     return True
+
+
+def _existing_confined_root(workspace: Path, root: Path) -> Path | None:
+    require_confined_directory(workspace, root, allow_missing=True)
+    try:
+        root.lstat()
+    except FileNotFoundError:
+        return None
+    return require_confined_directory(workspace, root)

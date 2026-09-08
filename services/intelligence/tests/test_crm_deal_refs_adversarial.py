@@ -25,8 +25,8 @@ from test_crm_deal_refs_export import FakeRepository
 
 
 class ResolvedRepository(FakeRepository):
-    def list_identity_revisions(self, *_args: object) -> list[dict[str, object]]:
-        return [
+    def iter_identity_revision_pages(self, *_args: object) -> object:
+        yield (
             {
                 "event_id": "event-1",
                 "global_revision": 1,
@@ -40,8 +40,20 @@ class ResolvedRepository(FakeRepository):
                 "resolution_revision": 1,
                 "effective_at": "2026-01-01T00:00:00Z",
                 "created_at": "2026-01-02T00:00:00Z",
-            }
-        ]
+            },
+        )
+
+
+class _DriftAfterFirstRead(FakeRepository):
+    def __init__(self) -> None:
+        super().__init__()
+        self.deal_reads = 0
+
+    def iter_deal_reference_pages(self, *_args: object) -> object:
+        self.deal_reads += 1
+        yield tuple(super().iter_deal_reference_pages().__next__())
+        if self.deal_reads == 1:
+            self.lifecycle = "superseded"
 
 
 def _complete(root: Path, *, resolved: bool = False) -> tuple[Path, Boundary]:
@@ -93,12 +105,46 @@ def test_completed_replay_is_artifact_only_after_source_change(
     assert verify_snapshot(target) == verify_snapshot(source)
 
 
+def test_unaccepted_complete_staging_reconciles_before_and_after_copy(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    _complete(workspace / "staging" / "prior")
+    staging = workspace / "staging" / "new"
+    staging.mkdir(parents=True)
+    repository = _DriftAfterFirstRead()
+    monkeypatch.setattr(
+        "intelligence.crm_deal_refs.commands.get_crm_deal_refs_repository", lambda: repository
+    )
+    with pytest.raises(RuntimeError, match="drifted"):
+        resume_handler(staging, lambda: False, ResumeRequest("prior", False))
+    assert repository.deal_reads == 2
+
+
+def test_unaccepted_partial_resume_reconciles_after_writing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from test_crm_deal_refs_recovery import _partial
+
+    workspace = tmp_path / "workspace"
+    _partial(workspace / "staging" / "prior")
+    staging = workspace / "staging" / "new"
+    staging.mkdir(parents=True)
+    repository = _DriftAfterFirstRead()
+    monkeypatch.setattr(
+        "intelligence.crm_deal_refs.commands.get_crm_deal_refs_repository", lambda: repository
+    )
+    with pytest.raises(RuntimeError, match="drifted"):
+        resume_handler(staging, lambda: False, ResumeRequest("prior", False))
+    assert repository.deal_reads == 2
+
+
 def test_rehashed_row_tampering_is_rejected_by_boundary_fingerprint(tmp_path: Path) -> None:
     root, _ = _complete(tmp_path)
     page = root / "pages" / "deal-references" / "page-000001.ndjson"
     row = json.loads(page.read_text(encoding="utf-8"))
     row["lifecycle_status_observed"] = "superseded"
-    page.write_text(canonical_json(row) + "\n", encoding="utf-8")
+    page.write_bytes((canonical_json(row) + "\n").encode("utf-8"))
     sidecar = root / "manifests" / "deal-references" / "page-000001.json"
     manifest = _read(sidecar)
     manifest["sha256"] = sha256_file(page)
@@ -196,6 +242,44 @@ def test_symlink_evidence_and_status_are_not_accepted_when_supported(
     assert payload["accepted"] is False
 
 
+def test_intermediate_domain_symlinks_are_rejected_for_accepted_and_partial_controls(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    target, _ = _complete(tmp_path / "target")
+    workspace = tmp_path / "workspace"
+    accepted_parent = workspace / "outputs" / "run-1" / "snapshots"
+    accepted_parent.parent.mkdir(parents=True)
+    try:
+        accepted_parent.symlink_to(target.parent.parent, target_is_directory=True)
+    except OSError:
+        pytest.skip("symbolic links are unavailable")
+    outputs = _registered(target)
+    runtime = _runtime(workspace, _run(), outputs)
+    with pytest.raises(ValueError, match="unsafe"):
+        deal_cli._require_accepted_output(
+            runtime, "run-1", workspace / "outputs" / "run-1" / "snapshots" / "crm" / "deal-refs"
+        )
+    resume_staging = workspace / "staging" / "resume-accepted"
+    resume_staging.mkdir(parents=True)
+    with pytest.raises(ValueError, match="unsafe"):
+        resume_handler(resume_staging, lambda: False, ResumeRequest("run-1", True))
+    arguments = SimpleNamespace(deal_refs_command="status", run_id="run-1")
+    assert deal_cli.run_crm_deal_refs(arguments, runtime) == 0
+    assert json.loads(capsys.readouterr().out)["accepted"] is False
+
+    partial_parent = workspace / "staging" / "run-2" / "snapshots"
+    partial_parent.parent.mkdir(parents=True)
+    partial_parent.symlink_to(target.parent.parent, target_is_directory=True)
+    failed = _runtime(workspace, Run("run-2", "crm_deal_refs_extract", "failed", 1, 0.0, 0.0), ())
+    arguments = SimpleNamespace(deal_refs_command="status", run_id="run-2")
+    assert deal_cli.run_crm_deal_refs(arguments, failed) == 0
+    assert json.loads(capsys.readouterr().out)["progress"] == {"unsafe": True}
+    resume_staging = workspace / "staging" / "resume-partial"
+    resume_staging.mkdir(parents=True)
+    with pytest.raises(ValueError, match="unsafe"):
+        resume_handler(resume_staging, lambda: False, ResumeRequest("run-2", False))
+
+
 class _State:
     def __init__(self, run: Run, outputs: tuple[OutputInventory, ...]) -> None:
         self.run = run
@@ -246,6 +330,45 @@ def test_accepted_registry_command_path_hash_size_and_set_mismatches_fail(
             )
 
 
+def test_accepted_registry_mismatch_rejects_before_domain_parsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    root, _ = _complete(workspace / "outputs" / "run-1")
+    outputs = list(_registered(root))
+    outputs[0] = replace(outputs[0], sha256="b" * 64)
+    monkeypatch.setattr(
+        deal_cli,
+        "verify_snapshot",
+        lambda _root: (_ for _ in ()).throw(AssertionError("domain parse must not occur")),
+    )
+    with pytest.raises(ValueError, match="inventory"):
+        deal_cli._require_accepted_output(
+            _runtime(workspace, _run(), tuple(outputs)), "run-1", root
+        )
+
+
+def test_accepted_registry_size_mismatch_rejects_before_hashing_or_domain_parsing(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    workspace = tmp_path / "workspace"
+    root, _ = _complete(workspace / "outputs" / "run-1")
+    outputs = _registered(root)
+    page = root / "pages" / "deal-references" / "page-000001.ndjson"
+    page.write_bytes(page.read_bytes() + b"x" * 1_000_000)
+    monkeypatch.setattr(
+        "intelligence.crm_deal_refs.export.sha256_file",
+        lambda _path: (_ for _ in ()).throw(AssertionError("files must not be hashed")),
+    )
+    monkeypatch.setattr(
+        deal_cli,
+        "verify_snapshot",
+        lambda _root: (_ for _ in ()).throw(AssertionError("domain parse must not occur")),
+    )
+    with pytest.raises(ValueError, match="inventory"):
+        deal_cli._require_accepted_output(_runtime(workspace, _run(), outputs), "run-1", root)
+
+
 def test_status_reports_malformed_evidence_as_not_accepted(
     tmp_path: Path, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -253,6 +376,22 @@ def test_status_reports_malformed_evidence_as_not_accepted(
     partial = workspace / "staging" / "run-1" / "snapshots" / "crm" / "deal-refs"
     partial.mkdir(parents=True)
     (partial / "checkpoint.json").write_text("{}", encoding="utf-8")
+    runtime = _runtime(workspace, replace(_run(), state="failed"), ())
+    arguments = SimpleNamespace(deal_refs_command="status", run_id="run-1")
+    assert deal_cli.run_crm_deal_refs(arguments, runtime) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["accepted"] is False
+    assert payload["progress"] == {"unsafe": True}
+
+
+def test_status_marks_impossible_checkpoint_counts_unsafe(
+    tmp_path: Path, capsys: pytest.CaptureFixture[str]
+) -> None:
+    workspace = tmp_path / "workspace"
+    root, _ = _complete(workspace / "staging" / "run-1")
+    checkpoint = _read(root / "checkpoint.json")
+    checkpoint["deal_records"] = MAX_RECORDS + 1
+    _write(root / "checkpoint.json", checkpoint)
     runtime = _runtime(workspace, replace(_run(), state="failed"), ())
     arguments = SimpleNamespace(deal_refs_command="status", run_id="run-1")
     assert deal_cli.run_crm_deal_refs(arguments, runtime) == 0
@@ -272,6 +411,7 @@ class OverflowRepository(Neo4jCrmDealRefsRepository):
         limit = params["limit"]
         assert isinstance(limit, int)
         if "SourceRecord" in query:
+            assert isinstance(params["max_raw_payload_chars"], int)
             start = self.deal_calls * 10
             self.deal_calls += 1
             return [
@@ -302,8 +442,16 @@ class OverflowRepository(Neo4jCrmDealRefsRepository):
 def test_repository_max_plus_one_deal_and_identity_overflow_fails_early() -> None:
     repository = OverflowRepository()
     with pytest.raises(RuntimeError, match="deal references"):
-        repository.list_deal_references("instance-a", "2026-02-01T00:00:00Z", 2, 2)
+        tuple(
+            repository.iter_deal_reference_pages(
+                "instance-a", "2026-02-01T00:00:00Z", 2, 2, 250_000
+            )
+        )
     assert repository.deal_calls == 2
     with pytest.raises(RuntimeError, match="identity revisions"):
-        repository.list_identity_revisions("instance-a", ("42",), "2026-02-01T00:00:00Z", 99, 2, 2)
+        tuple(
+            repository.iter_identity_revision_pages(
+                "instance-a", ("42",), "2026-02-01T00:00:00Z", 99, 2, 2
+            )
+        )
     assert repository.identity_calls == 2

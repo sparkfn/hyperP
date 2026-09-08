@@ -20,9 +20,16 @@ SCHEMA_VERSION = 2
 QUERY_VERSION = "crm-deal-refs-v2"
 IDENTITY_POLICY_VERSION = "crm_deal_identity_v2"
 SOURCE_SYSTEM = "bitrix_chat"
-MAX_PAGE_SIZE = 1_000
+MAX_PAGE_SIZE = 100
 MAX_RECORDS = 10_000
 MAX_PAYLOAD_BYTES = 1_000_000
+# Neo4j's `size()` is character-based. Keep this below the byte-level parser cap so an
+# oversized raw payload is never transferred merely because it is ASCII-heavy.
+MAX_RAW_PAYLOAD_CHARS = 250_000
+MAX_METADATA_BYTES = 64_000
+MAX_SNAPSHOT_MANIFEST_BYTES = 1_000_000
+MAX_RECORD_BYTES = 64_000
+MAX_PAGE_BYTES = MAX_RECORD_BYTES * MAX_PAGE_SIZE
 _SAFE_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,199}")
 
 

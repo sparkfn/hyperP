@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from collections.abc import Mapping
+from collections.abc import Iterator, Mapping
 from os import environ
 from typing import cast
 
@@ -62,14 +62,20 @@ class Neo4jCrmDealRefsRepository(CrmDealRefsRepository):
             raise RuntimeError("identity baseline readiness is invalid")
         return {"current_revision": revision, "baseline_ready": baseline_ready}
 
-    def list_deal_references(
-        self, source_instance_id: str, as_of: str, page_size: int, max_records: int
-    ) -> list[DealReferenceRow]:
+    def iter_deal_reference_pages(
+        self,
+        source_instance_id: str,
+        as_of: str,
+        page_size: int,
+        max_records: int,
+        max_raw_payload_chars: int,
+    ) -> Iterator[tuple[DealReferenceRow, ...]]:
         after_id: str | None = None
         after_version: int | None = None
         after_pk: str | None = None
-        rows: list[DealReferenceRow] = []
+        count = 0
         while True:
+            limit = min(page_size, max_records - count + 1)
             page = self._read(
                 LIST_DEAL_REFERENCE_PAGE,
                 {
@@ -78,21 +84,24 @@ class Neo4jCrmDealRefsRepository(CrmDealRefsRepository):
                     "after_source_record_id": after_id,
                     "after_source_record_version": after_version,
                     "after_source_record_pk": after_pk,
-                    "limit": min(page_size, max_records - len(rows) + 1),
+                    "limit": limit,
+                    "max_raw_payload_chars": max_raw_payload_chars,
                 },
             )
-            typed = [_deal_row(row) for row in page]
-            rows.extend(typed)
-            if len(rows) > max_records:
+            typed = tuple(_deal_row(row) for row in page)
+            count += len(typed)
+            if count > max_records:
                 raise RuntimeError("selected deal references exceed max-records")
-            if len(typed) < page_size:
-                return rows
+            if typed:
+                yield typed
+            if len(typed) < limit:
+                return
             final = typed[-1]
             after_id = _text(final["source_record_id"], "source_record_id")
             after_version = _positive_int(final["source_record_version"], "source_record_version")
             after_pk = _text(final["source_record_pk"], "source_record_pk")
 
-    def list_identity_revisions(
+    def iter_identity_revision_pages(
         self,
         source_instance_id: str,
         source_entity_ids: tuple[str, ...],
@@ -100,14 +109,15 @@ class Neo4jCrmDealRefsRepository(CrmDealRefsRepository):
         through_revision: int,
         page_size: int,
         max_records: int,
-    ) -> list[IdentityRevisionRow]:
+    ) -> Iterator[tuple[IdentityRevisionRow, ...]]:
         if not source_entity_ids:
-            return []
-        rows: list[IdentityRevisionRow] = []
+            return
+        count = 0
         for offset in range(0, len(source_entity_ids), _IDENTITY_ID_BATCH_SIZE):
             after: int | None = None
             source_ids = source_entity_ids[offset : offset + _IDENTITY_ID_BATCH_SIZE]
             while True:
+                limit = min(page_size, max_records - count + 1)
                 page = self._read(
                     LIST_IDENTITY_REVISION_PAGE,
                     {
@@ -117,18 +127,18 @@ class Neo4jCrmDealRefsRepository(CrmDealRefsRepository):
                         "as_of": as_of,
                         "through_revision": through_revision,
                         "after_global_revision": after,
-                        "limit": min(page_size, max_records - len(rows) + 1),
+                        "limit": limit,
                     },
                 )
-                typed = [_identity_row(row) for row in page]
-                rows.extend(typed)
-                if len(rows) > max_records:
+                typed = tuple(_identity_row(row) for row in page)
+                count += len(typed)
+                if count > max_records:
                     raise RuntimeError("selected identity revisions exceed max-records")
-                if len(typed) < min(page_size, max_records - len(rows) + len(typed) + 1):
+                if typed:
+                    yield typed
+                if len(typed) < limit:
                     break
                 after = _positive_int(typed[-1]["global_revision"], "global_revision")
-        rows.sort(key=lambda item: _positive_int(item["global_revision"], "global_revision"))
-        return rows
 
     def _read(self, query: str, parameters: Mapping[str, object]) -> list[dict[str, object]]:
         with self._driver.session(database=self._database, default_access_mode="READ") as session:
@@ -165,6 +175,7 @@ def _deal_row(value: dict[str, object]) -> DealReferenceRow:
         "lifecycle_status",
         "link_status",
         "raw_payload",
+        "raw_payload_oversize",
     }
     if set(value) != required:
         raise RuntimeError("deal-reference query returned an invalid row shape")

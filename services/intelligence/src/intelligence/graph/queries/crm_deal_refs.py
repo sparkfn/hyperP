@@ -45,7 +45,12 @@ RETURN record.source_record_id AS source_record_id,
        toString(record.ingested_at) AS ingested_at,
        record.lifecycle_status AS lifecycle_status,
        record.link_status AS link_status,
-       record.raw_payload AS raw_payload
+       CASE WHEN record.raw_payload IS NULL
+                 OR size(record.raw_payload) <= $max_raw_payload_chars
+            THEN record.raw_payload
+            ELSE NULL END AS raw_payload,
+       record.raw_payload IS NOT NULL
+         AND size(record.raw_payload) > $max_raw_payload_chars AS raw_payload_oversize
 ORDER BY record.source_record_id, toInteger(record.source_record_version), record.source_record_pk
 LIMIT $limit
 """
