@@ -146,8 +146,10 @@ WHERE capture.captures_json = $topology_json
         })
       }
       AND all(checkpoint_id IN captured.checkpoint_ids WHERE EXISTS {
-        MATCH (:IngestionCheckpoint {control_instance_id: $control_instance_id,
-          logical_run_id: captured.logical_run_id, checkpoint_id: checkpoint_id})
+        MATCH (checkpoint:IngestionCheckpoint {control_instance_id: $control_instance_id,
+          logical_run_id: captured.logical_run_id})
+        WHERE checkpoint.checkpoint_id = checkpoint_id
+          OR checkpoint.last_committed_record_id = checkpoint_id
       })
       AND size(captured.continuation_ids) = size([(logical)-[:HAS_CONTINUATION|CONTINUES_AS]->
         (continuation:IngestionLogicalRun {control_instance_id: $control_instance_id}) | continuation])
@@ -204,8 +206,10 @@ WHERE capture.captures_json = $topology_json
         MATCH (:IngestionCheckpoint {control_instance_id: $control_instance_id})-[:PRODUCED_BY]->(stale)
       }
       AND all(checkpoint_id IN $stale_snapshot.checkpoint_ids WHERE EXISTS {
-        MATCH (:IngestionCheckpoint {control_instance_id: $control_instance_id,
-          checkpoint_id: checkpoint_id})-[:PRODUCED_BY]->(stale)
+        MATCH (checkpoint:IngestionCheckpoint {control_instance_id: $control_instance_id})
+          -[:PRODUCED_BY]->(stale)
+        WHERE checkpoint.checkpoint_id = checkpoint_id
+          OR checkpoint.last_committed_record_id = checkpoint_id
       })
       AND NOT EXISTS {
         MATCH (foreign:IngestionLogicalRun)-[:HAS_ATTEMPT|ACTIVE_ATTEMPT]->(stale)
@@ -327,7 +331,7 @@ CALL {
     WITH logical
     OPTIONAL MATCH (checkpoint:IngestionCheckpoint {control_instance_id: $control_instance_id,
       logical_run_id: logical.logical_run_id})
-    RETURN collect(checkpoint.checkpoint_id) AS checkpoint_ids
+    RETURN collect(coalesce(checkpoint.checkpoint_id, checkpoint.last_committed_record_id)) AS checkpoint_ids
   }
   RETURN collect({
     stream_key: stream.stream_key, logical_run_id: logical.logical_run_id,
@@ -371,7 +375,7 @@ CALL {
     WITH stale
     OPTIONAL MATCH (checkpoint:IngestionCheckpoint {control_instance_id: $control_instance_id})
       -[:PRODUCED_BY]->(stale)
-    RETURN collect(checkpoint.checkpoint_id) AS checkpoint_ids
+    RETURN collect(coalesce(checkpoint.checkpoint_id, checkpoint.last_committed_record_id)) AS checkpoint_ids
   }
   CALL {
     WITH stale
