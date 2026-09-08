@@ -6,7 +6,11 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from intelligence.artifacts import sha256_file
-from intelligence.crm_deal_refs.checkpoints import copy_regular_file, regular_inventory
+from intelligence.crm_deal_refs.checkpoints import (
+    copy_regular_file,
+    regular_inventory,
+    require_confined_directory,
+)
 from intelligence.crm_deal_refs.export import (
     capture_matching_boundary,
     export_snapshot,
@@ -60,9 +64,10 @@ def extract_handler(staging: Path, cancelled: Cancelled, request: ExtractRequest
 def resume_handler(staging: Path, cancelled: Cancelled, request: ResumeRequest) -> None:
     """Replay accepted evidence artifact-only; source-reconcile a sealed partial boundary."""
     source = _source_root(staging, request)
-    if (source / "snapshot-manifest.json").is_file():
+    workspace = staging.parent.parent
+    if request.accepted:
         verify_snapshot(source)
-        _copy_verified_snapshot(source, staging / "snapshots" / "crm" / "deal-refs")
+        _copy_verified_snapshot(source, staging / "snapshots" / "crm" / "deal-refs", workspace)
         return
     boundary = read_boundary(source / "boundary.json")
     repository = get_crm_deal_refs_repository()
@@ -70,7 +75,12 @@ def resume_handler(staging: Path, cancelled: Cancelled, request: ResumeRequest) 
         deals, identities = capture_matching_boundary(repository, boundary)
         if cancelled():
             return
-        resume_snapshot(staging, source, boundary, deals, identities)
+        if (source / "snapshot-manifest.json").is_file():
+            verify_snapshot(source)
+            _copy_verified_snapshot(source, staging / "snapshots" / "crm" / "deal-refs", workspace)
+        else:
+            resume_snapshot(staging, source, boundary, deals, identities)
+        capture_matching_boundary(repository, boundary)
     finally:
         repository.close()
 
@@ -92,12 +102,11 @@ def _source_root(staging: Path, request: ResumeRequest) -> Path:
         if request.accepted
         else partial_snapshot_root(workspace, request.run_id)
     )
-    if root.is_dir() and not root.is_symlink():
-        return root
-    raise ValueError("prior CRM deal-reference evidence is unavailable")
+    return require_confined_directory(workspace, root)
 
 
-def _copy_verified_snapshot(source: Path, target: Path) -> None:
+def _copy_verified_snapshot(source: Path, target: Path, workspace: Path) -> None:
+    require_confined_directory(workspace, target, allow_missing=True)
     if target.exists() or target.is_symlink():
         raise FileExistsError("resume target already exists")
     target.mkdir(mode=0o700, parents=True)

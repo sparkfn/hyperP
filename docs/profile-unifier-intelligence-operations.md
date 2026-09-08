@@ -47,10 +47,12 @@ versions, page size, limits, and capture time. Extraction repeats persisted pred
 and fails on missing, added, changed, or conflicting selected records. This is fail-closed observed-drift
 detection, not an atomic Neo4j image.
 
-Resume accepts no replacement boundary. It copies verified complete evidence rather than hard-linking it;
-otherwise it reuses the sealed descriptor and rechecks the selection before producing a new immutable run.
-An interruption before sealing is not resumable. Artifact-only verification remains valid after Neo4j
-advances; source reconciliation is intentionally limited to extraction and resume.
+Resume accepts no replacement boundary. Artifact-only replay is reserved for an independently verified
+accepted output whose registered file inventory exactly matches its regular files, sizes, and checksums;
+it copies rather than hard-links that evidence. Every unaccepted prior run, including a complete-looking
+failed staging tree, reconciles the sealed selection before any copy/write and again after resumed writing
+before publication. An interruption before sealing is not resumable. Artifact-only verification remains
+valid after Neo4j advances; source reconciliation is intentionally limited to extraction and resume.
 
 The CRM deal-reference schema is versioned and accepts only `crm_deal_identity_v2` evidence. It preserves
 the source record hash, source-system/instance/policy provenance, source event/effective/close times,
@@ -60,7 +62,12 @@ identity revision whose first-known availability and effective time are both at 
 future-effective, unavailable, and all non-resolved identity evidence remains Person-unlinked. Page requests use bounded max+1
 keyset traversal with a fixed record ceiling. Page and checkpoint evidence carries cursors, exact boundary
 identity, counts, bytes, checksums, and an exact expected file inventory; links, hard links, non-regular
-entries, and unexpected evidence are rejected.
+entries, and unexpected evidence are rejected. Every component from the trusted workspace through an
+accepted or partial domain root must be a real directory, not a symlink. Accepted controls compare their
+registered regular-file inventory before parsing snapshot content. Metadata, pages, NDJSON lines, and
+records have fixed size limits; page records are streamed rather than whole-file materialized. Checkpoint
+record/page counts are bounded against the frozen record ceiling and page size before any sidecar traversal,
+and accepted path/byte-count equality is checked before any file content is hashed.
 
 Cancellation is accepted while a run is queued or executing. Entering `publishing` is the
 explicit non-cancellable commit point: a second connection receives a rejection rather than

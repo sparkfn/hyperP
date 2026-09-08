@@ -83,6 +83,34 @@ def fingerprints(value: Boundary) -> tuple[object, ...]:
     )
 
 
+def validate_checkpoint_limits(boundary: Boundary, checkpoint: Checkpoint) -> None:
+    """Reject impossible record/page/cursor shapes before traversing persisted page evidence."""
+    deal_pages = _page_count(checkpoint.deal_records, boundary.page_size)
+    identity_pages = _page_count(checkpoint.identity_records, boundary.page_size)
+    if (
+        checkpoint.deal_records > boundary.source_membership_count
+        or checkpoint.deal_records + checkpoint.identity_records > boundary.max_records
+        or checkpoint.deal_pages != deal_pages
+        or checkpoint.identity_pages != identity_pages
+    ):
+        raise ValueError("snapshot checkpoint limits are invalid")
+    if checkpoint.completed and checkpoint.deal_records != boundary.source_membership_count:
+        raise ValueError("completed snapshot deal count is invalid")
+    if (
+        checkpoint.identity_records > 0
+        and checkpoint.deal_records != boundary.source_membership_count
+    ):
+        raise ValueError("snapshot identity prefix requires a complete deal prefix")
+    if (checkpoint.deal_pages == 0) != (checkpoint.deal_next_cursor is None):
+        raise ValueError("snapshot checkpoint deal cursor is invalid")
+    if (checkpoint.identity_pages == 0) != (checkpoint.identity_next_cursor is None):
+        raise ValueError("snapshot checkpoint identity cursor is invalid")
+
+
+def _page_count(records: int, page_size: int) -> int:
+    return (records + page_size - 1) // page_size
+
+
 def ordered_deals(items: tuple[DealReference, ...]) -> None:
     if [item.key for item in items] != sorted(item.key for item in items) or len(
         {item.key for item in items}

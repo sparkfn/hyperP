@@ -28,6 +28,7 @@ def _deal(**changes: object) -> dict[str, object]:
         "ingested_at": "2026-01-02T00:00:00Z",
         "lifecycle_status": "active",
         "link_status": "unresolved",
+        "raw_payload_oversize": False,
         "raw_payload": json.dumps(
             {
                 "crm_deal_id": "42",
@@ -113,6 +114,54 @@ def test_equal_time_source_evidence_is_eligible() -> None:
     assert record.available_at == record.first_known_at == _AS_OF
 
 
+@pytest.mark.parametrize(
+    ("instant", "eligible"),
+    (
+        ("2026-01-31T23:59:59.999999Z", True),
+        ("2026-02-01T00:00:00Z", True),
+        ("2026-02-01T00:00:00.000001Z", False),
+    ),
+)
+def test_deal_cutoff_uses_aware_instants_not_fractional_string_ordering(
+    instant: str, eligible: bool
+) -> None:
+    payload = json.loads(str(_deal()["raw_payload"]))
+    for field in ("DATE_CREATE", "DATE_MODIFY", "CLOSEDATE"):
+        payload["deal"][field] = instant
+    record = map_deal_reference(
+        _deal(observed_at=instant, ingested_at=instant, raw_payload=json.dumps(payload)),
+        "instance-a",
+        _AS_OF,
+    )
+    assert record.point_in_time_eligible is eligible
+
+
+@pytest.mark.parametrize(
+    ("instant", "eligible"),
+    (
+        ("2026-01-31T23:59:59.999999Z", True),
+        ("2026-02-01T00:00:00Z", True),
+        ("2026-02-01T00:00:00.000001Z", False),
+    ),
+)
+def test_identity_cutoff_uses_aware_instants_not_fractional_string_ordering(
+    instant: str, eligible: bool
+) -> None:
+    record = map_identity_revision(
+        _identity(
+            link_status="resolved",
+            hyperp_person_id="00000000-0000-0000-0000-000000000001",
+            person_status="active",
+            created_at=instant,
+            effective_at=instant,
+        ),
+        "instance-a",
+        _AS_OF,
+    )
+    assert record.person_reference_eligible is eligible
+    assert (record.hyperp_person_id is not None) is eligible
+
+
 def test_empty_optional_close_and_stage_semantic_values_remain_missing() -> None:
     payload = json.loads(str(_deal()["raw_payload"]))
     payload["deal"]["CLOSEDATE"] = ""
@@ -121,6 +170,40 @@ def test_empty_optional_close_and_stage_semantic_values_remain_missing() -> None
     assert record.source_close_date is None
     assert record.stage_semantic_id is None
     assert record.stage_id == "C1:NEW"
+
+
+def test_numeric_bitrix_ids_and_category_zero_normalize_across_mixed_envelopes() -> None:
+    payload = json.loads(str(_deal()["raw_payload"]))
+    payload["crm_deal_id"] = 42
+    payload["category_id"] = 0
+    payload["deal"]["ID"] = "42"
+    payload["deal"]["CATEGORY_ID"] = 0
+    record = map_deal_reference(_deal(raw_payload=json.dumps(payload)), "instance-a", _AS_OF)
+    assert record.source_entity_id == "42"
+    assert record.category_id == "0"
+
+
+@pytest.mark.parametrize(
+    ("key", "value"),
+    (
+        ("crm_deal_id", True),
+        ("category_id", False),
+        ("crm_deal_id", 0),
+        ("category_id", -1),
+        ("category_id", 1.5),
+        ("category_id", "not-a-number"),
+    ),
+)
+def test_invalid_bitrix_id_category_scalars_fail_closed(key: str, value: object) -> None:
+    payload = json.loads(str(_deal()["raw_payload"]))
+    payload[key] = value
+    with pytest.raises(ValueError, match="invalid"):
+        map_deal_reference(_deal(raw_payload=json.dumps(payload)), "instance-a", _AS_OF)
+
+
+def test_query_marked_oversize_payload_is_rejected_before_decode() -> None:
+    with pytest.raises(ValueError, match="transfer limit"):
+        map_deal_reference(_deal(raw_payload_oversize=True, raw_payload=None), "instance-a", _AS_OF)
 
 
 def test_policy_and_ownership_are_fail_closed_not_filtered() -> None:

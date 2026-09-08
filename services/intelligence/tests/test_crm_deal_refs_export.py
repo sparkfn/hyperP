@@ -6,6 +6,7 @@ import json
 from pathlib import Path
 
 import pytest
+from intelligence.crm_deal_refs import export as deal_export
 from intelligence.crm_deal_refs.export import (
     capture_matching_boundary,
     export_snapshot,
@@ -30,14 +31,14 @@ class FakeRepository:
     def read_identity_boundary(self) -> dict[str, object]:
         return {"current_revision": self.current_revision, "baseline_ready": True}
 
-    def list_deal_references(self, *_args: object) -> list[dict[str, object]]:
+    def iter_deal_reference_pages(self, *_args: object) -> object:
         rows = [self._deal("42", 1, "pk-1")]
         if self.extra:
             rows.append(self._deal("43", 1, "pk-2"))
-        return rows
+        yield tuple(rows)
 
-    def list_identity_revisions(self, *_args: object) -> list[dict[str, object]]:
-        return [
+    def iter_identity_revision_pages(self, *_args: object) -> object:
+        yield (
             {
                 "event_id": "event-1",
                 "global_revision": 1,
@@ -51,8 +52,8 @@ class FakeRepository:
                 "resolution_revision": 1,
                 "effective_at": "2026-01-01T00:00:00Z",
                 "created_at": "2026-01-02T00:00:00Z",
-            }
-        ]
+            },
+        )
 
     def _deal(self, deal_id: str, version: int, pk: str) -> dict[str, object]:
         return {
@@ -71,6 +72,7 @@ class FakeRepository:
             "ingested_at": "2026-01-02T00:00:00Z",
             "lifecycle_status": self.lifecycle,
             "link_status": "unresolved",
+            "raw_payload_oversize": False,
             "raw_payload": json.dumps(
                 {
                     "crm_deal_id": deal_id,
@@ -134,8 +136,10 @@ def test_new_membership_and_total_limit_overflow_fail_closed() -> None:
 
 def test_duplicate_source_versions_fail_closed() -> None:
     repository = FakeRepository()
-    original = repository.list_deal_references
-    repository.list_deal_references = lambda *_args: [*original(), *original()]
+    original = repository.iter_deal_reference_pages
+    repository.iter_deal_reference_pages = lambda *_args: (
+        tuple((*next(original()), *next(original()))),
+    )
     with pytest.raises(ValueError, match="unordered"):
         seal_boundary(
             repository,
@@ -144,3 +148,70 @@ def test_duplicate_source_versions_fail_closed() -> None:
             page_size=2,
             max_records=3,
         )
+
+
+def test_deal_pages_are_mapped_before_the_repository_advances(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    class PageWiseRepository(FakeRepository):
+        def __init__(self) -> None:
+            super().__init__()
+            self.events: list[str] = []
+
+        def iter_deal_reference_pages(self, *_args: object) -> object:
+            self.events.append("page-1")
+            yield (self._deal("42", 1, "pk-1"),)
+            assert self.events == ["page-1", "mapped-42"]
+            self.events.append("page-2")
+            yield (self._deal("43", 1, "pk-2"),)
+
+    repository = PageWiseRepository()
+    original = deal_export.map_deal_reference
+
+    def map_page_row(row: dict[str, object], source: str, cutoff: str) -> object:
+        repository.events.append(f"mapped-{row['source_entity_id']}")
+        return original(row, source, cutoff)
+
+    monkeypatch.setattr(deal_export, "map_deal_reference", map_page_row)
+    boundary, deals, _ = deal_export.seal_boundary(
+        repository,
+        source_instance_id="instance-a",
+        as_of="2026-02-01T00:00:00Z",
+        page_size=1,
+        max_records=3,
+    )
+    assert boundary.source_membership_count == 2
+    assert [item.source_entity_id for item in deals] == ["42", "43"]
+    assert repository.events == ["page-1", "mapped-42", "page-2", "mapped-43"]
+
+
+def test_category_stage_changes_with_equal_times_preserve_both_versions() -> None:
+    class VersionedRepository(FakeRepository):
+        def iter_deal_reference_pages(self, *_args: object) -> object:
+            first = self._deal("42", 1, "pk-1")
+            second = self._deal("42", 2, "pk-2")
+            payload = json.loads(str(second["raw_payload"]))
+            payload["category_id"] = "2"
+            payload["stage_id"] = "C2:WON"
+            payload["deal"]["CATEGORY_ID"] = "2"
+            payload["deal"]["STAGE_ID"] = "C2:WON"
+            payload["deal"]["STAGE_SEMANTIC_ID"] = "S"
+            second["stage_id"] = "C2:WON"
+            second["raw_payload"] = json.dumps(payload)
+            yield (first, second)
+
+    boundary, deals, _ = seal_boundary(
+        VersionedRepository(),
+        source_instance_id="instance-a",
+        as_of="2026-02-01T00:00:00Z",
+        page_size=2,
+        max_records=3,
+    )
+    assert boundary.source_membership_count == 2
+    assert [
+        (item.key.source_record_version, item.category_id, item.stage_id) for item in deals
+    ] == [
+        (1, "1", "C1:NEW"),
+        (2, "2", "C2:WON"),
+    ]
+    assert deals[0].observed_at == deals[1].observed_at

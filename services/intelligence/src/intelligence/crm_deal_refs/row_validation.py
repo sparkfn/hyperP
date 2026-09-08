@@ -122,7 +122,7 @@ def _validate_deal(row: dict[str, object], boundary: Boundary) -> None:
             "source_close_date",
         )
     )
-    known = available is not None and available <= boundary.as_of
+    known = available is not None and _at_or_before(available, boundary.as_of)
     if row.get("availability") != ("known_by_cutoff" if known else "unknown"):
         raise ValueError("deal availability classification is invalid")
     category = row.get("category_id")
@@ -131,12 +131,12 @@ def _validate_deal(row: dict[str, object], boundary: Boundary) -> None:
     eligible = (
         known
         and temporal[0] is not None
-        and temporal[0] <= boundary.as_of
+        and _at_or_before(temporal[0], boundary.as_of)
         and temporal[1] is not None
-        and temporal[1] <= boundary.as_of
+        and _at_or_before(temporal[1], boundary.as_of)
         and temporal[2] is not None
-        and temporal[2] <= boundary.as_of
-        and (temporal[3] is None or temporal[3] <= boundary.as_of)
+        and _at_or_before(temporal[2], boundary.as_of)
+        and (temporal[3] is None or _at_or_before(temporal[3], boundary.as_of))
         and isinstance(category, str)
         and (isinstance(stage, str) or isinstance(semantic, str))
     )
@@ -166,14 +166,14 @@ def _validate_identity(row: dict[str, object], boundary: Boundary) -> None:
     effective = optional_timestamp(row.get("effective_at"), "effective_at")
     if first_known != available:
         raise ValueError("identity first-known availability is invalid")
-    known = available is not None and available <= boundary.as_of
+    known = available is not None and _at_or_before(available, boundary.as_of)
     if row.get("availability") != ("known_by_cutoff" if known else "unknown"):
         raise ValueError("identity availability classification is invalid")
     eligible = (
         row.get("link_status") == "resolved"
         and known
         and effective is not None
-        and effective <= boundary.as_of
+        and _at_or_before(effective, boundary.as_of)
     )
     if row.get("person_reference_eligible") is not eligible:
         raise ValueError("identity Person eligibility is invalid")
@@ -252,6 +252,17 @@ def canonical_timestamp(value: str) -> str:
     if parsed.tzinfo is None:
         raise ValueError("timestamp timezone is missing")
     return parsed.astimezone(UTC).isoformat().replace("+00:00", "Z")
+
+
+def _at_or_before(value: str, cutoff: str) -> bool:
+    return _timestamp_instant(value) <= _timestamp_instant(cutoff)
+
+
+def _timestamp_instant(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp timezone is missing")
+    return parsed.astimezone(UTC)
 
 
 def text(value: object, field: str) -> str:

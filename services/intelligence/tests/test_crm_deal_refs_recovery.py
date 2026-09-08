@@ -9,6 +9,7 @@ from pathlib import Path
 
 import pytest
 from intelligence.artifacts import canonical_json, sha256_file
+from intelligence.crm_deal_refs import snapshot_validation
 from intelligence.crm_deal_refs.checkpoints import replace_json
 from intelligence.crm_deal_refs.commands import accepted_snapshot_root, partial_snapshot_root
 from intelligence.crm_deal_refs.export import (
@@ -17,7 +18,7 @@ from intelligence.crm_deal_refs.export import (
     seal_boundary,
     verify_snapshot,
 )
-from intelligence.crm_deal_refs.models import json_value
+from intelligence.crm_deal_refs.models import MAX_RECORDS, json_value
 from intelligence.crm_deal_refs.snapshot_validation import read_checkpoint
 from test_crm_deal_refs_export import FakeRepository
 
@@ -69,7 +70,7 @@ def test_rehashed_changed_prefix_and_one_sided_sidecar_fail(tmp_path: Path) -> N
     page = source / "pages" / "deal-references" / "page-000001.ndjson"
     row = json.loads(page.read_text(encoding="utf-8"))
     row["lifecycle_status_observed"] = "superseded"
-    page.write_text(canonical_json(row) + "\n", encoding="utf-8")
+    page.write_bytes((canonical_json(row) + "\n").encode("utf-8"))
     manifest = source / "manifests" / "deal-references" / "page-000001.json"
     data = json.loads(manifest.read_text(encoding="utf-8"))
     data["sha256"] = sha256_file(page)
@@ -80,6 +81,67 @@ def test_rehashed_changed_prefix_and_one_sided_sidecar_fail(tmp_path: Path) -> N
     manifest.unlink()
     with pytest.raises((FileNotFoundError, ValueError)):
         resume_snapshot(tmp_path / "target2", source, boundary, deals, identities)
+
+
+def test_partial_checkpoint_limits_reject_before_sidecar_traversal(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    source, boundary, _, _, _ = _partial(tmp_path / "source")
+    digest = __import__(
+        "intelligence.crm_deal_refs.models", fromlist=["canonical_digest"]
+    ).canonical_digest(json_value(boundary))
+    checkpoint = read_checkpoint(source / "checkpoint.json", digest)
+    replace_json(
+        source / "checkpoint.json",
+        json_value(replace(checkpoint, deal_pages=MAX_RECORDS, deal_records=1)),
+    )
+    monkeypatch.setattr(
+        snapshot_validation,
+        "_prefix_manifests",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("sidecars must not be traversed")),
+    )
+    with pytest.raises(ValueError, match="checkpoint limits"):
+        snapshot_validation.verify_partial(source)
+
+
+def test_identity_prefix_without_complete_deal_prefix_is_rejected_before_resume_copy(
+    tmp_path: Path,
+) -> None:
+    repository = FakeRepository()
+    boundary, deals, identities = seal_boundary(
+        repository,
+        source_instance_id="instance-a",
+        as_of="2026-02-01T00:00:00Z",
+        page_size=1,
+        max_records=2,
+    )
+    export_snapshot(tmp_path / "source", boundary, deals, identities)
+    source = tmp_path / "source" / "snapshots" / "crm" / "deal-refs"
+    (source / "snapshot-manifest.json").unlink()
+    shutil.rmtree(source / "pages" / "deal-references")
+    shutil.rmtree(source / "manifests" / "deal-references")
+    digest = __import__(
+        "intelligence.crm_deal_refs.models", fromlist=["canonical_digest"]
+    ).canonical_digest(json_value(boundary))
+    checkpoint = read_checkpoint(source / "checkpoint.json", digest)
+    replace_json(
+        source / "checkpoint.json",
+        json_value(
+            replace(
+                checkpoint,
+                deal_pages=0,
+                deal_records=0,
+                deal_next_cursor=None,
+                completed=False,
+            )
+        ),
+    )
+    with pytest.raises(ValueError, match="complete deal prefix"):
+        snapshot_validation.verify_partial(source)
+    target = tmp_path / "target"
+    with pytest.raises(ValueError, match="complete deal prefix"):
+        resume_snapshot(target, source, boundary, deals, identities)
+    assert not (target / "snapshots" / "crm" / "deal-refs").exists()
 
 
 def test_snapshot_roots_reject_traversal() -> None:

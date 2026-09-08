@@ -29,6 +29,8 @@ def test_queries_are_read_only_and_source_scoped() -> None:
     assert "migration.completed_at" in queries.READ_IDENTITY_BOUNDARY
     assert "owned_entity_keys" in queries.LIST_DEAL_REFERENCE_PAGE
     assert "record_entity_key" in queries.LIST_DEAL_REFERENCE_PAGE
+    assert "$max_raw_payload_chars" in queries.LIST_DEAL_REFERENCE_PAGE
+    assert "raw_payload_oversize" in queries.LIST_DEAL_REFERENCE_PAGE
 
 
 def test_repository_executes_source_validation_in_read_mode_with_parameters() -> None:

@@ -40,6 +40,11 @@ _RESOLUTION_KINDS = frozenset(
 
 def map_deal_reference(row: DealReferenceRow, source_instance_id: str, as_of: str) -> DealReference:
     key, record_hash, policy, entity_id = _deal_provenance(row)
+    oversized = row["raw_payload_oversize"]
+    if oversized is True:
+        raise ValueError("crm deal raw payload exceeds query transfer limit")
+    if oversized is not False:
+        raise ValueError("crm deal raw payload oversize signal is invalid")
     payload = _payload(row["raw_payload"])
     source_payload = _source_deal_payload(payload)
     _payload_identity(payload, source_payload, entity_id)
@@ -54,20 +59,20 @@ def map_deal_reference(row: DealReferenceRow, source_instance_id: str, as_of: st
     close_at = _deal_timestamp(payload, source_payload, "CLOSEDATE")
     observed_at = _timestamp(row["observed_at"], "observed_at", required=False)
     available_at = _timestamp(row["ingested_at"], "ingested_at", required=False)
-    category_id = _deal_text(payload, source_payload, "category_id", "CATEGORY_ID")
+    category_id = _deal_numeric_scalar(payload, source_payload, "category_id", "CATEGORY_ID")
     stage_semantic_id = _deal_text(
         payload, source_payload, "stage_semantic_id", "STAGE_SEMANTIC_ID"
     )
     eligible = (
         available_at is not None
-        and available_at <= cutoff
+        and _at_or_before(available_at, cutoff)
         and observed_at is not None
-        and observed_at <= cutoff
+        and _at_or_before(observed_at, cutoff)
         and event_at is not None
-        and event_at <= cutoff
+        and _at_or_before(event_at, cutoff)
         and effective_at is not None
-        and effective_at <= cutoff
-        and (close_at is None or close_at <= cutoff)
+        and _at_or_before(effective_at, cutoff)
+        and (close_at is None or _at_or_before(close_at, cutoff))
         and category_id is not None
         and (stage is not None or stage_semantic_id is not None)
     )
@@ -91,7 +96,9 @@ def map_deal_reference(row: DealReferenceRow, source_instance_id: str, as_of: st
         source_effective_at=effective_at,
         source_close_date=close_at,
         availability=(
-            "known_by_cutoff" if available_at is not None and available_at <= cutoff else "unknown"
+            "known_by_cutoff"
+            if available_at is not None and _at_or_before(available_at, cutoff)
+            else "unknown"
         ),
         point_in_time_eligible=eligible,
         lifecycle_status_observed=_optional_text(row["lifecycle_status"], "lifecycle_status"),
@@ -149,8 +156,9 @@ def map_identity_revision(
     person_status = _optional_text(row["person_status"], "person_status")
     available_at = _timestamp(row["created_at"], "created_at", required=False)
     effective_at = _timestamp(row["effective_at"], "effective_at", required=False)
-    known = available_at is not None and available_at <= _cutoff(as_of)
-    effective_known = effective_at is not None and effective_at <= _cutoff(as_of)
+    cutoff = _cutoff(as_of)
+    known = available_at is not None and _at_or_before(available_at, cutoff)
+    effective_known = effective_at is not None and _at_or_before(effective_at, cutoff)
     person_visible = status == "resolved" and known and effective_known
     if status == "resolved" and person_visible:
         if person is None or person_status is None:
@@ -213,9 +221,9 @@ def _payload_identity(
     payload: dict[str, object], source_payload: dict[str, object], entity_id: str
 ) -> None:
     values = (
-        _payload_text(payload, "crm_deal_id"),
-        _payload_text(payload, "ID"),
-        _payload_text(source_payload, "ID"),
+        _payload_numeric_scalar(payload, "crm_deal_id", positive=True),
+        _payload_numeric_scalar(payload, "ID", positive=True),
+        _payload_numeric_scalar(source_payload, "ID", positive=True),
     )
     present = {value for value in values if value is not None}
     if len(present) > 1 or (present and present != {entity_id}):
@@ -245,6 +253,20 @@ def _deal_text(
     return next(iter(present), None)
 
 
+def _deal_numeric_scalar(
+    payload: dict[str, object], source_payload: dict[str, object], outer_key: str, source_key: str
+) -> str | None:
+    values = (
+        _payload_numeric_scalar(payload, outer_key, positive=False),
+        _payload_numeric_scalar(payload, source_key, positive=False),
+        _payload_numeric_scalar(source_payload, source_key, positive=False),
+    )
+    present = {value for value in values if value is not None}
+    if len(present) > 1:
+        raise ValueError(f"crm deal payload {source_key} values conflict")
+    return next(iter(present), None)
+
+
 def _deal_timestamp(
     payload: dict[str, object], source_payload: dict[str, object], key: str
 ) -> str | None:
@@ -257,6 +279,24 @@ def _payload_text(payload: dict[str, object], key: str) -> str | None:
     if value is None or (isinstance(value, str) and not value.strip()):
         return None
     return _text(value, key)
+
+
+def _payload_numeric_scalar(payload: dict[str, object], key: str, *, positive: bool) -> str | None:
+    value = payload.get(key)
+    if value is None or (isinstance(value, str) and not value.strip()):
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{key} is invalid")
+    if isinstance(value, int):
+        parsed = str(value)
+    elif isinstance(value, str) and value.isdigit():
+        parsed = value
+    else:
+        raise ValueError(f"{key} is invalid")
+    numeric = int(parsed)
+    if numeric < 0 or (positive and numeric == 0):
+        raise ValueError(f"{key} is invalid")
+    return parsed
 
 
 def _timestamp(value: object, field: str, *, required: bool) -> str | None:
@@ -276,6 +316,17 @@ def _timestamp(value: object, field: str, *, required: bool) -> str | None:
 
 def _cutoff(value: str) -> str:
     return _timestamp(value, "as_of", required=True) or ""
+
+
+def _at_or_before(value: str, cutoff: str) -> bool:
+    return _instant(value) <= _instant(cutoff)
+
+
+def _instant(value: str) -> datetime:
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None:
+        raise ValueError("timestamp must include timezone")
+    return parsed.astimezone(UTC)
 
 
 def _policy(value: object) -> str:

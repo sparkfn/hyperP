@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import Protocol, TypedDict
 
 
@@ -24,6 +25,7 @@ class DealReferenceRow(TypedDict):
     lifecycle_status: object
     link_status: object
     raw_payload: object
+    raw_payload_oversize: object
 
 
 class IdentityRevisionRow(TypedDict):
@@ -62,12 +64,17 @@ class CrmDealRefsRepository(Protocol):
     def read_identity_boundary(self) -> IdentityBoundary:
         """Read identity readiness and revision ceiling without graph mutation."""
 
-    def list_deal_references(
-        self, source_instance_id: str, as_of: str, page_size: int, max_records: int
-    ) -> list[DealReferenceRow]:
-        """Return every in-bound source version through deterministic keyset reads."""
+    def iter_deal_reference_pages(
+        self,
+        source_instance_id: str,
+        as_of: str,
+        page_size: int,
+        max_records: int,
+        max_raw_payload_chars: int,
+    ) -> Iterator[tuple[DealReferenceRow, ...]]:
+        """Yield bounded raw deal pages so payloads are mapped then released."""
 
-    def list_identity_revisions(
+    def iter_identity_revision_pages(
         self,
         source_instance_id: str,
         source_entity_ids: tuple[str, ...],
@@ -75,5 +82,5 @@ class CrmDealRefsRepository(Protocol):
         through_revision: int,
         page_size: int,
         max_records: int,
-    ) -> list[IdentityRevisionRow]:
-        """Return relevant immutable identity history through the sealed revision ceiling."""
+    ) -> Iterator[tuple[IdentityRevisionRow, ...]]:
+        """Yield bounded identity pages through the sealed revision ceiling."""

@@ -36,6 +36,7 @@ from intelligence.crm_deal_refs.export_support import (
 from intelligence.crm_deal_refs.mapping import map_deal_reference, map_identity_revision
 from intelligence.crm_deal_refs.models import (
     IDENTITY_POLICY_VERSION,
+    MAX_RAW_PAYLOAD_CHARS,
     SCHEMA_VERSION,
     SOURCE_SYSTEM,
     Boundary,
@@ -77,23 +78,30 @@ def seal_boundary(
     capture = utc_now()
     deals = tuple(
         replace(map_deal_reference(row, source_instance_id, as_of), observation_captured_at=capture)
-        for row in repository.list_deal_references(
-            source_instance_id, as_of, page_size, max_records
+        for page in repository.iter_deal_reference_pages(
+            source_instance_id, as_of, page_size, max_records, MAX_RAW_PAYLOAD_CHARS
         )
+        for row in page
     )
     _ordered_deals(deals)
     remaining = max_records - len(deals)
     if remaining < 0:
         raise RuntimeError("selected records exceed max-records")
     identities = tuple(
-        _identity_at_capture(map_identity_revision(row, source_instance_id, as_of), capture)
-        for row in repository.list_identity_revisions(
-            source_instance_id,
-            tuple(sorted({item.source_entity_id for item in deals})),
-            as_of,
-            counter["current_revision"],
-            page_size,
-            remaining,
+        sorted(
+            (
+                _identity_at_capture(map_identity_revision(row, source_instance_id, as_of), capture)
+                for page in repository.iter_identity_revision_pages(
+                    source_instance_id,
+                    tuple(sorted({item.source_entity_id for item in deals})),
+                    as_of,
+                    counter["current_revision"],
+                    page_size,
+                    remaining,
+                )
+                for row in page
+            ),
+            key=lambda item: item.global_revision,
         )
     )
     _ordered_identities(
@@ -130,23 +138,34 @@ def capture_matching_boundary(
             map_deal_reference(row, boundary.source_instance_id, boundary.as_of),
             observation_captured_at=boundary.captured_at,
         )
-        for row in repository.list_deal_references(
-            boundary.source_instance_id, boundary.as_of, boundary.page_size, boundary.max_records
+        for page in repository.iter_deal_reference_pages(
+            boundary.source_instance_id,
+            boundary.as_of,
+            boundary.page_size,
+            boundary.max_records,
+            MAX_RAW_PAYLOAD_CHARS,
         )
+        for row in page
     )
     _ordered_deals(deals)
     identities = tuple(
-        _identity_at_capture(
-            map_identity_revision(row, boundary.source_instance_id, boundary.as_of),
-            boundary.captured_at,
-        )
-        for row in repository.list_identity_revisions(
-            boundary.source_instance_id,
-            tuple(sorted({item.source_entity_id for item in deals})),
-            boundary.as_of,
-            boundary.identity_revision_ceiling,
-            boundary.page_size,
-            boundary.max_records - len(deals),
+        sorted(
+            (
+                _identity_at_capture(
+                    map_identity_revision(row, boundary.source_instance_id, boundary.as_of),
+                    boundary.captured_at,
+                )
+                for page in repository.iter_identity_revision_pages(
+                    boundary.source_instance_id,
+                    tuple(sorted({item.source_entity_id for item in deals})),
+                    boundary.as_of,
+                    boundary.identity_revision_ceiling,
+                    boundary.page_size,
+                    boundary.max_records - len(deals),
+                )
+                for row in page
+            ),
+            key=lambda item: item.global_revision,
         )
     )
     _ordered_identities(
@@ -268,16 +287,34 @@ def verify_snapshot(root: Path) -> dict[str, object]:
 
 def verified_snapshot_inventory(root: Path) -> tuple[tuple[str, str, int], ...]:
     verify_complete(root)
+    return snapshot_regular_inventory(root)
+
+
+def snapshot_regular_inventory(root: Path) -> tuple[tuple[str, str, int], ...]:
+    """Hash exact regular evidence without parsing its domain content."""
+    return snapshot_registered_inventory(root, snapshot_regular_sizes(root))
+
+
+def snapshot_regular_sizes(root: Path) -> tuple[tuple[str, int], ...]:
+    """List regular snapshot files and sizes without reading their contents."""
     from intelligence.crm_deal_refs.checkpoints import regular_inventory
 
     return tuple(
-        (
-            path,
-            sha256_file(root.joinpath(*path.split("/"))),
-            root.joinpath(*path.split("/")).stat().st_size,
-        )
-        for path in regular_inventory(root)
+        (path, root.joinpath(*path.split("/")).stat().st_size) for path in regular_inventory(root)
     )
+
+
+def snapshot_registered_inventory(
+    root: Path, expected: tuple[tuple[str, int], ...]
+) -> tuple[tuple[str, str, int], ...]:
+    """Hash only a prior exact size-checked regular-file inventory."""
+    items: list[tuple[str, str, int]] = []
+    for path, byte_count in expected:
+        candidate = root.joinpath(*path.split("/"))
+        if candidate.stat().st_size != byte_count:
+            raise ValueError("snapshot file size changed before hashing")
+        items.append((path, sha256_file(candidate), byte_count))
+    return tuple(items)
 
 
 def read_boundary(path: Path) -> Boundary:

@@ -60,13 +60,17 @@ closed.
 
 The allowlist is source instance/version identity, entity/category, stage/outcome references,
 observed/ingested and source-created/updated/close-date values, plus capture-time lifecycle/link
-observations. Bounded raw payload JSON is decoded only in memory for that projection and discarded;
+observations. Bitrix numeric deal IDs and categories accept non-boolean integers or digit strings
+(including category `0`) and normalize to strings; timestamps and stage references remain strings.
+Bounded raw payload JSON is decoded only in memory for that projection and discarded; an oversized
+payload is represented only by a query-side oversize signal, never transferred in full.
 titles, money, contact groups, matching candidates/evidence, scores, locks, and arbitrary payloads are not
 persisted. A source close date remains a source field, not proof of a closure transition. Stage families,
 stage mapping, lifecycle derivation, and outcome inference are excluded.
 
 `SourceRecord.ingested_at` is first-known availability. `observed_at` and source timestamps retain their
-source meanings and are never substituted for availability. Identity `effective_at` is preserved, while
+source meanings and are never substituted for availability. All cutoff decisions compare parsed
+timezone-aware UTC instants, not serialized timestamp ordering. Identity `effective_at` is preserved, while
 identity `created_at` is first-known availability. Missing availability remains unknown and cannot be
 represented as existing by `--as-of`. Lifecycle/eligibility are mutable capture-time observations, not
 historical authority. Only validated immutable `resolved` identity evidence whose first-known and
@@ -77,8 +81,14 @@ The correction-cycle schema separates immutable source/identity fact fingerprint
 link, and observed-Person-status fingerprints. Reconciliation reuses the persisted identity revision ceiling
 and rejects only a counter that falls behind it; unrelated revisions created after that ceiling are outside
 the frozen boundary. Resume validates and copies only a committed regular-file prefix into a new staging
-tree, then appends after the persisted cursor; no existing page or manifest is overwritten. Completed
-accepted replay is artifact-only, so later Neo4j state cannot invalidate accepted immutable output.
+tree, then appends after the persisted cursor; no existing page or manifest is overwritten. An unaccepted
+run always reconciles before copying/writing and after resumed writing, even when failed staging contains a
+complete-looking snapshot manifest. Only an independently verified accepted output may replay artifact-only,
+so later Neo4j state cannot invalidate accepted immutable output. Artifact reads are bounded and streamed,
+and accepted registry size/hash/path equality is checked before domain parsing; all workspace-to-domain-root
+path components are checked without following symlinks. Checkpoint page and record counts are bounded by
+the frozen ceiling before any sidecar traversal, while accepted path and byte-count equality is checked
+before reading file content for hashing.
 
 ## Deployment contract
 

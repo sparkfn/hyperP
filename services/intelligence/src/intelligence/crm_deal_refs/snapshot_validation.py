@@ -2,21 +2,22 @@
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 
 from intelligence.artifacts import canonical_json, sha256_file
 from intelligence.crm_deal_refs.checkpoints import read_json, regular_inventory
+from intelligence.crm_deal_refs.export_support import validate_checkpoint_limits
 from intelligence.crm_deal_refs.models import (
     IDENTITY_POLICY_VERSION,
+    MAX_PAGE_BYTES,
     MAX_PAGE_SIZE,
     MAX_RECORDS,
+    MAX_SNAPSHOT_MANIFEST_BYTES,
     QUERY_VERSION,
     SCHEMA_VERSION,
     SOURCE_SYSTEM,
     Boundary,
     Checkpoint,
-    DealKey,
     PageKind,
     PageManifest,
     canonical_digest,
@@ -26,7 +27,7 @@ from intelligence.crm_deal_refs.models import (
 )
 from intelligence.crm_deal_refs.row_validation import bind_full as _verify_full_binding
 from intelligence.crm_deal_refs.row_validation import deal_key as _deal_key
-from intelligence.crm_deal_refs.row_validation import validate_row as _validate_row
+from intelligence.crm_deal_refs.snapshot_pages import page_rows
 
 
 def read_boundary(path: Path) -> Boundary:
@@ -118,10 +119,14 @@ def verify_complete(
     boundary = read_boundary(root / "boundary.json")
     digest = canonical_digest(json_value(boundary))
     checkpoint = read_checkpoint(root / "checkpoint.json", digest)
+    validate_checkpoint_limits(boundary, checkpoint)
     if not checkpoint.completed:
         raise ValueError("snapshot is partial")
     manifests = _snapshot_manifests(
-        read_json(root / "snapshot-manifest.json"), boundary, digest, checkpoint
+        read_json(root / "snapshot-manifest.json", MAX_SNAPSHOT_MANIFEST_BYTES),
+        boundary,
+        digest,
+        checkpoint,
     )
     deals, identities = verify_pages(root, boundary, checkpoint, manifests)
     _verify_full_binding(boundary, deals, identities)
@@ -138,6 +143,7 @@ def verify_partial(root: Path) -> tuple[Boundary, Checkpoint, tuple[PageManifest
         raise ValueError("snapshot root is unsafe")
     boundary = read_boundary(root / "boundary.json")
     checkpoint = read_checkpoint(root / "checkpoint.json", canonical_digest(json_value(boundary)))
+    validate_checkpoint_limits(boundary, checkpoint)
     if checkpoint.completed or (root / "snapshot-manifest.json").exists():
         raise ValueError("partial snapshot terminal evidence is invalid")
     manifests = _prefix_manifests(root, checkpoint)
@@ -208,18 +214,6 @@ def _verify_group(
     return rows
 
 
-def page_rows(path: Path, kind: PageKind, boundary: Boundary) -> list[dict[str, object]]:
-    rows: list[dict[str, object]] = []
-    for line in path.read_text(encoding="utf-8").splitlines():
-        value = json.loads(line)
-        if not isinstance(value, dict) or canonical_json(value) != line:
-            raise ValueError("page row is invalid")
-        row = {str(key): item for key, item in value.items()}
-        _validate_row(row, kind, boundary)
-        rows.append(row)
-    return rows
-
-
 def cursor_of(row: dict[str, object]) -> str:
     key = row.get("key")
     if isinstance(key, dict):
@@ -257,7 +251,6 @@ def _snapshot_manifests(
         or value.get("identity_policy_version") != IDENTITY_POLICY_VERSION
         or value.get("as_of") != boundary.as_of
         or not isinstance(raw, list)
-        or canonical_digest(raw) != value.get("page_manifests_sha256")
     ):
         raise ValueError("snapshot manifest digest is invalid")
     counts = (
@@ -275,6 +268,10 @@ def _snapshot_manifests(
         checkpoint.identity_records,
     ):
         raise ValueError("snapshot manifest counts are invalid")
+    if len(raw) != checkpoint.deal_pages + checkpoint.identity_pages:
+        raise ValueError("snapshot manifest page count is invalid")
+    if canonical_digest(raw) != value.get("page_manifests_sha256"):
+        raise ValueError("snapshot manifest digest is invalid")
     items = tuple(_manifest(item) for item in raw)
     if items != tuple(sorted(items, key=lambda item: (item.kind, item.sequence))):
         raise ValueError("snapshot manifest ordering is invalid")
@@ -304,6 +301,9 @@ def _manifest(value: object) -> PageManifest:
     path = _text(value.get("path"), "path")
     if path != f"pages/{kind}/page-{sequence:06d}.ndjson":
         raise ValueError("page path is invalid")
+    byte_count = _nonnegative(value.get("byte_count"), "bytes")
+    if byte_count > MAX_PAGE_BYTES:
+        raise ValueError("page byte count exceeds snapshot limit")
     return PageManifest(
         sequence,
         kind,
@@ -318,7 +318,7 @@ def _manifest(value: object) -> PageManifest:
         _optional_text(value.get("first_key")),
         _optional_text(value.get("last_key")),
         _positive(value.get("count"), "count"),
-        _nonnegative(value.get("byte_count"), "bytes"),
+        byte_count,
         _digest(value.get("sha256")),
     )
 
@@ -346,16 +346,6 @@ def _validate_manifest(
         canonical_digest(json_value(boundary)),
     ):
         raise ValueError("page manifest boundary is invalid")
-
-
-def old_deal_key(value: object) -> DealKey:
-    if not isinstance(value, dict) or set(value) != set(DealKey.__dataclass_fields__):
-        raise ValueError("deal key schema is invalid")
-    return DealKey(
-        _text(value.get("source_record_id"), "record id"),
-        _positive(value.get("source_record_version"), "version"),
-        _text(value.get("source_record_pk"), "pk"),
-    )
 
 
 def _timestamp(value: object, field: str) -> str:
