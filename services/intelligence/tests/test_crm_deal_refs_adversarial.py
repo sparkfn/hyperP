@@ -11,7 +11,13 @@ from types import SimpleNamespace
 import pytest
 from intelligence.artifacts import canonical_json, sha256_file
 from intelligence.crm_deal_refs import cli as deal_cli
-from intelligence.crm_deal_refs.commands import ResumeRequest, resume_handler
+from intelligence.crm_deal_refs import commands as deal_commands
+from intelligence.crm_deal_refs.commands import (
+    ExtractRequest,
+    ResumeRequest,
+    extract_handler,
+    resume_handler,
+)
 from intelligence.crm_deal_refs.export import (
     export_snapshot,
     seal_boundary,
@@ -98,11 +104,41 @@ def test_completed_replay_is_artifact_only_after_source_change(
         "intelligence.crm_deal_refs.commands.get_crm_deal_refs_repository",
         lambda: (_ for _ in ()).throw(AssertionError("Neo4j must not be opened")),
     )
+    calls: list[Path] = []
+    original_verify = deal_commands.verify_snapshot
+
+    def verified(root: Path) -> dict[str, object]:
+        calls.append(root)
+        return original_verify(root)
+
+    monkeypatch.setattr(deal_commands, "verify_snapshot", verified)
     staging = workspace / "staging" / "new"
     staging.mkdir(parents=True)
     resume_handler(staging, lambda: False, ResumeRequest("prior", True))
     target = staging / "snapshots" / "crm" / "deal-refs"
+    assert calls == [source, target]
     assert verify_snapshot(target) == verify_snapshot(source)
+
+
+def test_extract_handler_verifies_generated_snapshot_before_return(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = FakeRepository()
+    calls: list[Path] = []
+    original_verify = deal_commands.verify_snapshot
+    monkeypatch.setattr(deal_commands, "get_crm_deal_refs_repository", lambda: repository)
+
+    def verified(root: Path) -> dict[str, object]:
+        calls.append(root)
+        return original_verify(root)
+
+    monkeypatch.setattr(deal_commands, "verify_snapshot", verified)
+    extract_handler(
+        tmp_path,
+        lambda: False,
+        ExtractRequest("instance-a", "2026-02-01T00:00:00Z", 2, 1),
+    )
+    assert calls == [tmp_path / "snapshots" / "crm" / "deal-refs"]
 
 
 def test_unaccepted_complete_staging_reconciles_before_and_after_copy(

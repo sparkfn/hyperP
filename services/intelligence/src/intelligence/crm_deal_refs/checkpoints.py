@@ -14,16 +14,17 @@ from intelligence.artifacts import canonical_json, sha256_file
 from intelligence.crm_deal_refs.models import MAX_METADATA_BYTES, MAX_PAGE_BYTES, MAX_RECORD_BYTES
 
 
-def write_new_json(path: Path, value: object) -> None:
+def write_new_json(path: Path, value: object, maximum_bytes: int = MAX_METADATA_BYTES) -> None:
     """Write canonical JSON once; an existing path is a conflict, never overwrite permission."""
+    payload = _serialized_json(value, maximum_bytes)
     _ensure_parent(path)
-    _write_new_bytes(path, canonical_json(value).encode("utf-8"))
+    _write_new_bytes(path, payload)
 
 
-def replace_json(path: Path, value: object) -> None:
+def replace_json(path: Path, value: object, maximum_bytes: int = MAX_METADATA_BYTES) -> None:
     """Atomically advance the single mutable checkpoint only after page evidence is durable."""
+    payload = _serialized_json(value, maximum_bytes)
     _ensure_parent(path)
-    payload = canonical_json(value).encode("utf-8")
     temporary = path.with_name(f".{path.name}.tmp-{uuid.uuid4().hex}")
     _write_new_bytes(temporary, payload)
     os.replace(temporary, path)
@@ -131,6 +132,15 @@ def _write_new_bytes(path: Path, payload: bytes) -> None:
         handle.flush()
         os.fsync(handle.fileno())
     _fsync_directory(path.parent)
+
+
+def _serialized_json(value: object, maximum_bytes: int) -> bytes:
+    if maximum_bytes < 1:
+        raise ValueError("snapshot write limit is invalid")
+    payload = canonical_json(value).encode("utf-8")
+    if len(payload) > maximum_bytes:
+        raise ValueError("snapshot JSON exceeds size limit")
+    return payload
 
 
 def _ensure_parent(path: Path) -> None:
