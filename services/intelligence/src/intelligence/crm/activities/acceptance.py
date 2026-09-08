@@ -6,26 +6,17 @@ from intelligence.crm.activities.acceptance_candidates import (
     Attempt,
     PublicationHistory,
     RuntimeReader,
-    VerificationCandidate,
     VerificationHistory,
     accepted_publication,
     publication,
     publication_candidate,
-    publication_candidate_name,
     publication_history,
     read_publication_candidate,
     read_publication_candidates,
     read_verification_candidates,
     status_history,
     verification,
-    verification_candidate_name,
     verification_history,
-)
-from intelligence.crm.activities.acceptance_candidates import (
-    parse_publication as _parse_publication,
-)
-from intelligence.crm.activities.acceptance_candidates import (
-    parse_verification as _parse_verification,
 )
 from intelligence.crm.activities.acceptance_descriptor import (
     AcceptanceDescriptor,
@@ -34,6 +25,17 @@ from intelligence.crm.activities.acceptance_descriptor import (
     parse_descriptor,
     publication_descriptor,
     write_publication_descriptor,
+)
+from intelligence.crm.activities.acceptance_parsing import (
+    VerificationCandidate,
+    publication_candidate_name,
+    verification_candidate_name,
+)
+from intelligence.crm.activities.acceptance_parsing import (
+    parse_publication as _parse_publication,
+)
+from intelligence.crm.activities.acceptance_parsing import (
+    parse_verification as _parse_verification,
 )
 
 __all__ = (

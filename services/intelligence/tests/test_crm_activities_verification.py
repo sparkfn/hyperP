@@ -17,6 +17,7 @@ from intelligence.crm.activities.manifests import write_snapshot
 from intelligence.crm.activities.models import (
     ArchiveRecord,
     ArchiveRequest,
+    Disposition,
     ParentReference,
     sha256_json,
 )
@@ -69,6 +70,82 @@ def test_verifier_accepts_complete_canonical_snapshot(tmp_path: Path) -> None:
     assert verify_snapshot(snapshot)["verified"] is True
 
 
+def test_verifier_accepts_empty_current_schema_snapshot(tmp_path: Path) -> None:
+    request = ArchiveRequest(
+        "checkpoint-a",
+        "bitrix-primary",
+        database_identity="neo4j-primary",
+        selection_contract_version="crm-activities-selection-v2",
+        max_references_per_record=42,
+    )
+    boundary = seal((), request)
+    staging = tmp_path / "staging" / "empty-run"
+    staging.mkdir(parents=True)
+    write_snapshot(staging, boundary, (), ())
+    snapshot = staging / "snapshots" / "crm" / "activities" / boundary.logical_snapshot_id
+    assert verify_snapshot(snapshot)["verified"] is True
+
+
+def test_verifier_rejects_accepted_unknown_lifecycle(tmp_path: Path) -> None:
+    record = replace(_record(), lifecycle_status="unrecognized_lifecycle")
+    boundary = seal((record,), ArchiveRequest("checkpoint-a", "bitrix-primary"))
+    staging = tmp_path / "staging" / "unknown-accepted"
+    staging.mkdir(parents=True)
+    write_snapshot(
+        staging,
+        boundary,
+        (record,),
+        (Disposition(record.source_record_pk, "accepted", None),),
+    )
+    snapshot = staging / "snapshots" / "crm" / "activities" / boundary.logical_snapshot_id
+    with pytest.raises(ValueError, match="closed classification"):
+        verify_snapshot(snapshot)
+
+
+def test_verifier_rejects_accepted_invalid_companion(tmp_path: Path) -> None:
+    activity = _record("activity-a")
+    child = ParentReference(
+        "activity-a",
+        "bitrix-primary",
+        "record-activity-a",
+        "crm_history",
+        "CHILD_OF",
+    )
+    conflicting_details = ParentReference(
+        "activity-b",
+        "bitrix-primary",
+        "record-activity-b",
+        "crm_history",
+        "DETAILS_HISTORY_ITEM",
+    )
+    call = replace(
+        _record("call-a"),
+        record_type="call",
+        child_parents=(child,),
+        details_parents=(conflicting_details,),
+        stored_parent=ParentReference(
+            None,
+            "bitrix-primary",
+            "record-activity-a",
+            "crm_history",
+            "STORED_PARENT",
+        ),
+    )
+    records = (activity, call)
+    boundary = seal(records, ArchiveRequest("checkpoint-a", "bitrix-primary"))
+    staging = tmp_path / "staging" / "invalid-accepted-companion"
+    staging.mkdir(parents=True)
+    write_snapshot(
+        staging,
+        boundary,
+        records,
+        tuple(Disposition(record.source_record_pk, "accepted", None) for record in records),
+    )
+    snapshot = staging / "snapshots" / "crm" / "activities" / boundary.logical_snapshot_id
+    with pytest.raises(ValueError, match="closed classification"):
+        verify_snapshot(snapshot)
+
+
 @pytest.mark.parametrize("mutation", ("extra", "missing", "noncanonical", "tamper"))
 def test_verifier_rejects_inventory_and_content_tampering(tmp_path: Path, mutation: str) -> None:
     snapshot, _ = _snapshot(tmp_path)
@@ -83,8 +160,12 @@ def test_verifier_rejects_inventory_and_content_tampering(tmp_path: Path, mutati
         path = snapshot / "cleanup-identities.json"
         content = path.read_text(encoding="utf-8").replace("activity-a", "activity-b")
         path.write_text(content, encoding="utf-8")
-    with pytest.raises(ValueError):
-        verify_snapshot(snapshot)
+    if mutation == "missing":
+        with pytest.raises(ValueError, match="missing"):
+            verify_snapshot(snapshot)
+    else:
+        with pytest.raises(ValueError):
+            verify_snapshot(snapshot)
 
 
 def test_verifier_rejects_closed_classification_tamper(tmp_path: Path) -> None:
@@ -156,7 +237,12 @@ def test_status_new_and_corrupt_evidence_are_explicit(tmp_path: Path) -> None:
     root = checkpoints.checkpoint_root(run, "checkpoint-a", _LIMITS)
     request = ArchiveRequest("checkpoint-a", "bitrix-primary")
     checkpoints.initialize(root, request, _LIMITS)
-    assert status(tmp_path, "checkpoint-a")["state"]["phase"] == "new"
+    before = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
+    result = status(tmp_path, "checkpoint-a")
+    after = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
+    assert result["state"]["phase"] == "new"
+    assert result["state_store"] == "absent"
+    assert after == before
     (root / "dispositions.json").write_text("not-json", encoding="utf-8")
     with pytest.raises(ValueError, match="corrupt"):
         status(tmp_path, "checkpoint-a")

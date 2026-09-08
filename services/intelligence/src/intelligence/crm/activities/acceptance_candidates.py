@@ -14,6 +14,9 @@ from intelligence.crm.activities.acceptance_descriptor import (
     published_inventory,
 )
 from intelligence.crm.activities.acceptance_history_io import (
+    CandidateState,
+)
+from intelligence.crm.activities.acceptance_history_io import (
     accepted_outputs as _accepted_outputs,
 )
 from intelligence.crm.activities.acceptance_history_io import (
@@ -49,13 +52,8 @@ _VERIFICATION_COMMAND = "crm_activities_verify"
 
 
 class _Config(Protocol):
-    workspace: Path
-
-
-class _State(Protocol):
-    def inspect(self, run_id: str) -> Run | None: ...
-
-    def accepted_outputs(self, run_id: str) -> tuple[OutputInventory, ...]: ...
+    @property
+    def workspace(self) -> Path: ...
 
 
 class RuntimeReader(Protocol):
@@ -63,7 +61,7 @@ class RuntimeReader(Protocol):
     def config(self) -> _Config: ...
 
     @property
-    def state(self) -> _State: ...
+    def state(self) -> CandidateState: ...
 
 
 @dataclass(frozen=True)
@@ -183,7 +181,7 @@ def _publication_history(
         if pointer_key in seen:
             continue
         seen.add(pointer_key)
-        state_run = _inspect(runtime, pointer.run_id, budget)
+        state_run = _inspect(runtime.state, pointer.run_id, budget)
         attempts.append(Attempt(pointer.run_id, None if state_run is None else state_run.state))
         if state_run is None or state_run.state != "completed":
             continue
@@ -227,7 +225,7 @@ def _verification_history(
         if candidate_key in seen:
             continue
         seen.add(candidate_key)
-        state_run = _inspect(runtime, candidate.run_id, budget)
+        state_run = _inspect(runtime.state, candidate.run_id, budget)
         attempts.append(Attempt(candidate.run_id, None if state_run is None else state_run.state))
         if state_run is None or state_run.state != "completed":
             continue
@@ -306,7 +304,7 @@ def _registered_descriptor(
         pointer.descriptor_sha256,
         pointer.descriptor_byte_count,
     )
-    accepted_outputs = _accepted_outputs(runtime, pointer.run_id, budget)
+    accepted_outputs = _accepted_outputs(runtime.state, pointer.run_id, budget)
     if expected_descriptor not in accepted_outputs:
         raise RuntimeError("publication descriptor is not registered in State")
     metadata, raw = read_published_evidence(
@@ -360,7 +358,7 @@ def _validate_completed_verification(
     if len(candidate.inventory) != 1 or candidate.inventory[0].relative_path != relative_path:
         raise RuntimeError("verification candidate inventory is invalid")
     expected = published_inventory(state_run.run_id, candidate.inventory)
-    if _accepted_outputs(runtime, state_run.run_id, budget) != expected:
+    if _accepted_outputs(runtime.state, state_run.run_id, budget) != expected:
         raise RuntimeError("verification candidate inventory conflicts with accepted outputs")
     evidence, raw = read_published_evidence(
         runtime.config.workspace,

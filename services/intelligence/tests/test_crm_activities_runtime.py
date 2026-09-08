@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import shutil
+from collections.abc import Iterator
 from hashlib import sha256
 from pathlib import Path
 from typing import cast
@@ -24,6 +25,8 @@ from intelligence.crm.activities.acceptance import (
     verification_candidate_name,
     write_publication_descriptor,
 )
+from intelligence.crm.activities.acceptance_history_io import candidate_history
+from intelligence.crm.activities.bounded import ReadBudget, ReadLimits
 from intelligence.crm.activities.checkpoint_limits import CheckpointLimits
 from intelligence.crm.activities.config import CrmActivitiesConfig
 from intelligence.crm.activities.manifests import write_snapshot
@@ -281,6 +284,35 @@ def test_extraction_output_cannot_self_establish_verification(tmp_path: Path) ->
     )
     with pytest.raises(RuntimeError, match="run command"):
         verification(cast(IntelligenceRuntime, runtime), request.snapshot_id)
+
+
+def test_candidate_history_charges_entries_before_materializing_inventory(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    root = tmp_path / "staging" / ".crm-activities" / "checkpoint-a"
+    root.mkdir(parents=True)
+    for index in range(20):
+        (root / f"unrelated-{index:02d}.json").write_text("{}", encoding="utf-8")
+    observed = 0
+    original = Path.iterdir
+
+    def bounded_iterdir(path: Path) -> Iterator[Path]:
+        nonlocal observed
+        for item in original(path):
+            if path == root:
+                observed += 1
+            yield item
+
+    monkeypatch.setattr(Path, "iterdir", bounded_iterdir)
+    with pytest.raises(RuntimeError, match="entry ceiling"):
+        candidate_history(
+            tmp_path,
+            "checkpoint-a",
+            "publication-candidate-",
+            ReadBudget(ReadLimits(1_000, 1, 10)),
+        )
+    assert observed == 2
 
 
 def test_candidate_filename_is_bound_to_embedded_run_identity(tmp_path: Path) -> None:
