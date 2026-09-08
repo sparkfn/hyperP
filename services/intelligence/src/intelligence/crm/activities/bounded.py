@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import stat
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -160,18 +161,27 @@ def records(root: Path, budget: ReadBudget) -> tuple[dict[str, object], ...]:
     return result
 
 
-def verify_snapshot_input(snapshot: Path, limits: ReadLimits) -> None:
-    """Bound unsafe verification input before the strict artifact verifier parses it."""
+def verify_snapshot_input(
+    snapshot: Path,
+    limits: ReadLimits,
+    trusted_selected_count: int,
+) -> None:
+    """Bound unsafe input using a descriptor/State-proven row ceiling.
+
+    The snapshot manifest is deliberately not consulted to enlarge this budget:
+    it remains untrusted until strict verification.  The caller obtains the
+    selected count from the descriptor-bound, State-hashed manifest first.
+    """
+    if (
+        not isinstance(trusted_selected_count, int)
+        or isinstance(trusted_selected_count, bool)
+        or trusted_selected_count < 0
+    ):
+        raise ValueError("trusted selected count is invalid")
     _required_directory(snapshot, "accepted activity snapshot")
-    budget = ReadBudget(limits)
-    selected_count = _selected_count(snapshot, budget)
-    row_ceiling = max(limits.maximum_rows, selected_count * _ROWS_PER_SELECTED_RECORD)
-    budget = ReadBudget(
-        ReadLimits(limits.maximum_bytes, limits.maximum_entries, row_ceiling),
-        bytes_read=budget.bytes_read,
-        entries_read=budget.entries_read,
-    )
-    pending = [snapshot]
+    row_ceiling = max(limits.maximum_rows, trusted_selected_count * _ROWS_PER_SELECTED_RECORD)
+    budget = ReadBudget(ReadLimits(limits.maximum_bytes, limits.maximum_entries, row_ceiling))
+    pending: list[Path] = [snapshot]
     while pending:
         directory = pending.pop()
         try:
@@ -179,8 +189,6 @@ def verify_snapshot_input(snapshot: Path, limits: ReadLimits) -> None:
         except OSError as error:
             raise ValueError("accepted activity snapshot could not be inspected") from error
         for candidate in children:
-            if candidate == snapshot / "manifest.json":
-                continue
             budget.add_entry()
             metadata = candidate.lstat()
             if has_link_or_reparse(metadata):
@@ -194,22 +202,6 @@ def verify_snapshot_input(snapshot: Path, limits: ReadLimits) -> None:
 
 
 _ROWS_PER_SELECTED_RECORD = 6
-
-
-def _selected_count(snapshot: Path, budget: ReadBudget) -> int:
-    path = snapshot / "manifest.json"
-    try:
-        metadata = path.lstat()
-    except FileNotFoundError as error:
-        raise ValueError("accepted activity snapshot is missing its manifest") from error
-    _regular_file(metadata, "accepted activity snapshot")
-    budget.add_entry()
-    raw = _read_bounded(path, metadata, budget, "accepted activity snapshot")
-    value = _json_object(raw, "manifest")
-    selected = value.get("selected_count")
-    if not isinstance(selected, int) or isinstance(selected, bool) or selected < 0:
-        raise ValueError("accepted activity snapshot manifest selected count is invalid")
-    return selected
 
 
 def _count_snapshot_rows(value: Mapping[str, object], budget: ReadBudget) -> None:
@@ -229,7 +221,7 @@ def _read_required_json(path: Path, budget: ReadBudget, label: str) -> dict[str,
     return value
 
 
-def _read_bounded(path: Path, metadata: stat.stat_result, budget: ReadBudget, label: str) -> bytes:
+def _read_bounded(path: Path, metadata: os.stat_result, budget: ReadBudget, label: str) -> bytes:
     if metadata.st_size > budget.limits.maximum_bytes - budget.bytes_read:
         raise RuntimeError("CRM activities evidence exceeds byte ceiling")
     try:
@@ -284,7 +276,7 @@ def _required_directory(path: Path, label: str) -> None:
         raise ValueError(f"{label} is missing")
 
 
-def _regular_file(metadata: stat.stat_result, label: str) -> None:
+def _regular_file(metadata: os.stat_result, label: str) -> None:
     if (
         has_link_or_reparse(metadata)
         or not stat.S_ISREG(metadata.st_mode)

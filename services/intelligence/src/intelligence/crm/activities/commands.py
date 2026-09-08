@@ -109,7 +109,8 @@ def _archive_handler(
     limits = CheckpointLimits(config.max_checkpoint_bytes, config.max_checkpoint_entries)
     checkpoint = checkpoints.checkpoint_root(run_staging, request.snapshot_id, limits)
     checkpoints.initialize(checkpoint, request, limits)
-    if operation == "resume" and checkpoints.state(checkpoint, limits).get("phase") == "new":
+    capture_allowed = checkpoints.boundary_capture_allowed(checkpoint, limits)
+    if operation == "resume" and capture_allowed:
         raise RuntimeError("CRM activities resume requires a durable sealed checkpoint")
     repository: CrmActivitiesRepository = Neo4jCrmActivitiesRepository(
         config.neo4j_uri,
@@ -118,7 +119,9 @@ def _archive_handler(
         config.neo4j_database,
     )
     try:
-        boundary = _boundary_or_capture(repository, checkpoint, request, limits, cancelled)
+        boundary = _boundary_or_capture(
+            repository, checkpoint, request, limits, cancelled, capture_allowed
+        )
         records = _validated_rows(repository, boundary, cancelled)
         outcomes = classify(records)
         outcome_values = [item.__dict__ for item in outcomes]
@@ -174,8 +177,9 @@ def _boundary_or_capture(
     request: ArchiveRequest,
     limits: CheckpointLimits,
     cancelled: Cancelled,
+    capture_allowed: bool,
 ) -> SealedBoundary:
-    if not checkpoints.boundary_capture_allowed(root, limits):
+    if not capture_allowed:
         boundary = parse_boundary(checkpoints.load_boundary(root, limits))
         if boundary.request != request:
             raise RuntimeError("resume request conflicts with sealed boundary configuration")

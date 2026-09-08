@@ -62,7 +62,14 @@ def verify_snapshot(snapshot: Path) -> Mapping[str, object]:
     identities = cleanup.get("identities")
     if not isinstance(identities, list) or cleanup.get("count") != len(identities):
         raise ValueError("cleanup identity set is invalid")
-    keys = [item.get("source_record_pk") for item in identities if isinstance(item, dict)]
+    keys: list[str] = []
+    for item in identities:
+        if not isinstance(item, dict):
+            raise ValueError("cleanup identity set is invalid")
+        identity = item.get("source_record_pk")
+        if not isinstance(identity, str):
+            raise ValueError("cleanup identity set is invalid")
+        keys.append(identity)
     if len(keys) != len(identities) or keys != sorted(set(keys)):
         raise ValueError("cleanup identity set is not sorted unique")
     pages = manifest.get("record_page_digests")
@@ -271,13 +278,10 @@ def _validate_manifest_shape(value: Mapping[str, object]) -> None:
         or value.get("provenance") != PROVENANCE
     ):
         raise ValueError("archive manifest schema is invalid")
-    if not all(
-        isinstance(value.get(key), int)
-        and not isinstance(value.get(key), bool)
-        and value.get(key) >= 0
-        for key in counts
-    ):
-        raise ValueError("archive manifest counts are invalid")
+    for key in counts:
+        count = value.get(key)
+        if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+            raise ValueError("archive manifest counts are invalid")
     if value.get("unexplained_remainder") != 0:
         raise ValueError("archive manifest remainder is invalid")
     if not isinstance(value.get("snapshot_id"), str) or not isinstance(

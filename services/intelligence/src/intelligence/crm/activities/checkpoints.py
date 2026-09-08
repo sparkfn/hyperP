@@ -203,7 +203,20 @@ def boundary_capture_allowed(root: Path, limits: CheckpointLimits) -> bool:
     boundary_path = checkpoint_file(root, ("boundary.json",), limits)
     boundary_exists = boundary_path.exists()
     if current_phase == "new":
-        return not boundary_exists
+        if not boundary_exists:
+            return True
+        # A crash may occur after immutable boundary publication and before
+        # mutable state replacement.  The durable boundary is authoritative;
+        # validate its request binding and seal that exact evidence rather than
+        # recapturing a different source population.
+        boundary = validate_boundary_evidence(load_boundary(root, limits))
+        if boundary.get("request") != load_request(root, limits).as_public_dict():
+            raise RuntimeError("new checkpoint boundary conflicts with immutable request")
+        boundary_digest = boundary.get("digest")
+        if not isinstance(boundary_digest, str):
+            raise RuntimeError("new checkpoint boundary digest is invalid")
+        _write_state(root, "sealed", boundary_digest, 0, limits)
+        return False
     if not boundary_exists:
         raise RuntimeError("sealed checkpoint state is missing its boundary evidence")
     return False

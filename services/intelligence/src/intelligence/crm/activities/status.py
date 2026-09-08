@@ -3,15 +3,15 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
+from dataclasses import dataclass
 from pathlib import Path
+from typing import Protocol
 
 from intelligence.crm.activities.acceptance import (
     AcceptanceDescriptor,
-    PublicationPointer,
-    VerificationCandidate,
-    parse_descriptor,
-    read_publication_candidates,
-    read_verification_candidates,
+    PublicationHistory,
+    VerificationHistory,
+    status_history,
 )
 from intelligence.crm.activities.bounded import (
     STATUS_READ_LIMITS,
@@ -19,7 +19,6 @@ from intelligence.crm.activities.bounded import (
     ReadLimits,
     checkpoint_root,
     read_evidence,
-    read_published_evidence,
     records,
 )
 from intelligence.crm.activities.checkpoint_resume import request_digest
@@ -32,10 +31,13 @@ from intelligence.crm.activities.models import (
     ArchiveRecord,
     ArchiveRequest,
     Disposition,
+    DispositionKind,
     SealedBoundary,
     sha256_json,
     validate_snapshot_id,
 )
+from intelligence.models import OutputInventory, Run
+from intelligence.state import State
 
 _MANIFEST_KEYS = {
     "schema_version",
@@ -54,22 +56,62 @@ _MANIFEST_KEYS = {
 }
 
 
+class StateReader(Protocol):
+    def inspect(self, run_id: str) -> Run | None: ...
+
+    def accepted_outputs(self, run_id: str) -> tuple[OutputInventory, ...]: ...
+
+
+@dataclass(frozen=True)
+class _StatusConfig:
+    workspace: Path
+
+
+@dataclass(frozen=True)
+class _StatusRuntime:
+    config: _StatusConfig
+    state: StateReader
+
+
 def status(
-    workspace: Path, checkpoint_id: str, limits: ReadLimits = STATUS_READ_LIMITS
+    workspace: Path,
+    checkpoint_id: str,
+    limits: ReadLimits = STATUS_READ_LIMITS,
+    state: StateReader | None = None,
 ) -> dict[str, object]:
-    """Return bounded checkpoint state without walking accepted snapshot files."""
+    """Return bounded State-backed checkpoint status without snapshot traversal."""
     validate_snapshot_id(checkpoint_id)
     root = checkpoint_root(workspace, checkpoint_id)
     if root is None:
         return {"checkpoint_id": checkpoint_id, "state": "absent"}
+    owned_state = state is None
+    reader: StateReader = State(workspace) if state is None else state
+    try:
+        return _status_from_root(workspace, checkpoint_id, root, limits, reader)
+    finally:
+        if owned_state:
+            if not isinstance(reader, State):
+                raise AssertionError("owned status State has an invalid type")
+            reader.close()
+
+
+def _status_from_root(
+    workspace: Path,
+    checkpoint_id: str,
+    root: Path,
+    limits: ReadLimits,
+    state: StateReader,
+) -> dict[str, object]:
     budget = ReadBudget(limits)
-    state = _state(_required(root, "checkpoint.json", budget))
+    state_value = _state(_required(root, "checkpoint.json", budget))
     request = _request(_required(root, "request.json", budget), checkpoint_id)
-    if state["request_digest"] != request_digest(request):
+    if state_value["request_digest"] != request_digest(request):
         raise ValueError("checkpoint state request digest is invalid")
     boundary_value = read_evidence(root, "boundary.json", budget)
     _add_rows(boundary_value, "entries", budget)
     boundary = _boundary(boundary_value)
+    if state_value["phase"] != "new" and boundary is None:
+        raise ValueError("sealed checkpoint state is missing its boundary evidence")
     if boundary is not None and boundary.request != request:
         raise ValueError("sealed boundary request conflicts with checkpoint request")
     dispositions = read_evidence(root, "dispositions.json", budget)
@@ -78,28 +120,38 @@ def status(
     _add_rows(manifest, "record_page_digests", budget)
     outcomes = _validate_dispositions(dispositions, boundary)
     _validate_manifest(manifest, boundary)
-    publication, pointer = _publication_status(workspace, checkpoint_id)
-    verification = _verification_status(workspace, checkpoint_id, publication, pointer)
-    _validate_descriptor_linkage(publication, request, boundary, manifest)
+    runtime = _StatusRuntime(_StatusConfig(workspace), state)
+    publication_history_value, verification_history_value = status_history(
+        runtime,
+        checkpoint_id,
+        budget,
+    )
+    publication = publication_history_value.accepted
+    descriptor = None if publication is None else publication[0]
+    pointer = None if publication is None else publication[1]
+    verified = verification_history_value.accepted
+    _validate_descriptor_linkage(descriptor, request, boundary, manifest)
     archive_records = _records(root, budget)
     source_instance = None if boundary is None else boundary.request.source_instance_id
     return {
         "checkpoint_id": checkpoint_id,
         "snapshot_id": None if manifest is None else manifest.get("snapshot_id"),
         "source_instance_id": source_instance,
-        "state": state,
+        "state": state_value,
         "boundary_digest": None if boundary is None else boundary.digest,
         "disposition_counts": _outcome_counts(outcomes),
         "duplicate_delivery_count": 0,
         "parent_resolution": _parent_summary(archive_records),
         "person_resolution": _person_summary(archive_records),
-        "accepted_run": None if publication is None else dict(publication.raw),
+        "accepted_run": None if descriptor is None else dict(descriptor.raw),
         "publication_candidate": None if pointer is None else pointer.as_dict(),
+        "publication_attempts": _attempts(publication_history_value),
         "manifest_digest": None if manifest is None else manifest.get("digest"),
         "cleanup_identity_digest": None
         if manifest is None
         else manifest.get("cleanup_identity_digest"),
-        "verification": None if verification is None else dict(verification.raw),
+        "verification": None if verified is None else dict(verified.raw),
+        "verification_attempts": _verification_attempts(verification_history_value),
     }
 
 
@@ -145,50 +197,17 @@ def _boundary(value: dict[str, object] | None) -> SealedBoundary | None:
     return boundary
 
 
-def _publication_status(
-    workspace: Path, checkpoint_id: str
-) -> tuple[AcceptanceDescriptor | None, PublicationPointer | None]:
-    candidates = read_publication_candidates(workspace, checkpoint_id)
-    if len(candidates) > 1:
-        return None, None
-    if not candidates:
-        return None, None
-    pointer = candidates[0]
-    metadata, raw = read_published_evidence(
-        workspace, pointer.run_id, pointer.descriptor_relative_path, ReadBudget(STATUS_READ_LIMITS)
-    )
-    if len(raw) != pointer.descriptor_byte_count or _sha256(raw) != pointer.descriptor_sha256:
-        raise ValueError("publication candidate descriptor bytes are invalid")
-    return parse_descriptor(metadata), pointer
+def _attempts(value: PublicationHistory) -> list[dict[str, str | None]]:
+    return [{"run_id": item.run_id, "state": item.state} for item in value.attempts]
 
 
-def _verification_status(
-    workspace: Path,
-    checkpoint_id: str,
-    publication: AcceptanceDescriptor | None,
-    pointer: PublicationPointer | None,
-) -> VerificationCandidate | None:
-    candidates = read_verification_candidates(workspace, checkpoint_id)
-    if len(candidates) > 1:
-        return None
-    if not candidates:
-        return None
-    candidate = candidates[0]
-    if publication is None or pointer is None:
-        raise ValueError("verification candidate has no descriptor-backed publication")
-    if (
-        candidate.accepted_run_id != publication.run_id
-        or candidate.snapshot_id != publication.snapshot_id
-        or candidate.accepted_manifest_digest != publication.manifest_digest
-        or candidate.accepted_descriptor_sha256 != pointer.descriptor_sha256
-    ):
-        raise ValueError("verification candidate linkage is inconsistent")
-    return candidate
+def _verification_attempts(value: VerificationHistory) -> list[dict[str, str | None]]:
+    return [{"run_id": item.run_id, "state": item.state} for item in value.attempts]
 
 
 def _validate_descriptor_linkage(
     descriptor: AcceptanceDescriptor | None,
-    request: object,
+    request: ArchiveRequest,
     boundary: SealedBoundary | None,
     manifest: dict[str, object] | None,
 ) -> None:
@@ -219,9 +238,7 @@ def _validate_dispositions(
     for item in outcomes:
         if not isinstance(item, dict):
             raise ValueError("disposition evidence item is invalid")
-        kind = item.get("disposition")
-        if kind not in {"accepted", "rejected", "quarantined"}:
-            raise ValueError("disposition evidence item is invalid")
+        kind = _disposition_kind(item.get("disposition"))
         disposition = Disposition(
             _text(item, "source_record_pk"), kind, _nullable_text(item, "reason_code")
         )
@@ -310,8 +327,21 @@ def _person_summary(records: tuple[ArchiveRecord, ...]) -> dict[str, int]:
 
 
 def _add_rows(value: dict[str, object] | None, key: str, budget: ReadBudget) -> None:
-    if value is not None and isinstance(value.get(key), list):
-        budget.add_rows(len(value[key]))
+    if value is None:
+        return
+    rows = value.get(key)
+    if isinstance(rows, list):
+        budget.add_rows(len(rows))
+
+
+def _disposition_kind(value: object) -> DispositionKind:
+    if value == "accepted":
+        return "accepted"
+    if value == "rejected":
+        return "rejected"
+    if value == "quarantined":
+        return "quarantined"
+    raise ValueError("disposition evidence item is invalid")
 
 
 def _digest(value: object, field: str) -> None:
@@ -321,12 +351,6 @@ def _digest(value: object, field: str) -> None:
         or any(char not in "0123456789abcdef" for char in value)
     ):
         raise ValueError(f"{field} is invalid")
-
-
-def _sha256(value: bytes) -> str:
-    from hashlib import sha256
-
-    return sha256(value).hexdigest()
 
 
 def _nullable_text(value: Mapping[str, object], key: str) -> str | None:

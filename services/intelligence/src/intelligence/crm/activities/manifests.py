@@ -278,9 +278,3 @@ def _identity(value: Mapping[str, object]) -> str:
     if not isinstance(source_record_pk, str):
         raise ValueError("archive identity row is invalid")
     return source_record_pk
-
-
-from intelligence.crm.activities.snapshot_verifier import (  # noqa: E402, F401
-    snapshot_inventory,
-    verify_snapshot,
-)

@@ -242,7 +242,17 @@ def _recoverable_temp(
         raise ValueError("checkpoint contains unsafe temporary evidence")
     final = inventory.get(entry.path.with_name(final_name))
     if entry.metadata.st_nlink == 1:
-        if final is not None:
+        # os.replace() can be interrupted after the prior mutable state is
+        # still visible but before its private replacement is committed.  The
+        # recognized one-link temporary is never committed evidence; discard it
+        # and preserve the independently admitted final sibling.
+        if final is not None and (
+            final.relative != entry.relative
+            or has_link_or_reparse(final.metadata)
+            or not stat.S_ISREG(final.metadata.st_mode)
+            or final.metadata.st_nlink != 1
+            or not _final_name_allowed(final.path.name, final.relative)
+        ):
             raise ValueError("checkpoint contains unsafe temporary evidence")
         return entry.path
     if entry.metadata.st_nlink != 2 or final is None:

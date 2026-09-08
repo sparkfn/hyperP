@@ -10,11 +10,13 @@ import pytest
 from intelligence.artifacts import canonical_json
 from intelligence.crm.activities import checkpoint_atomic, checkpoint_usage, checkpoints
 from intelligence.crm.activities.checkpoint_limits import CheckpointLimits
+from intelligence.crm.activities.checkpoint_storage import write_exact
 from intelligence.crm.activities.models import (
     ArchiveRecord,
     ArchiveRequest,
     Disposition,
     ParentReference,
+    sha256_json,
 )
 from intelligence.crm.activities.reconciliation import seal
 
@@ -77,13 +79,13 @@ def _page(
     archive_request = request or ArchiveRequest("checkpoint-a", "bitrix-primary")
     page: dict[str, object] = {
         "schema_version": "crm-activities-checkpoint-page-v1",
-        "request_digest": checkpoints.sha256_json(archive_request.as_public_dict()),
+        "request_digest": sha256_json(archive_request.as_public_dict()),
         "boundary_digest": boundary_digest,
         "identities": [record.source_record_pk],
         "records": [record.as_dict()],
         "dispositions": [Disposition(record.source_record_pk, "accepted", None).__dict__],
     }
-    page["digest"] = checkpoints.sha256_json(page)
+    page["digest"] = sha256_json(page)
     return page
 
 
@@ -94,7 +96,7 @@ def test_exact_limit_success_and_projected_byte_and_entry_rejections(tmp_path: P
         {
             "schema_version": "crm-activities-checkpoint-v1",
             "phase": "new",
-            "request_digest": checkpoints.sha256_json(request.as_public_dict()),
+            "request_digest": sha256_json(request.as_public_dict()),
         }
     ).encode("utf-8")
     exact = CheckpointLimits(max_bytes=len(request_payload) + len(state_payload), max_entries=4)
@@ -324,3 +326,31 @@ def test_recovery_rejects_arbitrary_hardlinks_and_bounded_temp_scans(
     monkeypatch.setattr(checkpoint_usage.time, "monotonic", lambda: next(monotonic_values))
     with pytest.raises(RuntimeError, match="recovery exceeds time ceiling"):
         checkpoints.bounded_usage(time_root, _limits())
+
+
+def test_boundary_written_before_state_recovery_seals_exact_boundary(tmp_path: Path) -> None:
+    root, request = _root(tmp_path)
+    limits = _limits()
+    record = _record()
+    boundary = seal((record,), request)
+    checkpoints.initialize(root, request, limits)
+    checkpoints.write_record(root, record.source_record_pk, record.as_dict(), limits)
+    # Simulate interruption after immutable boundary publication but before the
+    # mutable phase transition.  Admission must seal this exact boundary.
+    write_exact(root, ("boundary.json",), boundary.as_dict(), limits)
+    assert checkpoints.boundary_capture_allowed(root, limits) is False
+    assert checkpoints.state(root, limits)["phase"] == "sealed"
+    assert checkpoints.load_boundary(root, limits) == boundary.as_dict()
+
+
+def test_abandoned_mutable_replacement_temp_preserves_committed_state(tmp_path: Path) -> None:
+    root, request = _root(tmp_path)
+    limits = _limits()
+    checkpoints.initialize(root, request, limits)
+    final = root / "checkpoint.json"
+    committed = final.read_bytes()
+    temporary = root / f".checkpoint.json.{uuid.uuid4().hex}.tmp"
+    temporary.write_bytes(canonical_json({"replacement": True}).encode("utf-8"))
+    checkpoints.bounded_usage(root, limits)
+    assert final.read_bytes() == committed
+    assert not temporary.exists()
