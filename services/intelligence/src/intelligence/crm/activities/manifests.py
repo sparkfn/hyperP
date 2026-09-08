@@ -179,7 +179,9 @@ def _unresolved_rows(
             reasons.append("missing_or_conflicting_graph_parent")
         if record.ingested_at is None:
             reasons.append("missing_ingested_at")
-        if len(record.people) != 1:
+        if record.malformed_person_association_count > 0:
+            reasons.append("malformed_person_association")
+        if len(record.people) != 1 or record.malformed_person_association_count > 0:
             reasons.append("unresolved_person_association")
         elif record.people[0].revision is None:
             reasons.append("missing_person_revision")

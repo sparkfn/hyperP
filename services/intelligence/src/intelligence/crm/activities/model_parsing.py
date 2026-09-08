@@ -82,6 +82,7 @@ def parse_boundary(value: Mapping[str, object]) -> SealedBoundary:
 
 
 def record_from_mapping(value: Mapping[str, object]) -> ArchiveRecord:
+    people, malformed_people = _people(value.get("people"))
     return ArchiveRecord(
         _required(value, "source_record_pk"),
         _required(value, "source_record_id"),
@@ -103,10 +104,11 @@ def record_from_mapping(value: Mapping[str, object]) -> ArchiveRecord:
         _parent(value.get("stored_parent"), "STORED_PARENT"),
         _parents(value.get("child_parents"), "CHILD_OF"),
         _parents(value.get("details_parents"), "DETAILS_HISTORY_ITEM"),
-        _people(value.get("people")),
+        people,
         _capabilities(value.get("user_capabilities")),
         _text(value.get("ingested_at"), "ingested_at"),
         _text(value.get("link_status"), "link_status"),
+        _malformed_person_count(value.get("malformed_person_association_count"), malformed_people),
     )
 
 
@@ -177,27 +179,40 @@ def _parents(value: object, relationship: str) -> tuple[ParentReference, ...]:
     return result
 
 
-def _people(value: object) -> tuple[PersonReference, ...]:
+def _people(value: object) -> tuple[tuple[PersonReference, ...], int]:
     if value is None:
-        return ()
+        return (), 0
     items = _items(value, "people")
     people: list[PersonReference] = []
+    malformed = 0
     for item in items:
         if item is None:
             continue
-        person = _mapping(item, "person")
-        people.append(
-            PersonReference(
-                _required(person, "person_id"),
-                _text(person.get("status"), "person status"),
-                _text(person.get("revision"), "person revision"),
-                _person_association(person),
+        try:
+            person = _mapping(item, "person")
+            person_id = _required(person, "person_id")
+            people.append(
+                PersonReference(
+                    person_id,
+                    _text(person.get("status"), "person status"),
+                    _text(person.get("revision"), "person revision"),
+                    _person_association(person),
+                )
             )
-        )
+        except ValueError:
+            malformed += 1
     result = tuple(sorted(people, key=PersonReference.key))
     if len({item.key() for item in result}) != len(result):
         raise ValueError("duplicate Person evidence")
-    return result
+    return result, malformed
+
+
+def _malformed_person_count(value: object, fallback: int) -> int:
+    if value is None:
+        return fallback
+    if not isinstance(value, int) or isinstance(value, bool) or value < 0 or value > 10_000:
+        raise ValueError("malformed Person association count is invalid")
+    return max(value, fallback)
 
 
 def _capabilities(value: object) -> tuple[str, ...]:

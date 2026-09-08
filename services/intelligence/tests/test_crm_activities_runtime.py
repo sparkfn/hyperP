@@ -442,6 +442,7 @@ def test_status_selects_completed_attempt_without_erasing_failed_history(tmp_pat
     limits = CheckpointLimits(max_bytes=1_000_000, max_entries=100)
     root = checkpoints.checkpoint_root(staging, request.snapshot_id, limits)
     checkpoints.initialize(root, request, limits)
+    checkpoints.write_duplicate_deliveries(root, 0, limits)
     checkpoints.write_boundary(root, boundary, limits)
     checkpoints.write_evidence(root, "accepted-manifest.json", manifest, limits)
     checkpoints.complete(root, boundary.digest, 0, limits)

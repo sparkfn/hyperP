@@ -21,7 +21,7 @@ class ReadOnlyState:
         database = _database_path(workspace)
         connection: sqlite3.Connection | None = None
         try:
-            connection = sqlite3.connect(f"{database.absolute().as_uri()}?mode=ro", uri=True)
+            connection = sqlite3.connect(_readonly_uri(database), uri=True)
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA query_only = ON")
             _validate_schema(connection)
@@ -58,6 +58,42 @@ def _database_path(workspace: Path) -> Path:
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISREG(metadata.st_mode):
         raise ValueError("Intelligence State database is unsafe")
     return database
+
+
+def _readonly_uri(database: Path) -> str:
+    wal = database.with_name(f"{database.name}-wal")
+    shared_memory = database.with_name(f"{database.name}-shm")
+    sidecars = (wal, shared_memory)
+    exists = tuple(_sidecar_exists(path) for path in sidecars)
+    if exists == (False, False):
+        # A closed database has no WAL state to replay. Immutable mode avoids
+        # SQLite creating WAL/SHM sidecars for a diagnostic read.
+        return f"{database.absolute().as_uri()}?mode=ro&immutable=1"
+    if exists != (True, True):
+        raise ValueError("Intelligence State WAL sidecars are incomplete")
+    for path in sidecars:
+        _safe_sidecar(path)
+    # Existing safe WAL/SHM sidecars preserve visibility of an active State;
+    # mode=ro does not create new auxiliary paths.
+    return f"{database.absolute().as_uri()}?mode=ro"
+
+
+def _sidecar_exists(path: Path) -> bool:
+    try:
+        path.lstat()
+    except FileNotFoundError:
+        return False
+    return True
+
+
+def _safe_sidecar(path: Path) -> None:
+    metadata = path.lstat()
+    if (
+        stat.S_ISLNK(metadata.st_mode)
+        or not stat.S_ISREG(metadata.st_mode)
+        or metadata.st_nlink != 1
+    ):
+        raise ValueError("Intelligence State WAL sidecar is unsafe")
 
 
 def _directory(path: Path, label: str) -> None:

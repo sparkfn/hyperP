@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+
 from intelligence.crm.activities.models import (
     ArchiveRecord,
     ArchiveRequest,
@@ -12,44 +14,50 @@ from intelligence.crm.activities.models import (
 from intelligence.repositories.protocols.crm_activities import CrmActivitiesRepository
 
 
+@dataclass(frozen=True)
+class CaptureResult:
+    """Canonical selected records plus observed grouped duplicate deliveries."""
+
+    records: tuple[ArchiveRecord, ...]
+    duplicate_delivery_count: int
+
+
 def capture(
     repository: CrmActivitiesRepository,
     request: ArchiveRequest,
     max_rows: int,
     max_pages: int,
-) -> tuple[ArchiveRecord, ...]:
-    """Keyset enumerate exactly once, enforcing finite no-duplicate source evidence."""
+) -> CaptureResult:
+    """Enumerate bounded identity groups whose deliveries cannot cross page boundaries."""
     _assert_structurally_valid(repository, request)
     records: list[ArchiveRecord] = []
+    duplicate_delivery_count = 0
     cursor = ""
     for _ in range(max_pages):
         page = repository.page(request, cursor)
-        if not page:
+        if not page.records:
             break
-        if page[0].source_record_pk <= cursor or len(page) > request.page_size:
+        if page.records[0].source_record_pk <= cursor or len(page.records) > request.page_size:
             raise RuntimeError("source keyset page violates its cursor contract")
-        records.extend(page)
+        records.extend(page.records)
+        duplicate_delivery_count += page.duplicate_delivery_count
         if len(records) > max_rows:
             raise RuntimeError("CRM activity boundary exceeds configured row ceiling")
-        cursor = page[-1].source_record_pk
+        cursor = page.records[-1].source_record_pk
     else:
         raise RuntimeError("CRM activity boundary exceeds configured page ceiling")
     result = tuple(records)
-    if tuple(sorted(result, key=lambda item: item.source_record_pk)) != result:
-        raise RuntimeError("source boundary is not ordered")
     if len({item.source_record_pk for item in result}) != len(result):
-        raise RuntimeError("source boundary contains duplicate identities")
-    return result
+        raise RuntimeError("source boundary contains duplicate identities across keyset pages")
+    return CaptureResult(result, duplicate_delivery_count)
 
 
 def seal(records: tuple[ArchiveRecord, ...], request: ArchiveRequest) -> SealedBoundary:
     return SealedBoundary(request, tuple(BoundaryEntry.from_record(item) for item in records))
 
 
-def verify_boundary(
-    repository: CrmActivitiesRepository, boundary: SealedBoundary
-) -> tuple[ArchiveRecord, ...]:
-    """Independently re-enumerate selection and compare complete identity/fingerprint sets."""
+def verify_boundary(repository: CrmActivitiesRepository, boundary: SealedBoundary) -> CaptureResult:
+    """Re-enumerate grouped selection and compare complete canonical evidence."""
     _assert_structurally_valid(repository, boundary.request)
     current = capture(
         repository,
@@ -57,7 +65,7 @@ def verify_boundary(
         boundary.request.max_rows,
         boundary.request.max_pages,
     )
-    actual = tuple(BoundaryEntry.from_record(item) for item in current)
+    actual = tuple(BoundaryEntry.from_record(item) for item in current.records)
     if actual != boundary.entries:
         raise RuntimeError("CRM activities source boundary drift was detected")
     return current
@@ -77,7 +85,8 @@ def verify_page(
     boundary: SealedBoundary,
     identities: tuple[str, ...],
 ) -> tuple[ArchiveRecord, ...]:
-    rows = repository.by_identities(boundary.request, identities)
+    """Reread one bounded identity page using the repository's grouped records."""
+    rows = repository.by_identities(boundary.request, identities).records
     expected = tuple(item for item in boundary.entries if item.source_record_pk in set(identities))
     actual = tuple(BoundaryEntry.from_record(item) for item in rows)
     if tuple(item.source_record_pk for item in actual) != identities or actual != expected:

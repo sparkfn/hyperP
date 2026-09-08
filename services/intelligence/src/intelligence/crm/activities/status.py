@@ -37,6 +37,11 @@ from intelligence.crm.activities.models import (
     sha256_json,
     validate_snapshot_id,
 )
+from intelligence.crm.activities.status_summary import (
+    duplicate_deliveries,
+    parent_summary,
+    person_summary,
+)
 from intelligence.models import OutputInventory, Run
 from intelligence.state_readonly import ReadOnlyState
 
@@ -145,6 +150,10 @@ def _status_from_root(
     _add_rows(dispositions, "outcomes", budget)
     manifest = read_evidence(root, "accepted-manifest.json", budget)
     _add_rows(manifest, "record_page_digests", budget)
+    duplicate_evidence = read_evidence(root, "duplicate-deliveries.json", budget)
+    if boundary is not None and duplicate_evidence is None:
+        raise ValueError("boundary checkpoint is missing duplicate delivery evidence")
+    duplicate_delivery_count = duplicate_deliveries(duplicate_evidence)
     outcomes = _validate_dispositions(dispositions, boundary)
     _validate_manifest(manifest, boundary)
     runtime = _StatusRuntime(_StatusConfig(workspace), state)
@@ -168,9 +177,9 @@ def _status_from_root(
         "state_store": state_store,
         "boundary_digest": None if boundary is None else boundary.digest,
         "disposition_counts": _outcome_counts(outcomes),
-        "duplicate_delivery_count": 0,
-        "parent_resolution": _parent_summary(archive_records),
-        "person_resolution": _person_summary(archive_records),
+        "duplicate_delivery_count": duplicate_delivery_count,
+        "parent_resolution": parent_summary(archive_records),
+        "person_resolution": person_summary(archive_records),
         "accepted_run": None if descriptor is None else dict(descriptor.raw),
         "publication_candidate": None if pointer is None else pointer.as_dict(),
         "publication_attempts": _attempts(publication_history_value),
@@ -313,44 +322,6 @@ def _outcome_counts(outcomes: tuple[dict[str, object], ...]) -> dict[str, int]:
     return {
         kind: sum(1 for item in outcomes if item.get("disposition") == kind)
         for kind in ("accepted", "rejected", "quarantined")
-    }
-
-
-def _parent_summary(records: tuple[ArchiveRecord, ...]) -> dict[str, int]:
-    missing_stored = missing_graph = conflicting = resolved = 0
-    for record in records:
-        stored = record.stored_parent
-        if stored.source_record_id is None:
-            missing_stored += 1
-            continue
-        matches = tuple(
-            parent
-            for parent in record.child_parents
-            if parent.source_record_id == stored.source_record_id
-            and parent.source_instance_id == stored.source_instance_id
-            and parent.record_type == stored.record_type
-            and parent.source_system == stored.source_system
-        )
-        if len(matches) == 1 and len(record.child_parents) == 1:
-            resolved += 1
-        elif not matches:
-            missing_graph += 1
-        else:
-            conflicting += 1
-    return {
-        "missing_stored": missing_stored,
-        "missing_graph": missing_graph,
-        "conflicting": conflicting,
-        "resolved": resolved,
-    }
-
-
-def _person_summary(records: tuple[ArchiveRecord, ...]) -> dict[str, int]:
-    return {
-        "missing_or_ambiguous": sum(1 for item in records if len(item.people) != 1),
-        "missing_revision": sum(
-            1 for item in records if len(item.people) == 1 and item.people[0].revision is None
-        ),
     }
 
 

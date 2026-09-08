@@ -24,6 +24,7 @@ from intelligence.crm.activities.models import (
 from intelligence.crm.activities.reconciliation import seal
 from intelligence.crm.activities.snapshot_verifier import verify_snapshot
 from intelligence.crm.activities.status import status
+from intelligence.state import State
 
 _LIMITS = CheckpointLimits(max_bytes=1_000_000, max_entries=100)
 
@@ -237,15 +238,35 @@ def test_status_new_and_corrupt_evidence_are_explicit(tmp_path: Path) -> None:
     root = checkpoints.checkpoint_root(run, "checkpoint-a", _LIMITS)
     request = ArchiveRequest("checkpoint-a", "bitrix-primary")
     checkpoints.initialize(root, request, _LIMITS)
+    checkpoints.write_evidence(root, "duplicate-deliveries.json", {"count": 3}, _LIMITS)
     before = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
     result = status(tmp_path, "checkpoint-a")
     after = {path.relative_to(tmp_path) for path in tmp_path.rglob("*")}
     assert result["state"]["phase"] == "new"
     assert result["state_store"] == "absent"
+    assert result["duplicate_delivery_count"] == 3
     assert after == before
     (root / "dispositions.json").write_text("not-json", encoding="utf-8")
     with pytest.raises(ValueError, match="corrupt"):
         status(tmp_path, "checkpoint-a")
+
+
+def test_status_existing_state_does_not_create_wal_sidecars(tmp_path: Path) -> None:
+    state = State(tmp_path)
+    state.close()
+    database = tmp_path / "state" / "state.sqlite3"
+    sidecars = tuple(database.with_name(f"{database.name}{suffix}") for suffix in ("-wal", "-shm"))
+    for path in sidecars:
+        if path.exists():
+            path.unlink()
+    run = tmp_path / "staging" / "run-a"
+    run.mkdir(parents=True)
+    root = checkpoints.checkpoint_root(run, "checkpoint-a", _LIMITS)
+    request = ArchiveRequest("checkpoint-a", "bitrix-primary")
+    checkpoints.initialize(root, request, _LIMITS)
+    assert status(tmp_path, "checkpoint-a")["state_store"] == "available"
+    assert database.exists()
+    assert not any(path.exists() for path in sidecars)
 
 
 def test_status_rejects_unsafe_optional_evidence(tmp_path: Path) -> None:

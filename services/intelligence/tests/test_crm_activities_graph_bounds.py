@@ -6,7 +6,10 @@ from collections.abc import Iterator, Mapping
 
 import pytest
 from intelligence.crm.activities.models import ArchiveRequest
-from intelligence.graph.queries.crm_activities import PREFLIGHT_REFERENCE_FANOUT
+from intelligence.graph.queries.crm_activities import (
+    PREFLIGHT_REFERENCE_FANOUT,
+    PREFLIGHT_STRUCTURAL_INVALID,
+)
 from intelligence.repositories.neo4j.crm_activities import Neo4jCrmActivitiesRepository
 
 
@@ -91,6 +94,8 @@ def _row(identity: str) -> _FakeRow:
             "child_parents": [],
             "details_parents": [],
             "people": [],
+            "malformed_person_association_count": 0,
+            "duplicate_delivery_count": 0,
             "user_capabilities": [],
         }
     )
@@ -127,13 +132,13 @@ def test_repository_uses_parameterized_bounded_reads_and_finite_preflights(
         max_references_per_record=2,
     )
     try:
-        assert [item.source_record_pk for item in repository.page(request, "")] == [
+        assert [item.source_record_pk for item in repository.page(request, "").records] == [
             "activity-a",
             "activity-b",
         ]
         assert [
             item.source_record_pk
-            for item in repository.by_identities(request, ("activity-b", "activity-a"))
+            for item in repository.by_identities(request, ("activity-b", "activity-a")).records
         ] == ["activity-a", "activity-b"]
         assert repository.structural_invalid_count(request) == 0
         assert repository.reference_fanout_invalid_count(request) == 1
@@ -187,6 +192,8 @@ def test_reference_fanout_query_is_closed_read_only_and_untruncated() -> None:
         in PREFLIGHT_REFERENCE_FANOUT
     )
     assert "WITH DISTINCT" in PREFLIGHT_REFERENCE_FANOUT
+    assert "RETURN count(link) AS active_person_count" in PREFLIGHT_REFERENCE_FANOUT
+    assert "count(DISTINCT record) AS source_record_count" in PREFLIGHT_STRUCTURAL_INVALID
     assert "limit" not in lower
     for forbidden in ("raw_payload", "create", "merge", "set", "delete"):
         assert forbidden not in lower

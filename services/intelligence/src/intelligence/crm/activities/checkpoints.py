@@ -60,7 +60,27 @@ def initialize(root: Path, request: ArchiveRequest, limits: CheckpointLimits) ->
     )
 
 
+def write_duplicate_deliveries(root: Path, count: int, limits: CheckpointLimits) -> None:
+    if not isinstance(count, int) or isinstance(count, bool) or count < 0:
+        raise ValueError("duplicate delivery count is invalid")
+    write_exact(root, ("duplicate-deliveries.json",), {"count": count}, limits)
+
+
+def duplicate_delivery_count(root: Path, limits: CheckpointLimits) -> int:
+    value = _mapping(read_json(root, ("duplicate-deliveries.json",), limits), "duplicates")
+    count = value.get("count")
+    if (
+        set(value) != {"count"}
+        or not isinstance(count, int)
+        or isinstance(count, bool)
+        or count < 0
+    ):
+        raise ValueError("duplicate delivery evidence is invalid")
+    return count
+
+
 def write_boundary(root: Path, boundary: SealedBoundary, limits: CheckpointLimits) -> None:
+    duplicate_delivery_count(root, limits)
     if not boundary_capture_allowed(root, limits):
         if load_boundary(root, limits) != boundary.as_dict():
             raise RuntimeError("checkpoint boundary conflicts with existing sealed boundary")
@@ -209,6 +229,7 @@ def boundary_capture_allowed(root: Path, limits: CheckpointLimits) -> bool:
         # mutable state replacement.  The durable boundary is authoritative;
         # validate its request binding and seal that exact evidence rather than
         # recapturing a different source population.
+        duplicate_delivery_count(root, limits)
         boundary = validate_boundary_evidence(load_boundary(root, limits))
         if boundary.get("request") != load_request(root, limits).as_public_dict():
             raise RuntimeError("new checkpoint boundary conflicts with immutable request")
@@ -219,6 +240,7 @@ def boundary_capture_allowed(root: Path, limits: CheckpointLimits) -> bool:
         return False
     if not boundary_exists:
         raise RuntimeError("sealed checkpoint state is missing its boundary evidence")
+    duplicate_delivery_count(root, limits)
     return False
 
 
@@ -232,6 +254,7 @@ def validate_resume(
     current_usage(root, limits)
     if load_request(root, limits) != request:
         raise RuntimeError("checkpoint request conflicts with resume request")
+    duplicate_delivery_count(root, limits)
     current = state(root, limits)
     if current.get("request_digest") != request_digest(request):
         raise RuntimeError("checkpoint state conflicts with resume request")

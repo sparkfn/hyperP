@@ -56,10 +56,15 @@ CALL (record) {
 CALL (record) {
   OPTIONAL MATCH (record)-[link:LINKED_TO]->(person:Person)
   WHERE coalesce(link.is_active, true) = true
-  RETURN collect(DISTINCT CASE WHEN person IS NULL THEN null ELSE {
-    person_id: person.person_id, status: person.status,
-    revision: toString(person.revision), source_record_pk: link.source_record_pk
-  } END) AS people
+  RETURN collect(DISTINCT CASE
+    WHEN person IS NULL OR person.person_id IS NULL OR trim(toString(person.person_id)) = ''
+    THEN null ELSE {
+      person_id: person.person_id, status: person.status,
+      revision: toString(person.revision), source_record_pk: link.source_record_pk
+    } END) AS people,
+    count(CASE
+      WHEN person IS NOT NULL AND (person.person_id IS NULL OR trim(toString(person.person_id)) = '')
+      THEN link ELSE null END) AS malformed_person_association_count
 }
 RETURN record.source_record_pk AS source_record_pk,
        record.source_record_id AS source_record_id,
@@ -83,6 +88,8 @@ RETURN record.source_record_pk AS source_record_pk,
        [item IN child_parents WHERE item IS NOT NULL] AS child_parents,
        [item IN details_parents WHERE item IS NOT NULL] AS details_parents,
        [item IN people WHERE item IS NOT NULL] AS people,
+       malformed_person_association_count AS malformed_person_association_count,
+       match_delivery_count - 1 AS duplicate_delivery_count,
        [] AS user_capabilities
 ORDER BY source_record_pk
 """
@@ -92,7 +99,13 @@ MATCH (record:SourceRecord {{source_instance_id: $source_instance_id}})
       -[:FROM_SOURCE]->(:SourceSystem {{source_key: $source_key}})
 WHERE record.source_record_pk > $after_source_record_pk
   AND {_ADMITTED_ACTIVITY_OR_CALL}
-WITH record ORDER BY record.source_record_pk LIMIT $limit
+WITH record.source_record_pk AS source_record_pk,
+     collect(DISTINCT record) AS source_record_nodes,
+     count(record) AS match_delivery_count
+WHERE size(source_record_nodes) = 1
+WITH head(source_record_nodes) AS record, match_delivery_count
+ORDER BY record.source_record_pk
+LIMIT $limit
 {_SAFE_PROJECTION}
 """
 
@@ -101,28 +114,43 @@ MATCH (record:SourceRecord {{source_instance_id: $source_instance_id}})
       -[:FROM_SOURCE]->(:SourceSystem {{source_key: $source_key}})
 WHERE record.source_record_pk IN $source_record_pks
   AND {_ADMITTED_ACTIVITY_OR_CALL}
-WITH record ORDER BY record.source_record_pk
+WITH record.source_record_pk AS source_record_pk,
+     collect(DISTINCT record) AS source_record_nodes,
+     count(record) AS match_delivery_count
+WHERE size(source_record_nodes) = 1
+WITH head(source_record_nodes) AS record, match_delivery_count
+ORDER BY record.source_record_pk
 {_SAFE_PROJECTION}
 """
 
+
 PREFLIGHT_STRUCTURAL_INVALID = f"""
-MATCH (record:SourceRecord {{source_instance_id: $source_instance_id}})
-      -[:FROM_SOURCE]->(:SourceSystem {{source_key: $source_key}})
-WHERE (record.record_type = 'crm_history' AND {ACTIVITY_COMPATIBILITY})
-   OR (record.record_type = 'call' AND (EXISTS {{
-      MATCH (record)-[:CHILD_OF|DETAILS_HISTORY_ITEM]->(activity:SourceRecord {{source_instance_id: $source_instance_id, record_type: 'crm_history'}})
-            -[:FROM_SOURCE]->(:SourceSystem {{source_key: $source_key}})
-      WHERE {_ACTIVITY_COMPATIBILITY}
-   }}))
-WITH record
-WHERE record.source_record_pk IS NULL OR trim(toString(record.source_record_pk)) = ''
-   OR record.record_hash IS NULL OR trim(toString(record.record_hash)) = ''
-   OR record.source_record_id IS NULL OR trim(toString(record.source_record_id)) = ''
-   OR record.source_record_version IS NULL OR trim(toString(record.source_record_version)) = ''
-   OR record.source_version_key IS NULL OR trim(toString(record.source_version_key)) = ''
-RETURN count(record) AS invalid_count
+CALL {{
+  MATCH (record:SourceRecord {{source_instance_id: $source_instance_id}})
+        -[:FROM_SOURCE]->(:SourceSystem {{source_key: $source_key}})
+  WHERE {_ADMITTED_ACTIVITY_OR_CALL}
+  RETURN count(CASE
+    WHEN record.source_record_pk IS NULL OR trim(toString(record.source_record_pk)) = ''
+      OR record.record_hash IS NULL OR trim(toString(record.record_hash)) = ''
+      OR record.source_record_id IS NULL OR trim(toString(record.source_record_id)) = ''
+      OR record.source_record_version IS NULL OR trim(toString(record.source_record_version)) = ''
+      OR record.source_version_key IS NULL OR trim(toString(record.source_version_key)) = ''
+    THEN record ELSE null END) AS malformed_count
+}}
+CALL {{
+  MATCH (record:SourceRecord {{source_instance_id: $source_instance_id}})
+        -[:FROM_SOURCE]->(:SourceSystem {{source_key: $source_key}})
+  WHERE {_ADMITTED_ACTIVITY_OR_CALL}
+  WITH record.source_record_pk AS source_record_pk, count(DISTINCT record) AS source_record_count
+  WHERE source_record_pk IS NOT NULL
+    AND trim(toString(source_record_pk)) <> ''
+    AND source_record_count > 1
+  RETURN count(*) AS duplicate_identity_count
+}}
+RETURN malformed_count + duplicate_identity_count AS invalid_count
 LIMIT 1
 """
+
 
 PREFLIGHT_REFERENCE_FANOUT = f"""
 MATCH (record:SourceRecord {{source_instance_id: $source_instance_id}})
@@ -149,13 +177,9 @@ CALL (record) {{
   RETURN count(*) AS details_parent_count
 }}
 CALL (record) {{
-  MATCH (record)-[link:LINKED_TO]->(person:Person)
+  MATCH (record)-[link:LINKED_TO]->(:Person)
   WHERE coalesce(link.is_active, true) = true
-  WITH DISTINCT person.person_id AS person_id,
-       person.status AS status,
-       toString(person.revision) AS revision,
-       link.source_record_pk AS source_record_pk
-  RETURN count(*) AS active_person_count
+  RETURN count(link) AS active_person_count
 }}
 WITH record, child_parent_count, details_parent_count, active_person_count
 WHERE child_parent_count > $max_references_per_record

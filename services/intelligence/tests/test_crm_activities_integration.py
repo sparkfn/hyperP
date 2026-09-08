@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
+from intelligence.crm.activities.dispositions import classify
+from intelligence.crm.activities.manifests import write_snapshot
 from intelligence.crm.activities.model_parsing import record_from_mapping
 from intelligence.crm.activities.models import ArchiveRequest, BoundaryEntry, sha256_json
 from intelligence.crm.activities.reconciliation import seal
@@ -89,3 +92,47 @@ def test_boundary_changes_for_database_contract_and_link_status_drift() -> None:
     assert seal((first,), first_request).digest != seal((first,), third_request).digest
     assert BoundaryEntry.from_record(first) != BoundaryEntry.from_record(second)
     assert sha256_json(first.as_dict()) == first.digest()
+
+
+def test_malformed_optional_person_is_unresolved_without_rejecting_selection(
+    tmp_path: Path,
+) -> None:
+    row = _row("linked")
+    row["people"] = [
+        {
+            "person_id": None,
+            "status": "active",
+            "revision": "3",
+            "association_source_record_pk": "record-a",
+        }
+    ]
+    record = record_from_mapping(row)
+    assert record.people == ()
+    assert record.malformed_person_association_count == 1
+    assert classify((record,))[0].disposition == "accepted"
+    request = ArchiveRequest("checkpoint-a", "bitrix-primary")
+    boundary = seal((record,), request)
+    staging = tmp_path / "staging" / "run-a"
+    staging.mkdir(parents=True)
+    write_snapshot(staging, boundary, (record,), classify((record,)))
+    unresolved = json.loads(
+        (
+            staging
+            / "snapshots"
+            / "crm"
+            / "activities"
+            / boundary.logical_snapshot_id
+            / "unresolved-references.json"
+        ).read_text(encoding="utf-8")
+    )
+    assert unresolved["records"] == [
+        {
+            "source_record_pk": "record-a",
+            "reasons": [
+                "malformed_person_association",
+                "missing_or_conflicting_graph_parent",
+                "unresolved_person_association",
+                "user_capabilities_unavailable",
+            ],
+        }
+    ]
