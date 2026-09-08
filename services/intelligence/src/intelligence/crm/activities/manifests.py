@@ -167,6 +167,8 @@ def _unresolved_rows(
         reasons: list[str] = []
         if record.stored_parent.source_record_id is None:
             reasons.append("missing_stored_parent")
+        elif not _stored_parent_resolves(record):
+            reasons.append("missing_or_conflicting_graph_parent")
         if record.ingested_at is None:
             reasons.append("missing_ingested_at")
         if len(record.people) != 1:
@@ -181,6 +183,21 @@ def _unresolved_rows(
         if reasons:
             result.append({"source_record_pk": identity, "reasons": sorted(set(reasons))})
     return result
+
+
+def _stored_parent_resolves(record: ArchiveRecord) -> bool:
+    stored = record.stored_parent
+    matches = tuple(
+        parent
+        for parent in record.child_parents
+        if (
+            parent.source_record_id == stored.source_record_id
+            and parent.source_instance_id == stored.source_instance_id
+            and parent.record_type == stored.record_type
+            and parent.source_system == stored.source_system
+        )
+    )
+    return len(matches) == 1 and len(record.child_parents) == 1
 
 
 def _chunks(values: Sequence[ArchiveRecord], size: int) -> tuple[tuple[ArchiveRecord, ...], ...]:

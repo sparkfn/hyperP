@@ -203,6 +203,7 @@ class _FakeRepository:
     def __init__(self, records: tuple[ArchiveRecord, ...]) -> None:
         self.records = records
         self.invalid_count = 0
+        self.fanout_invalid_count = 0
 
     def page(
         self, request: ArchiveRequest, after_source_record_pk: str
@@ -222,6 +223,10 @@ class _FakeRepository:
     def structural_invalid_count(self, request: ArchiveRequest) -> int:
         del request
         return self.invalid_count
+
+    def reference_fanout_invalid_count(self, request: ArchiveRequest) -> int:
+        del request
+        return self.fanout_invalid_count
 
 
 def test_structural_preflight_fails_closed_before_keyset_capture() -> None:

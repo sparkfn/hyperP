@@ -26,6 +26,9 @@ def parse_request(value: Mapping[str, object]) -> ArchiveRequest:
         _integer(value, "page_size"),
         _integer(value, "max_rows"),
         _integer(value, "max_pages"),
+        _required(value, "database_identity"),
+        _required(value, "selection_contract_version"),
+        _integer(value, "max_references_per_record"),
     )
 
 
@@ -84,6 +87,7 @@ def record_from_mapping(value: Mapping[str, object]) -> ArchiveRecord:
         _people(value.get("people")),
         _capabilities(value.get("user_capabilities")),
         _text(value.get("ingested_at"), "ingested_at"),
+        _text(value.get("link_status"), "link_status"),
     )
 
 

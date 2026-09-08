@@ -17,10 +17,25 @@ ACTIVITY_COMPATIBILITY = """
 
 _ACTIVITY_COMPATIBILITY = ACTIVITY_COMPATIBILITY.replace("record.", "activity.")
 
+_ADMITTED_ACTIVITY_OR_CALL = f"""
+(
+  (record.record_type = 'crm_history' AND {ACTIVITY_COMPATIBILITY})
+  OR (record.record_type = 'call' AND (EXISTS {{
+    MATCH (record)-[:CHILD_OF]->(activity:SourceRecord {{source_instance_id: $source_instance_id, record_type: 'crm_history'}})
+          -[:FROM_SOURCE]->(:SourceSystem {{source_key: $source_key}})
+    WHERE {_ACTIVITY_COMPATIBILITY}
+  }} OR EXISTS {{
+    MATCH (record)-[:DETAILS_HISTORY_ITEM]->(activity:SourceRecord {{source_instance_id: $source_instance_id, record_type: 'crm_history'}})
+          -[:FROM_SOURCE]->(:SourceSystem {{source_key: $source_key}})
+    WHERE {_ACTIVITY_COMPATIBILITY}
+  }}))
+)
+"""
+
 _SAFE_PROJECTION = """
 CALL (record) {
   OPTIONAL MATCH (record)-[:CHILD_OF]->(child_parent:SourceRecord)
-                 -[:FROM_SOURCE]->(child_source:SourceSystem)
+  OPTIONAL MATCH (child_parent)-[:FROM_SOURCE]->(child_source:SourceSystem)
   RETURN collect(DISTINCT CASE WHEN child_parent IS NULL THEN null ELSE {
     source_record_pk: child_parent.source_record_pk,
     source_instance_id: child_parent.source_instance_id,
@@ -30,7 +45,7 @@ CALL (record) {
 }
 CALL (record) {
   OPTIONAL MATCH (record)-[:DETAILS_HISTORY_ITEM]->(details_parent:SourceRecord)
-                 -[:FROM_SOURCE]->(details_source:SourceSystem)
+  OPTIONAL MATCH (details_parent)-[:FROM_SOURCE]->(details_source:SourceSystem)
   RETURN collect(DISTINCT CASE WHEN details_parent IS NULL THEN null ELSE {
     source_record_pk: details_parent.source_record_pk,
     source_instance_id: details_parent.source_instance_id,
@@ -58,6 +73,7 @@ RETURN record.source_record_pk AS source_record_pk,
        record.history_source AS history_source,
        toString(record.projection_version) AS projection_version,
        record.projection_source AS projection_source, toString(record.event_at) AS event_at,
+       record.link_status AS link_status,
        toString(record.observed_at) AS observed_at,
        toString(record.ingested_at) AS ingested_at,
        toString(coalesce(record.standalone_crm_available_at, record.ingested_at)) AS available_at,
@@ -75,16 +91,7 @@ READ_SELECTED_PAGE = f"""
 MATCH (record:SourceRecord {{source_instance_id: $source_instance_id}})
       -[:FROM_SOURCE]->(:SourceSystem {{source_key: $source_key}})
 WHERE record.source_record_pk > $after_source_record_pk
-  AND ((record.record_type = 'crm_history' AND {ACTIVITY_COMPATIBILITY})
-       OR (record.record_type = 'call' AND (EXISTS {{
-         MATCH (record)-[:CHILD_OF]->(activity:SourceRecord {{source_instance_id: $source_instance_id, record_type: 'crm_history'}})
-               -[:FROM_SOURCE]->(:SourceSystem {{source_key: $source_key}})
-         WHERE {_ACTIVITY_COMPATIBILITY}
-       }} OR EXISTS {{
-         MATCH (record)-[:DETAILS_HISTORY_ITEM]->(activity:SourceRecord {{source_instance_id: $source_instance_id, record_type: 'crm_history'}})
-               -[:FROM_SOURCE]->(:SourceSystem {{source_key: $source_key}})
-         WHERE {_ACTIVITY_COMPATIBILITY}
-       }})))
+  AND {_ADMITTED_ACTIVITY_OR_CALL}
 WITH record ORDER BY record.source_record_pk LIMIT $limit
 {_SAFE_PROJECTION}
 """
@@ -93,16 +100,7 @@ READ_BY_IDENTITIES = f"""
 MATCH (record:SourceRecord {{source_instance_id: $source_instance_id}})
       -[:FROM_SOURCE]->(:SourceSystem {{source_key: $source_key}})
 WHERE record.source_record_pk IN $source_record_pks
-  AND ((record.record_type = 'crm_history' AND {ACTIVITY_COMPATIBILITY})
-       OR (record.record_type = 'call' AND (EXISTS {{
-         MATCH (record)-[:CHILD_OF]->(activity:SourceRecord {{source_instance_id: $source_instance_id, record_type: 'crm_history'}})
-               -[:FROM_SOURCE]->(:SourceSystem {{source_key: $source_key}})
-         WHERE {_ACTIVITY_COMPATIBILITY}
-       }} OR EXISTS {{
-         MATCH (record)-[:DETAILS_HISTORY_ITEM]->(activity:SourceRecord {{source_instance_id: $source_instance_id, record_type: 'crm_history'}})
-               -[:FROM_SOURCE]->(:SourceSystem {{source_key: $source_key}})
-         WHERE {_ACTIVITY_COMPATIBILITY}
-       }})))
+  AND {_ADMITTED_ACTIVITY_OR_CALL}
 WITH record ORDER BY record.source_record_pk
 {_SAFE_PROJECTION}
 """
@@ -124,4 +122,21 @@ WHERE record.source_record_pk IS NULL OR trim(toString(record.source_record_pk))
    OR record.source_version_key IS NULL OR trim(toString(record.source_version_key)) = ''
 RETURN count(record) AS invalid_count
 LIMIT 1
+"""
+
+PREFLIGHT_REFERENCE_FANOUT = f"""
+MATCH (record:SourceRecord {{source_instance_id: $source_instance_id}})
+      -[:FROM_SOURCE]->(:SourceSystem {{source_key: $source_key}})
+WHERE {_ADMITTED_ACTIVITY_OR_CALL}
+WITH record,
+     COUNT {{ MATCH (record)-[:CHILD_OF]->(:SourceRecord) }} AS child_parent_count,
+     COUNT {{ MATCH (record)-[:DETAILS_HISTORY_ITEM]->(:SourceRecord) }} AS details_parent_count,
+     COUNT {{
+       MATCH (record)-[link:LINKED_TO]->(:Person)
+       WHERE coalesce(link.is_active, true) = true
+     }} AS active_person_count
+WHERE child_parent_count > $max_references_per_record
+   OR details_parent_count > $max_references_per_record
+   OR active_person_count > $max_references_per_record
+RETURN count(record) AS invalid_count
 """

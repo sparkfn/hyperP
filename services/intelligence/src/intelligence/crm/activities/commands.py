@@ -6,17 +6,19 @@ from functools import partial
 from pathlib import Path
 from typing import Literal
 
+from intelligence.artifacts_staging import scan_staged_outputs
 from intelligence.crm.activities import checkpoints
+from intelligence.crm.activities.bounded import ReadLimits
+from intelligence.crm.activities.checkpoint_limits import CheckpointLimits
 from intelligence.crm.activities.config import CrmActivitiesConfig
 from intelligence.crm.activities.dispositions import classify
 from intelligence.crm.activities.manifests import write_snapshot
+from intelligence.crm.activities.model_parsing import parse_boundary, record_from_mapping
 from intelligence.crm.activities.models import (
     ArchiveRecord,
     ArchiveRequest,
     Disposition,
     SealedBoundary,
-    parse_boundary,
-    record_from_mapping,
     sha256_json,
 )
 from intelligence.crm.activities.reconciliation import capture, seal, verify_boundary, verify_page
@@ -36,6 +38,9 @@ def request_from_config(snapshot_id: str, config: CrmActivitiesConfig) -> Archiv
         config.page_size,
         config.max_rows,
         config.max_pages,
+        config.database_identity,
+        "crm-activities-selection-v2",
+        config.max_references_per_record,
     )
 
 
@@ -54,9 +59,26 @@ def registry(
 
 
 def verification_registry(
-    snapshot_id: str, accepted_run_id: str, accepted_manifest_digest: str
+    checkpoint_id: str,
+    snapshot_id: str,
+    accepted_run_id: str,
+    accepted_manifest_digest: str,
+    checkpoint_limits: CheckpointLimits,
+    input_limits: ReadLimits,
+    output_maximum_bytes: int,
+    output_maximum_entries: int,
 ) -> Registry:
-    handler = partial(_verify_handler, snapshot_id, accepted_run_id, accepted_manifest_digest)
+    handler = partial(
+        _verify_handler,
+        checkpoint_id,
+        snapshot_id,
+        accepted_run_id,
+        accepted_manifest_digest,
+        checkpoint_limits,
+        input_limits,
+        output_maximum_bytes,
+        output_maximum_entries,
+    )
     command = RegisteredCommand(
         "crm_activities_verify",
         True,
@@ -77,9 +99,10 @@ def _archive_handler(
     run_staging: Path,
     cancelled: Cancelled,
 ) -> None:
-    checkpoint = checkpoints.checkpoint_root(run_staging, request.snapshot_id)
-    checkpoints.initialize(checkpoint, request)
-    if operation == "resume" and checkpoints.state(checkpoint).get("phase") == "new":
+    limits = CheckpointLimits(config.max_checkpoint_bytes, config.max_checkpoint_entries)
+    checkpoint = checkpoints.checkpoint_root(run_staging, request.snapshot_id, limits)
+    checkpoints.initialize(checkpoint, request, limits)
+    if operation == "resume" and checkpoints.state(checkpoint, limits).get("phase") == "new":
         raise RuntimeError("CRM activities resume requires a durable sealed checkpoint")
     repository: CrmActivitiesRepository = Neo4jCrmActivitiesRepository(
         config.neo4j_uri,
@@ -88,7 +111,7 @@ def _archive_handler(
         config.neo4j_database,
     )
     try:
-        boundary = _boundary_or_capture(repository, checkpoint, request, cancelled)
+        boundary = _boundary_or_capture(repository, checkpoint, request, limits, cancelled)
         records = _validated_rows(repository, boundary, cancelled)
         outcomes = classify(records)
         outcome_values = [item.__dict__ for item in outcomes]
@@ -96,17 +119,35 @@ def _archive_handler(
             checkpoint,
             "dispositions.json",
             {"outcomes": outcome_values, "digest": sha256_json(outcome_values)},
+            limits,
         )
-        _write_checkpoint_pages(checkpoint, boundary, records, outcomes, cancelled)
+        _write_checkpoint_pages(checkpoint, boundary, records, outcomes, limits, cancelled)
         verify_boundary(repository, boundary)
         manifest = write_snapshot(run_staging, boundary, records, outcomes)
-        checkpoints.write_evidence(checkpoint, "accepted-manifest.json", manifest)
-        checkpoints.complete(checkpoint, boundary.digest, _page_count(boundary))
-        checkpoints.bounded_usage(
-            checkpoint,
+        checkpoints.write_evidence(checkpoint, "accepted-manifest.json", manifest, limits)
+        inventory = scan_staged_outputs(
+            run_staging.parent.parent,
+            run_staging.name,
             config.max_checkpoint_bytes,
             config.max_checkpoint_entries,
         )
+        checkpoints.write_evidence(
+            checkpoint,
+            "publication-candidate.json",
+            {
+                "checkpoint_id": request.snapshot_id,
+                "request": request.as_public_dict(),
+                "boundary_digest": boundary.digest,
+                "run_id": run_staging.name,
+                "snapshot_id": manifest["snapshot_id"],
+                "manifest_digest": manifest["digest"],
+                "cleanup_identity_digest": manifest["cleanup_identity_digest"],
+                "inventory": [item.__dict__ for item in inventory],
+            },
+            limits,
+        )
+        checkpoints.complete(checkpoint, boundary.digest, _page_count(boundary), limits)
+        checkpoints.bounded_usage(checkpoint, limits)
     finally:
         repository.close()
 
@@ -115,30 +156,34 @@ def _boundary_or_capture(
     repository: CrmActivitiesRepository,
     root: Path,
     request: ArchiveRequest,
+    limits: CheckpointLimits,
     cancelled: Cancelled,
 ) -> SealedBoundary:
     boundary_path = root / "boundary.json"
     if boundary_path.exists() or boundary_path.is_symlink():
-        boundary = parse_boundary(checkpoints.load_boundary(root))
+        boundary = parse_boundary(checkpoints.load_boundary(root, limits))
         if boundary.request != request:
             raise RuntimeError("resume request conflicts with sealed boundary configuration")
-        _validate_checkpoint_records(root, boundary)
+        checkpoints.validate_resume(root, request, boundary, limits)
+        _validate_checkpoint_records(root, boundary, limits)
         return boundary
     _cancelled(cancelled)
     records = capture(repository, request, request.max_rows, request.max_pages)
     for record in records:
         _cancelled(cancelled)
-        checkpoints.write_record(root, record.source_record_pk, record.as_dict())
+        checkpoints.write_record(root, record.source_record_pk, record.as_dict(), limits)
     boundary = seal(records, request)
-    checkpoints.write_boundary(root, boundary)
+    checkpoints.write_boundary(root, boundary, limits)
     verify_boundary(repository, boundary)
     return boundary
 
 
-def _validate_checkpoint_records(root: Path, boundary: SealedBoundary) -> None:
+def _validate_checkpoint_records(
+    root: Path, boundary: SealedBoundary, limits: CheckpointLimits
+) -> None:
     """A resume refuses missing/corrupt sealed record evidence before source reads."""
     for entry in boundary.entries:
-        record = record_from_mapping(checkpoints.read_record(root, entry.source_record_pk))
+        record = record_from_mapping(checkpoints.read_record(root, entry.source_record_pk, limits))
         if (
             record.digest() != entry.record_digest
             or record.reference_fingerprint() != entry.reference_fingerprint
@@ -168,6 +213,7 @@ def _write_checkpoint_pages(
     boundary: SealedBoundary,
     records: tuple[ArchiveRecord, ...],
     outcomes: tuple[Disposition, ...],
+    limits: CheckpointLimits,
     cancelled: Cancelled,
 ) -> None:
     record_by_id = {item.source_record_pk: item for item in records}
@@ -180,14 +226,15 @@ def _write_checkpoint_pages(
         identities = tuple(item.source_record_pk for item in entries)
         page: dict[str, object] = {
             "schema_version": "crm-activities-checkpoint-page-v1",
+            "request_digest": sha256_json(boundary.request.as_public_dict()),
             "boundary_digest": boundary.digest,
             "identities": list(identities),
             "records": [record_by_id[item].as_dict() for item in identities],
             "dispositions": [outcome_by_id[item].__dict__ for item in identities],
         }
         page["digest"] = sha256_json(page)
-        checkpoints.write_page(root, ordinal, page)
-        checkpoints.advance(root, boundary.digest, ordinal)
+        checkpoints.write_page(root, ordinal, page, limits)
+        checkpoints.advance(root, boundary.digest, ordinal, limits)
 
 
 def _page_count(boundary: SealedBoundary) -> int:
@@ -201,11 +248,26 @@ def _cancelled(cancelled: Cancelled) -> None:
 
 
 def _verify_handler(
+    checkpoint_id: str,
     snapshot_id: str,
     accepted_run_id: str,
     accepted_manifest_digest: str,
+    checkpoint_limits: CheckpointLimits,
+    input_limits: ReadLimits,
+    output_maximum_bytes: int,
+    output_maximum_entries: int,
     run_staging: Path,
     cancelled: Cancelled,
 ) -> None:
     _cancelled(cancelled)
-    verify_accepted(run_staging, accepted_run_id, snapshot_id, accepted_manifest_digest)
+    verify_accepted(
+        run_staging,
+        checkpoint_id,
+        accepted_run_id,
+        snapshot_id,
+        accepted_manifest_digest,
+        input_limits=input_limits,
+        output_maximum_bytes=output_maximum_bytes,
+        output_maximum_entries=output_maximum_entries,
+        checkpoint_limits=checkpoint_limits,
+    )

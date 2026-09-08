@@ -7,8 +7,10 @@ from typing import cast
 
 from neo4j import READ_ACCESS, Driver, GraphDatabase
 
-from intelligence.crm.activities.models import ArchiveRecord, ArchiveRequest, record_from_mapping
+from intelligence.crm.activities.model_parsing import record_from_mapping
+from intelligence.crm.activities.models import ArchiveRecord, ArchiveRequest
 from intelligence.graph.queries.crm_activities import (
+    PREFLIGHT_REFERENCE_FANOUT,
     PREFLIGHT_STRUCTURAL_INVALID,
     READ_BY_IDENTITIES,
     READ_SELECTED_PAGE,
@@ -57,22 +59,42 @@ class Neo4jCrmActivitiesRepository:
         )
 
     def structural_invalid_count(self, request: ArchiveRequest) -> int:
+        return self._preflight_invalid_count(
+            PREFLIGHT_STRUCTURAL_INVALID,
+            {
+                "source_instance_id": request.source_instance_id,
+                "source_key": request.source_key,
+            },
+            "structural",
+        )
+
+    def reference_fanout_invalid_count(self, request: ArchiveRequest) -> int:
+        return self._preflight_invalid_count(
+            PREFLIGHT_REFERENCE_FANOUT,
+            {
+                "source_instance_id": request.source_instance_id,
+                "source_key": request.source_key,
+                "max_references_per_record": request.max_references_per_record,
+            },
+            "reference fan-out",
+        )
+
+    def _preflight_invalid_count(
+        self,
+        query: str,
+        parameters: Mapping[str, object],
+        preflight_name: str,
+    ) -> int:
         with self._driver.session(
             database=self._database,
             default_access_mode=READ_ACCESS,
         ) as session:
-            row = session.run(
-                PREFLIGHT_STRUCTURAL_INVALID,
-                {
-                    "source_instance_id": request.source_instance_id,
-                    "source_key": request.source_key,
-                },
-            ).single()
+            row = session.run(query, dict(parameters)).single()
         if row is None or not isinstance(row.get("invalid_count"), int):
-            raise RuntimeError("CRM activities structural preflight returned no count")
+            raise RuntimeError(f"CRM activities {preflight_name} preflight returned no count")
         count = row.get("invalid_count")
         if isinstance(count, bool) or count < 0:
-            raise RuntimeError("CRM activities structural preflight count is invalid")
+            raise RuntimeError(f"CRM activities {preflight_name} preflight count is invalid")
         return count
 
     def _read(self, query: str, parameters: Mapping[str, object]) -> tuple[ArchiveRecord, ...]:

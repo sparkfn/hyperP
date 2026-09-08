@@ -59,6 +59,7 @@ def _call_outcome(
         record.stored_parent.source_instance_id != child[0].source_instance_id
         or record.stored_parent.source_record_id != child[0].source_record_id
         or record.stored_parent.record_type != "crm_history"
+        or record.stored_parent.source_system != child[0].source_system
     ):
         return Disposition(
             record.source_record_pk,
