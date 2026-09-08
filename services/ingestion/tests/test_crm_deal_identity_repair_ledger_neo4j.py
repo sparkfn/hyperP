@@ -1762,6 +1762,73 @@ def test_310_stale_orphan_and_cross_control_ambiguity_are_exact(neo4j_driver: Dr
         )
 
 
+def test_310_legacy_checkpoint_identity_is_preserved_during_quiescence(
+    neo4j_driver: Driver,
+) -> None:
+    """Legacy checkpoints use last_committed_record_id as their identity."""
+    _, control, run = _qualified_control_repository(
+        neo4j_driver, repair_id="repair-310-legacy-checkpoint"
+    )
+    _seed_complete_task_topology(neo4j_driver, run.control_instance_id)
+    stale_run_id = "repair-310-legacy-stale-attempt"
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (logical:IngestionLogicalRun {logical_run_id: 'repair-logical'}) "
+            "CREATE (stale:IngestRun {ingest_run_id: $stale_run_id, "
+            "control_instance_id: $control_instance_id, status: 'queued'}) "
+            "CREATE (logical)-[:HAS_ATTEMPT]->(stale) "
+            "CREATE (checkpoint:IngestionCheckpoint {logical_run_id: 'repair-logical', "
+            "control_instance_id: $control_instance_id, "
+            "last_committed_record_id: 'legacy-checkpoint-record'}) "
+            "CREATE (checkpoint)-[:PRODUCED_BY]->(stale)",
+            stale_run_id=stale_run_id,
+            control_instance_id=run.control_instance_id,
+        ).consume()
+
+    lease = control.claim(
+        RepairControlRequest("repair-310-legacy-checkpoint", run.run_id, "owner", "token", 0),
+        boundary_digest=run.boundary_digest,
+        control_instance_id=run.control_instance_id,
+    )
+    topology = control.request_stop_topology(
+        control_instance_id=run.control_instance_id,
+        run_id=run.run_id,
+        owner_id="owner",
+        stale_run_id=stale_run_id,
+    )
+    completed = control.complete_quiescence(
+        RepairControlRequest(
+            "repair-310-legacy-checkpoint", run.run_id, "owner", "token", lease.revision
+        ),
+        boundary_digest=run.boundary_digest,
+        control_instance_id=run.control_instance_id,
+        topology_digest=topology,
+        evidence=_absence_evidence(
+            control,
+            run,
+            owner="owner",
+            token_digest="token",
+            revision=lease.revision,
+            topology_digest=topology,
+        ),
+        proof_secret=b"secret",
+        stale_run_id=stale_run_id,
+    )
+    assert completed.state == "quiesced"
+    with neo4j_driver.session() as session:
+        checkpoint = session.run(
+            "MATCH (checkpoint:IngestionCheckpoint {control_instance_id: $control_instance_id, "
+            "last_committed_record_id: 'legacy-checkpoint-record'}) "
+            "RETURN checkpoint.checkpoint_id AS checkpoint_id, "
+            "checkpoint.last_committed_record_id AS last_committed_record_id",
+            control_instance_id=run.control_instance_id,
+        ).single(strict=True)
+    assert dict(checkpoint) == {
+        "checkpoint_id": None,
+        "last_committed_record_id": "legacy-checkpoint-record",
+    }
+
+
 def test_310_stale_owned_topology_is_terminalized_only_when_exact(neo4j_driver: Driver) -> None:
     ledger = _repository(neo4j_driver)
     _persist_evidence(neo4j_driver)
