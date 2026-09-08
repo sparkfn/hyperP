@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import hashlib
 from dataclasses import replace
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 from _bitrix_artifact_store_support import key_provider, new_store
@@ -240,7 +240,7 @@ def test_runtime_configuration_redacts_secret_and_retains_old_key(tmp_path: Path
             sealed = artifact.seal(
                 metadata={"mode": "test"},
                 provenance=_artifact_provenance(),
-                retention_expires_at=datetime(2026, 9, 8, tzinfo=UTC),
+                retention_expires_at=datetime.now(UTC) + timedelta(days=1),
             )
     rotated = ArtifactStoreConfiguration(
         tmp_path / "primary",

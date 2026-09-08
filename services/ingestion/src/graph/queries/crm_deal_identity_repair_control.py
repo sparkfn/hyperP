@@ -315,7 +315,7 @@ CALL {
   WHERE membership.stream_key IN ['crm_deals', 'crm_activities', 'openlines_conversations']
     AND logical.status IN ['queued', 'running', 'stop_requested', 'paused_with_checkpoint']
   WITH DISTINCT logical
-  OPTIONAL MATCH (logical)-[:HAS_ATTEMPT|ACTIVE_ATTEMPT]->
+  OPTIONAL MATCH (logical)-[:ACTIVE_ATTEMPT]->
     (matched_attempt:IngestRun {control_instance_id: $control_instance_id})
   WITH logical, collect(DISTINCT matched_attempt) AS attempts
   UNWIND CASE WHEN size(attempts) = 1 THEN attempts ELSE [NULL] END AS attempt
