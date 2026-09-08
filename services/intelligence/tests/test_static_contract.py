@@ -36,4 +36,6 @@ def test_compose_has_only_one_isolated_intelligence_service_and_volume() -> None
         assert "no-new-privileges:true" in service
         assert "tmpfs:" in service
         assert "/tmp:rw,noexec,nosuid,size=64m" in service
+        assert "INTELLIGENCE_NEO4J_URI" in service
+        assert "INTELLIGENCE_CRM_ACTIVITIES_SOURCE_INSTANCE" in service
         assert content.rstrip().endswith("volumes:\n  intelligence-data:")

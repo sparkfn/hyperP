@@ -1,0 +1,211 @@
+"""Reviewed spawn-safe handlers for bounded CRM activity archive commands."""
+
+from __future__ import annotations
+
+from functools import partial
+from pathlib import Path
+from typing import Literal
+
+from intelligence.crm.activities import checkpoints
+from intelligence.crm.activities.config import CrmActivitiesConfig
+from intelligence.crm.activities.dispositions import classify
+from intelligence.crm.activities.manifests import write_snapshot
+from intelligence.crm.activities.models import (
+    ArchiveRecord,
+    ArchiveRequest,
+    Disposition,
+    SealedBoundary,
+    parse_boundary,
+    record_from_mapping,
+    sha256_json,
+)
+from intelligence.crm.activities.reconciliation import capture, seal, verify_boundary, verify_page
+from intelligence.crm.activities.verification import verify_accepted
+from intelligence.registry import Cancelled, RegisteredCommand, Registry
+from intelligence.repositories.neo4j.crm_activities import Neo4jCrmActivitiesRepository
+from intelligence.repositories.protocols.crm_activities import CrmActivitiesRepository
+
+Operation = Literal["extract", "resume"]
+
+
+def request_from_config(snapshot_id: str, config: CrmActivitiesConfig) -> ArchiveRequest:
+    return ArchiveRequest(
+        snapshot_id,
+        config.source_instance_id,
+        config.source_key,
+        config.page_size,
+        config.max_rows,
+        config.max_pages,
+    )
+
+
+def registry(
+    operation: Operation, request: ArchiveRequest, config: CrmActivitiesConfig
+) -> Registry:
+    """Return only one request-scoped reviewed handler; global production registry remains empty."""
+    handler = partial(_archive_handler, operation, request, config)
+    command = RegisteredCommand(
+        f"crm_activities_{operation}",
+        True,
+        handler,
+        {"domain": "crm_activities", "operation": operation, "snapshot_id": request.snapshot_id},
+    )
+    return Registry((command,))
+
+
+def verification_registry(
+    snapshot_id: str, accepted_run_id: str, accepted_manifest_digest: str
+) -> Registry:
+    handler = partial(_verify_handler, snapshot_id, accepted_run_id, accepted_manifest_digest)
+    command = RegisteredCommand(
+        "crm_activities_verify",
+        True,
+        handler,
+        {
+            "domain": "crm_activities",
+            "operation": "verify",
+            "snapshot_id": snapshot_id,
+        },
+    )
+    return Registry((command,))
+
+
+def _archive_handler(
+    operation: Operation,
+    request: ArchiveRequest,
+    config: CrmActivitiesConfig,
+    run_staging: Path,
+    cancelled: Cancelled,
+) -> None:
+    checkpoint = checkpoints.checkpoint_root(run_staging, request.snapshot_id)
+    checkpoints.initialize(checkpoint, request)
+    if operation == "resume" and checkpoints.state(checkpoint).get("phase") == "new":
+        raise RuntimeError("CRM activities resume requires a durable sealed checkpoint")
+    repository: CrmActivitiesRepository = Neo4jCrmActivitiesRepository(
+        config.neo4j_uri,
+        config.neo4j_user,
+        config.neo4j_password,
+        config.neo4j_database,
+    )
+    try:
+        boundary = _boundary_or_capture(repository, checkpoint, request, cancelled)
+        records = _validated_rows(repository, boundary, cancelled)
+        outcomes = classify(records)
+        outcome_values = [item.__dict__ for item in outcomes]
+        checkpoints.write_evidence(
+            checkpoint,
+            "dispositions.json",
+            {"outcomes": outcome_values, "digest": sha256_json(outcome_values)},
+        )
+        _write_checkpoint_pages(checkpoint, boundary, records, outcomes, cancelled)
+        verify_boundary(repository, boundary)
+        manifest = write_snapshot(run_staging, boundary, records, outcomes)
+        checkpoints.write_evidence(checkpoint, "accepted-manifest.json", manifest)
+        checkpoints.complete(checkpoint, boundary.digest, _page_count(boundary))
+        checkpoints.bounded_usage(
+            checkpoint,
+            config.max_checkpoint_bytes,
+            config.max_checkpoint_entries,
+        )
+    finally:
+        repository.close()
+
+
+def _boundary_or_capture(
+    repository: CrmActivitiesRepository,
+    root: Path,
+    request: ArchiveRequest,
+    cancelled: Cancelled,
+) -> SealedBoundary:
+    boundary_path = root / "boundary.json"
+    if boundary_path.exists() or boundary_path.is_symlink():
+        boundary = parse_boundary(checkpoints.load_boundary(root))
+        if boundary.request != request:
+            raise RuntimeError("resume request conflicts with sealed boundary configuration")
+        _validate_checkpoint_records(root, boundary)
+        return boundary
+    _cancelled(cancelled)
+    records = capture(repository, request, request.max_rows, request.max_pages)
+    for record in records:
+        _cancelled(cancelled)
+        checkpoints.write_record(root, record.source_record_pk, record.as_dict())
+    boundary = seal(records, request)
+    checkpoints.write_boundary(root, boundary)
+    verify_boundary(repository, boundary)
+    return boundary
+
+
+def _validate_checkpoint_records(root: Path, boundary: SealedBoundary) -> None:
+    """A resume refuses missing/corrupt sealed record evidence before source reads."""
+    for entry in boundary.entries:
+        record = record_from_mapping(checkpoints.read_record(root, entry.source_record_pk))
+        if (
+            record.digest() != entry.record_digest
+            or record.reference_fingerprint() != entry.reference_fingerprint
+        ):
+            raise RuntimeError("sealed checkpoint record evidence is corrupt")
+
+
+def _validated_rows(
+    repository: CrmActivitiesRepository,
+    boundary: SealedBoundary,
+    cancelled: Cancelled,
+) -> tuple[ArchiveRecord, ...]:
+    records: list[ArchiveRecord] = []
+    identities = tuple(item.source_record_pk for item in boundary.entries)
+    for index in range(0, len(identities), boundary.request.page_size):
+        _cancelled(cancelled)
+        page_ids = identities[index : index + boundary.request.page_size]
+        records.extend(verify_page(repository, boundary, page_ids))
+    result = tuple(records)
+    if tuple(item.source_record_pk for item in result) != identities:
+        raise RuntimeError("sealed page reconstruction lost an identity")
+    return result
+
+
+def _write_checkpoint_pages(
+    root: Path,
+    boundary: SealedBoundary,
+    records: tuple[ArchiveRecord, ...],
+    outcomes: tuple[Disposition, ...],
+    cancelled: Cancelled,
+) -> None:
+    record_by_id = {item.source_record_pk: item for item in records}
+    outcome_by_id = {item.source_record_pk: item for item in outcomes}
+    for ordinal, offset in enumerate(
+        range(0, len(boundary.entries), boundary.request.page_size), start=1
+    ):
+        _cancelled(cancelled)
+        entries = boundary.entries[offset : offset + boundary.request.page_size]
+        identities = tuple(item.source_record_pk for item in entries)
+        page: dict[str, object] = {
+            "schema_version": "crm-activities-checkpoint-page-v1",
+            "boundary_digest": boundary.digest,
+            "identities": list(identities),
+            "records": [record_by_id[item].as_dict() for item in identities],
+            "dispositions": [outcome_by_id[item].__dict__ for item in identities],
+        }
+        page["digest"] = sha256_json(page)
+        checkpoints.write_page(root, ordinal, page)
+        checkpoints.advance(root, boundary.digest, ordinal)
+
+
+def _page_count(boundary: SealedBoundary) -> int:
+    count = len(boundary.entries)
+    return (count + boundary.request.page_size - 1) // boundary.request.page_size
+
+
+def _cancelled(cancelled: Cancelled) -> None:
+    if cancelled():
+        raise RuntimeError("CRM activities archive cancellation was requested")
+
+
+def _verify_handler(
+    snapshot_id: str,
+    accepted_run_id: str,
+    accepted_manifest_digest: str,
+    run_staging: Path,
+    cancelled: Cancelled,
+) -> None:
+    _cancelled(cancelled)
+    verify_accepted(run_staging, accepted_run_id, snapshot_id, accepted_manifest_digest)

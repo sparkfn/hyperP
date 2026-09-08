@@ -127,6 +127,7 @@ steps:
       - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_URI --user-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_USER --password-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD --timeout-seconds 90
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_projection_repository_neo4j.py -q
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_activation_neo4j.py -q
+      - uv run --package hyperp-intelligence pytest services/intelligence/tests -k crm_activities_neo4j -q
 
   - name: neo4j-ledger-310-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
