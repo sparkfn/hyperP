@@ -38,7 +38,13 @@ from intelligence.runtime import IntelligenceRuntime
 def add_crm_deal_refs_parser(commands: argparse._SubParsersAction[argparse.ArgumentParser]) -> None:
     """Add the intentionally narrow ``crm deal-refs`` command family."""
     crm = commands.add_parser("crm")
-    crm_commands = crm.add_subparsers(dest="crm_command", required=True)
+    add_crm_deal_refs_domain_parser(crm.add_subparsers(dest="crm_domain", required=True))
+
+
+def add_crm_deal_refs_domain_parser(
+    crm_commands: argparse._SubParsersAction[argparse.ArgumentParser],
+) -> None:
+    """Add deal-reference actions to an existing ``crm`` domain parser."""
     deal_refs = crm_commands.add_parser("deal-refs")
     actions = deal_refs.add_subparsers(dest="deal_refs_command", required=True)
     extract = actions.add_parser("extract")

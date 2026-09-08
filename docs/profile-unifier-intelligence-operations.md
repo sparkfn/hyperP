@@ -69,6 +69,13 @@ records have fixed size limits; page records are streamed rather than whole-file
 record/page counts are bounded against the frozen record ceiling and page size before any sidecar traversal,
 and accepted path/byte-count equality is checked before any file content is hashed.
 
+The CRM activities archive is a separately reviewed, default-off nested command surface:
+`intelligence crm activities extract|resume|verify|status`. It has a private checkpoint below
+`staging/.crm-activities/`, uses bounded read-only Neo4j projections, and publishes only after a
+sealed selection boundary, complete disposition reconciliation, and final drift verification. See
+`profile-unifier-crm-activities-archive.md`; installing the capability does not perform a live
+source extraction.
+
 Cancellation is accepted while a run is queued or executing. Entering `publishing` is the
 explicit non-cancellable commit point: a second connection receives a rejection rather than
 silently racing terminal publication. A stale publishing run is recovered against its durable

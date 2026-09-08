@@ -11,7 +11,12 @@ from pathlib import Path
 
 from intelligence.artifacts import sha256_file
 from intelligence.config import RuntimeConfig
-from intelligence.crm_deal_refs.cli import add_crm_deal_refs_parser, run_crm_deal_refs
+from intelligence.crm.activities import cli as crm_activities_cli
+from intelligence.crm.activities.cli import add_parser as add_crm_activities_parser
+from intelligence.crm_deal_refs.cli import (
+    add_crm_deal_refs_domain_parser,
+    run_crm_deal_refs,
+)
 from intelligence.models import OutputInventory, Run
 from intelligence.runtime import IntelligenceRuntime
 
@@ -20,7 +25,6 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the fixed command parser; it deliberately takes no shell-like arguments."""
     parser = argparse.ArgumentParser(prog="intelligence")
     commands = parser.add_subparsers(dest="command", required=True)
-    add_crm_deal_refs_parser(commands)
     commands.add_parser("status")
     commands.add_parser("health")
     commands.add_parser("idle")
@@ -34,6 +38,10 @@ def build_parser() -> argparse.ArgumentParser:
     backup = commands.add_parser("backup")
     backup.add_argument("name")
     commands.add_parser("verify-backup").add_argument("name")
+    crm = commands.add_parser("crm")
+    crm_domains = crm.add_subparsers(dest="crm_domain", required=True)
+    add_crm_deal_refs_domain_parser(crm_domains)
+    add_crm_activities_parser(crm_domains)
     run = commands.add_parser("run")
     run.add_argument("name")
     return parser
@@ -42,9 +50,13 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: Sequence[str] | None = None) -> int:
     """Execute one local control command."""
     arguments = build_parser().parse_args(argv)
+    if arguments.command == "crm" and arguments.crm_domain == "activities":
+        return crm_activities_cli.main(arguments)
     runtime = IntelligenceRuntime(RuntimeConfig.from_environment())
     try:
         if arguments.command == "crm":
+            if arguments.crm_domain != "deal-refs":
+                raise ValueError("unsupported Intelligence CRM domain")
             return run_crm_deal_refs(arguments, runtime)
         if arguments.command == "health":
             health = runtime.health()
