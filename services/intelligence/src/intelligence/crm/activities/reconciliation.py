@@ -68,6 +68,8 @@ def _assert_structurally_valid(
 ) -> None:
     if repository.structural_invalid_count(request) != 0:
         raise RuntimeError("CRM activities boundary has structural-invalid candidate records")
+    if repository.reference_fanout_invalid_count(request) != 0:
+        raise RuntimeError("CRM activities boundary has reference-fanout candidate records")
 
 
 def verify_page(

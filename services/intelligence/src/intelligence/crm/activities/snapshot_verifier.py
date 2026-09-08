@@ -9,12 +9,12 @@ from typing import cast
 
 from intelligence.artifacts import canonical_json, sha256_file
 from intelligence.crm.activities.manifests import _cleanup_records, _object, _read_json
+from intelligence.crm.activities.model_parsing import parse_boundary, record_from_mapping
 from intelligence.crm.activities.models import (
     PROVENANCE,
+    BoundaryEntry,
     Disposition,
     SealedBoundary,
-    parse_boundary,
-    record_from_mapping,
     sha256_json,
 )
 
@@ -95,6 +95,10 @@ def verify_snapshot(snapshot: Path) -> Mapping[str, object]:
         raise ValueError("accepted records are not globally sorted unique")
     if accepted_ids != keys:
         raise ValueError("cleanup identity set differs from accepted records")
+    sealed_entries = {entry.source_record_pk: entry for entry in boundary.entries}
+    for record in records:
+        if BoundaryEntry.from_record(record) != sealed_entries.get(record.source_record_pk):
+            raise ValueError("accepted record differs from its sealed boundary entry")
     expected_cleanup = _cleanup_records(
         records,
         tuple(Disposition(item.source_record_pk, "accepted", None) for item in records),
@@ -125,6 +129,12 @@ def verify_snapshot(snapshot: Path) -> Mapping[str, object]:
         raise ValueError("unresolved evidence contains an unselected identity")
     if len(accepted_ids) + len(rejected) + len(quarantined) != manifest.get("selected_count"):
         raise ValueError("archive disposition evidence has an unexplained remainder")
+    if (
+        manifest.get("rejected_count") != len(rejected)
+        or manifest.get("quarantined_count") != len(quarantined)
+        or manifest.get("cleanup_identity_count") != len(identities)
+    ):
+        raise ValueError("archive manifest counts disagree with evidence")
     expected = {
         Path("boundary.json"),
         Path("cleanup-identities.json"),

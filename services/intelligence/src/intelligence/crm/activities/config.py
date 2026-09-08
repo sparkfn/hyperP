@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from os import environ
 
@@ -30,6 +31,8 @@ class CrmActivitiesConfig:
     max_pages: int
     max_checkpoint_bytes: int
     max_checkpoint_entries: int
+    database_identity: str
+    max_references_per_record: int
 
     @classmethod
     def from_environment(cls) -> CrmActivitiesConfig:
@@ -56,4 +59,10 @@ class CrmActivitiesConfig:
                 1_000_000_000,
             ),
             _positive("INTELLIGENCE_CRM_ACTIVITIES_MAX_CHECKPOINT_ENTRIES", 10_000, 100_000),
+            _database_identity(uri, environ.get("INTELLIGENCE_NEO4J_DATABASE") or "default"),
+            _positive("INTELLIGENCE_CRM_ACTIVITIES_MAX_REFERENCES_PER_RECORD", 100, 10_000),
         )
+
+
+def _database_identity(uri: str, database: str) -> str:
+    return "db-" + hashlib.sha256(f"{uri}|{database}".encode()).hexdigest()[:24]

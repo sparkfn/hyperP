@@ -27,6 +27,8 @@ Before artifact paging, extraction performs bounded keyset enumeration and write
 
 Before either boundary capture or final boundary verification, a separate bounded read-only preflight checks the same closed activity/call candidate scope for missing or blank source/version/hash identity fields. A nonzero count is structural boundary corruption: acceptance fails before snapshot publication, the records do not enter the immutable selected identity set, and they never create cleanup authorization.
 
+The same preflight boundary rejects, without truncation or graph mutation, any admitted record whose `CHILD_OF`, `DETAILS_HISTORY_ITEM`, or active Person `LINKED_TO` reference cardinality exceeds the configured per-record ceiling. Parent edges remain observable even if their parent lacks `FROM_SOURCE`; the separately projected `source_system` value then records missing source-system evidence explicitly rather than hiding the edge.
+
 Every sealed identity has exactly one `accepted`, `rejected`, or `quarantined` disposition. The final manifest proves the disjoint partition and records a zero unexplained remainder. Unknown lifecycle values are rejected; missing optional parent/identity/user references do not invent a relationship.
 
 Accepted output is published only through the Intelligence runtime at `outputs/RUN_ID/snapshots/crm/activities/SNAPSHOT_ID/`. Logical snapshot/page/manifest digests use canonical JSON and exclude run IDs, attempts, and timing. A replay regenerates equivalent logical artifacts or fails on conflicting immutable evidence. Each accepted manifest declares `source_population=neo4j_existing_records`, `completeness=legacy_partial_snapshot`, and `bitrix_completeness_asserted=false`.

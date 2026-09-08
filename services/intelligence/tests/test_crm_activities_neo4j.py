@@ -48,6 +48,13 @@ def graph() -> Iterator[tuple[Driver, str, str, str, str, str, str]]:
                   parent_source_record_id: 'deal-a', parent_record_type: 'crm_deal'
                 })-[:FROM_SOURCE]->(source)
                 CREATE (history)-[:CHILD_OF]->(deal)
+                CREATE (unattributed:SourceRecord {
+                  source_record_pk: $unattributed, source_record_id: 'unattributed-a',
+                  source_record_version: '1', source_version_key: 'unattributed-v1',
+                  record_hash: 'unattributed-hash', source_instance_id: $instance,
+                  fixture_id: $fixture_id, record_type: 'crm_deal'
+                })
+                CREATE (history)-[:CHILD_OF]->(unattributed)
                 CREATE (call:SourceRecord {
                   source_record_pk: $call, source_record_id: 'call-a',
                   source_record_version: '1', source_version_key: 'call-v1',
@@ -79,6 +86,7 @@ def graph() -> Iterator[tuple[Driver, str, str, str, str, str, str]]:
                 source_key=source_key,
                 instance=source_instance,
                 deal=f"deal-{uuid4().hex}",
+                unattributed=f"unattributed-{uuid4().hex}",
                 history=f"history-{uuid4().hex}",
                 call=f"call-{uuid4().hex}",
                 person=f"person-{uuid4().hex}",
@@ -110,14 +118,15 @@ def test_reader_returns_only_safe_activity_and_companion_call_without_writes(
             "count"
         ]
     repository = Neo4jCrmActivitiesRepository(uri, user, password)
+    request = ArchiveRequest("snapshot-a", source_instance, source_key, max_references_per_record=2)
     try:
-        assert (
-            repository.structural_invalid_count(
-                ArchiveRequest("snapshot-a", source_instance, source_key)
-            )
-            == 0
+        assert repository.structural_invalid_count(request) == 0
+        assert repository.reference_fanout_invalid_count(request) == 0
+        rows = repository.page(request, "")
+        by_identity = repository.by_identities(
+            request,
+            tuple(row.source_record_pk for row in rows),
         )
-        rows = repository.page(ArchiveRequest("snapshot-a", source_instance, source_key), "")
     finally:
         repository.close()
     with driver.session() as session:
@@ -127,14 +136,15 @@ def test_reader_returns_only_safe_activity_and_companion_call_without_writes(
         ]
     assert before == after
     assert before_relationships == after_relationships
-    assert [row.record_type for row in rows] in (
-        ["call", "crm_history"],
-        ["crm_history", "call"],
-    )
+    assert [row.source_record_pk for row in rows] == sorted(row.source_record_pk for row in rows)
+    assert by_identity == rows
     assert {row.record_type for row in rows} == {"crm_history", "call"}
     assert [(item.source_record_pk, item.disposition) for item in classify(rows)]
     assert all(row.history_family != "stage" for row in rows)
     assert all("MUST_NOT_LEAK" not in str(row.as_dict()) for row in rows)
+    history = next(row for row in rows if row.record_type == "crm_history")
+    assert any(parent.source_system == source_key for parent in history.child_parents)
+    assert any(parent.source_system is None for parent in history.child_parents)
 
 
 def test_preflight_rejects_blank_identity_without_graph_mutation(
@@ -175,5 +185,85 @@ def test_preflight_rejects_blank_identity_without_graph_mutation(
             "count"
         ]
     assert invalid > 0
+    assert nodes_after == nodes_before
+    assert relationships_after == relationships_before
+
+
+def test_reference_fanout_preflight_rejects_each_bounded_reference_type_without_writes(
+    graph: tuple[Driver, str, str, str, str, str, str],
+) -> None:
+    driver, uri, user, password, source_instance, source_key, fixture_id = graph
+    with driver.session() as session:
+        session.run(
+            """
+            MATCH (source:SourceSystem {source_key: $source_key})
+            CREATE (child:SourceRecord {
+              fixture_id: $fixture_id, source_record_pk: 'child-overflow-' + $fixture_id,
+              source_record_id: 'child-overflow', source_record_version: '1',
+              source_version_key: 'child-overflow-v1', record_hash: 'child-overflow-hash',
+              source_instance_id: $source_instance, record_type: 'crm_history',
+              lifecycle_status: 'active', history_family: 'activity'
+            })-[:FROM_SOURCE]->(source)
+            CREATE (details:SourceRecord {
+              fixture_id: $fixture_id, source_record_pk: 'details-overflow-' + $fixture_id,
+              source_record_id: 'details-overflow', source_record_version: '1',
+              source_version_key: 'details-overflow-v1', record_hash: 'details-overflow-hash',
+              source_instance_id: $source_instance, record_type: 'crm_history',
+              lifecycle_status: 'active', history_family: 'activity'
+            })-[:FROM_SOURCE]->(source)
+            CREATE (people:SourceRecord {
+              fixture_id: $fixture_id, source_record_pk: 'people-overflow-' + $fixture_id,
+              source_record_id: 'people-overflow', source_record_version: '1',
+              source_version_key: 'people-overflow-v1', record_hash: 'people-overflow-hash',
+              source_instance_id: $source_instance, record_type: 'crm_history',
+              lifecycle_status: 'active', history_family: 'activity'
+            })-[:FROM_SOURCE]->(source)
+            CREATE (child_parent_a:SourceRecord {fixture_id: $fixture_id})
+            CREATE (child_parent_b:SourceRecord {fixture_id: $fixture_id})
+            CREATE (child_parent_c:SourceRecord {fixture_id: $fixture_id})
+            CREATE (child)-[:CHILD_OF]->(child_parent_a)
+            CREATE (child)-[:CHILD_OF]->(child_parent_b)
+            CREATE (child)-[:CHILD_OF]->(child_parent_c)
+            CREATE (details_parent_a:SourceRecord {fixture_id: $fixture_id})
+            CREATE (details_parent_b:SourceRecord {fixture_id: $fixture_id})
+            CREATE (details_parent_c:SourceRecord {fixture_id: $fixture_id})
+            CREATE (details)-[:DETAILS_HISTORY_ITEM]->(details_parent_a)
+            CREATE (details)-[:DETAILS_HISTORY_ITEM]->(details_parent_b)
+            CREATE (details)-[:DETAILS_HISTORY_ITEM]->(details_parent_c)
+            CREATE (active_a:Person {fixture_id: $fixture_id, person_id: 'active-a-' + $fixture_id})
+            CREATE (active_b:Person {fixture_id: $fixture_id, person_id: 'active-b-' + $fixture_id})
+            CREATE (active_c:Person {fixture_id: $fixture_id, person_id: 'active-c-' + $fixture_id})
+            CREATE (inactive:Person {fixture_id: $fixture_id, person_id: 'inactive-' + $fixture_id})
+            CREATE (people)-[:LINKED_TO {is_active: true}]->(active_a)
+            CREATE (people)-[:LINKED_TO {is_active: true}]->(active_b)
+            CREATE (people)-[:LINKED_TO {is_active: true}]->(active_c)
+            CREATE (people)-[:LINKED_TO {is_active: false}]->(inactive)
+            """,
+            source_key=source_key,
+            fixture_id=fixture_id,
+            source_instance=source_instance,
+        ).consume()
+        nodes_before = session.run("MATCH (n) RETURN count(n) AS count").single()["count"]
+        relationships_before = session.run("MATCH ()-[r]->() RETURN count(r) AS count").single()[
+            "count"
+        ]
+    repository = Neo4jCrmActivitiesRepository(uri, user, password)
+    try:
+        invalid = repository.reference_fanout_invalid_count(
+            ArchiveRequest(
+                "checkpoint-a",
+                source_instance,
+                source_key,
+                max_references_per_record=2,
+            )
+        )
+    finally:
+        repository.close()
+    with driver.session() as session:
+        nodes_after = session.run("MATCH (n) RETURN count(n) AS count").single()["count"]
+        relationships_after = session.run("MATCH ()-[r]->() RETURN count(r) AS count").single()[
+            "count"
+        ]
+    assert invalid == 3
     assert nodes_after == nodes_before
     assert relationships_after == relationships_before

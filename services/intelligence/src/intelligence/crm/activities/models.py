@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 import re
 from dataclasses import asdict, dataclass
 from typing import Literal, cast
@@ -56,11 +57,18 @@ class ArchiveRequest:
     page_size: int = 100
     max_rows: int = 10_000
     max_pages: int = 200
+    database_identity: str = "default"
+    selection_contract_version: str = "crm-activities-selection-v2"
+    max_references_per_record: int = 100
 
     def __post_init__(self) -> None:
         validate_snapshot_id(self.snapshot_id)
         _id(self.source_instance_id, "source_instance_id")
         _id(self.source_key, "source_key")
+        _id(self.database_identity, "database_identity")
+        _id(self.selection_contract_version, "selection_contract_version")
+        if not 1 <= self.max_references_per_record <= 10_000:
+            raise ValueError("max_references_per_record is outside approved bounds")
         if not 1 <= self.page_size <= 1_000:
             raise ValueError("page_size must be between 1 and 1000")
         if not 1 <= self.max_rows <= 100_000 or not 1 <= self.max_pages <= 10_000:
@@ -80,13 +88,14 @@ class ParentReference:
     source_system: str | None = None
 
     def __post_init__(self) -> None:
-        for value, field in (
+        optional_values: tuple[tuple[str | None, str], ...] = (
             (self.source_record_pk, "parent source_record_pk"),
             (self.source_instance_id, "parent source_instance_id"),
             (self.source_record_id, "parent source_record_id"),
             (self.record_type, "parent record_type"),
             (self.source_system, "parent source_system"),
-        ):
+        )
+        for value, field in optional_values:
             if value is not None:
                 _id(value, field)
         _id(self.relationship, "parent relationship")
@@ -152,6 +161,7 @@ class ArchiveRecord:
     people: tuple[PersonReference, ...]
     user_capabilities: tuple[str, ...]
     ingested_at: str | None = None
+    link_status: str | None = None
 
     def __post_init__(self) -> None:
         for value, field in (
@@ -169,7 +179,7 @@ class ArchiveRecord:
             or len(self.record_hash) > 512
         ):
             raise ValueError("archive record is unsupported or missing its source hash")
-        for value, field in (
+        optional_values: tuple[tuple[str | None, str], ...] = (
             (self.lifecycle_status, "lifecycle_status"),
             (self.history_family, "history_family"),
             (self.history_kind, "history_kind"),
@@ -180,7 +190,9 @@ class ArchiveRecord:
             (self.observed_at, "observed_at"),
             (self.available_at, "available_at"),
             (self.ingested_at, "ingested_at"),
-        ):
+            (self.link_status, "link_status"),
+        )
+        for value, field in optional_values:
             _text(value, field)
         if tuple(sorted(self.child_parents, key=ParentReference.key)) != self.child_parents:
             raise ValueError("child parents must be canonical")
@@ -207,7 +219,7 @@ class ArchiveRecord:
         )
 
     def as_dict(self) -> dict[str, object]:
-        payload = cast(dict[str, object], asdict(self))
+        payload = cast(dict[str, object], json.loads(canonical_json(asdict(self))))
         payload["reference_fingerprint"] = self.reference_fingerprint()
         return payload
 
@@ -259,6 +271,8 @@ class SealedBoundary:
                 "schema_version": self.schema_version,
                 "source_instance_id": self.request.source_instance_id,
                 "source_key": self.request.source_key,
+                "database_identity": self.request.database_identity,
+                "selection_contract_version": self.request.selection_contract_version,
                 "entries": [asdict(item) for item in self.entries],
             }
         )
