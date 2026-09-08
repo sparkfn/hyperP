@@ -191,6 +191,7 @@ def test_resume_rejects_contradictory_page_inventory_and_state(tmp_path: Path) -
     boundary = seal((record,), request)
     checkpoints.initialize(root, request, limits)
     checkpoints.write_record(root, record.source_record_pk, record.as_dict(), limits)
+    checkpoints.write_duplicate_deliveries(root, 0, limits)
     checkpoints.write_boundary(root, boundary, limits)
     (root / "pages" / "page-00000002.json").write_bytes(
         canonical_json(_page(boundary.digest, record)).encode("utf-8")
@@ -212,6 +213,7 @@ def test_resume_accepts_one_durable_unadvanced_page_and_never_regresses_cursor(
     checkpoints.initialize(root, request, limits)
     checkpoints.write_record(root, first.source_record_pk, first.as_dict(), limits)
     checkpoints.write_record(root, second.source_record_pk, second.as_dict(), limits)
+    checkpoints.write_duplicate_deliveries(root, 0, limits)
     checkpoints.write_boundary(root, boundary, limits)
     checkpoints.write_page(root, 1, _page(boundary.digest, first, request), limits)
     first_page = (root / "pages" / "page-00000001.json").read_bytes()
@@ -239,6 +241,7 @@ def test_resume_rejects_more_than_one_unadvanced_page(tmp_path: Path) -> None:
     checkpoints.initialize(root, request, limits)
     checkpoints.write_record(root, first.source_record_pk, first.as_dict(), limits)
     checkpoints.write_record(root, second.source_record_pk, second.as_dict(), limits)
+    checkpoints.write_duplicate_deliveries(root, 0, limits)
     checkpoints.write_boundary(root, boundary, limits)
     checkpoints.write_page(root, 1, _page(boundary.digest, first, request), limits)
     (root / "pages" / "page-00000002.json").write_bytes(
@@ -260,6 +263,7 @@ def test_sealed_progress_without_boundary_never_permits_recapture(
     boundary = seal((record,), request)
     checkpoints.initialize(root, request, limits)
     checkpoints.write_record(root, record.source_record_pk, record.as_dict(), limits)
+    checkpoints.write_duplicate_deliveries(root, 0, limits)
     checkpoints.write_boundary(root, boundary, limits)
     if checkpoint_phase == "paging":
         checkpoints.write_page(root, 1, _page(boundary.digest, record), limits)
@@ -337,6 +341,7 @@ def test_boundary_written_before_state_recovery_seals_exact_boundary(tmp_path: P
     checkpoints.write_record(root, record.source_record_pk, record.as_dict(), limits)
     # Simulate interruption after immutable boundary publication but before the
     # mutable phase transition.  Admission must seal this exact boundary.
+    checkpoints.write_duplicate_deliveries(root, 0, limits)
     write_exact(root, ("boundary.json",), boundary.as_dict(), limits)
     assert checkpoints.boundary_capture_allowed(root, limits) is False
     assert checkpoints.state(root, limits)["phase"] == "sealed"
@@ -354,3 +359,15 @@ def test_abandoned_mutable_replacement_temp_preserves_committed_state(tmp_path: 
     checkpoints.bounded_usage(root, limits)
     assert final.read_bytes() == committed
     assert not temporary.exists()
+
+
+def test_boundary_marker_requires_preceding_duplicate_delivery_evidence(tmp_path: Path) -> None:
+    root, request = _root(tmp_path)
+    limits = _limits()
+    boundary = seal((_record(),), request)
+    checkpoints.initialize(root, request, limits)
+    with pytest.raises(FileNotFoundError):
+        checkpoints.write_boundary(root, boundary, limits)
+    checkpoints.write_duplicate_deliveries(root, 0, limits)
+    checkpoints.write_boundary(root, boundary, limits)
+    assert checkpoints.duplicate_delivery_count(root, limits) == 0

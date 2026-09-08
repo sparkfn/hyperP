@@ -171,6 +171,7 @@ class ArchiveRecord:
     user_capabilities: tuple[str, ...]
     ingested_at: str | None = None
     link_status: str | None = None
+    malformed_person_association_count: int = 0
 
     def __post_init__(self) -> None:
         for value, field in (
@@ -209,6 +210,12 @@ class ArchiveRecord:
             raise ValueError("details parents must be canonical")
         if tuple(sorted(self.people, key=PersonReference.key)) != self.people:
             raise ValueError("Person references must be canonical")
+        if (
+            not isinstance(self.malformed_person_association_count, int)
+            or isinstance(self.malformed_person_association_count, bool)
+            or not 0 <= self.malformed_person_association_count <= 10_000
+        ):
+            raise ValueError("malformed Person association count is invalid")
         if tuple(sorted(set(self.user_capabilities))) != self.user_capabilities:
             raise ValueError("user capability evidence must be canonical")
 
@@ -223,6 +230,7 @@ class ArchiveRecord:
                 "child_parents": [_parent_dict(item) for item in self.child_parents],
                 "details_parents": [_parent_dict(item) for item in self.details_parents],
                 "people": [_person_dict(item) for item in self.people],
+                "malformed_person_association_count": self.malformed_person_association_count,
                 "user_capabilities": list(self.user_capabilities),
             }
         )
@@ -250,6 +258,7 @@ class ArchiveRecord:
             "child_parents": [_parent_dict(item) for item in self.child_parents],
             "details_parents": [_parent_dict(item) for item in self.details_parents],
             "people": [_person_dict(item) for item in self.people],
+            "malformed_person_association_count": self.malformed_person_association_count,
             "user_capabilities": list(self.user_capabilities),
             "ingested_at": self.ingested_at,
             "link_status": self.link_status,
@@ -258,6 +267,24 @@ class ArchiveRecord:
 
     def digest(self) -> str:
         return sha256_json(self.as_dict())
+
+
+@dataclass(frozen=True)
+class ArchivePage:
+    """One bounded row per source identity plus grouped duplicate delivery count."""
+
+    records: tuple[ArchiveRecord, ...]
+    duplicate_delivery_count: int
+
+    def __post_init__(self) -> None:
+        if (
+            not isinstance(self.duplicate_delivery_count, int)
+            or isinstance(self.duplicate_delivery_count, bool)
+            or self.duplicate_delivery_count < 0
+            or tuple(sorted(self.records, key=lambda item: item.source_record_pk)) != self.records
+            or len({item.source_record_pk for item in self.records}) != len(self.records)
+        ):
+            raise ValueError("archive keyset page is invalid")
 
 
 @dataclass(frozen=True)

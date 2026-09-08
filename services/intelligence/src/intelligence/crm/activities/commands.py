@@ -133,7 +133,11 @@ def _archive_handler(
         )
         cursor = checkpoints.resume_cursor(checkpoint, request, boundary, limits)
         _write_checkpoint_pages(checkpoint, boundary, records, outcomes, cursor, limits, cancelled)
-        verify_boundary(repository, boundary)
+        final_boundary = verify_boundary(repository, boundary)
+        if final_boundary.duplicate_delivery_count != checkpoints.duplicate_delivery_count(
+            checkpoint, limits
+        ):
+            raise RuntimeError("CRM activities duplicate delivery count drift was detected")
         manifest = write_snapshot(run_staging, boundary, records, outcomes)
         checkpoints.write_evidence(checkpoint, "accepted-manifest.json", manifest, limits)
         inventory = scan_staged_outputs(
@@ -187,13 +191,16 @@ def _boundary_or_capture(
         _validate_checkpoint_records(root, boundary, limits)
         return boundary
     _cancelled(cancelled)
-    records = capture(repository, request, request.max_rows, request.max_pages)
-    for record in records:
+    captured = capture(repository, request, request.max_rows, request.max_pages)
+    for record in captured.records:
         _cancelled(cancelled)
         checkpoints.write_record(root, record.source_record_pk, record.as_dict(), limits)
-    boundary = seal(records, request)
+    boundary = seal(captured.records, request)
+    checkpoints.write_duplicate_deliveries(root, captured.duplicate_delivery_count, limits)
     checkpoints.write_boundary(root, boundary, limits)
-    verify_boundary(repository, boundary)
+    sealed_boundary = verify_boundary(repository, boundary)
+    if sealed_boundary.duplicate_delivery_count != captured.duplicate_delivery_count:
+        raise RuntimeError("CRM activities duplicate delivery count drift was detected")
     return boundary
 
 

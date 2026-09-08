@@ -9,6 +9,7 @@ from uuid import uuid4
 import pytest
 from intelligence.crm.activities.dispositions import classify
 from intelligence.crm.activities.models import ArchiveRequest
+from intelligence.crm.activities.reconciliation import capture
 from intelligence.repositories.neo4j.crm_activities import Neo4jCrmActivitiesRepository
 from neo4j import Driver, GraphDatabase
 
@@ -122,11 +123,12 @@ def test_reader_returns_only_safe_activity_and_companion_call_without_writes(
     try:
         assert repository.structural_invalid_count(request) == 0
         assert repository.reference_fanout_invalid_count(request) == 0
-        rows = repository.page(request, "")
+        page = repository.page(request, "")
+        rows = page.records
         by_identity = repository.by_identities(
             request,
             tuple(row.source_record_pk for row in rows),
-        )
+        ).records
     finally:
         repository.close()
     with driver.session() as session:
@@ -155,15 +157,50 @@ def test_by_identities_returns_only_the_requested_real_neo4j_record(
     repository = Neo4jCrmActivitiesRepository(uri, user, password)
     request = ArchiveRequest("snapshot-a", source_instance, source_key)
     try:
-        page = repository.page(request, "")
+        page = repository.page(request, "").records
         assert len(page) > 1
         selected = page[0].source_record_pk
-        rows = repository.by_identities(request, (selected,))
+        rows = repository.by_identities(request, (selected,)).records
     finally:
         repository.close()
 
     assert tuple(row.source_record_pk for row in rows) == (selected,)
     assert rows[0].record_type in {"crm_history", "call"}
+
+
+def test_duplicate_source_delivery_is_grouped_across_page_sizes(
+    graph: tuple[Driver, str, str, str, str, str, str],
+) -> None:
+    driver, uri, user, password, source_instance, source_key, fixture_id = graph
+    with driver.session() as session:
+        session.run(
+            """
+            MATCH (record:SourceRecord {fixture_id: $fixture_id, record_type: 'crm_history'}),
+                  (source:SourceSystem {fixture_id: $fixture_id, source_key: $source_key})
+            CREATE (record)-[:FROM_SOURCE]->(source)
+            """,
+            fixture_id=fixture_id,
+            source_key=source_key,
+        ).consume()
+    repository = Neo4jCrmActivitiesRepository(uri, user, password)
+    try:
+        one = capture(
+            repository,
+            ArchiveRequest("snapshot-a", source_instance, source_key, page_size=1),
+            100,
+            100,
+        )
+        two = capture(
+            repository,
+            ArchiveRequest("snapshot-a", source_instance, source_key, page_size=2),
+            100,
+            100,
+        )
+    finally:
+        repository.close()
+
+    assert one.records == two.records
+    assert one.duplicate_delivery_count == two.duplicate_delivery_count == 1
 
 
 def test_preflight_rejects_blank_identity_without_graph_mutation(
