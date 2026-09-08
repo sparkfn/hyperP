@@ -25,6 +25,7 @@ from intelligence.crm.activities.reconciliation import seal
 from intelligence.crm.activities.snapshot_verifier import verify_snapshot
 from intelligence.crm.activities.status import status
 from intelligence.state import State
+from intelligence.state_readonly import ReadOnlyState
 
 _LIMITS = CheckpointLimits(max_bytes=1_000_000, max_entries=100)
 
@@ -266,6 +267,23 @@ def test_status_existing_state_does_not_create_wal_sidecars(tmp_path: Path) -> N
     checkpoints.initialize(root, request, _LIMITS)
     assert status(tmp_path, "checkpoint-a")["state_store"] == "available"
     assert database.exists()
+    assert not any(path.exists() for path in sidecars)
+
+
+def test_immutable_readonly_state_detects_database_change_before_close(tmp_path: Path) -> None:
+    state = State(tmp_path)
+    state.close()
+    database = tmp_path / "state" / "state.sqlite3"
+    sidecars = tuple(database.with_name(f"{database.name}{suffix}") for suffix in ("-wal", "-shm"))
+    for path in sidecars:
+        if path.exists():
+            path.unlink()
+    reader = ReadOnlyState.open(tmp_path)
+    writer = State(tmp_path)
+    writer.create_mutating_run("concurrent-test")
+    writer.close()
+    with pytest.raises(RuntimeError, match="changed during status read"):
+        reader.close()
     assert not any(path.exists() for path in sidecars)
 
 

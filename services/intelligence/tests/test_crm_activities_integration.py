@@ -136,3 +136,25 @@ def test_malformed_optional_person_is_unresolved_without_rejecting_selection(
             ],
         }
     ]
+
+
+def test_mixed_malformed_person_counts_are_additive_and_digest_visible() -> None:
+    row = _row("linked")
+    row["malformed_person_association_count"] = 1
+    row["people"] = [
+        {
+            "person_id": "bad/id",
+            "status": "active",
+            "revision": "3",
+            "association_source_record_pk": "record-a",
+        }
+    ]
+    record = record_from_mapping(row)
+    assert record.people == ()
+    assert record.malformed_person_association_count == 2
+    round_trip = record_from_mapping(json.loads(json.dumps(record.as_dict(), sort_keys=True)))
+    assert round_trip == record
+    assert round_trip.digest() == record.digest()
+    drifted_row = dict(row)
+    drifted_row["malformed_person_association_count"] = 2
+    assert record_from_mapping(drifted_row).digest() != record.digest()
