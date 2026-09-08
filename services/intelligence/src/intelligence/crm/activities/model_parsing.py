@@ -212,7 +212,10 @@ def _malformed_person_count(value: object, fallback: int) -> int:
         return fallback
     if not isinstance(value, int) or isinstance(value, bool) or value < 0 or value > 10_000:
         raise ValueError("malformed Person association count is invalid")
-    return max(value, fallback)
+    total = value + fallback
+    if total > 10_000:
+        raise ValueError("malformed Person association count is invalid")
+    return total
 
 
 def _capabilities(value: object) -> tuple[str, ...]:

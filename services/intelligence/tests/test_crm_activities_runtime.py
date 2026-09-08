@@ -382,25 +382,13 @@ def test_descriptor_writer_integrates_with_bounded_status(tmp_path: Path) -> Non
     run = tmp_path / "staging" / "archive-run"
     run.mkdir(parents=True)
     manifest = write_snapshot(run, boundary, (), ())
-    root = tmp_path / "staging" / ".crm-activities" / request.snapshot_id
-    (root / "records").mkdir(parents=True)
-    (root / "pages").mkdir()
-    _write_json(root, "request.json", request.as_public_dict())
-    _write_json(
-        root,
-        "checkpoint.json",
-        {
-            "schema_version": "crm-activities-checkpoint-v1",
-            "phase": "completed",
-            "request_digest": sha256(
-                canonical_json(request.as_public_dict()).encode("utf-8")
-            ).hexdigest(),
-            "boundary_digest": boundary.digest,
-            "pages": 0,
-        },
-    )
-    _write_json(root, "boundary.json", boundary.as_dict())
-    _write_json(root, "accepted-manifest.json", dict(manifest))
+    limits = CheckpointLimits(max_bytes=1_000_000, max_entries=100)
+    root = checkpoints.checkpoint_root(run, request.snapshot_id, limits)
+    checkpoints.initialize(root, request, limits)
+    checkpoints.write_duplicate_deliveries(root, 0, limits)
+    checkpoints.write_boundary(root, boundary, limits)
+    checkpoints.write_evidence(root, "accepted-manifest.json", manifest, limits)
+    checkpoints.complete(root, boundary.digest, 0, limits)
     result = status(tmp_path, request.snapshot_id)
     assert result["state"]["phase"] == "completed"
     assert result["manifest_digest"] == manifest["digest"]

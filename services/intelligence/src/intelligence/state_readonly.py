@@ -4,24 +4,44 @@ from __future__ import annotations
 
 import sqlite3
 import stat
+from dataclasses import dataclass
 from pathlib import Path
 
 from intelligence import state_queries
 from intelligence.models import OutputInventory, Run
 
 
+@dataclass(frozen=True)
+class _FileGuard:
+    device: int
+    inode: int
+    size: int
+    mtime_ns: int
+
+
+@dataclass(frozen=True)
+class _ImmutableGuard:
+    database: Path
+    state_directory: Path
+    database_guard: _FileGuard
+    directory_guard: _FileGuard
+    sidecars: tuple[Path, Path]
+
+
 class ReadOnlyState:
     """A State query subset which never bootstraps, migrates, or creates paths."""
 
-    def __init__(self, connection: sqlite3.Connection) -> None:
+    def __init__(self, connection: sqlite3.Connection, guard: _ImmutableGuard | None) -> None:
         self._connection = connection
+        self._guard = guard
 
     @classmethod
     def open(cls, workspace: Path) -> ReadOnlyState:
         database = _database_path(workspace)
+        uri, guard = _readonly_plan(database)
         connection: sqlite3.Connection | None = None
         try:
-            connection = sqlite3.connect(_readonly_uri(database), uri=True)
+            connection = sqlite3.connect(uri, uri=True)
             connection.row_factory = sqlite3.Row
             connection.execute("PRAGMA query_only = ON")
             _validate_schema(connection)
@@ -31,10 +51,13 @@ class ReadOnlyState:
             raise
         if connection is None:
             raise AssertionError("readonly State connection was not opened")
-        return cls(connection)
+        return cls(connection, guard)
 
     def close(self) -> None:
+        changed = self._guard is not None and not _guard_is_current(self._guard)
         self._connection.close()
+        if changed:
+            raise RuntimeError("immutable Intelligence State changed during status read")
 
     def inspect(self, run_id: str) -> Run | None:
         return state_queries.inspect(self._connection, run_id)
@@ -60,22 +83,52 @@ def _database_path(workspace: Path) -> Path:
     return database
 
 
-def _readonly_uri(database: Path) -> str:
+def _readonly_plan(database: Path) -> tuple[str, _ImmutableGuard | None]:
     wal = database.with_name(f"{database.name}-wal")
     shared_memory = database.with_name(f"{database.name}-shm")
     sidecars = (wal, shared_memory)
     exists = tuple(_sidecar_exists(path) for path in sidecars)
     if exists == (False, False):
-        # A closed database has no WAL state to replay. Immutable mode avoids
-        # SQLite creating WAL/SHM sidecars for a diagnostic read.
-        return f"{database.absolute().as_uri()}?mode=ro&immutable=1"
+        guard = _capture_immutable_guard(database, sidecars)
+        return f"{database.absolute().as_uri()}?mode=ro&immutable=1", guard
     if exists != (True, True):
         raise ValueError("Intelligence State WAL sidecars are incomplete")
     for path in sidecars:
         _safe_sidecar(path)
     # Existing safe WAL/SHM sidecars preserve visibility of an active State;
     # mode=ro does not create new auxiliary paths.
-    return f"{database.absolute().as_uri()}?mode=ro"
+    return f"{database.absolute().as_uri()}?mode=ro", None
+
+
+def _capture_immutable_guard(database: Path, sidecars: tuple[Path, Path]) -> _ImmutableGuard:
+    if any(_sidecar_exists(path) for path in sidecars):
+        raise RuntimeError("Intelligence State WAL sidecars changed during immutable admission")
+    return _ImmutableGuard(
+        database,
+        database.parent,
+        _file_guard(database, "Intelligence State database"),
+        _file_guard(database.parent, "Intelligence State directory"),
+        sidecars,
+    )
+
+
+def _guard_is_current(guard: _ImmutableGuard) -> bool:
+    try:
+        return (
+            _file_guard(guard.database, "Intelligence State database") == guard.database_guard
+            and _file_guard(guard.state_directory, "Intelligence State directory")
+            == guard.directory_guard
+            and not any(_sidecar_exists(path) for path in guard.sidecars)
+        )
+    except (FileNotFoundError, ValueError, OSError):
+        return False
+
+
+def _file_guard(path: Path, label: str) -> _FileGuard:
+    metadata = path.lstat()
+    if stat.S_ISLNK(metadata.st_mode):
+        raise ValueError(f"{label} is unsafe")
+    return _FileGuard(metadata.st_dev, metadata.st_ino, metadata.st_size, metadata.st_mtime_ns)
 
 
 def _sidecar_exists(path: Path) -> bool:
