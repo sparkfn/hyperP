@@ -201,8 +201,8 @@ class ArchiveRecord:
             (self.ingested_at, "ingested_at"),
             (self.link_status, "link_status"),
         )
-        for value, field in optional_values:
-            _text(value, field)
+        for optional_value, optional_field in optional_values:
+            _text(optional_value, optional_field)
         if tuple(sorted(self.child_parents, key=ParentReference.key)) != self.child_parents:
             raise ValueError("child parents must be canonical")
         if tuple(sorted(self.details_parents, key=ParentReference.key)) != self.details_parents:

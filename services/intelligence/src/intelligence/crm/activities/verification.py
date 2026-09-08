@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Sequence
+from hashlib import sha256
 from pathlib import Path
 
 from intelligence.artifacts_staging import scan_staged_outputs
@@ -12,13 +13,17 @@ from intelligence.crm.activities.acceptance import (
     PublicationPointer,
     verification_candidate_name,
 )
-from intelligence.crm.activities.bounded import ReadLimits, accepted_snapshot, verify_snapshot_input
-from intelligence.crm.activities.checkpoint_limits import CheckpointLimits
-from intelligence.crm.activities.manifests import (
-    snapshot_inventory,
-    verify_snapshot,
-    write_verification,
+from intelligence.crm.activities.bounded import (
+    ReadBudget,
+    ReadLimits,
+    accepted_snapshot,
+    read_published_evidence,
+    verify_snapshot_input,
 )
+from intelligence.crm.activities.checkpoint_limits import CheckpointLimits
+from intelligence.crm.activities.manifests import write_verification
+from intelligence.crm.activities.models import sha256_json
+from intelligence.crm.activities.snapshot_verifier import snapshot_inventory, verify_snapshot
 from intelligence.models import OutputInventory
 
 
@@ -44,7 +49,13 @@ def verify_accepted(
         raise ValueError("verification output limits must be positive")
     workspace = run_staging.parent.parent
     snapshot = accepted_snapshot(workspace, descriptor.run_id, descriptor.snapshot_id)
-    verify_snapshot_input(snapshot, input_limits)
+    selected_count = _trusted_selected_count(
+        workspace,
+        descriptor,
+        trusted_accepted_outputs,
+        input_limits,
+    )
+    verify_snapshot_input(snapshot, input_limits, selected_count)
     _verify_trusted_snapshot_inventory(descriptor, trusted_accepted_outputs, snapshot)
     evidence = dict(verify_snapshot(snapshot))
     if evidence.get("manifest_digest") != descriptor.manifest_digest:
@@ -76,6 +87,49 @@ def verify_accepted(
         },
         checkpoint_limits,
     )
+
+
+def _trusted_selected_count(
+    workspace: Path,
+    descriptor: AcceptanceDescriptor,
+    trusted_outputs: Sequence[OutputInventory],
+    limits: ReadLimits,
+) -> int:
+    """Read the descriptor-bound manifest before it may set a row ceiling."""
+    relative_path = f"snapshots/crm/activities/{descriptor.snapshot_id}/manifest.json"
+    expected_path = f"outputs/{descriptor.run_id}/{relative_path}"
+    matches = tuple(item for item in trusted_outputs if item.relative_path == expected_path)
+    if len(matches) != 1:
+        raise RuntimeError("accepted State inventory lacks one descriptor manifest")
+    expected = matches[0]
+    metadata, raw = read_published_evidence(
+        workspace,
+        descriptor.run_id,
+        relative_path,
+        ReadBudget(limits),
+    )
+    if len(raw) != expected.byte_count or _bytes_digest(raw) != expected.sha256:
+        raise RuntimeError("accepted manifest bytes conflict with trusted State inventory")
+    unsigned = dict(metadata)
+    manifest_digest = unsigned.pop("digest", None)
+    selected_count = metadata.get("selected_count")
+    if (
+        not isinstance(manifest_digest, str)
+        or manifest_digest != descriptor.manifest_digest
+        or sha256_json(unsigned) != manifest_digest
+        or metadata.get("snapshot_id") != descriptor.snapshot_id
+        or metadata.get("boundary_digest") != descriptor.boundary_digest
+        or not isinstance(selected_count, int)
+        or isinstance(selected_count, bool)
+        or selected_count < 0
+    ):
+        raise RuntimeError("accepted descriptor manifest is invalid")
+    return selected_count
+
+
+def _bytes_digest(value: bytes) -> str:
+
+    return sha256(value).hexdigest()
 
 
 def _verify_trusted_snapshot_inventory(

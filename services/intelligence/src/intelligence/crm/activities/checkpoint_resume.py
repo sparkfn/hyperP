@@ -15,6 +15,7 @@ from intelligence.crm.activities.model_parsing import (
 from intelligence.crm.activities.models import (
     ArchiveRequest,
     Disposition,
+    DispositionKind,
     SealedBoundary,
     sha256_json,
 )
@@ -243,7 +244,11 @@ def _nullable_string(value: object, field: str) -> str | None:
     return _string(value, field)
 
 
-def _disposition(value: object) -> str:
+def _disposition(value: object) -> DispositionKind:
     if isinstance(value, str) and value in {"accepted", "rejected", "quarantined"}:
-        return value
+        if value == "accepted":
+            return "accepted"
+        if value == "rejected":
+            return "rejected"
+        return "quarantined"
     raise ValueError("checkpoint disposition is invalid")

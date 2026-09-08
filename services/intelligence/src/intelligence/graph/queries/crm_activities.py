@@ -157,6 +157,7 @@ CALL (record) {{
        link.source_record_pk AS source_record_pk
   RETURN count(*) AS active_person_count
 }}
+WITH record, child_parent_count, details_parent_count, active_person_count
 WHERE child_parent_count > $max_references_per_record
    OR details_parent_count > $max_references_per_record
    OR active_person_count > $max_references_per_record

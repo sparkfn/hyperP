@@ -8,9 +8,8 @@ from typing import Protocol, cast
 
 from intelligence.config import RuntimeConfig
 from intelligence.crm.activities.acceptance import (
-    parse_descriptor,
+    accepted_publication,
     publication,
-    read_publication_candidates,
     verification,
 )
 from intelligence.crm.activities.bounded import ReadLimits
@@ -22,7 +21,6 @@ from intelligence.crm.activities.commands import (
     verification_registry,
 )
 from intelligence.crm.activities.config import CrmActivitiesConfig
-from intelligence.crm.activities.model_parsing import parse_request
 from intelligence.crm.activities.status import (
     status as _status,
 )
@@ -61,17 +59,12 @@ def main(arguments: argparse.Namespace) -> int:
         config, registry(cast(Operation, command), request, archive_config)
     )
     try:
-        existing = publication(runtime, request.snapshot_id)
+        existing = publication(runtime, request)
         if existing is not None:
-            raw_request = existing.get("request")
-            if not isinstance(raw_request, dict) or parse_request(raw_request) != request:
-                raise RuntimeError(
-                    "completed candidate conflicts with current archive configuration"
-                )
             print(json.dumps(_publication_result(existing), sort_keys=True))
             return 0
         runtime.run(f"crm_activities_{command}")
-        accepted = publication(runtime, request.snapshot_id)
+        accepted = publication(runtime, request)
         if accepted is None:
             raise RuntimeError("completed archive has no accepted publication candidate")
         print(json.dumps(_publication_result(accepted), sort_keys=True))
@@ -85,10 +78,10 @@ def _run_verification(
 ) -> int:
     runtime = IntelligenceRuntime(config)
     try:
-        accepted = publication(runtime, checkpoint_id)
-        if accepted is None:
+        selected = accepted_publication(runtime, checkpoint_id)
+        if selected is None:
             raise RuntimeError("checkpoint has no accepted publication candidate")
-        descriptor = parse_descriptor(accepted)
+        descriptor, pointer = selected
         accepted_run_id = descriptor.run_id
         if supplied_run_id is not None and supplied_run_id != accepted_run_id:
             raise RuntimeError("supplied accepted run does not match publication candidate")
@@ -99,16 +92,6 @@ def _run_verification(
             return 0
     finally:
         runtime.close()
-    pointer = next(
-        (
-            item
-            for item in read_publication_candidates(config.workspace, checkpoint_id)
-            if item.run_id == accepted_run_id
-        ),
-        None,
-    )
-    if pointer is None:
-        raise RuntimeError("accepted descriptor has no publication pointer")
     verified = IntelligenceRuntime(
         config,
         verification_registry(

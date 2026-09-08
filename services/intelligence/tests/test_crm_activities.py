@@ -6,6 +6,7 @@ from pathlib import Path
 
 import pytest
 from intelligence.crm.activities import checkpoints
+from intelligence.crm.activities.checkpoint_limits import CheckpointLimits
 from intelligence.crm.activities.dispositions import assert_partition, classify
 from intelligence.crm.activities.manifests import write_snapshot
 from intelligence.crm.activities.models import (
@@ -17,9 +18,12 @@ from intelligence.crm.activities.models import (
 from intelligence.crm.activities.reconciliation import capture, seal, verify_boundary
 from intelligence.graph.queries.crm_activities import (
     ACTIVITY_COMPATIBILITY,
+    PREFLIGHT_REFERENCE_FANOUT,
     PREFLIGHT_STRUCTURAL_INVALID,
     READ_SELECTED_PAGE,
 )
+
+_LIMITS = CheckpointLimits(max_bytes=1_000_000, max_entries=100)
 
 
 def _record(
@@ -83,6 +87,13 @@ def test_closed_query_contract_excludes_raw_payload_stage_and_conversations() ->
     assert "DETAILS_HISTORY_ITEM" in READ_SELECTED_PAGE
     assert "ingested_at" in READ_SELECTED_PAGE
     assert "source_system" in READ_SELECTED_PAGE
+
+
+def test_reference_fanout_query_keeps_subquery_scope_and_is_read_only() -> None:
+    assert "WITH record, child_parent_count" in PREFLIGHT_REFERENCE_FANOUT
+    lower = PREFLIGHT_REFERENCE_FANOUT.lower()
+    for forbidden in ("raw_payload", "create", "merge", " set ", "delete"):
+        assert forbidden not in lower
 
 
 def test_closed_legacy_versions_are_explicit_and_preflight_is_read_only() -> None:
@@ -268,14 +279,14 @@ def test_boundary_is_deterministic_across_source_pages_and_rejects_drift(
 def test_checkpoint_rejects_unsafe_links_and_conflicting_request(tmp_path: Path) -> None:
     run = tmp_path / "staging" / "run-a"
     run.mkdir(parents=True)
-    root = checkpoints.checkpoint_root(run, "snapshot-a")
+    root = checkpoints.checkpoint_root(run, "snapshot-a", _LIMITS)
     request = ArchiveRequest("snapshot-a", "bitrix-primary")
-    checkpoints.initialize(root, request)
+    checkpoints.initialize(root, request, _LIMITS)
     with pytest.raises(RuntimeError, match="conflicts"):
-        checkpoints.initialize(root, ArchiveRequest("snapshot-a", "bitrix-secondary"))
+        checkpoints.initialize(root, ArchiveRequest("snapshot-a", "bitrix-secondary"), _LIMITS)
     (root / "unsafe.json").symlink_to(root / "request.json")
     with pytest.raises(ValueError, match="unsafe"):
-        checkpoints.bounded_usage(root, 100_000, 100)
+        checkpoints.bounded_usage(root, _LIMITS)
 
 
 def test_checkpoint_initialization_preserves_progress_and_hashed_colon_identity(
@@ -283,18 +294,20 @@ def test_checkpoint_initialization_preserves_progress_and_hashed_colon_identity(
 ) -> None:
     run = tmp_path / "staging" / "run-a"
     run.mkdir(parents=True)
-    root = checkpoints.checkpoint_root(run, "checkpoint-a")
+    root = checkpoints.checkpoint_root(run, "checkpoint-a", _LIMITS)
     request = ArchiveRequest("checkpoint-a", "bitrix-primary")
-    checkpoints.initialize(root, request)
+    checkpoints.initialize(root, request, _LIMITS)
     boundary = seal((_record("record:with:colon"),), request)
-    checkpoints.write_record(root, "record:with:colon", _record("record:with:colon").as_dict())
-    checkpoints.write_boundary(root, boundary)
-    checkpoints.advance(root, boundary.digest, 1)
-    checkpoints.initialize(root, request)
-    assert checkpoints.state(root)["phase"] == "paging"
+    checkpoints.write_record(
+        root, "record:with:colon", _record("record:with:colon").as_dict(), _LIMITS
+    )
+    checkpoints.write_boundary(root, boundary, _LIMITS)
+    checkpoints.advance(root, boundary.digest, 1, _LIMITS)
+    checkpoints.initialize(root, request, _LIMITS)
+    assert checkpoints.state(root, _LIMITS)["phase"] == "paging"
     assert (
-        checkpoints.read_record(root, "record:with:colon")["source_record_pk"]
+        checkpoints.read_record(root, "record:with:colon", _LIMITS)["source_record_pk"]
         == "record:with:colon"
     )
     with pytest.raises(ValueError, match="Windows-safe"):
-        checkpoints.checkpoint_root(run, "checkpoint:unsafe")
+        checkpoints.checkpoint_root(run, "checkpoint:unsafe", _LIMITS)
