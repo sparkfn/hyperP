@@ -61,6 +61,10 @@ def initialize(root: Path, request: ArchiveRequest, limits: CheckpointLimits) ->
 
 
 def write_boundary(root: Path, boundary: SealedBoundary, limits: CheckpointLimits) -> None:
+    if not boundary_capture_allowed(root, limits):
+        if load_boundary(root, limits) != boundary.as_dict():
+            raise RuntimeError("checkpoint boundary conflicts with existing sealed boundary")
+        return
     write_exact(root, ("boundary.json",), boundary.as_dict(), limits)
     _write_state(root, "sealed", boundary.digest, 0, limits)
 
@@ -110,6 +114,13 @@ def write_page(
     if ordinal < 1:
         raise ValueError("page ordinal must be positive")
     validate_page_shape(value)
+    current = state(root, limits)
+    current_phase = phase(current)
+    committed = page_count(current.get("pages", 0)) if current_phase != "new" else 0
+    if current_phase == "new" or ordinal > committed + 1:
+        raise RuntimeError("checkpoint page ordinal skips durable progress")
+    if current_phase == "completed" and ordinal > committed:
+        raise RuntimeError("completed checkpoint cannot accept a new page")
     write_exact(root, ("pages", f"page-{ordinal:08d}.json"), dict(value), limits)
 
 
@@ -135,10 +146,44 @@ def bounded_usage(root: Path, limits: CheckpointLimits) -> None:
 
 
 def advance(root: Path, boundary_digest: str, ordinal: int, limits: CheckpointLimits) -> None:
+    validate_boundary_digest(boundary_digest)
+    if ordinal < 1:
+        raise ValueError("checkpoint page cursor is invalid")
+    current = state(root, limits)
+    current_phase = phase(current)
+    if current_phase == "new" or current.get("boundary_digest") != boundary_digest:
+        raise RuntimeError("checkpoint cursor conflicts with sealed boundary")
+    committed = page_count(current.get("pages"))
+    if current_phase == "completed":
+        if ordinal == committed:
+            return
+        raise RuntimeError("completed checkpoint cursor cannot change")
+    if current_phase == "sealed" and committed != 0:
+        raise RuntimeError("sealed checkpoint has an invalid page cursor")
+    if ordinal < committed:
+        raise RuntimeError("checkpoint cursor cannot regress")
+    if ordinal == committed:
+        return
+    if ordinal != committed + 1:
+        raise RuntimeError("checkpoint cursor skips durable progress")
     _write_state(root, "paging", boundary_digest, ordinal, limits)
 
 
 def complete(root: Path, boundary_digest: str, pages: int, limits: CheckpointLimits) -> None:
+    validate_boundary_digest(boundary_digest)
+    if pages < 0:
+        raise ValueError("checkpoint page cursor is invalid")
+    current = state(root, limits)
+    current_phase = phase(current)
+    if current_phase == "new" or current.get("boundary_digest") != boundary_digest:
+        raise RuntimeError("checkpoint completion conflicts with sealed boundary")
+    committed = page_count(current.get("pages"))
+    if committed != pages:
+        raise RuntimeError("checkpoint completion skips durable progress")
+    if current_phase == "completed":
+        return
+    if current_phase == "sealed" and pages != 0:
+        raise RuntimeError("sealed checkpoint has an invalid page cursor")
     _write_state(root, "completed", boundary_digest, pages, limits)
 
 
@@ -146,13 +191,31 @@ def state(root: Path, limits: CheckpointLimits) -> Mapping[str, object]:
     return validate_state_evidence(read_json(root, ("checkpoint.json",), limits))
 
 
+def boundary_capture_allowed(root: Path, limits: CheckpointLimits) -> bool:
+    """Return whether capture may create a boundary for this checkpoint.
+
+    Integration requirement: command orchestration must call this before graph
+    capture. A missing boundary after any sealed, paging, or completed state is
+    corruption, never permission to recapture a different source population.
+    """
+    current = state(root, limits)
+    current_phase = phase(current)
+    boundary_path = checkpoint_file(root, ("boundary.json",), limits)
+    boundary_exists = boundary_path.exists()
+    if current_phase == "new":
+        return not boundary_exists
+    if not boundary_exists:
+        raise RuntimeError("sealed checkpoint state is missing its boundary evidence")
+    return False
+
+
 def validate_resume(
     root: Path,
     request: ArchiveRequest,
     boundary: SealedBoundary,
     limits: CheckpointLimits,
-) -> None:
-    """Reject contradictory checkpoint request, boundary, page, and cursor evidence."""
+) -> int:
+    """Return the validated durable page cursor without mutating checkpoint state."""
     current_usage(root, limits)
     if load_request(root, limits) != request:
         raise RuntimeError("checkpoint request conflicts with resume request")
@@ -175,7 +238,32 @@ def validate_resume(
         raise RuntimeError("sealed checkpoint has an invalid page cursor")
     if current_phase == "paging" and pages == 0:
         raise RuntimeError("paging checkpoint has an invalid page cursor")
-    validate_page_inventory(root, boundary, pages, limits)
+    durable_pages = validate_page_inventory(root, boundary, pages, limits)
+    if durable_pages > expected_pages:
+        raise RuntimeError("checkpoint page inventory exceeds sealed boundary")
+    return durable_pages
+
+
+def resume_cursor(
+    root: Path,
+    request: ArchiveRequest,
+    boundary: SealedBoundary,
+    limits: CheckpointLimits,
+) -> int:
+    """Validate and durably acknowledge one valid page written before interruption.
+
+    Integration requirement: resume writers must start strictly after the
+    returned cursor. This prevents recomputing or cursor-regressing pages that
+    were already committed before the process stopped.
+    """
+    durable_pages = validate_resume(root, request, boundary, limits)
+    current = state(root, limits)
+    committed = page_count(current.get("pages", 0)) if phase(current) != "new" else 0
+    if durable_pages == committed + 1:
+        advance(root, boundary.digest, durable_pages, limits)
+    elif durable_pages != committed:
+        raise RuntimeError("checkpoint page inventory has more than one unadvanced page")
+    return durable_pages
 
 
 def _write_state(
@@ -209,7 +297,12 @@ def _request_digest(root: Path, limits: CheckpointLimits) -> str:
 def _mapping(value: object, field: str) -> Mapping[str, object]:
     if not isinstance(value, dict):
         raise ValueError(f"{field} must be an object")
-    return value
+    result: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise ValueError(f"{field} must use string keys")
+        result[key] = item
+    return result
 
 
 def _validate_record(value: object) -> Mapping[str, object]:

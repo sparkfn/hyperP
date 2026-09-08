@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
 
 from intelligence.crm.activities.checkpoint_limits import CheckpointLimits
 from intelligence.crm.activities.checkpoint_storage import checkpoint_directory, read_json
@@ -95,13 +94,12 @@ def validate_page_shape(value: Mapping[str, object]) -> None:
         raise ValueError("checkpoint page schema is invalid")
     _digest(value.get("request_digest"), "checkpoint page request digest")
     _digest(value.get("boundary_digest"), "checkpoint page boundary digest")
-    if not isinstance(value.get("identities"), list) or not all(
-        isinstance(item, str) for item in value["identities"]
-    ):
+    identities = value.get("identities")
+    if not isinstance(identities, list) or not all(isinstance(item, str) for item in identities):
         raise ValueError("checkpoint page identities are invalid")
-    if not isinstance(value.get("records"), list) or not isinstance(
-        value.get("dispositions"), list
-    ):
+    records = value.get("records")
+    dispositions = value.get("dispositions")
+    if not isinstance(records, list) or not isinstance(dispositions, list):
         raise ValueError("checkpoint page collections are invalid")
     digest = value.get("digest")
     _digest(digest, "checkpoint page digest")
@@ -116,10 +114,15 @@ def validate_page_inventory(
     boundary: SealedBoundary,
     pages: int,
     limits: CheckpointLimits,
-) -> None:
+) -> int:
+    """Validate committed pages plus at most one post-write cursor interruption.
+
+    The returned cursor is the durable page count. Callers that advance state
+    must persist it only after this function returns successfully.
+    """
     directory = checkpoint_directory(root, ("pages",), limits)
     files = tuple(sorted(directory.iterdir(), key=lambda item: item.name))
-    if len(files) != pages:
+    if len(files) not in {pages, pages + 1}:
         raise RuntimeError("checkpoint page inventory is incomplete")
     for ordinal, path in enumerate(files, start=1):
         if path.name != f"page-{ordinal:08d}.json":
@@ -127,6 +130,7 @@ def validate_page_inventory(
         page = _mapping(read_json(root, ("pages", path.name), limits), "checkpoint page")
         validate_page_shape(page)
         _validate_page_evidence(page, boundary, ordinal)
+    return len(files)
 
 
 def request_digest(request: ArchiveRequest) -> str:
@@ -162,8 +166,8 @@ def _validate_page_evidence(
         or page["identities"] != identities
     ):
         raise RuntimeError("checkpoint page identities conflict with sealed boundary")
-    records = cast(list[object], page["records"])
-    dispositions = cast(list[object], page["dispositions"])
+    records = _object_list(page.get("records"), "checkpoint page records")
+    dispositions = _object_list(page.get("dispositions"), "checkpoint page dispositions")
     if len(records) != len(entries) or len(dispositions) != len(entries):
         raise RuntimeError("checkpoint page evidence has the wrong cardinality")
     for entry, record_value, disposition_value in zip(entries, records, dispositions, strict=True):
@@ -196,7 +200,18 @@ def _validate_page_evidence(
 def _mapping(value: object, field: str) -> Mapping[str, object]:
     if not isinstance(value, dict):
         raise ValueError(f"{field} must be an object")
-    return cast(Mapping[str, object], value)
+    result: dict[str, object] = {}
+    for key, item in value.items():
+        if not isinstance(key, str):
+            raise ValueError(f"{field} must use string keys")
+        result[key] = item
+    return result
+
+
+def _object_list(value: object, field: str) -> list[object]:
+    if not isinstance(value, list):
+        raise ValueError(f"{field} are invalid")
+    return list(value)
 
 
 def _exact_keys(
@@ -229,6 +244,6 @@ def _nullable_string(value: object, field: str) -> str | None:
 
 
 def _disposition(value: object) -> str:
-    if value not in {"accepted", "rejected", "quarantined"}:
-        raise ValueError("checkpoint disposition is invalid")
-    return cast(str, value)
+    if isinstance(value, str) and value in {"accepted", "rejected", "quarantined"}:
+        return value
+    raise ValueError("checkpoint disposition is invalid")

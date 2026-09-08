@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import cast
+from typing import TypeGuard
 
 from intelligence.crm.activities.models import (
     ArchiveRecord,
@@ -17,8 +17,24 @@ from intelligence.crm.activities.models import (
     _text,
 )
 
+_REQUEST_KEYS = frozenset(
+    {
+        "snapshot_id",
+        "source_instance_id",
+        "source_key",
+        "page_size",
+        "max_rows",
+        "max_pages",
+        "database_identity",
+        "selection_contract_version",
+        "max_references_per_record",
+    }
+)
+
 
 def parse_request(value: Mapping[str, object]) -> ArchiveRequest:
+    if set(value) != _REQUEST_KEYS:
+        raise ValueError("archive request has unexpected fields")
     return ArchiveRequest(
         _required(value, "snapshot_id"),
         _required(value, "source_instance_id"),
@@ -33,26 +49,32 @@ def parse_request(value: Mapping[str, object]) -> ArchiveRequest:
 
 
 def parse_boundary(value: Mapping[str, object]) -> SealedBoundary:
-    request_value = value.get("request")
-    entries_value = value.get("entries")
-    if not isinstance(request_value, Mapping) or not isinstance(entries_value, list):
+    if (
+        set(value) != {"schema_version", "request", "entries", "digest"}
+        or value.get("schema_version") != "crm-activities-boundary-v1"
+    ):
         raise ValueError("boundary evidence is malformed")
+    request_value = _mapping(value.get("request"), "boundary request")
+    entries_value = _items(value.get("entries"), "boundary entries")
     entries: list[BoundaryEntry] = []
     for item in entries_value:
-        if not isinstance(item, Mapping):
-            raise ValueError("boundary entry is malformed")
-        record_type = _required(cast(Mapping[str, object], item), "record_type")
-        if record_type not in {"crm_history", "call"}:
-            raise ValueError("boundary entry record type is malformed")
+        entry = _mapping(item, "boundary entry")
+        if set(entry) != {
+            "source_record_pk",
+            "record_type",
+            "record_digest",
+            "reference_fingerprint",
+        }:
+            raise ValueError("boundary entry has unexpected fields")
         entries.append(
             BoundaryEntry(
-                _required(cast(Mapping[str, object], item), "source_record_pk"),
-                cast(RecordKind, record_type),
-                _required(cast(Mapping[str, object], item), "record_digest"),
-                _required(cast(Mapping[str, object], item), "reference_fingerprint"),
+                _required(entry, "source_record_pk"),
+                _record_kind(_required(entry, "record_type")),
+                _required(entry, "record_digest"),
+                _required(entry, "reference_fingerprint"),
             )
         )
-    request = parse_request(cast(Mapping[str, object], request_value))
+    request = parse_request(request_value)
     result = SealedBoundary(request, tuple(entries))
     if value.get("digest") != result.digest:
         raise ValueError("boundary digest is corrupt")
@@ -60,9 +82,6 @@ def parse_boundary(value: Mapping[str, object]) -> SealedBoundary:
 
 
 def record_from_mapping(value: Mapping[str, object]) -> ArchiveRecord:
-    record_type = _required(value, "record_type")
-    if record_type not in {"crm_history", "call"}:
-        raise ValueError("unsupported query record type")
     return ArchiveRecord(
         _required(value, "source_record_pk"),
         _required(value, "source_record_id"),
@@ -71,7 +90,7 @@ def record_from_mapping(value: Mapping[str, object]) -> ArchiveRecord:
         _required(value, "record_hash"),
         _required(value, "source_instance_id"),
         _required(value, "source_key"),
-        cast(RecordKind, record_type),
+        _record_kind(_required(value, "record_type")),
         _text(value.get("lifecycle_status"), "lifecycle_status"),
         _text(value.get("history_family"), "history_family"),
         _text(value.get("history_kind"), "history_kind"),
@@ -106,9 +125,27 @@ def _integer(value: Mapping[str, object], key: str) -> int:
 
 
 def _mapping(value: object, field: str) -> Mapping[str, object]:
-    if not isinstance(value, Mapping):
+    if not _is_string_mapping(value):
         raise ValueError(f"{field} must be a mapping")
-    return cast(Mapping[str, object], value)
+    return value
+
+
+def _is_string_mapping(value: object) -> TypeGuard[Mapping[str, object]]:
+    return isinstance(value, Mapping) and all(isinstance(key, str) for key in value)
+
+
+def _items(value: object, field: str) -> tuple[object, ...]:
+    if not isinstance(value, (list, tuple)):
+        raise ValueError(f"{field} must be a list or tuple")
+    return tuple(value)
+
+
+def _record_kind(value: str) -> RecordKind:
+    if value == "crm_history":
+        return "crm_history"
+    if value == "call":
+        return "call"
+    raise ValueError("unsupported query record type")
 
 
 def _parent(value: object, relationship: str) -> ParentReference:
@@ -128,11 +165,10 @@ def _parent(value: object, relationship: str) -> ParentReference:
 def _parents(value: object, relationship: str) -> tuple[ParentReference, ...]:
     if value is None:
         return ()
-    if not isinstance(value, list):
-        raise ValueError("parent collection must be a list")
+    items = _items(value, "parent collection")
     result = tuple(
         sorted(
-            (_parent(item, relationship) for item in value if item is not None),
+            (_parent(item, relationship) for item in items if item is not None),
             key=ParentReference.key,
         )
     )
@@ -144,10 +180,9 @@ def _parents(value: object, relationship: str) -> tuple[ParentReference, ...]:
 def _people(value: object) -> tuple[PersonReference, ...]:
     if value is None:
         return ()
-    if not isinstance(value, list):
-        raise ValueError("people must be a list")
+    items = _items(value, "people")
     people: list[PersonReference] = []
-    for item in value:
+    for item in items:
         if item is None:
             continue
         person = _mapping(item, "person")
@@ -156,7 +191,7 @@ def _people(value: object) -> tuple[PersonReference, ...]:
                 _required(person, "person_id"),
                 _text(person.get("status"), "person status"),
                 _text(person.get("revision"), "person revision"),
-                _text(person.get("source_record_pk"), "person association pk"),
+                _person_association(person),
             )
         )
     result = tuple(sorted(people, key=PersonReference.key))
@@ -168,9 +203,20 @@ def _people(value: object) -> tuple[PersonReference, ...]:
 def _capabilities(value: object) -> tuple[str, ...]:
     if value is None:
         return ()
-    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
-        raise ValueError("user capabilities must be strings")
-    result = tuple(sorted(set(cast(list[str], value))))
+    items = _items(value, "user capabilities")
+    capabilities: list[str] = []
+    for item in items:
+        if not isinstance(item, str):
+            raise ValueError("user capabilities must be strings")
+        capabilities.append(item)
+    result = tuple(sorted(set(capabilities)))
     for item in result:
         _id(item, "user capability")
     return result
+
+
+def _person_association(person: Mapping[str, object]) -> str | None:
+    association = person.get("association_source_record_pk")
+    if association is None:
+        association = person.get("source_record_pk")
+    return _text(association, "person association pk")

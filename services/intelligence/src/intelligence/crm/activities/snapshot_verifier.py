@@ -5,16 +5,22 @@ from __future__ import annotations
 import stat
 from collections.abc import Mapping
 from pathlib import Path
-from typing import cast
 
 from intelligence.artifacts import canonical_json, sha256_file
-from intelligence.crm.activities.manifests import _cleanup_records, _object, _read_json
+from intelligence.crm.activities.dispositions import classify
+from intelligence.crm.activities.manifests import (
+    _cleanup_records,
+    _object,
+    _read_json,
+    _unresolved_rows,
+)
 from intelligence.crm.activities.model_parsing import parse_boundary, record_from_mapping
 from intelligence.crm.activities.models import (
     PROVENANCE,
+    ArchiveRecord,
     BoundaryEntry,
     Disposition,
-    SealedBoundary,
+    DispositionKind,
     sha256_json,
 )
 
@@ -65,7 +71,7 @@ def verify_snapshot(snapshot: Path) -> Mapping[str, object]:
     actual_pages = tuple(sorted((snapshot / "records").glob("page-*.json")))
     if len(actual_pages) != len(pages):
         raise ValueError("record page count is invalid")
-    records = []
+    accepted_records: list[ArchiveRecord] = []
     for path, digest in zip(actual_pages, pages, strict=True):
         page = _json_object(path, "record page")
         if (
@@ -82,27 +88,26 @@ def verify_snapshot(snapshot: Path) -> Mapping[str, object]:
         if not isinstance(values, list):
             raise ValueError("record page is invalid")
         for raw in values:
-            if not isinstance(raw, dict):
-                raise ValueError("record page contains a non-object")
-            record = record_from_mapping(cast(Mapping[str, object], raw))
-            if raw != record.as_dict():
+            record_value = _object(raw, "record page record")
+            record = record_from_mapping(record_value)
+            if dict(record_value) != record.as_dict():
                 raise ValueError("accepted record schema is not canonical")
-            records.append(record)
-    if len(records) != manifest.get("accepted_count") or len(identities) != len(records):
+            accepted_records.append(record)
+    if len(accepted_records) != manifest.get("accepted_count") or len(identities) != len(
+        accepted_records
+    ):
         raise ValueError("accepted/cleanup identity counts do not agree")
-    accepted_ids = [item.source_record_pk for item in records]
+    accepted_ids = [item.source_record_pk for item in accepted_records]
     if accepted_ids != sorted(set(accepted_ids)):
         raise ValueError("accepted records are not globally sorted unique")
     if accepted_ids != keys:
         raise ValueError("cleanup identity set differs from accepted records")
     sealed_entries = {entry.source_record_pk: entry for entry in boundary.entries}
-    for record in records:
-        if BoundaryEntry.from_record(record) != sealed_entries.get(record.source_record_pk):
-            raise ValueError("accepted record differs from its sealed boundary entry")
-    expected_cleanup = _cleanup_records(
-        records,
-        tuple(Disposition(item.source_record_pk, "accepted", None) for item in records),
+    _verify_records_against_boundary(accepted_records, sealed_entries, "accepted")
+    accepted_outcomes = tuple(
+        Disposition(record.source_record_pk, "accepted", None) for record in accepted_records
     )
+    expected_cleanup = _cleanup_records(accepted_records, accepted_outcomes)
     if identities != expected_cleanup:
         raise ValueError("cleanup identities are not exactly the accepted cleanup set")
     rejected_object = _json_object(snapshot / "rejected.json", "rejected evidence")
@@ -111,30 +116,55 @@ def verify_snapshot(snapshot: Path) -> Mapping[str, object]:
         snapshot / "unresolved-references.json",
         "unresolved evidence",
     )
-    rejected = _digest_rows(rejected_object, "rejected")
-    quarantined = _digest_rows(quarantined_object, "quarantined")
+    rejected_rows = _digest_rows(rejected_object, "rejected")
+    quarantined_rows = _digest_rows(quarantined_object, "quarantined")
     unresolved = _digest_rows(unresolved_object, "unresolved")
-    if not isinstance(rejected, list) or not isinstance(quarantined, list):
-        raise ValueError("non-accepted evidence is invalid")
-    nonaccepted_ids = _outcome_ids(rejected) + _outcome_ids(quarantined)
-    _validate_outcome_rows(rejected, boundary, "rejected")
-    _validate_outcome_rows(quarantined, boundary, "quarantined")
-    if len(set(accepted_ids) | set(nonaccepted_ids)) != len(accepted_ids) + len(nonaccepted_ids):
+    rejected_records, rejected_outcomes = _outcomes_from_rows(
+        rejected_rows,
+        sealed_entries,
+        "rejected",
+    )
+    quarantined_records, quarantined_outcomes = _outcomes_from_rows(
+        quarantined_rows,
+        sealed_entries,
+        "quarantined",
+    )
+    all_records = tuple(
+        sorted(
+            accepted_records + rejected_records + quarantined_records,
+            key=lambda record: record.source_record_pk,
+        )
+    )
+    actual_outcomes = tuple(
+        sorted(
+            accepted_outcomes + rejected_outcomes + quarantined_outcomes,
+            key=lambda outcome: outcome.source_record_pk,
+        )
+    )
+    expected_outcomes = classify(all_records)
+    if actual_outcomes != expected_outcomes:
+        raise ValueError("snapshot dispositions do not match closed classification")
+    if len({record.source_record_pk for record in all_records}) != len(all_records):
         raise ValueError("archive disposition evidence overlaps")
     selected = {item.source_record_pk for item in boundary.entries}
-    if set(accepted_ids) | set(nonaccepted_ids) != selected:
+    if {record.source_record_pk for record in all_records} != selected:
         raise ValueError("disposition identities differ from sealed boundary")
-    unresolved_ids = _unresolved_ids(unresolved)
-    if not set(unresolved_ids).issubset(selected):
-        raise ValueError("unresolved evidence contains an unselected identity")
-    if len(accepted_ids) + len(rejected) + len(quarantined) != manifest.get("selected_count"):
+    if len(all_records) != manifest.get("selected_count"):
         raise ValueError("archive disposition evidence has an unexplained remainder")
     if (
-        manifest.get("rejected_count") != len(rejected)
-        or manifest.get("quarantined_count") != len(quarantined)
+        manifest.get("selected_count") != len(boundary.entries)
+        or manifest.get("accepted_count") != len(accepted_records)
+        or manifest.get("rejected_count") != len(rejected_records)
+        or manifest.get("quarantined_count") != len(quarantined_records)
         or manifest.get("cleanup_identity_count") != len(identities)
     ):
         raise ValueError("archive manifest counts disagree with evidence")
+    records_by_id = {record.source_record_pk: record for record in all_records}
+    if unresolved != _unresolved_rows(records_by_id, expected_outcomes):
+        raise ValueError("unresolved evidence does not match archive records")
+    unresolved_ids = _unresolved_ids(unresolved)
+    if not set(unresolved_ids).issubset(selected):
+        raise ValueError("unresolved evidence contains an unselected identity")
     expected = {
         Path("boundary.json"),
         Path("cleanup-identities.json"),
@@ -152,6 +182,16 @@ def verify_snapshot(snapshot: Path) -> Mapping[str, object]:
         "manifest_digest": original_digest,
         "verified": True,
     }
+
+
+def _verify_records_against_boundary(
+    records: list[ArchiveRecord],
+    entries: Mapping[str, BoundaryEntry],
+    field: str,
+) -> None:
+    for record in records:
+        if BoundaryEntry.from_record(record) != entries.get(record.source_record_pk):
+            raise ValueError(f"{field} record differs from its sealed boundary entry")
 
 
 def snapshot_inventory(snapshot: Path) -> tuple[tuple[str, str, int], ...]:
@@ -264,6 +304,9 @@ def _validate_boundary_shape(value: Mapping[str, object]) -> None:
             "page_size",
             "max_rows",
             "max_pages",
+            "database_identity",
+            "selection_contract_version",
+            "max_references_per_record",
         }
         or not isinstance(entries, list)
     ):
@@ -286,40 +329,49 @@ def _validate_cleanup_shape(value: Mapping[str, object]) -> None:
         raise ValueError("cleanup schema is invalid")
 
 
-def _validate_outcome_rows(rows: list[object], boundary: SealedBoundary, kind: str) -> None:
-    entries = {item.source_record_pk: item for item in boundary.entries}
-    for row in rows:
-        if not isinstance(row, dict) or set(row) != {
+def _outcomes_from_rows(
+    rows: list[object],
+    entries: Mapping[str, BoundaryEntry],
+    disposition: DispositionKind,
+) -> tuple[list[ArchiveRecord], tuple[Disposition, ...]]:
+    if disposition == "accepted":
+        raise ValueError("accepted outcomes must be stored in record pages")
+    records: list[ArchiveRecord] = []
+    outcomes: list[Disposition] = []
+    identities: list[str] = []
+    for raw in rows:
+        row = _object(raw, "outcome evidence row")
+        if set(row) != {
             "source_record_pk",
             "record_type",
             "reason_code",
             "reference_fingerprint",
+            "record",
         }:
             raise ValueError("outcome row schema is invalid")
         identity = row.get("source_record_pk")
-        entry = entries.get(identity) if isinstance(identity, str) else None
+        reason_code = row.get("reason_code")
+        if not isinstance(identity, str) or not isinstance(reason_code, str):
+            raise ValueError("outcome evidence row is invalid")
+        record_value = _object(row.get("record"), "outcome record")
+        record = record_from_mapping(record_value)
+        if dict(record_value) != record.as_dict():
+            raise ValueError("outcome record schema is not canonical")
+        entry = entries.get(identity)
         if (
-            entry is None
-            or row.get("record_type") != entry.record_type
-            or row.get("reference_fingerprint") != entry.reference_fingerprint
-            or not isinstance(row.get("reason_code"), str)
+            identity != record.source_record_pk
+            or entry is None
+            or row.get("record_type") != record.record_type
+            or row.get("reference_fingerprint") != record.reference_fingerprint()
+            or BoundaryEntry.from_record(record) != entry
         ):
-            raise ValueError(f"{kind} outcome row is invalid")
-
-
-def _outcome_ids(rows: list[object]) -> list[str]:
-    ids: list[str] = []
-    for row in rows:
-        if not isinstance(row, dict):
-            raise ValueError("outcome evidence row is invalid")
-        identity = row.get("source_record_pk")
-        reason = row.get("reason_code")
-        if not isinstance(identity, str) or not isinstance(reason, str):
-            raise ValueError("outcome evidence row is invalid")
-        ids.append(identity)
-    if ids != sorted(set(ids)):
+            raise ValueError("outcome row conflicts with sealed boundary")
+        records.append(record)
+        outcomes.append(Disposition(identity, disposition, reason_code))
+        identities.append(identity)
+    if identities != sorted(set(identities)):
         raise ValueError("outcome evidence identities are not sorted unique")
-    return ids
+    return records, tuple(outcomes)
 
 
 def _unresolved_ids(rows: list[object]) -> list[str]:

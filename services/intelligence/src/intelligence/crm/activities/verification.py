@@ -1,48 +1,57 @@
-"""Supervised artifact verification candidate writer."""
+"""Artifact-only supervised verification for accepted CRM activity snapshots."""
 
 from __future__ import annotations
 
+from collections.abc import Sequence
 from pathlib import Path
 
 from intelligence.artifacts_staging import scan_staged_outputs
 from intelligence.crm.activities import checkpoints
-from intelligence.crm.activities.bounded import (
-    ReadLimits,
-    accepted_snapshot,
-    verify_snapshot_input,
+from intelligence.crm.activities.acceptance import (
+    AcceptanceDescriptor,
+    PublicationPointer,
+    verification_candidate_name,
 )
+from intelligence.crm.activities.bounded import ReadLimits, accepted_snapshot, verify_snapshot_input
 from intelligence.crm.activities.checkpoint_limits import CheckpointLimits
-from intelligence.crm.activities.manifests import verify_snapshot, write_verification
-from intelligence.crm.activities.models import validate_snapshot_id
+from intelligence.crm.activities.manifests import (
+    snapshot_inventory,
+    verify_snapshot,
+    write_verification,
+)
+from intelligence.models import OutputInventory
 
 
 def verify_accepted(
     run_staging: Path,
-    checkpoint_id: str,
-    accepted_run_id: str,
-    snapshot_id: str,
-    accepted_manifest_digest: str,
+    descriptor: AcceptanceDescriptor,
+    publication_pointer: PublicationPointer,
+    trusted_accepted_outputs: Sequence[OutputInventory],
     *,
     input_limits: ReadLimits,
     output_maximum_bytes: int,
     output_maximum_entries: int,
     checkpoint_limits: CheckpointLimits,
 ) -> None:
-    """Fully verify bounded input under supervision and publish a child-written candidate."""
-    validate_snapshot_id(checkpoint_id)
-    validate_snapshot_id(snapshot_id)
-    _run_id(accepted_run_id)
-    _digest(accepted_manifest_digest)
+    """Verify artifact bytes against State-provided inventory without source access.
+
+    The caller resolves and validates the descriptor from State before spawning
+    this handler. The handler requires no Neo4j configuration or credentials.
+    """
+    if descriptor.run_id != publication_pointer.run_id:
+        raise ValueError("verification descriptor and publication pointer differ")
     if output_maximum_bytes < 1 or output_maximum_entries < 1:
         raise ValueError("verification output limits must be positive")
     workspace = run_staging.parent.parent
-    snapshot = accepted_snapshot(workspace, accepted_run_id, snapshot_id)
+    snapshot = accepted_snapshot(workspace, descriptor.run_id, descriptor.snapshot_id)
     verify_snapshot_input(snapshot, input_limits)
+    _verify_trusted_snapshot_inventory(descriptor, trusted_accepted_outputs, snapshot)
     evidence = dict(verify_snapshot(snapshot))
-    if evidence.get("manifest_digest") != accepted_manifest_digest:
+    if evidence.get("manifest_digest") != descriptor.manifest_digest:
         raise ValueError("accepted manifest changed before verification")
-    evidence["accepted_run_id"] = accepted_run_id
-    evidence["accepted_manifest_digest"] = accepted_manifest_digest
+    evidence["accepted_run_id"] = descriptor.run_id
+    evidence["accepted_manifest_digest"] = descriptor.manifest_digest
+    evidence["accepted_descriptor_sha256"] = publication_pointer.descriptor_sha256
     write_verification(run_staging, evidence)
     inventory = scan_staged_outputs(
         workspace,
@@ -50,27 +59,51 @@ def verify_accepted(
         output_maximum_bytes,
         output_maximum_entries,
     )
-    checkpoint = checkpoints.checkpoint_root(run_staging, checkpoint_id, checkpoint_limits)
+    checkpoint = checkpoints.checkpoint_root(
+        run_staging, descriptor.checkpoint_id, checkpoint_limits
+    )
     checkpoints.write_evidence(
         checkpoint,
-        "verification-candidate.json",
+        verification_candidate_name(run_staging.name),
         {
-            "checkpoint_id": checkpoint_id,
+            "checkpoint_id": descriptor.checkpoint_id,
             "run_id": run_staging.name,
-            "accepted_run_id": accepted_run_id,
-            "snapshot_id": snapshot_id,
-            "accepted_manifest_digest": accepted_manifest_digest,
-            "inventory": [item.__dict__ for item in inventory],
+            "accepted_run_id": descriptor.run_id,
+            "snapshot_id": descriptor.snapshot_id,
+            "accepted_manifest_digest": descriptor.manifest_digest,
+            "accepted_descriptor_sha256": publication_pointer.descriptor_sha256,
+            "inventory": [_inventory_dict(item) for item in inventory],
         },
         checkpoint_limits,
     )
 
 
-def _run_id(value: str) -> None:
-    if not value or value in {".", ".."} or "/" in value or "\\" in value:
-        raise ValueError("accepted run identity is unsafe")
+def _verify_trusted_snapshot_inventory(
+    descriptor: AcceptanceDescriptor,
+    trusted_outputs: Sequence[OutputInventory],
+    snapshot: Path,
+) -> None:
+    prefix = f"outputs/{descriptor.run_id}/snapshots/crm/activities/{descriptor.snapshot_id}/"
+    expected = tuple(
+        OutputInventory(
+            f"outputs/{descriptor.run_id}/{item.relative_path}", item.sha256, item.byte_count
+        )
+        for item in descriptor.snapshot_inventory
+    )
+    registered = tuple(item for item in trusted_outputs if item.relative_path.startswith(prefix))
+    if registered != expected:
+        raise RuntimeError("accepted State inventory conflicts with acceptance descriptor")
+    actual = tuple(
+        OutputInventory(f"{prefix}{relative_path}", digest, byte_count)
+        for relative_path, digest, byte_count in snapshot_inventory(snapshot)
+    )
+    if actual != expected:
+        raise RuntimeError("accepted snapshot bytes conflict with trusted State inventory")
 
 
-def _digest(value: str) -> None:
-    if len(value) != 64 or any(character not in "0123456789abcdef" for character in value):
-        raise ValueError("accepted manifest digest is invalid")
+def _inventory_dict(item: OutputInventory) -> dict[str, object]:
+    return {
+        "relative_path": item.relative_path,
+        "sha256": item.sha256,
+        "byte_count": item.byte_count,
+    }

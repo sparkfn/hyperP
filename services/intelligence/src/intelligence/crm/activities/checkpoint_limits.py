@@ -3,6 +3,13 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Final
+
+# Recovery deliberately shares the persisted byte and entry ceilings rather
+# than adding a third caller-configured limit. Keep the public two-argument
+# CheckpointLimits constructor stable; this short wall-clock cap only prevents
+# an attacker-controlled checkpoint directory from monopolising resume.
+TEMP_RECOVERY_MAX_SECONDS: Final[float] = 1.0
 
 
 @dataclass(frozen=True)

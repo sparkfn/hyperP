@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from collections.abc import Mapping
-from typing import cast
 
 from neo4j import READ_ACCESS, Driver, GraphDatabase
 
@@ -90,9 +89,12 @@ class Neo4jCrmActivitiesRepository:
             default_access_mode=READ_ACCESS,
         ) as session:
             row = session.run(query, dict(parameters)).single()
-        if row is None or not isinstance(row.get("invalid_count"), int):
+        if row is None:
             raise RuntimeError(f"CRM activities {preflight_name} preflight returned no count")
-        count = row.get("invalid_count")
+        values: Mapping[str, object] = row.data()
+        count = values.get("invalid_count")
+        if not isinstance(count, int):
+            raise RuntimeError(f"CRM activities {preflight_name} preflight count is invalid")
         if isinstance(count, bool) or count < 0:
             raise RuntimeError(f"CRM activities {preflight_name} preflight count is invalid")
         return count
@@ -103,9 +105,14 @@ class Neo4jCrmActivitiesRepository:
             default_access_mode=READ_ACCESS,
         ) as session:
             result = session.run(query, dict(parameters))
-            rows = tuple(
-                record_from_mapping(cast(Mapping[str, object], row.data())) for row in result
+            rows: tuple[ArchiveRecord, ...] = tuple(
+                record_from_mapping(_row_mapping(row.data())) for row in result
             )
         if tuple(sorted(rows, key=lambda item: item.source_record_pk)) != rows:
             raise RuntimeError("archive query returned a non-keyset page")
         return rows
+
+
+def _row_mapping(value: Mapping[str, object]) -> Mapping[str, object]:
+    """Copy the Neo4j boundary into concrete object-valued mapping evidence."""
+    return {key: item for key, item in value.items()}

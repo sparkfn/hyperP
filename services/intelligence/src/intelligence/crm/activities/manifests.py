@@ -7,15 +7,16 @@ import os
 import stat
 import uuid
 from collections.abc import Mapping, Sequence
-from dataclasses import asdict
 from pathlib import Path
-from typing import cast
+from typing import TypeGuard
 
 from intelligence.artifacts import canonical_json
+from intelligence.crm.activities.dispositions import assert_partition
 from intelligence.crm.activities.models import (
     PROVENANCE,
     ArchiveRecord,
     Disposition,
+    DispositionKind,
     SealedBoundary,
     sha256_json,
 )
@@ -35,18 +36,22 @@ def write_snapshot(
     destination = run_staging / "snapshots" / "crm" / "activities" / boundary.logical_snapshot_id
     _directory(destination)
     _directory(destination / "records")
+    assert_partition(records, outcomes)
     accepted = {item.source_record_pk for item in outcomes if item.disposition == "accepted"}
     records_by_id = {item.source_record_pk: item for item in records}
+    if len(records_by_id) != len(records):
+        raise RuntimeError("archive records contain duplicate identities")
     accepted_records = tuple(records_by_id[item] for item in sorted(accepted))
     page_digests: list[str] = []
     for ordinal, chunk in enumerate(_chunks(accepted_records, _LOGICAL_PAGE_SIZE), start=1):
-        page = {
+        page: dict[str, object] = {
             "schema_version": "crm-activities-page-v1",
             "records": [item.as_dict() for item in chunk],
         }
-        page["digest"] = sha256_json(page)
+        page_digest = sha256_json(page)
+        page["digest"] = page_digest
         _write_exact(destination / "records" / f"page-{ordinal:08d}.json", page)
-        page_digests.append(cast(str, page["digest"]))
+        page_digests.append(page_digest)
     rejected = _outcome_rows(records_by_id, outcomes, "rejected")
     quarantined = _outcome_rows(records_by_id, outcomes, "quarantined")
     unresolved = _unresolved_rows(records_by_id, outcomes)
@@ -134,17 +139,19 @@ def _cleanup_records(
                 "observed_at": record.observed_at,
                 "ingested_at": record.ingested_at,
                 "available_at": record.available_at,
-                "stored_parent": asdict(record.stored_parent),
+                "stored_parent": _stored_parent_row(record),
             }
         )
-    return sorted(result, key=lambda item: cast(str, item["source_record_pk"]))
+    return sorted(result, key=lambda item: _identity(item))
 
 
 def _outcome_rows(
-    records: Mapping[str, ArchiveRecord], outcomes: Sequence[Disposition], kind: str
+    records: Mapping[str, ArchiveRecord], outcomes: Sequence[Disposition], kind: DispositionKind
 ) -> list[dict[str, object]]:
-    result = []
-    for outcome in outcomes:
+    if kind == "accepted":
+        raise ValueError("accepted outcomes belong in record pages")
+    result: list[dict[str, object]] = []
+    for outcome in sorted(outcomes, key=lambda item: item.source_record_pk):
         if outcome.disposition == kind:
             record = records[outcome.source_record_pk]
             result.append(
@@ -153,6 +160,7 @@ def _outcome_rows(
                     "record_type": record.record_type,
                     "reason_code": outcome.reason_code,
                     "reference_fingerprint": record.reference_fingerprint(),
+                    "record": record.as_dict(),
                 }
             )
     return result
@@ -239,13 +247,37 @@ def _read_json(path: Path) -> object:
         or metadata.st_nlink != 1
     ):
         raise ValueError("snapshot artifact is unsafe")
-    return json.loads(path.read_text(encoding="utf-8"))
+    decoded: object = json.loads(path.read_text(encoding="utf-8"))
+    return decoded
 
 
 def _object(value: object, field: str) -> Mapping[str, object]:
-    if not isinstance(value, dict):
+    if not _is_object(value):
         raise ValueError(f"{field} must be an object")
-    return cast(Mapping[str, object], value)
+    return value
+
+
+def _is_object(value: object) -> TypeGuard[Mapping[str, object]]:
+    return isinstance(value, dict) and all(isinstance(key, str) for key in value)
+
+
+def _stored_parent_row(record: ArchiveRecord) -> dict[str, str | None]:
+    parent = record.stored_parent
+    return {
+        "source_record_pk": parent.source_record_pk,
+        "source_instance_id": parent.source_instance_id,
+        "source_record_id": parent.source_record_id,
+        "record_type": parent.record_type,
+        "relationship": parent.relationship,
+        "source_system": parent.source_system,
+    }
+
+
+def _identity(value: Mapping[str, object]) -> str:
+    source_record_pk = value.get("source_record_pk")
+    if not isinstance(source_record_pk, str):
+        raise ValueError("archive identity row is invalid")
+    return source_record_pk
 
 
 from intelligence.crm.activities.snapshot_verifier import (  # noqa: E402, F401

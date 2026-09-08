@@ -147,6 +147,25 @@ def test_reader_returns_only_safe_activity_and_companion_call_without_writes(
     assert any(parent.source_system is None for parent in history.child_parents)
 
 
+def test_by_identities_returns_only_the_requested_real_neo4j_record(
+    graph: tuple[Driver, str, str, str, str, str, str],
+) -> None:
+    driver, uri, user, password, source_instance, source_key, fixture_id = graph
+    del fixture_id
+    repository = Neo4jCrmActivitiesRepository(uri, user, password)
+    request = ArchiveRequest("snapshot-a", source_instance, source_key)
+    try:
+        page = repository.page(request, "")
+        assert len(page) > 1
+        selected = page[0].source_record_pk
+        rows = repository.by_identities(request, (selected,))
+    finally:
+        repository.close()
+
+    assert tuple(row.source_record_pk for row in rows) == (selected,)
+    assert rows[0].record_type in {"crm_history", "call"}
+
+
 def test_preflight_rejects_blank_identity_without_graph_mutation(
     graph: tuple[Driver, str, str, str, str, str, str],
 ) -> None:
@@ -218,6 +237,13 @@ def test_reference_fanout_preflight_rejects_each_bounded_reference_type_without_
               source_instance_id: $source_instance, record_type: 'crm_history',
               lifecycle_status: 'active', history_family: 'activity'
             })-[:FROM_SOURCE]->(source)
+            CREATE (source_fanout:SourceRecord {
+              fixture_id: $fixture_id, source_record_pk: 'source-fanout-' + $fixture_id,
+              source_record_id: 'source-fanout', source_record_version: '1',
+              source_version_key: 'source-fanout-v1', record_hash: 'source-fanout-hash',
+              source_instance_id: $source_instance, record_type: 'crm_history',
+              lifecycle_status: 'active', history_family: 'activity'
+            })-[:FROM_SOURCE]->(source)
             CREATE (child_parent_a:SourceRecord {fixture_id: $fixture_id})
             CREATE (child_parent_b:SourceRecord {fixture_id: $fixture_id})
             CREATE (child_parent_c:SourceRecord {fixture_id: $fixture_id})
@@ -238,6 +264,20 @@ def test_reference_fanout_preflight_rejects_each_bounded_reference_type_without_
             CREATE (people)-[:LINKED_TO {is_active: true}]->(active_b)
             CREATE (people)-[:LINKED_TO {is_active: true}]->(active_c)
             CREATE (people)-[:LINKED_TO {is_active: false}]->(inactive)
+            CREATE (source_parent:SourceRecord {fixture_id: $fixture_id})
+            CREATE (source_fanout)-[:CHILD_OF]->(source_parent)
+            CREATE (parent_source_a:SourceSystem {
+              fixture_id: $fixture_id, source_key: 'parent-source-a-' + $fixture_id
+            })
+            CREATE (parent_source_b:SourceSystem {
+              fixture_id: $fixture_id, source_key: 'parent-source-b-' + $fixture_id
+            })
+            CREATE (parent_source_c:SourceSystem {
+              fixture_id: $fixture_id, source_key: 'parent-source-c-' + $fixture_id
+            })
+            CREATE (source_parent)-[:FROM_SOURCE]->(parent_source_a)
+            CREATE (source_parent)-[:FROM_SOURCE]->(parent_source_b)
+            CREATE (source_parent)-[:FROM_SOURCE]->(parent_source_c)
             """,
             source_key=source_key,
             fixture_id=fixture_id,
@@ -264,6 +304,6 @@ def test_reference_fanout_preflight_rejects_each_bounded_reference_type_without_
         relationships_after = session.run("MATCH ()-[r]->() RETURN count(r) AS count").single()[
             "count"
         ]
-    assert invalid == 3
+    assert invalid == 4
     assert nodes_after == nodes_before
     assert relationships_after == relationships_before
