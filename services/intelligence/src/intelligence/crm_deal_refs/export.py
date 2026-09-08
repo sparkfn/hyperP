@@ -37,6 +37,7 @@ from intelligence.crm_deal_refs.mapping import map_deal_reference, map_identity_
 from intelligence.crm_deal_refs.models import (
     IDENTITY_POLICY_VERSION,
     MAX_RAW_PAYLOAD_CHARS,
+    MAX_SNAPSHOT_MANIFEST_BYTES,
     SCHEMA_VERSION,
     SOURCE_SYSTEM,
     Boundary,
@@ -208,7 +209,11 @@ def export_snapshot(
         checkpoint, completed=True, deal_records=len(deals), identity_records=len(identities)
     )
     replace_json(root / "checkpoint.json", json_value(checkpoint))
-    write_new_json(root / "snapshot-manifest.json", _snapshot(boundary, checkpoint, manifests))
+    write_new_json(
+        root / "snapshot-manifest.json",
+        _snapshot(boundary, checkpoint, manifests),
+        MAX_SNAPSHOT_MANIFEST_BYTES,
+    )
 
 
 def resume_snapshot(
@@ -272,6 +277,7 @@ def resume_snapshot(
     write_new_json(
         root / "snapshot-manifest.json",
         _snapshot(boundary, checkpoint, copied),
+        MAX_SNAPSHOT_MANIFEST_BYTES,
     )
 
 

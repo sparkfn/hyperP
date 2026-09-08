@@ -112,6 +112,34 @@ def test_fixed_ceiling_ignores_unrelated_later_revision_and_detects_selected_dri
         capture_matching_boundary(repository, boundary)
 
 
+def test_snapshot_manifest_write_limit_keeps_oversize_output_unverifiable(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    repository = FakeRepository()
+    boundary, deals, identities = seal_boundary(
+        repository,
+        source_instance_id="instance-a",
+        as_of="2026-02-01T00:00:00Z",
+        page_size=1,
+        max_records=2,
+    )
+    export_snapshot(tmp_path / "normal", boundary, deals, identities)
+    assert (
+        verify_snapshot(tmp_path / "normal" / "snapshots" / "crm" / "deal-refs")[
+            "deal_record_count"
+        ]
+        == 1
+    )
+
+    monkeypatch.setattr(deal_export, "MAX_SNAPSHOT_MANIFEST_BYTES", 1)
+    with pytest.raises(ValueError, match="size limit"):
+        export_snapshot(tmp_path / "oversize", boundary, deals, identities)
+    root = tmp_path / "oversize" / "snapshots" / "crm" / "deal-refs"
+    assert not (root / "snapshot-manifest.json").exists()
+    with pytest.raises(FileNotFoundError):
+        verify_snapshot(root)
+
+
 def test_new_membership_and_total_limit_overflow_fail_closed() -> None:
     repository = FakeRepository()
     boundary, _, _ = seal_boundary(

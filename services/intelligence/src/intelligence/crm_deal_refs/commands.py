@@ -54,6 +54,7 @@ def extract_handler(staging: Path, cancelled: Cancelled, request: ExtractRequest
         if cancelled():
             return
         export_snapshot(staging, boundary, deals, identities)
+        verify_snapshot(staging / "snapshots" / "crm" / "deal-refs")
         if cancelled():
             return
         capture_matching_boundary(repository, boundary)
@@ -65,9 +66,11 @@ def resume_handler(staging: Path, cancelled: Cancelled, request: ResumeRequest) 
     """Replay accepted evidence artifact-only; source-reconcile a sealed partial boundary."""
     source = _source_root(staging, request)
     workspace = staging.parent.parent
+    target = staging / "snapshots" / "crm" / "deal-refs"
     if request.accepted:
         verify_snapshot(source)
-        _copy_verified_snapshot(source, staging / "snapshots" / "crm" / "deal-refs", workspace)
+        _copy_verified_snapshot(source, target, workspace)
+        verify_snapshot(target)
         return
     boundary = read_boundary(source / "boundary.json")
     repository = get_crm_deal_refs_repository()
@@ -77,9 +80,10 @@ def resume_handler(staging: Path, cancelled: Cancelled, request: ResumeRequest) 
             return
         if (source / "snapshot-manifest.json").is_file():
             verify_snapshot(source)
-            _copy_verified_snapshot(source, staging / "snapshots" / "crm" / "deal-refs", workspace)
+            _copy_verified_snapshot(source, target, workspace)
         else:
             resume_snapshot(staging, source, boundary, deals, identities)
+        verify_snapshot(target)
         capture_matching_boundary(repository, boundary)
     finally:
         repository.close()
