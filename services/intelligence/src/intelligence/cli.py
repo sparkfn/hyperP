@@ -11,6 +11,7 @@ from pathlib import Path
 
 from intelligence.artifacts import sha256_file
 from intelligence.config import RuntimeConfig
+from intelligence.crm_deal_refs.cli import add_crm_deal_refs_parser, run_crm_deal_refs
 from intelligence.models import OutputInventory, Run
 from intelligence.runtime import IntelligenceRuntime
 
@@ -19,6 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     """Build the fixed command parser; it deliberately takes no shell-like arguments."""
     parser = argparse.ArgumentParser(prog="intelligence")
     commands = parser.add_subparsers(dest="command", required=True)
+    add_crm_deal_refs_parser(commands)
     commands.add_parser("status")
     commands.add_parser("health")
     commands.add_parser("idle")
@@ -42,6 +44,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     runtime = IntelligenceRuntime(RuntimeConfig.from_environment())
     try:
+        if arguments.command == "crm":
+            return run_crm_deal_refs(arguments, runtime)
         if arguments.command == "health":
             health = runtime.health()
             print(json.dumps({"healthy": health.healthy, "reason": health.reason}))

@@ -666,6 +666,9 @@ wheels = [
 name = "hyperp-intelligence"
 version = "0.1.0"
 source = { editable = "services/intelligence" }
+dependencies = [
+    { name = "neo4j" },
+]
 
 [package.dev-dependencies]
 dev = [
@@ -675,6 +678,7 @@ dev = [
 ]
 
 [package.metadata]
+requires-dist = [{ name = "neo4j", specifier = ">=5.20,<6" }]
 
 [package.metadata.requires-dev]
 dev = [

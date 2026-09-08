@@ -3,7 +3,9 @@ name = "hyperp-intelligence"
 version = "0.1.0"
 description = "Bounded single-container Intelligence runtime"
 requires-python = ">=3.12"
-dependencies = []
+dependencies = [
+    "neo4j>=5.20,<6",
+]
 
 [project.scripts]
 intelligence = "intelligence.cli:main"
