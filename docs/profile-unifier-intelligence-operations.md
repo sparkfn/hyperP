@@ -22,6 +22,46 @@ single safe names, not paths or `.sqlite3` snapshots. A bundle is atomic/no-repl
 SQLite online snapshot plus checksummed copies of completed-run manifests and accepted outputs;
 verify it before exporting a copy off-volume. There is no restore or pruning command.
 
+### CRM deal-reference snapshots
+
+The reviewed domain surface is deliberately fixed:
+
+```text
+intelligence crm deal-refs extract --source-instance-id ID --as-of ISO8601 --max-records N [--page-size N]
+intelligence crm deal-refs resume RUN_ID
+intelligence crm deal-refs verify RUN_ID
+intelligence crm deal-refs status RUN_ID
+```
+
+`extract` and `resume` are default-off Intelligence mutations using the same exclusive lock, child
+supervision, output limits, staging, and no-replace publication rules as other reviewed runtime
+commands. `verify` and `status` are read-only controls: they neither connect to Neo4j nor submit a job.
+Credentials are read only inside the supervised child from `INTELLIGENCE_NEO4J_URI`,
+`INTELLIGENCE_NEO4J_USER`, `INTELLIGENCE_NEO4J_PASSWORD`, and `INTELLIGENCE_NEO4J_DATABASE`; they
+must not occur in arguments, logs, descriptors, or manifests.
+
+Snapshots stage privately and publish immutably at `outputs/<run-id>/snapshots/crm/deal-refs/`; no
+mutable current-deal pointer exists. A sealed descriptor records the source instance, UTC availability
+cutoff, identity revision ceiling, keyset membership/content/observation fingerprints, schema/query
+versions, page size, limits, and capture time. Extraction repeats persisted predicates before publication
+and fails on missing, added, changed, or conflicting selected records. This is fail-closed observed-drift
+detection, not an atomic Neo4j image.
+
+Resume accepts no replacement boundary. It copies verified complete evidence rather than hard-linking it;
+otherwise it reuses the sealed descriptor and rechecks the selection before producing a new immutable run.
+An interruption before sealing is not resumable. Artifact-only verification remains valid after Neo4j
+advances; source reconciliation is intentionally limited to extraction and resume.
+
+The CRM deal-reference schema is versioned and accepts only `crm_deal_identity_v2` evidence. It preserves
+the source record hash, source-system/instance/policy provenance, source event/effective/close times,
+availability and first-known times, `STAGE_ID`, and `STAGE_SEMANTIC_ID` when present. It does not infer a
+stage outcome or lifecycle. Person UUID and observed Person status appear only for a resolved immutable
+identity revision whose first-known availability and effective time are both at or before the cutoff;
+future-effective, unavailable, and all non-resolved identity evidence remains Person-unlinked. Page requests use bounded max+1
+keyset traversal with a fixed record ceiling. Page and checkpoint evidence carries cursors, exact boundary
+identity, counts, bytes, checksums, and an exact expected file inventory; links, hard links, non-regular
+entries, and unexpected evidence are rejected.
+
 Cancellation is accepted while a run is queued or executing. Entering `publishing` is the
 explicit non-cancellable commit point: a second connection receives a rejection rather than
 silently racing terminal publication. A stale publishing run is recovered against its durable
