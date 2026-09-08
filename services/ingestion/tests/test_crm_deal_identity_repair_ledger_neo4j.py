@@ -1340,6 +1340,7 @@ def _seed_complete_task_topology(driver: Driver, control_instance_id: str) -> No
             "logical_run_id: 'repair-logical', control_instance_id: $control_instance_id, "
             "status: 'running'})"
             "-[:HAS_ATTEMPT]->(attempt) "
+            "CREATE (logical)-[:ACTIVE_ATTEMPT]->(attempt) "
             "CREATE (stream:BitrixIngestionStream {source_key: 'bitrix_chat', "
             "control_instance_id: $control_instance_id, stream_key: 'crm_deals', "
             "logical_run_id: 'repair-logical', ingest_run_id: 'repair-attempt', "
@@ -1472,6 +1473,46 @@ def test_310_duplicate_attempt_relationships_produce_one_capture(neo4j_driver: D
         ).state
         == "quiesced"
     )
+
+
+def test_310_historical_attempts_do_not_invalidate_active_capture(
+    neo4j_driver: Driver,
+) -> None:
+    """Historical HAS_ATTEMPT rows must not replace the active attempt capture."""
+    _, control, run = _qualified_control_repository(
+        neo4j_driver, repair_id="repair-310-historical-attempt"
+    )
+    _seed_complete_task_topology(neo4j_driver, run.control_instance_id)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (logical:IngestionLogicalRun {logical_run_id: 'repair-logical'}) "
+            "-[:HAS_ATTEMPT]->(active:IngestRun {ingest_run_id: 'repair-attempt'}) "
+            "CREATE (logical)-[:ACTIVE_ATTEMPT]->(active) "
+            "CREATE (historical:IngestRun {ingest_run_id: 'repair-historical-attempt', "
+            "control_instance_id: $control_instance_id, generation: 0, status: 'failed'}) "
+            "CREATE (logical)-[:HAS_ATTEMPT]->(historical)",
+            control_instance_id=run.control_instance_id,
+        ).consume()
+
+    lease = control.claim(
+        RepairControlRequest("repair-310-historical-attempt", run.run_id, "owner", "token", 0),
+        boundary_digest=run.boundary_digest,
+        control_instance_id=run.control_instance_id,
+    )
+    topology = control.request_stop_topology(
+        control_instance_id=run.control_instance_id,
+        run_id=run.run_id,
+        owner_id="owner",
+        stale_run_id="e5deb1d6-7333-4660-be4f-c44fcf5af686",
+    )
+    assert lease.state == "quiescing"
+    assert len(
+        control.captured_task_identities(
+            run_id=run.run_id,
+            control_instance_id=run.control_instance_id,
+            topology_digest=topology,
+        )
+    ) == 1
 
 
 def test_310_ambiguous_current_attempts_fail_closed(neo4j_driver: Driver) -> None:
@@ -1896,6 +1937,7 @@ def test_310_topology_capture_supersedes_only_exact_target_and_retains_controls(
             "logical_run_id: 'target-logical', control_instance_id: $control_instance_id, "
             "status: 'running'})"
             "-[:HAS_ATTEMPT]->(attempt) "
+            "CREATE (logical)-[:ACTIVE_ATTEMPT]->(attempt) "
             "CREATE (stream:BitrixIngestionStream {source_key: 'bitrix_chat', "
             "control_instance_id: $control_instance_id, stream_key: 'crm_deals', "
             "logical_run_id: 'target-logical', ingest_run_id: 'target-attempt', "
