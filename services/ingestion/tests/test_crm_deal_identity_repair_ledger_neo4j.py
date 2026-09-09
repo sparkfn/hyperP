@@ -2350,6 +2350,36 @@ def _seed_quiesced_allocation_control(
         ).consume()
 
 
+def test_310_quiesced_allocation_accepts_expired_proof_with_current_seal(
+    neo4j_driver: Driver,
+) -> None:
+    """A terminal sealed quiescence remains allocatable after an overnight wait."""
+    _, control, run = _qualified_control_repository(
+        neo4j_driver, repair_id="repair-310-expired-quiescence-proof"
+    )
+    _seed_quiesced_allocation_control(neo4j_driver, run)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+            "SET control.proof_expires_at = datetime() - duration('PT1S'), "
+            "control.sealed_revision = control.revision",
+            run_id=run.run_id,
+        ).consume()
+
+    request = RepairControlRequest(
+        "repair-310-expired-quiescence-proof", run.run_id, "owner", "token", 1
+    )
+    assert control.proof_digest(request) == "proof"
+    allocated = _allocate(
+        control,
+        request,
+        boundary_digest=run.boundary_digest,
+        proof_digest="proof",
+        plan=_allocation_plan_for_test(run.run_id, run.boundary_digest, 1),
+    )
+    assert (allocated.state, allocated.revision) == ("allocated", 2)
+
+
 def test_310_pause_resume_exact_replay_rejects_conflicts_and_stale_revisions(
     neo4j_driver: Driver,
 ) -> None:
