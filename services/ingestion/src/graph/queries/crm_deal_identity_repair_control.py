@@ -645,7 +645,15 @@ WHERE dispatch.blocked = true
   AND dispatch.repair_revision = $expected_revision
   AND control.control_instance_id = run.control_instance_id
   AND control.state IN ['quiesced', 'allocated']
-  AND control.proof_digest = $proof_digest AND control.proof_expires_at > datetime()
+  AND control.proof_digest = $proof_digest
+  AND (
+    control.proof_expires_at > datetime()
+    OR (
+      control.state = 'quiesced'
+      AND control.sealed_revision = control.revision
+      AND control.sealed_boundary_digest IS NOT NULL
+    )
+  )
   AND run.inventory_digest = $actual_inventory_digest
   AND run.inventory_row_count = $actual_inventory_row_count
   AND run.eligible_unit_count = $actual_eligible_unit_count
@@ -735,7 +743,14 @@ RETURN run.run_id AS run_id, run.status AS qualification_status, control.state A
 
 READ_REPAIR_CONTROL_PROOF = """
 MATCH (control:CrmDealRepairControl {run_id: $run_id, owner_id: $owner_id, token_digest: $token_digest})
-WHERE control.proof_expires_at > datetime()
+WHERE (
+    control.proof_expires_at > datetime()
+    OR (
+      control.state = 'quiesced'
+      AND control.sealed_revision = control.revision
+      AND control.sealed_boundary_digest IS NOT NULL
+    )
+  )
   AND (
     (control.revision = $revision AND control.state IN ['quiesced', 'allocated'])
     OR (
