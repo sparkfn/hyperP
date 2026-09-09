@@ -53,6 +53,7 @@ class Run:
     runtime_epoch: str | None = None
     cleanup_unresolved: bool = False
     execution_may_be_alive: bool = False
+    command_provenance: tuple[tuple[str, str | int | float | bool | None], ...] | None = None
 
 
 @dataclass(frozen=True)

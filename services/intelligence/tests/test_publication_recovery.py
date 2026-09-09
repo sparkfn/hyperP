@@ -24,10 +24,14 @@ from intelligence.state import State
 
 
 def _orphan_publishing_run(
-    tmp_path: Path, *, publish: bool, release_lock: bool = True
+    tmp_path: Path,
+    *,
+    publish: bool,
+    release_lock: bool = True,
+    command_provenance: dict[str, str] | None = None,
 ) -> tuple[str, State]:
     state = State(tmp_path)
-    run = state.create_mutating_run("approved")
+    run = state.create_mutating_run("approved", command_provenance=command_provenance)
     staging = state.layout.staging / run.run_id
     staging.mkdir()
     (staging / "result.json").write_text("{}", encoding="utf-8")
@@ -425,5 +429,42 @@ def test_startup_reuses_valid_preexisting_parent_manifest(tmp_path: Path) -> Non
         assert tuple((runtime.state.layout.rejected_manifests / run_id).glob("*")) == ()
         recovered = runtime.state.inspect(run_id)
         assert recovered is not None and recovered.state == "completed"
+    finally:
+        runtime.close()
+
+
+def test_startup_reuses_valid_parent_manifest_with_persisted_provenance(tmp_path: Path) -> None:
+    """Exact v3 evidence is retained instead of quarantined during restart reconciliation."""
+    provenance = {"workflow": "models"}
+    run_id, state = _orphan_publishing_run(
+        tmp_path,
+        publish=True,
+        command_provenance=provenance,
+    )
+    run = state.inspect(run_id)
+    assert run is not None
+    output_path = state.layout.outputs / run_id / "result.json"
+    output = OutputInventory(
+        f"outputs/{run_id}/result.json", sha256_file(output_path), output_path.stat().st_size
+    )
+    write_manifest(
+        tmp_path,
+        run_id,
+        run.command,
+        "completed",
+        outputs=(output,),
+        created_at=run.created_at,
+        started_at=run.started_at,
+        limits=dict(run.limits),
+        command_provenance=provenance,
+    )
+    original = (state.layout.manifests / f"{run_id}.json").read_bytes()
+    state.close()
+    runtime = IntelligenceRuntime(RuntimeConfig(tmp_path), Registry())
+    try:
+        assert (runtime.state.layout.manifests / f"{run_id}.json").read_bytes() == original
+        assert tuple((runtime.state.layout.rejected_manifests / run_id).glob("*")) == ()
+        recovered = runtime.state.inspect(run_id)
+        assert recovered is not None and recovered.command_provenance == (("workflow", "models"),)
     finally:
         runtime.close()

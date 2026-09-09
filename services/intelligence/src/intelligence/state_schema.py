@@ -8,7 +8,7 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
-SCHEMA_VERSION = 7
+SCHEMA_VERSION = 8
 ConnectionVerifier = Callable[[sqlite3.Connection], None]
 
 
@@ -120,7 +120,8 @@ def _create_current_schema(connection: sqlite3.Connection) -> None:
             manifest_json TEXT, publishing_inventory_json TEXT, started_at REAL, ended_at REAL,
             limits_json TEXT, runtime_epoch TEXT,
             cleanup_unresolved INTEGER NOT NULL DEFAULT 0,
-            execution_may_be_alive INTEGER NOT NULL DEFAULT 0
+            execution_may_be_alive INTEGER NOT NULL DEFAULT 0,
+            command_provenance_json TEXT
         )
         """,
         """
@@ -171,6 +172,7 @@ def _validate_current_schema(connection: sqlite3.Connection, *, require_constrai
                 "runtime_epoch",
                 "cleanup_unresolved",
                 "execution_may_be_alive",
+                "command_provenance_json",
             }
         ),
         "mutation_lock": frozenset({"singleton", "run_id", "fence", "heartbeat_at"}),
@@ -210,7 +212,7 @@ def _validate_current_schema(connection: sqlite3.Connection, *, require_constrai
 
 def upgrade(connection: sqlite3.Connection, version: int, runtime_epoch: str | None) -> None:
     """Apply the bounded in-place schema upgrade path transactionally."""
-    if version < 1 or version > 6:
+    if version < 1 or version > 8:
         raise RuntimeError("Intelligence state schema is unsupported")
     connection.execute("BEGIN IMMEDIATE")
     try:
@@ -221,6 +223,8 @@ def upgrade(connection: sqlite3.Connection, version: int, runtime_epoch: str | N
             if active is not None:
                 raise RuntimeError("active legacy execution requires a trusted runtime epoch")
         columns = {str(row[1]) for row in connection.execute("PRAGMA table_info(runs)")}
+        if not {"id", "command", "state", "fence", "created_at", "heartbeat_at"}.issubset(columns):
+            raise RuntimeError("Intelligence current schema is incomplete")
         added_runtime_epoch = "runtime_epoch" not in columns
         added_execution_fence = "execution_may_be_alive" not in columns
         for name in (
@@ -232,6 +236,7 @@ def upgrade(connection: sqlite3.Connection, version: int, runtime_epoch: str | N
             "runtime_epoch",
             "cleanup_unresolved",
             "execution_may_be_alive",
+            "command_provenance_json",
         ):
             if name not in columns:
                 default = (
@@ -247,6 +252,8 @@ def upgrade(connection: sqlite3.Connection, version: int, runtime_epoch: str | N
                     default = " INTEGER NOT NULL DEFAULT 0"
                 if name == "execution_may_be_alive":
                     default = " INTEGER NOT NULL DEFAULT 0"
+                if name == "command_provenance_json":
+                    default = " TEXT"
                 connection.execute(f"ALTER TABLE runs ADD COLUMN {name}{default}")
         if added_runtime_epoch and runtime_epoch is not None:
             # Pre-v6 rows had no epoch. This is only a baseline, not a quiescence

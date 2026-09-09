@@ -10,7 +10,7 @@ from intelligence.config import RuntimeConfig
 from intelligence.registry import PRODUCTION_REGISTRY, RegisteredCommand, Registry
 from intelligence.runtime import IntelligenceRuntime
 from intelligence.state import State
-from intelligence.state_schema import bootstrap, upgrade, verify_connection
+from intelligence.state_schema import SCHEMA_VERSION, bootstrap, upgrade, verify_connection
 
 
 def test_wal_empty_registry_and_default_off(tmp_path: Path) -> None:
@@ -46,6 +46,89 @@ def test_lock_fence_cancel_recovery_and_reopen(tmp_path: Path) -> None:
     reopened = State(tmp_path)
     assert reopened.inspect(run.run_id) is not None
     reopened.close()
+
+
+def test_admission_persists_exact_command_provenance_atomically(tmp_path: Path) -> None:
+    """Inspection exposes the reviewed scalar provenance admitted with the mutation lock."""
+    state = State(tmp_path)
+    try:
+        provenance = {"request_digest": "a" * 64, "workflow": "models"}
+        run = state.create_mutating_run("train_run", command_provenance=provenance)
+        row = state.connection.execute(
+            "SELECT command_provenance_json FROM runs WHERE id = ?", (run.run_id,)
+        ).fetchone()
+        assert row is not None
+        assert json.loads(str(row[0])) == provenance
+        assert run.command_provenance == tuple(sorted(provenance.items()))
+        inspected = state.inspect(run.run_id)
+        assert inspected is not None and inspected.command_provenance == run.command_provenance
+        state.mark_execution_quiescent(run)
+        state.connection.execute("UPDATE mutation_lock SET heartbeat_at = 0")
+        state.recover_stale(run.run_id, "operator recovery", 1)
+        manifest = json.loads(
+            (state.layout.manifests / f"{run.run_id}.json").read_text(encoding="utf-8")
+        )
+        assert manifest["command_provenance"] == provenance
+    finally:
+        state.close()
+
+
+def test_legacy_run_provenance_remains_unknown_after_schema_upgrade(tmp_path: Path) -> None:
+    """A pre-provenance run is represented as unknown, never as an invented empty mapping."""
+    layout = workspace_layout(tmp_path)
+    connection = sqlite3.connect(layout.state_database)
+    connection.executescript(
+        """
+        CREATE TABLE metadata (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+        INSERT INTO metadata(key, value) VALUES('schema_version', '7');
+        CREATE TABLE runs (
+            id TEXT PRIMARY KEY, command TEXT NOT NULL, state TEXT NOT NULL,
+            fence INTEGER NOT NULL, created_at REAL NOT NULL, heartbeat_at REAL,
+            cancellation_requested INTEGER NOT NULL DEFAULT 0, recovery_reason TEXT,
+            manifest_json TEXT, publishing_inventory_json TEXT, started_at REAL, ended_at REAL,
+            limits_json TEXT, runtime_epoch TEXT, cleanup_unresolved INTEGER NOT NULL DEFAULT 0,
+            execution_may_be_alive INTEGER NOT NULL DEFAULT 0
+        );
+        CREATE TABLE mutation_lock (
+            singleton INTEGER PRIMARY KEY CHECK(singleton = 1), run_id TEXT,
+            fence INTEGER NOT NULL DEFAULT 0, heartbeat_at REAL
+        );
+        CREATE TABLE accepted_outputs (
+            relative_path TEXT PRIMARY KEY, run_id TEXT NOT NULL,
+            sha256 TEXT NOT NULL, byte_count INTEGER NOT NULL
+        );
+        INSERT INTO mutation_lock(singleton) VALUES(1);
+        INSERT INTO runs(id, command, state, fence, created_at, heartbeat_at, limits_json)
+        VALUES(
+            'legacy-run',
+            'approved',
+            'completed',
+            1,
+            1,
+            1,
+            '{"max_log_bytes":1,"max_output_bytes":1,"max_output_entries":1,"max_runtime_seconds":1}'
+        );
+        """
+    )
+    connection.commit()
+    connection.close()
+    state = State(tmp_path)
+    try:
+        historical = state.inspect("legacy-run")
+        assert historical is not None and historical.command_provenance is None
+        legacy = state.create_mutating_run("new-run", command_provenance={})
+        assert legacy.command_provenance == ()
+        state.mark_execution_quiescent(legacy)
+        state.connection.execute("UPDATE mutation_lock SET heartbeat_at = 0")
+        state.recover_stale(legacy.run_id, "clean up", 1)
+        assert (
+            state.connection.execute(
+                "SELECT command_provenance_json FROM runs WHERE id = ?", (legacy.run_id,)
+            ).fetchone()[0]
+            == "{}"
+        )
+    finally:
+        state.close()
 
 
 def test_stale_recovery_fence_mismatch_rolls_back_run_and_lock(tmp_path: Path) -> None:
@@ -241,7 +324,7 @@ def test_schema_v4_state_migrates_admission_limits_column(tmp_path: Path) -> Non
             "SELECT value FROM metadata WHERE key = 'schema_version'"
         ).fetchone()[0]
         columns = {str(row[1]) for row in reopened.connection.execute("PRAGMA table_info(runs)")}
-        assert version == "7"
+        assert version == str(SCHEMA_VERSION)
         assert "limits_json" in columns
     finally:
         reopened.close()

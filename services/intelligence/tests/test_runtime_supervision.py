@@ -5,6 +5,7 @@ from __future__ import annotations
 import multiprocessing
 import os
 import signal
+import sys
 import time
 from multiprocessing.process import BaseProcess
 from pathlib import Path
@@ -53,6 +54,30 @@ def abrupt_survivor_handler(directory: Path, cancelled: Cancelled) -> None:
         time.sleep(0.01)
 
 
+def cpu_limited_handler(directory: Path, cancelled: Cancelled) -> None:
+    """Consume CPU until the kernel-enforced reviewed limit terminates this child."""
+    del directory, cancelled
+    value = 0
+    while True:
+        value += 1
+
+
+def address_space_limited_handler(directory: Path, cancelled: Cancelled) -> None:
+    """Allocate beyond the reviewed address-space cap without touching accepted outputs."""
+    del directory, cancelled
+    bytearray(256 * 1024 * 1024)
+
+
+def output_limited_handler(directory: Path, cancelled: Cancelled) -> None:
+    """Exceed the parent-monitored output cap while ignoring cooperative cancellation."""
+    del cancelled
+    with (directory / "oversized.bin").open("wb") as handle:
+        while True:
+            handle.write(b"x" * 128)
+            handle.flush()
+            time.sleep(0.01)
+
+
 def never_ready_child(handler: CommandHandler, staging: Path, ready: object) -> None:
     """Simulate a child that starts but never proves process-group readiness."""
     del handler, staging, ready
@@ -61,23 +86,52 @@ def never_ready_child(handler: CommandHandler, staging: Path, ready: object) -> 
 
 def abrupt_supervisor(workspace: str) -> None:
     """Run a real supervisor until the test kills this process abruptly."""
-    runtime = _runtime(Path(workspace), abrupt_survivor_handler, timeout=30)
+    runtime = _runtime(
+        Path(workspace),
+        abrupt_survivor_handler,
+        timeout=30,
+        metadata={"workflow": "abrupt-provenance"},
+    )
     runtime.run("approved")
 
 
-def _runtime(tmp_path: Path, handler: CommandHandler, timeout: int = 5) -> IntelligenceRuntime:
-    command = RegisteredCommand("approved", True, handler, {})
+def _runtime(
+    tmp_path: Path,
+    handler: CommandHandler,
+    timeout: int = 5,
+    *,
+    child_limits: dict[str, int] | None = None,
+    runtime_limits: dict[str, int] | None = None,
+    metadata: dict[str, str | int | float | bool | None] | None = None,
+    output_bytes: int = 100_000_000,
+) -> IntelligenceRuntime:
+    command = RegisteredCommand(
+        "approved",
+        True,
+        handler,
+        {} if metadata is None else metadata,
+        child_limits,
+        runtime_limits,
+    )
     return IntelligenceRuntime(
-        RuntimeConfig(tmp_path, mutations_enabled=True, max_runtime_seconds=timeout),
+        RuntimeConfig(
+            tmp_path,
+            mutations_enabled=True,
+            max_runtime_seconds=timeout,
+            max_output_bytes=output_bytes,
+        ),
         Registry((command,)),
     )
+
+
+_RESOURCE_LIMITS = {"max_cpu_seconds": 10, "max_address_space_bytes": 128 * 1024 * 1024}
 
 
 def test_staging_setup_failure_terminalizes_without_live_fence(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
     """Admission setup failures prove quiescence because no child was launched."""
-    runtime = _runtime(tmp_path, success_handler)
+    runtime = _runtime(tmp_path, success_handler, metadata={"workflow": "prelaunch"})
     original_mkdir = Path.mkdir
     staging_root = runtime.state.layout.staging
 
@@ -93,6 +147,9 @@ def test_staging_setup_failure_terminalizes_without_live_fence(
         run_id = str(runtime.state.connection.execute("SELECT id FROM runs").fetchone()[0])
         run = runtime.state.inspect(run_id)
         assert run is not None and run.state == "failed"
+        assert run.command_provenance == (("workflow", "prelaunch"),)
+        manifest = (runtime.state.layout.manifests / f"{run_id}.json").read_text(encoding="utf-8")
+        assert '"command_provenance":{"workflow":"prelaunch"}' in manifest
         assert not run.execution_may_be_alive
         assert runtime.state.active_run() is None
         assert runtime.health().healthy
@@ -358,6 +415,162 @@ def test_spawn_timeout_terminates_uncooperative_handler(tmp_path: Path) -> None:
     runtime.close()
 
 
+def test_preflight_resource_failure_occurs_before_run_admission(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    """Unavailable required enforcement cannot create a fenced run or unresolved lock."""
+    runtime = _runtime(tmp_path, success_handler, child_limits=_RESOURCE_LIMITS)
+
+    def fail_preflight(_limits: object) -> None:
+        raise RuntimeError("reviewed resource enforcement is unavailable")
+
+    monkeypatch.setattr(runtime_module, "_preflight_resource_enforcement", fail_preflight)
+    try:
+        with pytest.raises(RuntimeError, match="resource enforcement"):
+            runtime.run("approved")
+        assert runtime.state.connection.execute("SELECT COUNT(*) FROM runs").fetchone()[0] == 0
+        assert runtime.state.active_run() is None
+        assert runtime.health().healthy
+    finally:
+        runtime.close()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="resource enforcement must execute on Linux CI")
+def test_effective_reviewed_limits_are_minima_and_persisted_before_spawn(tmp_path: Path) -> None:
+    """A command can narrow generic limits while preserving its exact resource caps."""
+    command_limits = {
+        "max_log_bytes": 111,
+        "max_output_bytes": 222,
+        "max_output_entries": 3,
+        "max_runtime_seconds": 4,
+    }
+    runtime = _runtime(
+        tmp_path,
+        success_handler,
+        timeout=10,
+        output_bytes=500,
+        child_limits=_RESOURCE_LIMITS,
+        runtime_limits=command_limits,
+        metadata={"workflow": "minimum-limits"},
+    )
+    try:
+        run_id = runtime.run("approved")
+        run = runtime.state.inspect(run_id)
+        assert run is not None
+        assert dict(run.limits) == {**command_limits, **_RESOURCE_LIMITS}
+        assert run.command_provenance == (("workflow", "minimum-limits"),)
+        manifest = (runtime.state.layout.manifests / f"{run_id}.json").read_text(encoding="utf-8")
+        assert '"command_provenance":{"workflow":"minimum-limits"}' in manifest
+        assert '"max_cpu_seconds":10' in manifest
+        assert '"max_address_space_bytes":134217728' in manifest
+    finally:
+        runtime.close()
+
+
+@pytest.mark.skipif(sys.platform != "linux", reason="resource enforcement must execute on Linux CI")
+def test_linux_kernel_and_parent_resource_enforcement(tmp_path: Path) -> None:
+    """Linux CI executes CPU, address-space, elapsed, output, and cancellation boundaries."""
+    cpu_runtime = _runtime(
+        tmp_path / "cpu",
+        cpu_limited_handler,
+        timeout=10,
+        child_limits={**_RESOURCE_LIMITS, "max_cpu_seconds": 1},
+    )
+    try:
+        started = time.monotonic()
+        with pytest.raises(RuntimeError, match="failed"):
+            cpu_runtime.run("approved")
+        assert time.monotonic() - started < 6
+        cpu_run = cpu_runtime.state.inspect(
+            str(cpu_runtime.state.connection.execute("SELECT id FROM runs").fetchone()[0])
+        )
+        assert cpu_run is not None and cpu_run.state == "failed"
+    finally:
+        cpu_runtime.close()
+
+    memory_runtime = _runtime(
+        tmp_path / "memory",
+        address_space_limited_handler,
+        timeout=10,
+        child_limits=_RESOURCE_LIMITS,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="failed"):
+            memory_runtime.run("approved")
+        memory_run = memory_runtime.state.inspect(
+            str(memory_runtime.state.connection.execute("SELECT id FROM runs").fetchone()[0])
+        )
+        assert memory_run is not None and memory_run.state == "failed"
+    finally:
+        memory_runtime.close()
+
+    elapsed_runtime = _runtime(
+        tmp_path / "elapsed",
+        uncooperative_handler,
+        timeout=1,
+        child_limits=_RESOURCE_LIMITS,
+    )
+    try:
+        elapsed_run_id = elapsed_runtime.run("approved")
+        elapsed_run = elapsed_runtime.state.inspect(elapsed_run_id)
+        assert elapsed_run is not None and elapsed_run.state == "timed_out"
+    finally:
+        elapsed_runtime.close()
+
+    output_runtime = _runtime(
+        tmp_path / "output",
+        output_limited_handler,
+        timeout=10,
+        output_bytes=512,
+        child_limits=_RESOURCE_LIMITS,
+    )
+    try:
+        with pytest.raises(RuntimeError, match="failed"):
+            output_runtime.run("approved")
+        output_run = output_runtime.state.inspect(
+            str(output_runtime.state.connection.execute("SELECT id FROM runs").fetchone()[0])
+        )
+        assert output_run is not None and output_run.state == "failed"
+    finally:
+        output_runtime.close()
+
+    results: list[str] = []
+    failures: list[BaseException] = []
+
+    def invoke() -> None:
+        runtime = _runtime(
+            tmp_path / "cancel",
+            cancellation_handler,
+            timeout=10,
+            child_limits=_RESOURCE_LIMITS,
+        )
+        try:
+            results.append(runtime.run("approved"))
+        except BaseException as error:  # pragma: no cover - assertion below reports it.
+            failures.append(error)
+        finally:
+            runtime.close()
+
+    observer = State(tmp_path / "cancel")
+    worker = Thread(target=invoke)
+    worker.start()
+    try:
+        deadline = time.monotonic() + 5
+        active = observer.active_run()
+        while active is None and time.monotonic() < deadline:
+            time.sleep(0.05)
+            active = observer.active_run()
+        assert active is not None
+        observer.cancel(active.run_id)
+        worker.join(timeout=5)
+        assert not worker.is_alive()
+        assert not failures and results == [active.run_id]
+        terminal = observer.inspect(active.run_id)
+        assert terminal is not None and terminal.state == "cancelled"
+    finally:
+        observer.close()
+
+
 def test_second_connection_cancellation_terminates_child(tmp_path: Path) -> None:
     """A distinct durable connection can cancel a live spawned child process."""
     results: list[str] = []
@@ -413,6 +626,7 @@ def test_abrupt_supervisor_death_keeps_same_epoch_recovery_fenced(tmp_path: Path
             time.sleep(0.05)
             active = observer.active_run()
         assert active is not None
+        assert active.command_provenance == (("workflow", "abrupt-provenance"),)
         pid_path = workspace_layout(tmp_path).staging / active.run_id / "child.pid"
         while not pid_path.exists() and time.monotonic() < deadline:
             time.sleep(0.05)
@@ -439,6 +653,11 @@ def test_abrupt_supervisor_death_keeps_same_epoch_recovery_fenced(tmp_path: Path
             recreated.recover_stale(active.run_id, "container recreated", 1)
             recovered = recreated.inspect(active.run_id)
             assert recovered is not None and recovered.state == "stale_recovered"
+            assert recovered.command_provenance == (("workflow", "abrupt-provenance"),)
+            manifest = (recreated.layout.manifests / f"{active.run_id}.json").read_text(
+                encoding="utf-8"
+            )
+            assert '"command_provenance":{"workflow":"abrupt-provenance"}' in manifest
             assert recreated.active_run() is None
         finally:
             recreated.close()

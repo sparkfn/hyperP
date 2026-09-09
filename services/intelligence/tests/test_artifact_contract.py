@@ -232,6 +232,44 @@ def test_manifest_strict_expected_limits_and_end_time_are_enforced(tmp_path: Pat
         )
 
 
+def test_manifest_v3_binds_exact_command_provenance_without_rewriting_v2(tmp_path: Path) -> None:
+    """New evidence binds reviewed metadata while prior v2 evidence remains provenance-unknown."""
+    provenance = {"request_digest": "a" * 64, "workflow": "models"}
+    current = write_manifest(
+        tmp_path,
+        "provenance",
+        "approved",
+        "completed",
+        command_provenance=provenance,
+    )
+    current_path = workspace_layout(tmp_path).manifests / "provenance.json"
+    assert current["schema_version"] == 3
+    read_manifest(
+        current_path,
+        expected_run_id="provenance",
+        expected_command="approved",
+        expected_state="completed",
+        expected_command_provenance=provenance,
+    )
+    with pytest.raises(ValueError, match="provenance"):
+        read_manifest(
+            current_path,
+            expected_run_id="provenance",
+            expected_command="approved",
+            expected_state="completed",
+            expected_command_provenance=None,
+        )
+    legacy = write_manifest(tmp_path, "v2", "approved", "completed")
+    assert legacy["schema_version"] == 2
+    read_manifest(
+        workspace_layout(tmp_path).manifests / "v2.json",
+        expected_run_id="v2",
+        expected_command="approved",
+        expected_state="completed",
+        expected_command_provenance=None,
+    )
+
+
 @pytest.mark.parametrize(
     "limits",
     (

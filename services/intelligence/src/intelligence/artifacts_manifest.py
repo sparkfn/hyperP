@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import stat
 import time
@@ -24,17 +25,21 @@ from intelligence.artifacts_core import (
 )
 from intelligence.models import OutputInventory, RunLogInventory, TerminalRunState
 
-MANIFEST_SCHEMA_VERSION = 2
+MANIFEST_SCHEMA_VERSION = 3
+PREVIOUS_MANIFEST_SCHEMA_VERSION = 2
 LEGACY_MANIFEST_SCHEMA_VERSION = 1
-MANIFEST_LIMIT_KEYS = frozenset(
+RUNTIME_LIMIT_KEYS = frozenset(
     {"max_log_bytes", "max_output_bytes", "max_output_entries", "max_runtime_seconds"}
 )
+RESOURCE_LIMIT_KEYS = frozenset({"max_cpu_seconds", "max_address_space_bytes"})
+MANIFEST_LIMIT_KEYS = RUNTIME_LIMIT_KEYS | RESOURCE_LIMIT_KEYS
 DEFAULT_MANIFEST_LIMITS: dict[str, int] = {
     "max_log_bytes": 1_000_000,
     "max_output_bytes": 100_000_000,
     "max_output_entries": 10_000,
     "max_runtime_seconds": 3_600,
 }
+_UNSPECIFIED_PROVENANCE = object()
 _MANIFEST_BASE_KEYS = frozenset(
     {
         "schema_version",
@@ -65,6 +70,7 @@ def write_manifest(
     ended_at: float | None = None,
     limits: Mapping[str, int] | None = None,
     run_log: RunLogInventory | None = None,
+    command_provenance: Mapping[str, object] | None = None,
     legacy_unknown_limits: bool = False,
 ) -> dict[str, object]:
     """Write one canonical secret-free terminal manifest, accepting identical retries."""
@@ -74,8 +80,13 @@ def write_manifest(
         _validate_public_text(reason, "manifest reason")
     all_outputs = tuple(outputs) if outputs else (() if output is None else (output,))
     now = time.time() if ended_at is None else ended_at
-    schema_version = (
-        LEGACY_MANIFEST_SCHEMA_VERSION if legacy_unknown_limits else MANIFEST_SCHEMA_VERSION
+    if legacy_unknown_limits and command_provenance is not None:
+        raise ValueError("legacy terminal manifest cannot claim command provenance")
+    effective_limits = {} if legacy_unknown_limits else dict(limits or DEFAULT_MANIFEST_LIMITS)
+    schema_version = _manifest_schema_version(
+        legacy_unknown_limits,
+        effective_limits,
+        command_provenance,
     )
     value: dict[str, object] = {
         "schema_version": schema_version,
@@ -89,9 +100,7 @@ def write_manifest(
         else now,
         "ended_at": now,
         "state": state,
-        "limits": dict(
-            sorted(({} if legacy_unknown_limits else limits or DEFAULT_MANIFEST_LIMITS).items())
-        ),
+        "limits": dict(sorted(effective_limits.items())),
         "outputs": [
             {"byte_count": item.byte_count, "path": item.relative_path, "sha256": item.sha256}
             for item in sorted(all_outputs, key=lambda item: item.relative_path)
@@ -106,6 +115,8 @@ def write_manifest(
     }
     if reason is not None:
         value["reason"] = reason
+    if command_provenance is not None:
+        value["command_provenance"] = dict(sorted(command_provenance.items()))
     created_value = _manifest_number(value["created_at"], "created_at")
     started_value = _manifest_number(value["started_at"], "started_at")
     validate_manifest(
@@ -118,6 +129,7 @@ def write_manifest(
         expected_created_at=created_value,
         expected_started_at=started_value,
         expected_run_log=run_log,
+        expected_command_provenance=command_provenance,
     )
     path = workspace_layout(workspace).manifests / f"{run_id}.json"
     encoded = canonical_json(value)
@@ -173,6 +185,7 @@ def read_manifest(
     expected_ended_at: float | None = None,
     expected_limits: Mapping[str, int] | None = None,
     expected_run_log: RunLogInventory | None = None,
+    expected_command_provenance: Mapping[str, object] | None | object = _UNSPECIFIED_PROVENANCE,
 ) -> dict[str, object]:
     """Read and strictly validate immutable parent-owned terminal evidence."""
     if path.is_symlink() or not path.is_file():
@@ -196,6 +209,7 @@ def read_manifest(
         expected_ended_at=expected_ended_at,
         expected_limits=expected_limits,
         expected_run_log=expected_run_log,
+        expected_command_provenance=expected_command_provenance,
     )
 
 
@@ -212,16 +226,24 @@ def validate_manifest(
     expected_ended_at: float | None = None,
     expected_limits: Mapping[str, int] | None = None,
     expected_run_log: RunLogInventory | None = None,
+    expected_command_provenance: Mapping[str, object] | None | object = _UNSPECIFIED_PROVENANCE,
 ) -> dict[str, object]:
     """Validate exact manifest schema, evidence, limits, and public values."""
     if not isinstance(value, dict):
         raise ValueError("terminal manifest must be an object")
     manifest = cast(dict[str, object], value)
-    keys = _MANIFEST_BASE_KEYS | ({"reason"} if expected_reason is not None else set())
-    if set(manifest) != keys:
-        raise ValueError("terminal manifest schema is invalid")
     schema_version = manifest.get("schema_version")
-    if schema_version not in {LEGACY_MANIFEST_SCHEMA_VERSION, MANIFEST_SCHEMA_VERSION}:
+    if schema_version not in {
+        LEGACY_MANIFEST_SCHEMA_VERSION,
+        PREVIOUS_MANIFEST_SCHEMA_VERSION,
+        MANIFEST_SCHEMA_VERSION,
+    }:
+        raise ValueError("terminal manifest schema is invalid")
+    keys = _MANIFEST_BASE_KEYS | ({"reason"} if expected_reason is not None else set())
+    has_provenance = "command_provenance" in manifest
+    if schema_version == MANIFEST_SCHEMA_VERSION and has_provenance:
+        keys |= {"command_provenance"}
+    if set(manifest) != keys:
         raise ValueError("terminal manifest schema is invalid")
     if manifest.get("run_id") != expected_run_id or manifest.get("command") != expected_command:
         raise ValueError("terminal manifest identity is invalid")
@@ -258,6 +280,18 @@ def validate_manifest(
             raise ValueError("terminal manifest reason is invalid")
     elif manifest.get("reason") != expected_reason:
         raise ValueError("terminal manifest reason is invalid")
+    provenance = manifest.get("command_provenance")
+    if has_provenance:
+        _validate_command_provenance(provenance)
+    if expected_command_provenance is _UNSPECIFIED_PROVENANCE:
+        return manifest
+    if expected_command_provenance is None:
+        if has_provenance:
+            raise ValueError("terminal manifest command provenance is invalid")
+    elif not isinstance(expected_command_provenance, Mapping):
+        raise ValueError("terminal manifest command provenance is invalid")
+    elif provenance != _normalized_command_provenance(expected_command_provenance):
+        raise ValueError("terminal manifest command provenance is invalid")
     return manifest
 
 
@@ -267,12 +301,18 @@ def _normalize_manifest_limits(value: object, schema_version: object) -> dict[st
         for key, limit in value.items()
     ):
         raise ValueError("terminal manifest limits are invalid")
-    if schema_version == MANIFEST_SCHEMA_VERSION and set(value) != MANIFEST_LIMIT_KEYS:
+    keys = frozenset(value)
+    if schema_version == MANIFEST_SCHEMA_VERSION and keys not in {
+        RUNTIME_LIMIT_KEYS,
+        MANIFEST_LIMIT_KEYS,
+    }:
+        raise ValueError("terminal manifest limits are invalid")
+    if schema_version == PREVIOUS_MANIFEST_SCHEMA_VERSION and keys != RUNTIME_LIMIT_KEYS:
         raise ValueError("terminal manifest limits are invalid")
     legacy_three_key_limits = frozenset(
         {"max_log_bytes", "max_output_bytes", "max_runtime_seconds"}
     )
-    legacy_four_key_limits = frozenset(MANIFEST_LIMIT_KEYS)
+    legacy_four_key_limits = RUNTIME_LIMIT_KEYS
     if schema_version == LEGACY_MANIFEST_SCHEMA_VERSION and set(value) not in {
         frozenset(),
         legacy_three_key_limits,
@@ -282,6 +322,42 @@ def _normalize_manifest_limits(value: object, schema_version: object) -> dict[st
     normalized = dict(DEFAULT_MANIFEST_LIMITS)
     normalized.update(cast(dict[str, int], value))
     return normalized
+
+
+def _manifest_schema_version(
+    legacy_unknown_limits: bool,
+    limits: Mapping[str, int],
+    command_provenance: Mapping[str, object] | None,
+) -> int:
+    if legacy_unknown_limits:
+        return LEGACY_MANIFEST_SCHEMA_VERSION
+    if command_provenance is not None or set(limits) == MANIFEST_LIMIT_KEYS:
+        return MANIFEST_SCHEMA_VERSION
+    return PREVIOUS_MANIFEST_SCHEMA_VERSION
+
+
+def _normalized_command_provenance(value: Mapping[str, object]) -> dict[str, object]:
+    _validate_command_provenance(value)
+    return dict(sorted(value.items()))
+
+
+def _validate_command_provenance(value: object) -> None:
+    if not isinstance(value, Mapping) or len(value) > 32:
+        raise ValueError("terminal manifest command provenance is invalid")
+    for key, item in value.items():
+        if not isinstance(key, str) or not key or len(key) > 100:
+            raise ValueError("terminal manifest command provenance is invalid")
+        if any(
+            marker in key.lower()
+            for marker in ("secret", "token", "password", "credential", "authorization")
+        ):
+            raise ValueError("terminal manifest command provenance is invalid")
+        if not isinstance(item, (str, int, float, bool)) and item is not None:
+            raise ValueError("terminal manifest command provenance is invalid")
+        if isinstance(item, float) and not math.isfinite(item):
+            raise ValueError("terminal manifest command provenance is invalid")
+        if isinstance(item, str) and (not item or len(item) > 512):
+            raise ValueError("terminal manifest command provenance is invalid")
 
 
 def _manifest_number(value: object, field: str) -> float:

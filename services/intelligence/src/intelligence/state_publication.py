@@ -3,12 +3,14 @@
 from __future__ import annotations
 
 import json
+import math
 import sqlite3
 from collections.abc import Sequence
 from pathlib import Path
 from typing import cast
 
 from intelligence.artifacts import MANIFEST_LIMIT_KEYS, canonical_json, sha256_file
+from intelligence.artifacts_manifest import RUNTIME_LIMIT_KEYS
 from intelligence.models import OutputInventory, Run, RunState
 
 _TERMINAL: frozenset[str] = frozenset(
@@ -29,7 +31,7 @@ def _row_to_run(row: sqlite3.Row) -> Run:
             raise RuntimeError("run limits are corrupt") from error
         if not isinstance(raw_limits, dict):
             raise RuntimeError("run limits are corrupt")
-        if set(raw_limits) != MANIFEST_LIMIT_KEYS:
+        if set(raw_limits) not in {RUNTIME_LIMIT_KEYS, MANIFEST_LIMIT_KEYS}:
             raise RuntimeError("run limits are corrupt")
         parsed: list[tuple[str, int]] = []
         for key, value in raw_limits.items():
@@ -39,6 +41,32 @@ def _row_to_run(row: sqlite3.Row) -> Run:
                 raise RuntimeError("run limits are corrupt")
             parsed.append((key, value))
         limits = tuple(sorted(parsed))
+    provenance_value = row["command_provenance_json"]
+    provenance: tuple[tuple[str, str | int | float | bool | None], ...] | None = None
+    if provenance_value is not None:
+        try:
+            raw_provenance = json.loads(str(provenance_value))
+        except json.JSONDecodeError as error:
+            raise RuntimeError("run command provenance is corrupt") from error
+        if not isinstance(raw_provenance, dict) or len(raw_provenance) > 32:
+            raise RuntimeError("run command provenance is corrupt")
+        values: list[tuple[str, str | int | float | bool | None]] = []
+        for key, value in raw_provenance.items():
+            if not isinstance(key, str) or not key or len(key) > 100:
+                raise RuntimeError("run command provenance is corrupt")
+            if any(
+                marker in key.lower()
+                for marker in ("secret", "token", "password", "credential", "authorization")
+            ):
+                raise RuntimeError("run command provenance is corrupt")
+            if not isinstance(value, (str, int, float, bool)) and value is not None:
+                raise RuntimeError("run command provenance is corrupt")
+            if isinstance(value, float) and not math.isfinite(value):
+                raise RuntimeError("run command provenance is corrupt")
+            if isinstance(value, str) and (not value or len(value) > 512):
+                raise RuntimeError("run command provenance is corrupt")
+            values.append((key, value))
+        provenance = tuple(sorted(values))
     return Run(
         str(row["id"]),
         str(row["command"]),
@@ -54,6 +82,7 @@ def _row_to_run(row: sqlite3.Row) -> Run:
         None if row["runtime_epoch"] is None else str(row["runtime_epoch"]),
         bool(row["cleanup_unresolved"]),
         bool(row["execution_may_be_alive"]),
+        provenance,
     )
 
 
