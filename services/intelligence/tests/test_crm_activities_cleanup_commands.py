@@ -24,6 +24,8 @@ from intelligence.crm.activities.cleanup.types import (
     CleanupAuthorization,
     CleanupIdentity,
     CleanupTarget,
+    ProtectedSourceEndpointEvidence,
+    QuiescenceEvidence,
     ResourceCeilings,
     canonical_digest,
 )
@@ -98,6 +100,29 @@ def _receipt(
     batch_size: int = 1,
     cleanup_run_id: str = "cleanup-a",
 ) -> CleanupReceipt:
+    authorization = CleanupAuthorization(
+        "checkpoint-a",
+        "archive-run",
+        "snapshot-a",
+        _digest("manifest"),
+        _digest("boundary"),
+        _digest("cleanup"),
+        "archive-db",
+    )
+    target = CleanupTarget("environment-a", "environment-a", "database-a", "database-a")
+    quiescence = QuiescenceEvidence.create(
+        "quiescence-a",
+        authorization.accepted_run_id,
+        authorization.checkpoint_id,
+        authorization.logical_snapshot_id,
+        authorization.manifest_digest,
+        authorization.cleanup_identity_digest,
+        "bitrix_chat",
+        "bitrix-a",
+        target.configured_environment_id,
+        target.observed_database_identity,
+        authorization.boundary_digest,
+    )
     identities = tuple(
         CleanupIdentity(
             key,
@@ -116,21 +141,26 @@ def _receipt(
     )
     return CleanupReceipt.create(
         cleanup_run_id,
-        CleanupAuthorization(
-            "checkpoint-a",
-            "archive-run",
-            "snapshot-a",
-            _digest("manifest"),
-            _digest("boundary"),
-            _digest("cleanup"),
-            "archive-db",
-        ),
-        CleanupTarget("environment-a", "environment-a", "database-a", "database-a"),
+        authorization,
+        target,
         batch_size,
         ResourceCeilings(100_000, 100, 10, 10),
         "policy-v1",
+        quiescence,
         {"protected": 0},
         identities,
+        protected_source_endpoints=tuple(
+            ProtectedSourceEndpointEvidence(
+                key,
+                f"relationship-{key}",
+                "FROM_SOURCE",
+                "outbound",
+                f"source-{key}",
+                ("SourceSystem",),
+                "bitrix_chat",
+            )
+            for key in keys
+        ),
     )
 
 
@@ -213,6 +243,11 @@ class _Repository:
         )
 
     def verify_protected(self, _protected: tuple[object, ...]) -> tuple[object, ...]:
+        return ()
+
+    def verify_protected_source_endpoints(
+        self, _endpoints: tuple[object, ...]
+    ) -> tuple[object, ...]:
         return ()
 
     def close(self) -> None:
@@ -309,6 +344,19 @@ def test_receipt_admission_rejects_exact_binding_mismatch(monkeypatch: pytest.Mo
             ),
             receipt.target,
             request,
+            QuiescenceEvidence.create(
+                receipt.quiescence_run_id,
+                receipt.authorization.accepted_run_id,
+                receipt.authorization.checkpoint_id,
+                receipt.authorization.logical_snapshot_id,
+                receipt.authorization.manifest_digest,
+                receipt.authorization.cleanup_identity_digest,
+                receipt.quiescence_source_key,
+                receipt.quiescence_source_instance_id,
+                receipt.target.configured_environment_id,
+                receipt.target.observed_database_identity,
+                receipt.authorization.boundary_digest,
+            ),
         )
 
 
@@ -470,6 +518,7 @@ def test_verify_is_read_only_and_rejects_failed_reconciliation(tmp_path: Path) -
         {"a": "failed_after_execution"},
         {"protected": 0},
         {"protected": 0},
+        receipt.protected_preservation,
     )
     (root / "reconciliation.json").write_text(canonical_json(failed.as_dict()), encoding="utf-8")
     with pytest.raises((RuntimeError, ValueError)):

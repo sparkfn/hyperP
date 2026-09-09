@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import cast
 
+from intelligence.crm.activities.cleanup.types import ProtectedSourceEndpointEvidence
 from intelligence.repositories.protocols.crm_activity_cleanup import (
     MAX_BATCH_IDENTITIES,
     MAX_INCIDENT_RELATIONSHIPS,
@@ -17,6 +18,7 @@ from intelligence.repositories.protocols.crm_activity_cleanup import (
     ProtectedEvidence,
     RecordOutcome,
     RequiredAbsenceCrmActivityCleanupRepository,
+    canonical_expected_deletions,
 )
 
 
@@ -109,7 +111,10 @@ class BoundedCleanupRepository(RequiredAbsenceCrmActivityCleanupRepository):
         database_identity: str,
         expected: tuple[ExpectedDeletionFact, ...],
     ) -> BatchOutcome:
-        return self._repository.delete_batch(database_identity, expected)
+        return self._repository.delete_batch(
+            database_identity,
+            canonical_expected_deletions(expected),
+        )
 
     def delete_batch_with_required_absences(
         self,
@@ -122,13 +127,20 @@ class BoundedCleanupRepository(RequiredAbsenceCrmActivityCleanupRepository):
             raise RuntimeError("cleanup repository lacks required-absence transaction support")
         repository = cast(RequiredAbsenceCrmActivityCleanupRepository, self._repository)
         return repository.delete_batch_with_required_absences(
-            database_identity, expected, required_absent
+            database_identity,
+            canonical_expected_deletions(expected),
+            required_absent,
         )
 
     def verify_protected(
         self, protected: tuple[ProtectedEvidence, ...]
     ) -> tuple[ProtectedEvidence, ...]:
         return self._repository.verify_protected(protected)
+
+    def verify_protected_source_endpoints(
+        self, endpoints: tuple[ProtectedSourceEndpointEvidence, ...]
+    ) -> tuple[ProtectedSourceEndpointEvidence, ...]:
+        return self._repository.verify_protected_source_endpoints(endpoints)
 
     def close(self) -> None:
         self._repository.close()
@@ -213,11 +225,11 @@ def _dependency_groups(
         if len(component) > chunk_size:
             raise RuntimeError("cleanup call-parent component exceeds repository batch ceiling")
         if current and len(current) + len(component) > chunk_size:
-            groups.append(tuple(current))
+            groups.append(tuple(sorted(current)))
             current = []
         current.extend(component)
     if current:
-        groups.append(tuple(current))
+        groups.append(tuple(sorted(current)))
     return tuple(groups)
 
 

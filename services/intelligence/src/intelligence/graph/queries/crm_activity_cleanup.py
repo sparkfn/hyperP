@@ -158,3 +158,19 @@ WHERE elementId(record) = record_element_id
 DELETE record
 RETURN count(*) AS deleted_count
 """
+
+
+VERIFY_PROTECTED_SOURCE_ENDPOINTS = """
+UNWIND $endpoints AS expected
+OPTIONAL MATCH (source:SourceSystem)
+WHERE elementId(source) = expected.endpoint_element_id
+  AND source.source_key = expected.endpoint_source_key
+RETURN expected.selected_source_record_pk AS selected_source_record_pk,
+       expected.relationship_element_id AS relationship_element_id,
+       expected.relationship_type AS relationship_type,
+       expected.direction AS direction,
+       CASE WHEN source IS NULL THEN null ELSE elementId(source) END AS endpoint_element_id,
+       CASE WHEN source IS NULL THEN [] ELSE labels(source) END AS endpoint_labels,
+       source.source_key AS endpoint_source_key
+ORDER BY selected_source_record_pk, relationship_element_id
+"""

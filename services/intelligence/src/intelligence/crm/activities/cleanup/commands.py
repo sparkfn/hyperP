@@ -7,31 +7,39 @@ from functools import partial
 from pathlib import Path
 from typing import Literal
 
-from intelligence.crm.activities.cleanup.admission import admit
+from intelligence.crm.activities.cleanup.admission import AdmittedArchive, admit
 from intelligence.crm.activities.cleanup.command_evidence import (
     _authorization,
     _bind_plan_to_receipt,
     _create_receipt,
     _live_identities,
+    _quiescence,
     _receipt,
     _receipt_identities,
     _require_receipt_identities,
 )
 from intelligence.crm.activities.cleanup.command_execution import (
     _execute,
+    _resolve_lost_ack,
     _run_id,
     _verify,
     _write,
 )
 from intelligence.crm.activities.cleanup.config import CleanupConfig
 from intelligence.crm.activities.cleanup.models import CleanupRequest
-from intelligence.crm.activities.cleanup.planning import BoundedCleanupRepository, plan_cleanup
+from intelligence.crm.activities.cleanup.planning import (
+    BoundedCleanupRepository,
+    CleanupPlanning,
+    plan_cleanup,
+)
 from intelligence.crm.activities.cleanup.receipt import CleanupReceipt, receipt_relative_path
+from intelligence.crm.activities.cleanup.types import CleanupTarget
 from intelligence.registry import Cancelled, RegisteredCommand, Registry
 from intelligence.repositories.neo4j.crm_activity_cleanup import Neo4jCrmActivityCleanupRepository
 from intelligence.repositories.protocols.crm_activity_cleanup import (
     CleanupPlan,
     CrmActivityCleanupRepository,
+    LiveTargetIdentity,
 )
 from intelligence.state import State
 
@@ -57,6 +65,8 @@ def registry(
     receipt_run_id: str | None = None,
     receipt_digest: str | None = None,
     cleanup_run_id: str | None = None,
+    quiescence_run_id: str | None = None,
+    quiescence_digest: str | None = None,
 ) -> Registry:
     """Register one picklable request-scoped handler; production remains empty."""
     handler = partial(
@@ -67,6 +77,8 @@ def registry(
         receipt_run_id,
         receipt_digest,
         cleanup_run_id,
+        quiescence_run_id,
+        quiescence_digest,
     )
     command = RegisteredCommand(
         "crm_activities_cleanup_" + operation.replace("-", "_"),
@@ -84,6 +96,8 @@ def _handler(
     receipt_run_id: str | None,
     receipt_digest: str | None,
     cleanup_run_id: str | None,
+    quiescence_run_id: str | None,
+    quiescence_digest: str | None,
     staging: Path,
     cancelled: Cancelled,
 ) -> None:
@@ -106,6 +120,8 @@ def _handler(
             receipt_run_id,
             receipt_digest,
             cleanup_run_id,
+            quiescence_run_id,
+            quiescence_digest,
         )
     finally:
         repository.close()
@@ -123,30 +139,31 @@ def _run(
     receipt_run_id: str | None,
     receipt_digest: str | None,
     cleanup_run_id: str | None,
+    quiescence_run_id: str | None,
+    quiescence_digest: str | None,
 ) -> CleanupReceipt | None:
     bounded_repository = BoundedCleanupRepository(repository)
     if operation in {"execute", "resume"} and not config.enabled:
         raise RuntimeError("CRM activity cleanup execution is disabled")
     admitted = admit(_AdmissionRuntime(state, _WorkspaceConfig(state.workspace)), request)
     authorization = _authorization(admitted)
-    from intelligence.crm.activities.cleanup.types import CleanupTarget
-
     target = CleanupTarget(
         config.environment_id,
         request.target.environment_id,
         request.target.database_identity,
         bounded_repository.database_identity(),
     )
-    planning = plan_cleanup(
-        _live_identities(admitted),
-        bounded_repository,
-        min(config.archive.max_rows, admitted.descriptor.request.max_rows),
+    quiescence = _quiescence(
+        state,
+        quiescence_run_id,
+        quiescence_digest,
+        authorization,
+        target,
     )
-    identities = planning.identities
-    inspections = planning.inspections
-    plan: CleanupPlan = planning.plan
+    identities = _live_identities(admitted)
     run_id = _run_id(cleanup_run_id)
     if operation == "dry-run":
+        planning = _plan(admitted, identities, bounded_repository, config)
         receipt = _create_receipt(
             run_id,
             authorization,
@@ -154,8 +171,9 @@ def _run(
             request.batch_size,
             config,
             admitted,
-            plan,
-            inspections,
+            planning.plan,
+            planning.inspections,
+            quiescence,
         )
         _write(staging, receipt_relative_path(staging.name), receipt.as_dict())
         from intelligence.crm.activities.cleanup import checkpoints
@@ -174,12 +192,19 @@ def _run(
         authorization,
         target,
         request,
+        quiescence,
     )
     _require_receipt_identities(receipt, identities)
     from intelligence.crm.activities.cleanup import checkpoints
 
     root = checkpoints.checkpoint_root(state.workspace, run_id, create=False)
     checkpoint = checkpoints.recover_durable_results(root, checkpoints.load(root, run_id, receipt))
+    # An intent without a result is not durable success. Reconcile it before deriving
+    # call outcomes or binding fresh graph evidence to the immutable receipt.
+    checkpoint = _resolve_lost_ack(root, checkpoint, bounded_repository, identities)
+    planning = _plan(admitted, identities, bounded_repository, config)
+    inspections = planning.inspections
+    plan: CleanupPlan = planning.plan
     durable = dict(checkpoints.durable_outcomes(root, checkpoint).outcomes)
     processed_successful = frozenset(
         item.source_record_pk
@@ -213,3 +238,17 @@ def _run(
             cancelled,
         )
     return None
+
+
+def _plan(
+    admitted: AdmittedArchive,
+    identities: tuple[LiveTargetIdentity, ...],
+    repository: BoundedCleanupRepository,
+    config: CleanupConfig,
+) -> CleanupPlanning:
+    """Build a fresh bounded graph plan after pending checkpoint evidence is resolved."""
+    return plan_cleanup(
+        identities,
+        repository,
+        min(config.archive.max_rows, admitted.descriptor.request.max_rows),
+    )

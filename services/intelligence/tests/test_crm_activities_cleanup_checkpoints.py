@@ -19,6 +19,8 @@ from intelligence.crm.activities.cleanup.types import (
     CleanupAuthorization,
     CleanupIdentity,
     CleanupTarget,
+    ProtectedSourceEndpointEvidence,
+    QuiescenceEvidence,
     ResourceCeilings,
     canonical_digest,
 )
@@ -26,6 +28,39 @@ from intelligence.crm.activities.cleanup.types import (
 
 def _digest(name: str) -> str:
     return canonical_digest({"name": name})
+
+
+def _quiescence() -> QuiescenceEvidence:
+    return QuiescenceEvidence.create(
+        "quiescence-run",
+        "archive-run",
+        "checkpoint-a",
+        "snapshot-a",
+        _digest("manifest"),
+        _digest("cleanup"),
+        "bitrix-source",
+        "bitrix-a",
+        "environment-a",
+        "database-a",
+        _digest("boundary"),
+    )
+
+
+def _source_endpoints(
+    identities: tuple[CleanupIdentity, ...],
+) -> tuple[ProtectedSourceEndpointEvidence, ...]:
+    return tuple(
+        ProtectedSourceEndpointEvidence(
+            identity.source_record_pk,
+            f"from-source-{identity.source_record_pk}",
+            "FROM_SOURCE",
+            "outbound",
+            "source-system-a",
+            ("SourceSystem",),
+            "bitrix-source",
+        )
+        for identity in sorted(identities, key=lambda item: item.source_record_pk)
+    )
 
 
 def _receipt(count: int = 2) -> CleanupReceipt:
@@ -60,8 +95,10 @@ def _receipt(count: int = 2) -> CleanupReceipt:
         1,
         ResourceCeilings(100_000, 100, 10, 10),
         "policy-v1",
+        _quiescence(),
         {"deals": 1},
         identities,
+        protected_source_endpoints=_source_endpoints(identities),
     )
 
 
@@ -109,8 +146,10 @@ def _mixed_receipt() -> CleanupReceipt:
         2,
         ResourceCeilings(100_000, 100, 10, 10),
         "policy-v1",
+        _quiescence(),
         {"deals": 1},
         identities,
+        protected_source_endpoints=_source_endpoints(identities),
     )
 
 
@@ -312,6 +351,7 @@ def test_quota_and_reconciliation_balance_contracts(tmp_path: Path) -> None:
         {},
         {"records": 1},
         {"records": 0},
+        receipt.protected_preservation,
     )
     assert parse_reconciliation(good.as_dict(), ("source-0",), receipt.logical_digest) == good
     verify_durable_partition(
@@ -338,6 +378,7 @@ def test_reconciled_checkpoint_binds_receipt_and_complete_durable_partition(tmp_
         {},
         {"records": 1},
         {"records": 0},
+        receipt.protected_preservation,
     )
     wrong_receipt = good.as_dict()
     wrong_receipt["receipt_digest"] = _digest("other-receipt")

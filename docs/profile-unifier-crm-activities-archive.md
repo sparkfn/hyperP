@@ -66,3 +66,11 @@ Only closed, enumerated ownership may be deleted; no broad graph scan, interpola
 delete, or `DETACH DELETE` is available. Persistent checkpoint evidence records attempts, batch intents,
 results, recovery reconciliation, and a balanced terminal partition. Verification proves selected absence
 and protected-baseline preservation without changing the accepted archive.
+
+Cleanup dry-run, execute, resume, and verify require a completed State-registered operational
+quiescence artifact produced by the separate live archive acceptance workflow. The artifact binds
+the accepted run, checkpoint, logical snapshot, manifest, cleanup identity, source key and
+instance, environment, database identity, and frozen boundary. Graph write locks are
+defense-in-depth only: they do not prove that a writer cannot create an absent identity. Protected
+preservation evidence covers only the finite, exact endpoints and relationships recorded in the
+receipt; it is not a graph-wide class-preservation proof.

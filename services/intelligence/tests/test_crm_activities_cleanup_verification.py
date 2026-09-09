@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import cast
+
 import pytest
 from intelligence.artifacts import canonical_json
 from intelligence.crm.activities.cleanup.command_evidence import (
@@ -14,11 +16,14 @@ from intelligence.crm.activities.cleanup.types import (
     CleanupAuthorization,
     CleanupIdentity,
     CleanupTarget,
+    ProtectedSourceEndpointEvidence,
+    QuiescenceEvidence,
     ResourceCeilings,
     canonical_digest,
 )
 from intelligence.crm.activities.cleanup.verification import verify_protected_evidence
 from intelligence.repositories.protocols.crm_activity_cleanup import (
+    CrmActivityCleanupRepository,
     EndpointIdentity,
     IncidentRelationship,
     ProtectedEvidence,
@@ -27,6 +32,34 @@ from intelligence.repositories.protocols.crm_activity_cleanup import (
 
 def _digest(value: str) -> str:
     return canonical_digest({"value": value})
+
+
+def _quiescence() -> QuiescenceEvidence:
+    return QuiescenceEvidence.create(
+        "quiescence-run",
+        "archive-run",
+        "checkpoint-a",
+        "snapshot-a",
+        _digest("manifest"),
+        _digest("cleanup"),
+        "bitrix-source",
+        "bitrix-a",
+        "environment-a",
+        "database-a",
+        _digest("boundary"),
+    )
+
+
+def _source_endpoint(identity: CleanupIdentity) -> ProtectedSourceEndpointEvidence:
+    return ProtectedSourceEndpointEvidence(
+        identity.source_record_pk,
+        f"from-source-{identity.source_record_pk}",
+        "FROM_SOURCE",
+        "outbound",
+        "source-system-a",
+        ("SourceSystem",),
+        "bitrix-source",
+    )
 
 
 def _receipt() -> CleanupReceipt:
@@ -77,9 +110,11 @@ def _receipt() -> CleanupReceipt:
         1,
         ResourceCeilings(100_000, 100, 10, 10),
         "policy-v1",
+        _quiescence(),
         {"protected": 1},
         (identity,),
         (protected,),
+        (_source_endpoint(identity),),
     )
 
 
@@ -106,8 +141,10 @@ def _companion_receipt() -> CleanupReceipt:
         receipt.batch_size,
         receipt.resource_ceilings,
         receipt.policy_version,
+        _quiescence(),
         dict(receipt.protected_baseline),
         (activity, call),
+        protected_source_endpoints=(_source_endpoint(activity), _source_endpoint(call)),
         authorized_companion_relationships=(
             AuthorizedCompanionRelationship(
                 "child-edge", "CHILD_OF", "call-a", "source-a", "outbound", "inbound"
@@ -164,11 +201,14 @@ def test_receipt_round_trips_exact_protected_relationship_evidence() -> None:
     assert "relationship-a" in str(receipt.as_dict())
     proof = receipt.as_dict()["protected_preservation"]
     assert proof == {
-        "schema_version": "crm-activities-cleanup-protected-preservation-v1",
+        "schema_version": "crm-activities-cleanup-protected-preservation-v2",
+        "scope": "exact-selected-from-source-endpoints-and-unowned-relationships",
         "selected_identity_count": 1,
         "selected_identity_digest": receipt.protected_preservation.selected_identity_digest,
         "relationship_count": 1,
         "relationship_digest": receipt.protected_preservation.relationship_digest,
+        "source_endpoint_count": 1,
+        "source_endpoint_digest": receipt.protected_preservation.source_endpoint_digest,
     }
 
 
@@ -180,7 +220,12 @@ def test_receipt_serialization_never_contains_raw_identifier_value() -> None:
     assert sentinel not in serialized
     assert sentinel not in checkpoint_binding
     assert "identifier_value" not in checkpoint_binding
-    endpoint = receipt.as_dict()["protected_evidence"][0]["relationship"]["other_endpoint"]
+    protected = receipt.as_dict()["protected_evidence"]
+    assert isinstance(protected, list) and protected and isinstance(protected[0], dict)
+    relationship = protected[0]["relationship"]
+    assert isinstance(relationship, dict)
+    endpoint = relationship["other_endpoint"]
+    assert isinstance(endpoint, dict)
     assert endpoint["identifier_comparison_token"] == "opaque-identifier-node-a"
     assert "identifier_value" not in endpoint
 
@@ -194,13 +239,54 @@ def test_protected_preservation_proof_rejects_tampering() -> None:
         CleanupReceipt.parse(value)
 
 
+def test_source_endpoint_proof_is_exact_bounded_and_rejects_missing_or_tampered_evidence() -> None:
+    receipt = _receipt()
+    payload = receipt.as_dict()
+    endpoints = payload["protected_source_endpoints"]
+    assert isinstance(endpoints, list) and len(endpoints) == 1 and isinstance(endpoints[0], dict)
+    endpoint = endpoints[0]
+    assert endpoint["selected_source_record_pk"] == "source-a"
+    assert endpoint["relationship_type"] == "FROM_SOURCE"
+    assert endpoint["direction"] == "outbound"
+    assert endpoint["endpoint_labels"] == ["SourceSystem"]
+
+    missing = receipt.as_dict()
+    missing["protected_source_endpoints"] = []
+    with pytest.raises(ValueError, match="protected preservation proof"):
+        CleanupReceipt.parse(missing)
+
+    tampered = receipt.as_dict()
+    tampered_endpoints = tampered["protected_source_endpoints"]
+    assert isinstance(tampered_endpoints, list) and isinstance(tampered_endpoints[0], dict)
+    tampered_endpoints[0]["endpoint_source_key"] = "other-source"
+    proof = tampered["protected_preservation"]
+    assert isinstance(proof, dict)
+    proof["source_endpoint_digest"] = canonical_digest(tampered_endpoints)
+    with pytest.raises(ValueError, match="quiescence"):
+        CleanupReceipt.parse(tampered)
+
+
+def test_source_endpoint_proof_excludes_raw_endpoint_properties() -> None:
+    receipt = _receipt()
+    payload = receipt.as_dict()
+    serialized = canonical_json(payload)
+    assert "SENSITIVE-SOURCE-ENDPOINT-PROPERTY" not in serialized
+    endpoints = payload["protected_source_endpoints"]
+    assert isinstance(endpoints, list) and isinstance(endpoints[0], dict)
+    endpoints[0]["raw_source_uri"] = "SENSITIVE-SOURCE-ENDPOINT-PROPERTY"
+    with pytest.raises(ValueError, match="schema"):
+        CleanupReceipt.parse(payload)
+
+
 def test_protected_verification_is_read_only_and_fails_closed() -> None:
     receipt = _receipt()
     repository = _Repository()
-    verify_protected_evidence(repository, receipt)
+    verify_protected_evidence(cast(CrmActivityCleanupRepository, repository), receipt)
     assert repository.calls == 1
     with pytest.raises(RuntimeError, match="protected evidence"):
-        verify_protected_evidence(_Repository(receipt.protected_evidence), receipt)
+        verify_protected_evidence(
+            cast(CrmActivityCleanupRepository, _Repository(receipt.protected_evidence)), receipt
+        )
 
 
 def test_prior_call_adjustment_allows_only_exact_authorized_parent_edge_removals() -> None:

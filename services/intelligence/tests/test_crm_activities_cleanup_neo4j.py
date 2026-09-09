@@ -10,6 +10,7 @@ from uuid import uuid4
 import pytest
 from intelligence.artifacts import canonical_json
 from intelligence.crm.activities.cleanup.receipt import _protected_dict
+from intelligence.crm.activities.cleanup.types import ProtectedSourceEndpointEvidence
 from intelligence.repositories.neo4j.crm_activity_cleanup import (
     Neo4jCrmActivityCleanupRepository,
 )
@@ -207,6 +208,21 @@ def test_crm_activities_neo4j_database_identity_and_selected_activity_call_are_d
     try:
         database_identity = repository.database_identity()
         plan = _plan(repository, identities)
+        activity_inspection = repository.inspect((activity.source_record_pk,))[0]
+        source_relationship = next(
+            item
+            for item in activity_inspection.incident_relationships
+            if item.relationship_type == "FROM_SOURCE"
+        )
+        source_endpoint = ProtectedSourceEndpointEvidence(
+            activity.source_record_pk,
+            source_relationship.relationship_element_id,
+            "FROM_SOURCE",
+            "outbound",
+            source_relationship.other_endpoint.element_id,
+            source_relationship.other_endpoint.labels,
+            activity.source_key,
+        )
         assert database_identity
         assert tuple(item.target.source_record_pk for item in plan.expected_deletions) == tuple(
             item.source_record_pk for item in identities
@@ -214,6 +230,7 @@ def test_crm_activities_neo4j_database_identity_and_selected_activity_call_are_d
         outcome = repository.delete_batch(database_identity, plan.expected_deletions)
         assert outcome.mutation_applied is True
         assert [item.classification for item in outcome.outcomes] == ["deleted", "deleted"]
+        assert repository.verify_protected_source_endpoints((source_endpoint,)) == ()
         inspected = repository.inspect(tuple(item.source_record_pk for item in identities))
     finally:
         repository.close()
@@ -225,6 +242,47 @@ def test_crm_activities_neo4j_database_identity_and_selected_activity_call_are_d
         ).single()
     assert row is not None
     assert row["count"] == 1
+
+
+@pytest.mark.parametrize("use_required_absence_entry", (False, True))
+def test_crm_activities_neo4j_canonicalizes_calls_first_command_facts_before_transaction(
+    graph: GraphFixture,
+    use_required_absence_entry: bool,
+) -> None:
+    driver, _, _, _, _, _, fixture_id = graph
+    activity = _create_activity(graph, f"a-parent-{fixture_id}")
+    call = _create_call(graph, f"z-call-{fixture_id}", activity)
+    repository = _repository(graph)
+    try:
+        database_identity = repository.database_identity()
+        plan = _plan(repository, (activity, call))
+        facts_by_key = {item.target.source_record_pk: item for item in plan.expected_deletions}
+        command_scheduled_facts = (
+            facts_by_key[call.source_record_pk],
+            facts_by_key[activity.source_record_pk],
+        )
+        outcome = (
+            repository.delete_batch_with_required_absences(
+                database_identity,
+                command_scheduled_facts,
+                (),
+            )
+            if use_required_absence_entry
+            else repository.delete_batch(database_identity, command_scheduled_facts)
+        )
+        inspected = repository.inspect((activity.source_record_pk, call.source_record_pk))
+    finally:
+        repository.close()
+    assert outcome == BatchOutcome(
+        database_identity,
+        (
+            RecordOutcome(activity.source_record_pk, "deleted", "deleted_after_revalidation"),
+            RecordOutcome(call.source_record_pk, "deleted", "deleted_after_revalidation"),
+        ),
+        True,
+    )
+    assert [item.matching_node_count for item in inspected] == [0, 0]
+    assert _count(driver, fixture_id) == (1, 0)
 
 
 def test_crm_activities_neo4j_exact_absence_is_not_authorization_for_a_replacement(

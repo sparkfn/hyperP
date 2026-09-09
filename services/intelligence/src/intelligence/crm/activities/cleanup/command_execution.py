@@ -10,7 +10,10 @@ from intelligence.artifacts import canonical_json
 from intelligence.crm.activities.cleanup import checkpoints
 from intelligence.crm.activities.cleanup.receipt import CleanupReceipt
 from intelligence.crm.activities.cleanup.reconciliation import reconcile
-from intelligence.crm.activities.cleanup.types import canonical_digest
+from intelligence.crm.activities.cleanup.types import (
+    ProtectedSourceEndpointEvidence,
+    canonical_digest,
+)
 from intelligence.registry import Cancelled
 from intelligence.repositories.protocols.crm_activity_cleanup import (
     BatchOutcome,
@@ -69,6 +72,7 @@ def _execute(
         tuple(sorted(item.source_record_pk for item in receipt.identities))
     )
     missing_protected = repository.verify_protected(receipt.protected_evidence)
+    _verify_protected_source_endpoints(repository, receipt.protected_source_endpoints)
     reconciliation = reconcile(
         checkpoint.receipt_digest,
         tuple(item.source_record_pk for item in receipt.identities),
@@ -76,6 +80,7 @@ def _execute(
         codes,
         dict(receipt.protected_baseline),
         _after_counts(receipt, final_inspections, missing_protected),
+        receipt.protected_preservation,
     )
     checkpoints.write_reconciliation(root, checkpoint, reconciliation.as_dict())
 
@@ -331,6 +336,7 @@ def _verify(
     missing_protected = repository.verify_protected(receipt.protected_evidence)
     if missing_protected != ():
         raise RuntimeError("cleanup protected evidence changed")
+    _verify_protected_source_endpoints(repository, receipt.protected_source_endpoints)
     if dict(reconciliation.before_counts) != dict(receipt.protected_baseline) or dict(
         reconciliation.after_counts
     ) != _after_counts(receipt, inspections, missing_protected):
@@ -365,6 +371,21 @@ def _after_counts(
         ),
         "protected_evidence_count": len(receipt.protected_evidence) - len(missing_protected),
     }
+
+
+def _verify_protected_source_endpoints(
+    repository: CrmActivityCleanupRepository,
+    endpoints: tuple[ProtectedSourceEndpointEvidence, ...],
+) -> None:
+    """Require the finite SourceSystem preservation adapter; never infer its success."""
+    method = getattr(repository, "verify_protected_source_endpoints", None)
+    if not callable(method):
+        raise RuntimeError(
+            "cleanup repository requires finite protected source endpoint verification"
+        )
+    missing = method(endpoints)
+    if missing != ():
+        raise RuntimeError("cleanup protected source endpoint evidence changed")
 
 
 def _run_id(value: str | None) -> str:

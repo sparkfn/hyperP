@@ -10,6 +10,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal, Protocol, TypedDict
 
+from intelligence.crm.activities.cleanup.types import ProtectedSourceEndpointEvidence
+
 CleanupClassification = Literal["deleted", "already_absent", "retained", "conflict", "failed"]
 RelationshipDirection = Literal["inbound", "outbound", "self"]
 RecordType = Literal["crm_history", "call"]
@@ -336,6 +338,18 @@ class ExpectedDeletionFact:
             raise ValueError("expected deletion refers to an unobserved relationship")
 
 
+def canonical_expected_deletions(
+    values: tuple[ExpectedDeletionFact, ...],
+) -> tuple[ExpectedDeletionFact, ...]:
+    """Order deletion facts for the lexically ordered repository write contract.
+
+    Receipt scheduling may deliberately put companion calls before their parent
+    activities. This ordering is only for execution scheduling: repository inputs
+    and outcomes remain keyed by the canonical source-record identity order.
+    """
+    return tuple(sorted(values, key=lambda item: item.target.source_record_pk))
+
+
 @dataclass(frozen=True)
 class RecordOutcome:
     source_record_pk: str
@@ -411,6 +425,10 @@ class CrmActivityCleanupRepository(Protocol):
     def verify_protected(
         self, protected: tuple[ProtectedEvidence, ...]
     ) -> tuple[ProtectedEvidence, ...]: ...
+
+    def verify_protected_source_endpoints(
+        self, endpoints: tuple[ProtectedSourceEndpointEvidence, ...]
+    ) -> tuple[ProtectedSourceEndpointEvidence, ...]: ...
 
     def close(self) -> None: ...
 

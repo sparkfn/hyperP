@@ -12,6 +12,8 @@ from intelligence.crm.activities.cleanup.types import (
     CleanupAuthorization,
     CleanupIdentity,
     CleanupTarget,
+    ProtectedSourceEndpointEvidence,
+    QuiescenceEvidence,
     ResourceCeilings,
     canonical_digest,
 )
@@ -31,23 +33,49 @@ def _receipt() -> CleanupReceipt:
         0,
         canonical_digest("deps"),
     )
+    authorization = CleanupAuthorization(
+        "checkpoint-a",
+        "archive-a",
+        "snapshot-a",
+        canonical_digest("manifest"),
+        canonical_digest("boundary"),
+        canonical_digest("cleanup"),
+        "archive-db",
+    )
+    target = CleanupTarget("environment-a", "environment-a", "database-a", "database-a")
+    quiescence = QuiescenceEvidence.create(
+        "quiescence-a",
+        "archive-a",
+        "checkpoint-a",
+        "snapshot-a",
+        canonical_digest("manifest"),
+        canonical_digest("cleanup"),
+        "bitrix_chat",
+        "bitrix-a",
+        "environment-a",
+        "database-a",
+        canonical_digest("boundary"),
+    )
+    endpoint = ProtectedSourceEndpointEvidence(
+        "source-a",
+        "relationship-a",
+        "FROM_SOURCE",
+        "outbound",
+        "source-element-a",
+        ("SourceSystem",),
+        "bitrix_chat",
+    )
     return CleanupReceipt.create(
         "cleanup-a",
-        CleanupAuthorization(
-            "checkpoint-a",
-            "archive-a",
-            "snapshot-a",
-            canonical_digest("manifest"),
-            canonical_digest("boundary"),
-            canonical_digest("cleanup"),
-            "archive-db",
-        ),
-        CleanupTarget("environment-a", "environment-a", "database-a", "database-a"),
+        authorization,
+        target,
         1,
         ResourceCeilings(100_000, 100, 10, 10),
         "policy-v1",
+        quiescence,
         {},
         (identity,),
+        protected_source_endpoints=(endpoint,),
     )
 
 
@@ -61,12 +89,13 @@ def test_status_reads_only_validated_checkpoint_evidence(tmp_path: Path) -> None
         root, checkpoint, 1, {"source-a": "already_absent"}, {}
     )
     value = {
-        "schema_version": "crm-activities-cleanup-reconciliation-v1",
+        "schema_version": "crm-activities-cleanup-reconciliation-v2",
         "receipt_digest": receipt.logical_digest,
         "outcomes": {"source-a": "already_absent"},
         "failure_codes": {},
         "before_counts": {},
         "after_counts": {},
+        "protected_preservation": receipt.protected_preservation.as_dict(),
         "counts": {"deleted": 0, "already_absent": 1, "retained": 0, "conflict": 0, "failed": 0},
         "authorized_count": 1,
         "unexplained_remainder": 0,

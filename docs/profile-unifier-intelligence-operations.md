@@ -138,3 +138,11 @@ same-container operator command therefore cannot bypass unresolved cleanup. Lega
 with no persisted limits emit schema-v1 evidence with empty limits rather than fabricated defaults.
 Backup bundles use an independent format version and continue to verify pre-v5 schema-4 bundles
 whose snapshots lack persisted limits.
+
+Cleanup dry-run, execute, resume, and verify require a completed State-registered operational
+quiescence artifact produced by the separate live archive acceptance workflow. The artifact binds
+the accepted run, checkpoint, logical snapshot, manifest, cleanup identity, source key and
+instance, environment, database identity, and frozen boundary. Graph write locks are
+defense-in-depth only: they do not prove that a writer cannot create an absent identity. Protected
+preservation evidence covers only the finite, exact endpoints and relationships recorded in the
+receipt; it is not a graph-wide class-preservation proof.
