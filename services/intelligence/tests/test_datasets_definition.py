@@ -159,6 +159,10 @@ def test_independent_horizon_label_and_partial_activity_lower_bound() -> None:
     assert row.horizon_source_record_pk == "pk-2"
     assert row.selected_identity_global_revision == 1
     assert row.horizon_version_age_seconds == 43_200
+    assert row.selected_identity_event_id == "identity-a"
+    assert row.horizon_source_record_id == "bitrix-crm-deal-42"
+    assert row.horizon_source_record_version == 2
+    assert row.horizon_observed_at == "2026-01-02T00:00:00Z"
 
 
 def test_absent_partial_archive_evidence_is_null_not_zero_and_digest_is_stable() -> None:
@@ -365,6 +369,8 @@ def test_identity_supersession_and_future_evidence_never_fall_back() -> None:
     )
     result = compute(replace(inputs, deals=replace(inputs.deals, identities=(prior, backdated))))
     assert result.rows[0].identity_reason == "identity_unresolved"
+    assert result.rows[0].selected_identity_global_revision == 2
+    assert result.rows[0].selected_identity_event_id == "identity-a"
 
 
 def test_graph_only_multiple_and_unresolved_parents_have_specific_exclusions() -> None:
@@ -470,3 +476,19 @@ def test_competing_source_lineages_for_one_entity_fail_closed() -> None:
     )
     with pytest.raises(ValueError, match="competing source record lineages"):
         compute(replace(inputs, deals=replace(inputs.deals, deals=(first, tied_second))))
+
+
+def test_feature_projection_excludes_post_cutoff_provenance() -> None:
+    from intelligence.datasets.specification import definition
+
+    inputs = _inputs(False)
+    base = compute(inputs).rows[0].as_dict()
+    later = replace(inputs.deals.deals[1], observed_at="2026-01-02T06:00:00Z")
+    changed = (
+        compute(replace(inputs, deals=replace(inputs.deals, deals=(inputs.deals.deals[0], later))))
+        .rows[0]
+        .as_dict()
+    )
+    fields = definition()["feature_allowlist"]
+    assert isinstance(fields, list)
+    assert {field: base[field] for field in fields} == {field: changed[field] for field in fields}

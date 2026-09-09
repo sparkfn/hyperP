@@ -9,7 +9,7 @@ import pytest
 from intelligence.artifacts import canonical_json
 from intelligence.datasets import cli
 from intelligence.datasets.admission import admit_activities
-from intelligence.datasets.catalog import conflicts, entries
+from intelligence.datasets.catalog import conflicts, entries, find_run
 from intelligence.datasets.models import canonical_digest
 from intelligence.models import OutputInventory, Run
 from test_datasets_admission import _activity_run, _Config, _Runtime
@@ -74,6 +74,21 @@ def test_catalog_missing_descriptor_directory_fails_closed(tmp_path: Path) -> No
         entries(tmp_path)
     with pytest.raises(ValueError):
         conflicts(tmp_path, descriptor.request_digest, "0" * 64)
+
+
+def test_catalog_fails_closed_when_terminal_manifest_outlives_moved_run_output(
+    tmp_path: Path,
+) -> None:
+    run_id, descriptor = _publish_dataset(tmp_path)
+    assert entries(tmp_path)[0].run_id == run_id
+    moved = tmp_path / "moved-output"
+    (tmp_path / "outputs" / run_id).rename(moved)
+    with pytest.raises(ValueError):
+        entries(tmp_path)
+    with pytest.raises(ValueError):
+        conflicts(tmp_path, descriptor.request_digest, "0" * 64)
+    with pytest.raises(ValueError):
+        find_run(tmp_path, run_id)
 
 
 class _VerifyState:

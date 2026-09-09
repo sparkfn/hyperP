@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from datetime import UTC, datetime
+from decimal import Decimal
 from hashlib import sha256
 from pathlib import Path
 from typing import Literal
@@ -67,9 +69,23 @@ def parse_instant(value: str, field: str) -> datetime:
     return parsed.astimezone(UTC)
 
 
+def instant_key(value: str, field: str) -> tuple[datetime, Decimal]:
+    """Return a lossless UTC second/fraction comparison key for source instants."""
+    match = re.fullmatch(r"(.+?)(?:\.(\d+))?(Z|[+-]\d\d:\d\d)", value)
+    if match is None:
+        raise ValueError(f"{field} must be an ISO-8601 timestamp")
+    base, fraction, zone = match.groups()
+    second = parse_instant(f"{base}{zone}", field)
+    return second, Decimal(f"0.{fraction or '0'}")
+
+
 def duration_seconds(start: str, end: str) -> int:
     """Return a non-negative integer duration without fractional-time encoding."""
-    seconds = int((parse_instant(end, "end") - parse_instant(start, "start")).total_seconds())
+    end_second, end_fraction = instant_key(end, "end")
+    start_second, start_fraction = instant_key(start, "start")
+    seconds = int(
+        Decimal((end_second - start_second).total_seconds()) + end_fraction - start_fraction
+    )
     if seconds < 0:
         raise ValueError("duration cannot be negative")
     return seconds
@@ -324,12 +340,19 @@ class DatasetRow:
     horizon_source_record_pk: str | None
     person_id: str | None
     selected_identity_global_revision: int | None
+    selected_identity_event_id: str | None
     category_id: str | None
     stage_id: str | None
     stage_semantic_id: str | None
     deal_age_seconds: int | None
     source_version_age_seconds: int | None
     horizon_version_age_seconds: int | None
+    horizon_source_record_id: str | None
+    horizon_source_record_version: int | None
+    horizon_observed_at: str | None
+    horizon_available_at: str | None
+    horizon_first_known_at: str | None
+    horizon_source_effective_at: str | None
     archived_activity_count_lower_bound: int | None
     companion_call_count_lower_bound: int | None
     seconds_since_last_eligible_archived_activity: int | None
@@ -359,6 +382,7 @@ class DatasetRow:
             "label_reason": self.label_reason,
             "person_id": self.person_id,
             "selected_identity_global_revision": self.selected_identity_global_revision,
+            "selected_identity_event_id": self.selected_identity_event_id,
             "seconds_since_last_eligible_archived_activity": (
                 self.seconds_since_last_eligible_archived_activity
             ),
@@ -367,6 +391,12 @@ class DatasetRow:
             "source_system": self.source_system,
             "source_version_age_seconds": self.source_version_age_seconds,
             "horizon_version_age_seconds": self.horizon_version_age_seconds,
+            "horizon_source_record_id": self.horizon_source_record_id,
+            "horizon_source_record_version": self.horizon_source_record_version,
+            "horizon_observed_at": self.horizon_observed_at,
+            "horizon_available_at": self.horizon_available_at,
+            "horizon_first_known_at": self.horizon_first_known_at,
+            "horizon_source_effective_at": self.horizon_source_effective_at,
             "included_activity_join_corroboration": self.included_activity_join_corroboration,
             "stage_id": self.stage_id,
             "stage_semantic_id": self.stage_semantic_id,

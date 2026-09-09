@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from intelligence.crm.activities.models import ArchiveRecord, ParentReference
 from intelligence.crm_deal_refs.models import DealReference
-from intelligence.datasets.models import SOURCE_SYSTEM, AcceptedInputs, parse_instant
+from intelligence.datasets.models import SOURCE_SYSTEM, AcceptedInputs, instant_key
 
 
 @dataclass(frozen=True)
@@ -110,9 +110,9 @@ def activity_event(record: ArchiveRecord, cutoff: str) -> str | None:
     if any(value is None for value in evidence):
         return None
     try:
-        limit = parse_instant(cutoff, "cutoff")
+        limit = instant_key(cutoff, "cutoff")
         if not all(
-            parse_instant(str(value), "activity temporal evidence") <= limit for value in evidence
+            instant_key(str(value), "activity temporal evidence") <= limit for value in evidence
         ):
             return None
     except ValueError:

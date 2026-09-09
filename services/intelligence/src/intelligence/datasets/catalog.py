@@ -6,6 +6,7 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
+from intelligence.artifacts import read_manifest, run_log_inventory
 from intelligence.crm.activities.path_safety import confined_directory
 from intelligence.datasets.artifacts import DatasetDescriptor, parse_descriptor, verify_dataset
 from intelligence.datasets.bounds import (
@@ -43,17 +44,15 @@ class CatalogEntry:
 
 def entries(workspace: Path, budget: ReadBudget | None = None) -> tuple[CatalogEntry, ...]:
     """Enumerate bounded accepted entries; overflow never means no replay conflict."""
-    outputs = _confined(workspace, ("outputs",))
-    _directory(outputs, "dataset outputs")
     read_budget = budget or _budget()
-    runs = _children(outputs, read_budget, "dataset output run")
-    if len(runs) > MAX_CATALOG_RUNS:
+    run_ids = _manifest_run_ids(workspace, read_budget)
+    if len(run_ids) > MAX_CATALOG_RUNS:
         raise RuntimeError("dataset catalog bound exceeded")
     state = ReadOnlyState.open(workspace)
     try:
         result: list[CatalogEntry] = []
-        for root in runs:
-            result.extend(_run_entries(workspace, root, state, read_budget))
+        for run_id in run_ids:
+            result.extend(_run_entries(workspace, run_id, state, read_budget))
         return tuple(sorted(result, key=lambda item: (item.run_id, item.descriptor.dataset_id)))
     finally:
         state.close()
@@ -72,13 +71,9 @@ def find(workspace: Path, dataset_id: str, run_id: str) -> CatalogEntry:
 def find_run(workspace: Path, run_id: str) -> CatalogEntry:
     """Resolve exactly one accepted dataset from one bounded named run directory."""
     safe_component(run_id, "dataset run")
-    outputs = _confined(workspace, ("outputs",))
-    _directory(outputs, "dataset outputs")
-    root = _confined(workspace, ("outputs", run_id))
-    _directory(root, "dataset output run")
     state = ReadOnlyState.open(workspace)
     try:
-        values = _run_entries(workspace, root, state, _budget())
+        values = _run_entries(workspace, run_id, state, _budget())
     finally:
         state.close()
     if len(values) != 1:
@@ -107,11 +102,10 @@ def list_entries(workspace: Path, limit: int, after: str | None) -> tuple[Catalo
 
 def _run_entries(
     workspace: Path,
-    root: Path,
+    run_id: str,
     state: ReadOnlyState,
     budget: ReadBudget,
 ) -> list[CatalogEntry]:
-    run_id = root.name
     safe_component(run_id, "dataset run")
     run = state.inspect(run_id)
     if run is None or run.state != "completed" or run.command != "dataset_build":
@@ -119,6 +113,9 @@ def _run_entries(
     accepted = state.accepted_outputs(run_id)
     if not accepted:
         return []
+    _terminal_manifest(workspace, state, run_id, accepted)
+    root = _confined(workspace, ("outputs", run_id))
+    _directory(root, "dataset output run")
     descriptor_directory = _confined(
         workspace,
         ("outputs", run_id, "acceptance-descriptors", "datasets"),
@@ -196,6 +193,43 @@ def _children(root: Path, budget: ReadBudget, label: str) -> tuple[Path, ...]:
     except OSError as error:
         raise ValueError(f"{label} directory cannot be read") from error
     return tuple(sorted(values, key=lambda item: item.name))
+
+
+def _manifest_run_ids(workspace: Path, budget: ReadBudget) -> tuple[str, ...]:
+    directory = _confined(workspace, ("runs", "manifests"))
+    values: list[str] = []
+    for path in _files(directory, budget, "terminal manifest"):
+        if path.suffix != ".json":
+            raise ValueError("terminal manifest path is invalid")
+        run_id = path.stem
+        safe_component(run_id, "dataset run")
+        values.append(run_id)
+    if len(values) != len(set(values)):
+        raise ValueError("duplicate terminal manifest run evidence")
+    return tuple(sorted(values))
+
+
+def _terminal_manifest(
+    workspace: Path,
+    state: ReadOnlyState,
+    run_id: str,
+    accepted: tuple[OutputInventory, ...],
+) -> None:
+    run = state.inspect(run_id)
+    if run is None:
+        raise ValueError("terminal manifest run is absent from State")
+    path = _confined(workspace, ("runs", "manifests")) / f"{run_id}.json"
+    read_manifest(
+        path,
+        expected_run_id=run_id,
+        expected_command=run.command,
+        expected_state="completed",
+        expected_outputs=accepted,
+        expected_created_at=run.created_at,
+        expected_started_at=run.started_at,
+        expected_limits=dict(run.limits) if run.limits else None,
+        expected_run_log=run_log_inventory(workspace, run_id),
+    )
 
 
 def _files(root: Path, budget: ReadBudget, label: str) -> tuple[Path, ...]:

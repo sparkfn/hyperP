@@ -49,6 +49,10 @@ Identity linkage uses only #353 immutable identity revisions that were both effe
 `T`. A newer non-resolved revision prevents fallback to an older resolution. #354 Person evidence
 is never historical identity linkage and Person linkage is metadata, not a feature.
 
+The row retains non-feature provenance separately from the feature allowlist: selected identity
+revision/event, horizon source-version identity and temporal evidence, horizon staleness, and
+activity join corroboration. These fields support audit and replay but are not model features.
+
 Activity counts are lower bounds from the accepted legacy partial archive. If no eligible archived
 activity evidence exists for a deal at `T`, activity counts and recency are null with an explicit
 missingness reason, never zero. Every manifest preserves `neo4j_existing_records`,
