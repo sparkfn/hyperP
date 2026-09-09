@@ -7,7 +7,7 @@ from dataclasses import dataclass
 
 from intelligence.crm.activities.models import ArchiveRecord, ParentReference
 from intelligence.crm_deal_refs.models import DealReference
-from intelligence.datasets.models import SOURCE_SYSTEM, AcceptedInputs, parse_utc
+from intelligence.datasets.models import SOURCE_SYSTEM, AcceptedInputs, parse_instant
 
 
 @dataclass(frozen=True)
@@ -15,6 +15,7 @@ class ActivityEvidence:
     event_at: str
     record_type: str
     source_record_pk: str
+    join_corroboration: str
 
 
 @dataclass(frozen=True)
@@ -35,7 +36,8 @@ class Lineage:
 @dataclass(frozen=True)
 class Join:
     target: str | None
-    reason: str | None
+    failure_reason: str | None
+    corroboration: str | None
 
 
 def deal_lineage(inputs: AcceptedInputs) -> Lineage:
@@ -70,13 +72,15 @@ def activity_evidence(
     if len(by_id) != len(inputs.activities.records):
         raise ValueError("activity inputs contain duplicate source record PKs")
     joined: dict[str, list[ActivityEvidence]] = defaultdict(list)
-    targets: dict[str, str] = {}
+    targets: dict[str, tuple[str, str]] = {}
     dispositions: list[dict[str, object]] = []
     for record in sorted(
         inputs.activities.records,
         key=lambda item: (item.record_type == "call", item.source_record_pk),
     ):
-        primary, target, reason = _activity_primary(record, inputs, lineage, by_id, targets)
+        primary, target, reason, corroboration = _activity_primary(
+            record, inputs, lineage, by_id, targets
+        )
         dispositions.append(
             {
                 "kind": "activity",
@@ -90,7 +94,12 @@ def activity_evidence(
             if event is None:
                 raise AssertionError("included activity lacks temporal evidence")
             joined[target].append(
-                ActivityEvidence(event, record.record_type, record.source_record_pk)
+                ActivityEvidence(
+                    event,
+                    record.record_type,
+                    record.source_record_pk,
+                    corroboration or "stored_parent_only",
+                )
             )
     _assert_balance(inputs, dispositions)
     return {key: tuple(value) for key, value in joined.items()}, dispositions
@@ -101,9 +110,9 @@ def activity_event(record: ArchiveRecord, cutoff: str) -> str | None:
     if any(value is None for value in evidence):
         return None
     try:
-        limit = parse_utc(cutoff, "cutoff")
+        limit = parse_instant(cutoff, "cutoff")
         if not all(
-            parse_utc(str(value), "activity temporal evidence") <= limit for value in evidence
+            parse_instant(str(value), "activity temporal evidence") <= limit for value in evidence
         ):
             return None
     except ValueError:
@@ -160,12 +169,12 @@ def _activity_primary(
     inputs: AcceptedInputs,
     lineage: Lineage,
     by_id: dict[str, ArchiveRecord],
-    targets: dict[str, str],
-) -> tuple[str, str | None, str | None]:
+    targets: dict[str, tuple[str, str]],
+) -> tuple[str, str | None, str | None, str | None]:
     if record.source_record_pk in inputs.activities.rejected_ids:
-        return "source_rejected", None, "source_rejected"
+        return "source_rejected", None, "source_rejected", None
     if record.source_record_pk in inputs.activities.quarantined_ids:
-        return "source_quarantined", None, "source_quarantined"
+        return "source_quarantined", None, "source_quarantined", None
     if record.source_record_pk not in inputs.activities.accepted_ids:
         raise ValueError("activity record lacks a source disposition")
     join = (
@@ -174,11 +183,18 @@ def _activity_primary(
         else call_parent_target(record, by_id, targets)
     )
     if join.target is None:
-        return "join_excluded", None, join.reason
-    targets[record.source_record_pk] = join.target
+        return "join_excluded", None, join.failure_reason, None
     if activity_event(record, inputs.request.feature_cutoff) is None:
-        return "temporally_excluded", None, "activity_temporal_evidence_unavailable_or_after_cutoff"
-    return "feature_included", join.target, None
+        return (
+            "temporally_excluded",
+            None,
+            "activity_temporal_evidence_unavailable_or_after_cutoff",
+            None,
+        )
+    if join.corroboration is None:
+        raise AssertionError("successful join lacks corroboration")
+    targets[record.source_record_pk] = (join.target, join.corroboration)
+    return "feature_included", join.target, None, join.corroboration
 
 
 def stored_parent_target(record: ArchiveRecord, inputs: AcceptedInputs, lineage: Lineage) -> Join:
@@ -191,30 +207,36 @@ def stored_parent_target(record: ArchiveRecord, inputs: AcceptedInputs, lineage:
         or stored.source_record_id is None
     ):
         return Join(
-            None, "graph_only_deal_parent" if candidates else "missing_or_invalid_stored_parent"
+            None,
+            "graph_only_deal_parent" if candidates else "missing_or_invalid_stored_parent",
+            None,
         )
     target = lineage.by_source_record_id.get(stored.source_record_id)
     if target is None:
-        return Join(None, "stored_parent_deal_not_in_lineage")
+        return Join(None, "stored_parent_deal_not_in_lineage", None)
     if (
         stored.source_record_pk is not None
         and stored.source_record_pk not in target.source_record_pks
     ):
-        return Join(None, "stored_parent_pk_not_in_lineage")
+        return Join(None, "stored_parent_pk_not_in_lineage", None)
     if len(candidates) > 1:
-        return Join(None, "graph_multiple_deal_candidates")
+        return Join(None, "graph_multiple_deal_candidates", None)
     if len(candidates) == 1:
         conflict = _graph_conflict(stored, candidates[0])
         if conflict is not None:
-            return Join(None, conflict)
-    return Join(target.source_entity_id, None)
+            return Join(None, conflict, None)
+    return Join(
+        target.source_entity_id,
+        None,
+        "stored_parent_graph_corroborated" if candidates else "stored_parent_only",
+    )
 
 
 def call_parent_target(
-    record: ArchiveRecord, by_id: dict[str, ArchiveRecord], targets: dict[str, str]
+    record: ArchiveRecord, by_id: dict[str, ArchiveRecord], targets: dict[str, tuple[str, str]]
 ) -> Join:
     if len(record.child_parents) != 1 or len(record.details_parents) != 1:
-        return Join(None, "call_parent_shape_invalid")
+        return Join(None, "call_parent_shape_invalid", None)
     child, detail = record.child_parents[0], record.details_parents[0]
     if (
         child.record_type != "crm_history"
@@ -224,9 +246,11 @@ def call_parent_target(
         or child.source_record_pk not in by_id
         or by_id[child.source_record_pk].record_type != "crm_history"
     ):
-        return Join(None, "call_parent_reference_invalid")
-    target = targets.get(child.source_record_pk)
-    return Join(target, None if target is not None else "call_parent_join_excluded")
+        return Join(None, "call_parent_reference_invalid", None)
+    parent = targets.get(child.source_record_pk)
+    if parent is None:
+        return Join(None, "call_parent_join_excluded", None)
+    return Join(parent[0], None, parent[1])
 
 
 def _graph_conflict(stored: ParentReference, graph: ParentReference) -> str | None:

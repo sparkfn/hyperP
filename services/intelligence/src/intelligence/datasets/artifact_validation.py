@@ -130,6 +130,8 @@ def _numeric_fields(row: Mapping[str, object]) -> None:
     fields = {
         "deal_age_seconds",
         "source_version_age_seconds",
+        "horizon_version_age_seconds",
+        "selected_identity_global_revision",
         "archived_activity_count_lower_bound",
         "companion_call_count_lower_bound",
         "seconds_since_last_eligible_archived_activity",
@@ -140,6 +142,13 @@ def _numeric_fields(row: Mapping[str, object]) -> None:
             not isinstance(value, int) or isinstance(value, bool) or value < 0
         ):
             raise ValueError("dataset row numeric value is invalid")
+    if row.get("included_activity_join_corroboration") not in {
+        "none",
+        "stored_parent_only",
+        "stored_parent_graph_corroborated",
+        "mixed",
+    }:
+        raise ValueError("dataset activity join provenance is invalid")
 
 
 def _row_consistency(row: Mapping[str, object]) -> None:

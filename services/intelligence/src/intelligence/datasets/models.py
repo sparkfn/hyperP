@@ -49,22 +49,27 @@ def code_contract_fingerprint() -> str:
 
 
 def parse_utc(value: str, field: str) -> datetime:
-    """Parse a canonical timezone-aware UTC instant without accepting local ambiguity."""
+    """Parse a canonical UTC request/output instant."""
+    parsed = parse_instant(value, field)
+    if parsed.isoformat().replace("+00:00", "Z") != value:
+        raise ValueError(f"{field} must be canonical UTC")
+    return parsed
+
+
+def parse_instant(value: str, field: str) -> datetime:
+    """Parse any timezone-aware ISO-8601 source instant and normalize for comparison."""
     try:
         parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
     except ValueError as error:
         raise ValueError(f"{field} must be an ISO-8601 timestamp") from error
     if parsed.tzinfo is None:
         raise ValueError(f"{field} must include a timezone")
-    normalized = parsed.astimezone(UTC)
-    if normalized.isoformat().replace("+00:00", "Z") != value:
-        raise ValueError(f"{field} must be canonical UTC")
-    return normalized
+    return parsed.astimezone(UTC)
 
 
 def duration_seconds(start: str, end: str) -> int:
     """Return a non-negative integer duration without fractional-time encoding."""
-    seconds = int((parse_utc(end, "end") - parse_utc(start, "start")).total_seconds())
+    seconds = int((parse_instant(end, "end") - parse_instant(start, "start")).total_seconds())
     if seconds < 0:
         raise ValueError("duration cannot be negative")
     return seconds
@@ -318,15 +323,18 @@ class DatasetRow:
     feature_source_record_pk: str | None
     horizon_source_record_pk: str | None
     person_id: str | None
+    selected_identity_global_revision: int | None
     category_id: str | None
     stage_id: str | None
     stage_semantic_id: str | None
     deal_age_seconds: int | None
     source_version_age_seconds: int | None
+    horizon_version_age_seconds: int | None
     archived_activity_count_lower_bound: int | None
     companion_call_count_lower_bound: int | None
     seconds_since_last_eligible_archived_activity: int | None
     activity_coverage: str
+    included_activity_join_corroboration: str
     activity_missingness_reason: str | None
     identity_reason: str | None
     feature_reason: str | None
@@ -350,6 +358,7 @@ class DatasetRow:
             "label": self.label,
             "label_reason": self.label_reason,
             "person_id": self.person_id,
+            "selected_identity_global_revision": self.selected_identity_global_revision,
             "seconds_since_last_eligible_archived_activity": (
                 self.seconds_since_last_eligible_archived_activity
             ),
@@ -357,6 +366,8 @@ class DatasetRow:
             "source_instance_id": self.source_instance_id,
             "source_system": self.source_system,
             "source_version_age_seconds": self.source_version_age_seconds,
+            "horizon_version_age_seconds": self.horizon_version_age_seconds,
+            "included_activity_join_corroboration": self.included_activity_join_corroboration,
             "stage_id": self.stage_id,
             "stage_semantic_id": self.stage_semantic_id,
         }

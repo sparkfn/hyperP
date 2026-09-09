@@ -5,7 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from intelligence.crm_deal_refs.models import DealReference
-from intelligence.datasets.models import parse_utc
+from intelligence.datasets.models import parse_instant
 
 
 @dataclass(frozen=True)
@@ -42,8 +42,10 @@ def _eligible(record: DealReference, cutoff: str) -> bool:
     if record.source_close_date is not None:
         values += (record.source_close_date,)
     try:
-        cutoff_value = parse_utc(cutoff, "cutoff")
-        return all(parse_utc(value, "deal temporal evidence") <= cutoff_value for value in values)
+        cutoff_value = parse_instant(cutoff, "cutoff")
+        return all(
+            parse_instant(value, "deal temporal evidence") <= cutoff_value for value in values
+        )
     except ValueError:
         return False
 
@@ -55,8 +57,8 @@ def _order(record: DealReference) -> tuple[object, ...]:
     if effective is None or observed is None or available is None:
         raise ValueError("ineligible deal version cannot be ordered")
     return (
-        parse_utc(effective, "source effective"),
-        parse_utc(observed, "observed"),
-        parse_utc(available, "available"),
+        parse_instant(effective, "source effective"),
+        parse_instant(observed, "observed"),
+        parse_instant(available, "available"),
         record.key.source_record_version,
     )
