@@ -40,3 +40,29 @@ Accepted output is published only through the Intelligence runtime at `outputs/R
 The hidden checkpoint directory has independent byte and entry limits because it is outside the foundation current-run staging scan. It rejects traversal, symlinks, hard links, non-regular files, conflicting immutable writes, corrupt JSON, unsupported state, and boundary/request mismatches. Cursor/page progress advances only after durable page evidence.
 
 Use `resume` only after the foundation active-run/stale-recovery safeguards have established a safe execution domain. `verify` resolves the checkpoint's State-proven publication descriptor, derives the accepted run and logical snapshot, validates artifact/schema/inventory/partition/provenance/cleanup linkage, and writes separate verification evidence into its own current run output. A verification candidate is accepted only when a completed `crm_activities_verify` run has registered the exact descriptor-bound verification artifact; it never changes the accepted snapshot or requires retained Neo4j records.
+
+
+## Manifest-gated cleanup capability
+
+This is a disabled-by-default, CLI-only capability. It performs no live extraction or deletion when
+installed. Dry run freezes a logical `--cleanup-run-id` and bounded `--batch-size` into one canonical
+State-registered receipt. Execute, resume, and verify require that exact cleanup ID plus receipt run
+and digest; they cannot override the frozen batch size. Status reads only bounded local checkpoint
+evidence.
+
+```text
+intelligence crm activities cleanup dry-run AUTH TARGET --cleanup-run-id ID --batch-size N
+intelligence crm activities cleanup execute AUTH TARGET RECEIPT --cleanup-run-id ID
+intelligence crm activities cleanup resume AUTH TARGET RECEIPT --cleanup-run-id ID
+intelligence crm activities cleanup verify AUTH TARGET RECEIPT --cleanup-run-id ID
+intelligence crm activities cleanup status --cleanup-run-id ID
+```
+
+`INTELLIGENCE_MUTATIONS_ENABLED=true` is required for dry-run and verify because they publish
+Intelligence evidence, although their graph access is read-only. Execute and resume additionally
+require default-false `INTELLIGENCE_CRM_ACTIVITY_CLEANUP_ENABLED=true` and matching
+`INTELLIGENCE_ENVIRONMENT_ID`. Exact PK inspection exposes drift rather than treating it as absence.
+Only closed, enumerated ownership may be deleted; no broad graph scan, interpolation, neighboring-node
+delete, or `DETACH DELETE` is available. Persistent checkpoint evidence records attempts, batch intents,
+results, recovery reconciliation, and a balanced terminal partition. Verification proves selected absence
+and protected-baseline preservation without changing the accepted archive.

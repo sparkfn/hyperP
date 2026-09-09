@@ -394,3 +394,41 @@ def _validate_completed_verification(
         or sha256_json(unsigned) != artifact_digest
     ):
         raise RuntimeError("verification artifact is not bound to accepted descriptor")
+
+
+def accepted_publication_for_run(
+    runtime: RuntimeReader,
+    checkpoint_id: str,
+    accepted_run_id: str,
+    limits: ReadLimits = CANDIDATE_READ_LIMITS,
+) -> tuple[AcceptanceDescriptor, PublicationPointer]:
+    """Resolve one explicit completed archive run; ambiguity is an admission failure."""
+    budget = ReadBudget(limits)
+    candidates: list[PublicationPointer] = []
+    for name, value in _candidate_history(
+        runtime.config.workspace, checkpoint_id, PUBLICATION_PREFIX, budget
+    ):
+        pointer = parse_publication(value, checkpoint_id)
+        if name != publication_candidate_name(pointer.run_id):
+            raise ValueError("publication candidate name conflicts with its run identity")
+        if pointer.run_id == accepted_run_id:
+            candidates.append(pointer)
+    unique = {
+        (
+            item.run_id,
+            item.descriptor_relative_path,
+            item.descriptor_sha256,
+            item.descriptor_byte_count,
+        )
+        for item in candidates
+    }
+    if len(unique) != 1:
+        raise RuntimeError("accepted archive run is absent or ambiguous")
+    pointer = candidates[0]
+    state_run = _inspect(runtime.state, accepted_run_id, budget)
+    if state_run is None or state_run.state != "completed":
+        raise RuntimeError("accepted archive run is not completed")
+    descriptor = _registered_descriptor(runtime, pointer, state_run, budget, {})
+    if descriptor.checkpoint_id != checkpoint_id:
+        raise RuntimeError("accepted archive descriptor checkpoint conflicts")
+    return descriptor, pointer
