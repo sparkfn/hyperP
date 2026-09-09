@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 
 import pytest
@@ -148,6 +148,7 @@ class _Repository:
     planned: CleanupPlan | None = None
     delete_calls: int = 0
     delete_outcome: BatchOutcome | None = None
+    required_absence_calls: list[tuple[str, ...]] = field(default_factory=list)
 
     def database_identity(self) -> str:
         return "database-a"
@@ -180,6 +181,35 @@ class _Repository:
                 for item in expected
             ),
             bool(expected),
+        )
+
+    def delete_batch_with_required_absences(
+        self,
+        identity: str,
+        expected: tuple[ExpectedDeletionFact, ...],
+        required_absent: tuple[LiveTargetIdentity, ...],
+    ) -> BatchOutcome:
+        self.required_absence_calls.append(tuple(item.source_record_pk for item in required_absent))
+        outcome = self.delete_batch(identity, expected)
+        return BatchOutcome(
+            identity,
+            tuple(
+                sorted(
+                    (
+                        *outcome.outcomes,
+                        *(
+                            RecordOutcome(
+                                item.source_record_pk,
+                                "already_absent",
+                                "absent_at_mutation",
+                            )
+                            for item in required_absent
+                        ),
+                    ),
+                    key=lambda item: item.source_record_pk,
+                )
+            ),
+            outcome.mutation_applied,
         )
 
     def verify_protected(self, _protected: tuple[object, ...]) -> tuple[object, ...]:
@@ -300,6 +330,7 @@ def test_execute_progresses_batches_and_duplicate_delivery_is_idempotent(tmp_pat
     checkpoint = checkpoints.load(root, "cleanup-a", receipt)
     assert checkpoint.phase == "reconciled"
     assert repo.delete_calls == 2
+    assert repo.required_absence_calls == [("a",)]
     _execute(
         receipt,
         "cleanup-a",
@@ -311,6 +342,36 @@ def test_execute_progresses_batches_and_duplicate_delivery_is_idempotent(tmp_pat
         lambda: False,
     )
     assert repo.delete_calls == 2
+
+
+def test_current_batch_absence_is_revalidated_with_ready_deletion(tmp_path: Path) -> None:
+    receipt = _receipt(("a", "b"), 2, "cleanup-mixed-absence")
+    plan = CleanupPlan(
+        (_fact("a"),),
+        (),
+        (
+            RecordOutcome("a", "retained", "ready_for_batch_mutation"),
+            RecordOutcome("b", "already_absent", "absent_before_mutation"),
+        ),
+    )
+    repo = _Repository(planned=plan)
+    _execute(
+        receipt,
+        "cleanup-mixed-absence",
+        tmp_path,
+        repo,
+        (_identity("a"), _identity("b")),
+        plan,
+        "attempt",
+        lambda: False,
+    )
+    assert repo.required_absence_calls == [("b",)]
+    root = checkpoints.checkpoint_root(tmp_path, "cleanup-mixed-absence", create=False)
+    checkpoint = checkpoints.load(root, "cleanup-mixed-absence", receipt)
+    assert dict(checkpoints.durable_outcomes(root, checkpoint).outcomes) == {
+        "a": "deleted",
+        "b": "already_absent",
+    }
 
 
 def test_revalidation_conflict_rolls_back_batch_and_is_durably_accounted(tmp_path: Path) -> None:

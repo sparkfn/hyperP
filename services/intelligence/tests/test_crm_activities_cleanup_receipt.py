@@ -13,6 +13,7 @@ from intelligence.crm.activities.cleanup.receipt import (
     receipt_relative_path,
 )
 from intelligence.crm.activities.cleanup.types import (
+    AuthorizedCompanionRelationship,
     CleanupAuthorization,
     CleanupIdentity,
     CleanupTarget,
@@ -62,6 +63,52 @@ def _receipt() -> CleanupReceipt:
     )
 
 
+def _companion_receipt() -> CleanupReceipt:
+    receipt = _receipt()
+    activity = receipt.identities[0]
+    call = CleanupIdentity(
+        "call-a",
+        "call",
+        activity.source_instance_id,
+        activity.source_record_version,
+        "call-hash",
+        _digest("call-record"),
+        _digest("call-references"),
+        2,
+        _digest("call-relationships"),
+        2,
+        _digest("call-dependencies"),
+    )
+    return CleanupReceipt.create(
+        receipt.cleanup_run_id,
+        receipt.authorization,
+        receipt.target,
+        receipt.batch_size,
+        receipt.resource_ceilings,
+        receipt.policy_version,
+        dict(receipt.protected_baseline),
+        (activity, call),
+        authorized_companion_relationships=(
+            AuthorizedCompanionRelationship(
+                "child-edge-a",
+                "CHILD_OF",
+                call.source_record_pk,
+                activity.source_record_pk,
+                "outbound",
+                "inbound",
+            ),
+            AuthorizedCompanionRelationship(
+                "details-edge-a",
+                "DETAILS_HISTORY_ITEM",
+                call.source_record_pk,
+                activity.source_record_pk,
+                "outbound",
+                "inbound",
+            ),
+        ),
+    )
+
+
 class _State:
     def __init__(self, run: Run, outputs: tuple[OutputInventory, ...]) -> None:
         self._run = run
@@ -93,6 +140,13 @@ def test_receipt_is_deterministic_across_runtime_attempts() -> None:
     assert "receipt-run" not in canonical_json(first.as_dict())
 
 
+def test_authorized_companion_relationships_round_trip_deterministically() -> None:
+    first = _companion_receipt()
+    second = _companion_receipt()
+    assert first.as_dict() == second.as_dict()
+    assert CleanupReceipt.parse(first.as_dict()) == first
+
+
 def test_receipt_orders_companion_calls_before_activities() -> None:
     receipt = _receipt()
     activity = receipt.identities[0]
@@ -120,6 +174,37 @@ def test_receipt_orders_companion_calls_before_activities() -> None:
         (activity, call),
     )
     assert [item.record_type for item in reordered.identities] == ["call", "crm_history"]
+
+
+@pytest.mark.parametrize(
+    ("field", "value"),
+    (
+        ("relationship_element_id", "other-edge"),
+        ("call_source_record_pk", "unknown-call"),
+        ("activity_source_record_pk", "unknown-activity"),
+        ("relationship_type", "DETAILS_HISTORY_ITEM"),
+        ("call_direction", "inbound"),
+        ("activity_direction", "outbound"),
+    ),
+)
+def test_authorized_companion_relationship_tampering_fails_closed(field: str, value: str) -> None:
+    receipt = _companion_receipt()
+    payload = receipt.as_dict()
+    companions = payload["authorized_companion_relationships"]
+    assert isinstance(companions, list) and isinstance(companions[0], dict)
+    companions[0][field] = value
+    with pytest.raises(ValueError):
+        CleanupReceipt.parse(payload)
+
+
+def test_authorized_companion_relationship_digest_and_sensitive_values_are_not_serialized() -> None:
+    receipt = _companion_receipt()
+    payload = receipt.as_dict()
+    serialized = canonical_json(payload)
+    assert "SENSITIVE-IDENTIFIER-VALUE" not in serialized
+    payload["authorized_companion_relationship_digest"] = "0" * 64
+    with pytest.raises(ValueError, match="authorized companion relationship digest"):
+        CleanupReceipt.parse(payload)
 
 
 @pytest.mark.parametrize("mutation", ("sha", "bytes", "schema", "digest", "command", "extra"))

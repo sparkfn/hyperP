@@ -15,6 +15,7 @@ RelationshipDirection = Literal["inbound", "outbound", "self"]
 RecordType = Literal["crm_history", "call"]
 
 MAX_BATCH_IDENTITIES = 1_000
+MAX_AUTHORIZED_IDENTITIES = 100_000
 MAX_INCIDENT_RELATIONSHIPS = 1_000
 
 
@@ -29,7 +30,7 @@ class GraphRelationshipRow(TypedDict):
     other_source_record_pk: str | None
     other_person_id: str | None
     other_identifier_type: str | None
-    other_identifier_value: str | None
+    other_identifier_comparison_token: str | None
     other_source_key: str | None
     other_review_case_id: str | None
     other_match_decision_id: str | None
@@ -84,7 +85,12 @@ class ParentIdentity:
 
 @dataclass(frozen=True)
 class LiveTargetIdentity:
-    """One immutable manifest-authorized source record identity."""
+    """One immutable manifest-authorized source record identity.
+
+    ``source_record_id``, ``source_version_key``, and projection fields are
+    accepted-manifest facts. ``None`` is an exact expected absence, not a
+    wildcard, preserving fail-closed compatibility for legacy constructors.
+    """
 
     source_record_pk: str
     record_type: RecordType
@@ -97,6 +103,11 @@ class LiveTargetIdentity:
     source_key: str
     child_parent_source_record_pks: tuple[str, ...] = ()
     details_parent_source_record_pks: tuple[str, ...] = ()
+    source_record_id: str | None = None
+    source_version_key: str | None = None
+    history_source: str | None = None
+    projection_source: str | None = None
+    projection_version: str | None = None
 
     def __post_init__(self) -> None:
         for value, field in (
@@ -111,6 +122,14 @@ class LiveTargetIdentity:
             raise ValueError("cleanup record type is unsupported")
         _optional_text(self.lifecycle_status, "lifecycle_status")
         _optional_text(self.history_family, "history_family")
+        for optional_value, field in (
+            (self.source_record_id, "source_record_id"),
+            (self.source_version_key, "source_version_key"),
+            (self.history_source, "history_source"),
+            (self.projection_source, "projection_source"),
+            (self.projection_version, "projection_version"),
+        ):
+            _optional_text(optional_value, field)
         for values, field in (
             (self.child_parent_source_record_pks, "CHILD_OF parent identities"),
             (self.details_parent_source_record_pks, "DETAILS_HISTORY_ITEM parent identities"),
@@ -130,7 +149,7 @@ class EndpointIdentity:
     source_record_pk: str | None
     person_id: str | None
     identifier_type: str | None
-    identifier_value: str | None
+    identifier_comparison_token: str | None
     source_key: str | None
     review_case_id: str | None
     match_decision_id: str | None
@@ -142,7 +161,7 @@ class EndpointIdentity:
             (self.source_record_pk, "endpoint source_record_pk"),
             (self.person_id, "endpoint person_id"),
             (self.identifier_type, "endpoint identifier_type"),
-            (self.identifier_value, "endpoint identifier_value"),
+            (self.identifier_comparison_token, "endpoint identifier comparison token"),
             (self.source_key, "endpoint source_key"),
             (self.review_case_id, "endpoint review_case_id"),
             (self.match_decision_id, "endpoint match_decision_id"),
@@ -156,11 +175,16 @@ class EndpointIdentity:
             self.source_record_pk or "",
             self.person_id or "",
             self.identifier_type or "",
-            self.identifier_value or "",
+            self.identifier_comparison_token or "",
             self.source_key or "",
             self.review_case_id or "",
             self.match_decision_id or "",
         )
+
+    @property
+    def identifier_value(self) -> str | None:
+        """Compatibility view of the opaque token; it is never an Identifier value."""
+        return self.identifier_comparison_token
 
 
 @dataclass(frozen=True)
@@ -202,6 +226,11 @@ class ObservedRecord:
     lifecycle_status: str | None
     history_family: str | None
     stored_parent: ParentIdentity
+    source_record_id: str | None = None
+    source_version_key: str | None = None
+    history_source: str | None = None
+    projection_source: str | None = None
+    projection_version: str | None = None
 
     def __post_init__(self) -> None:
         _text(self.element_id, "record element id")
@@ -213,6 +242,11 @@ class ObservedRecord:
             (self.record_hash, "record_hash"),
             (self.lifecycle_status, "lifecycle_status"),
             (self.history_family, "history_family"),
+            (self.source_record_id, "source_record_id"),
+            (self.source_version_key, "source_version_key"),
+            (self.history_source, "history_source"),
+            (self.projection_source, "projection_source"),
+            (self.projection_version, "projection_version"),
         ):
             _optional_text(value, field)
 
@@ -315,7 +349,7 @@ class RecordOutcome:
 
 @dataclass(frozen=True)
 class BatchOutcome:
-    """Deterministic partition for every supplied batch identity."""
+    """Deterministic partition for exact deletions and required absences."""
 
     database_identity: str
     outcomes: tuple[RecordOutcome, ...]
@@ -325,7 +359,7 @@ class BatchOutcome:
         _text(self.database_identity, "database identity")
         identities = tuple(item.source_record_pk for item in self.outcomes)
         if identities:
-            _canonical_strings(identities, "batch outcome identities", MAX_BATCH_IDENTITIES)
+            _canonical_strings(identities, "batch outcome identities", MAX_AUTHORIZED_IDENTITIES)
 
     def for_classification(
         self, classification: CleanupClassification
@@ -347,7 +381,8 @@ class CleanupPlan:
         if protected != tuple(sorted(set(protected))):
             raise ValueError("protected evidence is not canonical")
         outcome_ids = tuple(item.source_record_pk for item in self.outcomes)
-        _canonical_strings(outcome_ids, "plan outcome identities", MAX_BATCH_IDENTITIES)
+        if outcome_ids:
+            _canonical_strings(outcome_ids, "plan outcome identities", MAX_BATCH_IDENTITIES)
 
 
 class CrmActivityCleanupRepository(Protocol):
@@ -378,3 +413,14 @@ class CrmActivityCleanupRepository(Protocol):
     ) -> tuple[ProtectedEvidence, ...]: ...
 
     def close(self) -> None: ...
+
+
+class RequiredAbsenceCrmActivityCleanupRepository(CrmActivityCleanupRepository, Protocol):
+    """Optional transactional extension for revalidating selected absences."""
+
+    def delete_batch_with_required_absences(
+        self,
+        database_identity: str,
+        expected: tuple[ExpectedDeletionFact, ...],
+        required_absent: tuple[LiveTargetIdentity, ...],
+    ) -> BatchOutcome: ...

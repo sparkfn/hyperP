@@ -1,64 +1,117 @@
-"""Exact accepted-run archive admission failure tests."""
+"""State-backed, bounded admission tests for accepted CRM activity archives."""
 
 from __future__ import annotations
 
-import json
+import shutil
 from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from intelligence.artifacts import canonical_json
+from intelligence.artifacts_staging import scan_staged_outputs
+from intelligence.crm.activities.acceptance import (
+    parse_descriptor,
+    publication_descriptor,
+    write_publication_descriptor,
+)
 from intelligence.crm.activities.cleanup import admission
 from intelligence.crm.activities.cleanup.models import (
     CleanupAuthorization,
     CleanupRequest,
     CleanupTarget,
 )
+from intelligence.crm.activities.dispositions import classify
+from intelligence.crm.activities.manifests import write_snapshot
+from intelligence.crm.activities.models import ArchiveRecord, ArchiveRequest, ParentReference
+from intelligence.crm.activities.reconciliation import seal
 from intelligence.models import OutputInventory
 
 
-def _request(manifest: str = "a" * 64) -> CleanupRequest:
-    return CleanupRequest(
-        CleanupAuthorization("checkpoint-a", "run-a", "snapshot-a", manifest),
-        CleanupTarget("environment-a", "database-a"),
-        1,
+def _record() -> ArchiveRecord:
+    return ArchiveRecord(
+        "activity-a",
+        "record-a",
+        "1",
+        "version-a",
+        "hash-a",
+        "bitrix-primary",
+        "bitrix_chat",
+        "crm_history",
+        "active",
+        "activity",
+        "call",
+        "bitrix_crm_activity",
+        "2",
+        "bitrix_crm_activity_v2",
+        None,
+        "2026-09-08T00:00:00Z",
+        None,
+        ParentReference(None, "bitrix-primary", "deal-a", "crm_deal", "STORED_PARENT"),
+        (),
+        (),
+        (),
+        (),
+        None,
     )
 
 
-def _snapshot(tmp_path: Path, include_record: bool = True) -> Path:
-    snapshot = tmp_path / "snapshot"
-    records = snapshot / "records"
-    records.mkdir(parents=True)
-    cleanup = {
-        "identities": [
-            {
-                "source_record_pk": "source-a",
-                "record_type": "crm_history",
-                "source_record_version": "v1",
-                "record_hash": "hash-a",
-                "lifecycle_status": "active",
-            }
-        ]
-    }
-    (snapshot / "cleanup-identities.json").write_text(json.dumps(cleanup), encoding="utf-8")
-    page = {
-        "records": []
-        if not include_record
-        else [
-            {
-                "source_record_pk": "source-a",
-                "record_type": "crm_history",
-                "source_record_version": "v1",
-                "record_hash": "hash-a",
-                "lifecycle_status": "active",
-                "source_instance_id": "bitrix-a",
-                "source_key": "bitrix_chat",
-                "history_family": "activity",
-                "stored_parent": {},
-            }
-        ]
-    }
-    (records / "page-00000001.json").write_text(json.dumps(page), encoding="utf-8")
-    return snapshot
+def _published_archive(
+    tmp_path: Path,
+) -> tuple[object, object, CleanupRequest, tuple[OutputInventory, ...]]:
+    request = ArchiveRequest("checkpoint-a", "bitrix-primary")
+    record = _record()
+    boundary = seal((record,), request)
+    staging = tmp_path / "staging" / "archive-run"
+    staging.mkdir(parents=True)
+    manifest = write_snapshot(staging, boundary, (record,), classify((record,)))
+    inventory = scan_staged_outputs(tmp_path, staging.name, 1_000_000, 100)
+    descriptor = publication_descriptor(
+        request.snapshot_id,
+        request,
+        boundary.digest,
+        staging.name,
+        "crm_activities_extract",
+        boundary.logical_snapshot_id,
+        str(manifest["digest"]),
+        str(manifest["cleanup_identity_digest"]),
+        inventory,
+    )
+    pointer = write_publication_descriptor(staging, descriptor)
+    shutil.copytree(staging, tmp_path / "outputs" / staging.name)
+    outputs = tuple(
+        OutputInventory(
+            f"outputs/{staging.name}/{item.relative_path}", item.sha256, item.byte_count
+        )
+        for item in scan_staged_outputs(tmp_path, staging.name, 1_000_000, 100)
+    )
+    cleanup = CleanupRequest(
+        CleanupAuthorization(
+            request.snapshot_id, staging.name, boundary.logical_snapshot_id, str(manifest["digest"])
+        ),
+        CleanupTarget("environment-a", "database-a"),
+        1,
+    )
+    return parse_descriptor(descriptor), pointer, cleanup, outputs
+
+
+def _runtime(tmp_path: Path, outputs: tuple[OutputInventory, ...]) -> object:
+    return SimpleNamespace(
+        config=SimpleNamespace(workspace=tmp_path),
+        state=SimpleNamespace(accepted_outputs=lambda _run: outputs),
+    )
+
+
+def test_admission_accepts_real_354_snapshot_descriptor_and_state_inventory(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    descriptor, pointer, request, outputs = _published_archive(tmp_path)
+    monkeypatch.setattr(
+        admission, "accepted_publication_for_run", lambda *_args: (descriptor, pointer)
+    )
+    admitted = admission.admit(_runtime(tmp_path, outputs), request)
+    assert admitted.descriptor == descriptor
+    assert admitted.pointer == pointer
+    assert [item["source_record_pk"] for item in admitted.identities] == ["activity-a"]
 
 
 def test_admission_rejects_locator_conflict_before_snapshot_read(
@@ -68,38 +121,42 @@ def test_admission_rejects_locator_conflict_before_snapshot_read(
     monkeypatch.setattr(
         admission, "accepted_publication_for_run", lambda *_args: (descriptor, object())
     )
+    request = CleanupRequest(
+        CleanupAuthorization("checkpoint-a", "run-a", "snapshot-a", "a" * 64),
+        CleanupTarget("environment-a", "database-a"),
+        1,
+    )
     with pytest.raises(RuntimeError, match="locators conflict"):
         admission.admit(
-            SimpleNamespace(config=SimpleNamespace(workspace=tmp_path), state=object()), _request()
+            SimpleNamespace(config=SimpleNamespace(workspace=tmp_path), state=object()), request
         )
 
 
-def test_admission_rejects_missing_record_join_and_state_inventory_tampering(
-    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+@pytest.mark.parametrize("canonical", (True, False))
+def test_admission_rejects_oversized_artifact_before_unbounded_verification(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path, canonical: bool
 ) -> None:
-    snapshot = _snapshot(tmp_path, include_record=False)
-    pointer = SimpleNamespace(
-        descriptor_relative_path="descriptor.json",
-        descriptor_sha256="c" * 64,
-        descriptor_byte_count=1,
-    )
-    descriptor = SimpleNamespace(
-        run_id="run-a", snapshot_id="snapshot-a", manifest_digest="a" * 64, snapshot_inventory=()
-    )
+    descriptor, pointer, request, outputs = _published_archive(tmp_path)
     monkeypatch.setattr(
         admission, "accepted_publication_for_run", lambda *_args: (descriptor, pointer)
     )
-    monkeypatch.setattr(admission, "accepted_snapshot", lambda *_args: snapshot)
-    monkeypatch.setattr(admission, "verify_snapshot", lambda *_args: {"manifest_digest": "a" * 64})
-    monkeypatch.setattr(admission, "snapshot_inventory", lambda *_args: ())
-    state = SimpleNamespace(accepted_outputs=lambda _run: (OutputInventory("wrong", "d" * 64, 1),))
-    runtime = SimpleNamespace(config=SimpleNamespace(workspace=tmp_path), state=state)
-    with pytest.raises(RuntimeError, match="State inventory"):
-        admission.admit(runtime, _request())
-    expected = OutputInventory("outputs/run-a/descriptor.json", "c" * 64, 1)
-    runtime = SimpleNamespace(
-        config=SimpleNamespace(workspace=tmp_path),
-        state=SimpleNamespace(accepted_outputs=lambda _run: (expected,)),
+    snapshot = (
+        tmp_path
+        / "outputs"
+        / descriptor.run_id
+        / "snapshots"
+        / "crm"
+        / "activities"
+        / descriptor.snapshot_id
     )
-    with pytest.raises(RuntimeError, match="does not join accepted record evidence"):
-        admission.admit(runtime, _request())
+    target = snapshot / "records" / "page-00000001.json"
+    target.write_bytes(
+        canonical_json({"records": ["x" * 20_000]}).encode("utf-8") if canonical else b"x" * 20_000
+    )
+    monkeypatch.setattr(
+        admission,
+        "verify_snapshot",
+        lambda _snapshot: (_ for _ in ()).throw(AssertionError("unbounded verifier must not run")),
+    )
+    with pytest.raises(RuntimeError, match="byte ceiling"):
+        admission.admit(_runtime(tmp_path, outputs), request)
