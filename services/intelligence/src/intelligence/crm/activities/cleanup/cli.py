@@ -39,6 +39,10 @@ def add_parser(parent: argparse._SubParsersAction[argparse.ArgumentParser]) -> N
     evidence.add_argument("--source-instance-id", required=True)
     evidence.add_argument("--cleanup-identity-digest", required=True)
     evidence.add_argument("--boundary-digest", required=True)
+    evidence.add_argument("--attest-writer-retired", action="store_true", required=True)
+    evidence.add_argument("--attest-writers-quiescent", action="store_true", required=True)
+    evidence.add_argument("--attestation-operator", required=True)
+    evidence.add_argument("--attestation-reference", required=True)
 
 
 def _authorization_and_target(command: argparse.ArgumentParser) -> None:
@@ -152,6 +156,8 @@ def _register_quiescence(arguments: argparse.Namespace) -> int:
         arguments.environment_id,
         arguments.database_identity,
         arguments.boundary_digest,
+        arguments.attestation_operator,
+        arguments.attestation_reference,
     )
     runtime = IntelligenceRuntime(config, registration_registry(evidence))
     try:

@@ -47,6 +47,8 @@ def _quiescence() -> QuiescenceEvidence:
         "environment-a",
         "database-a",
         _digest("boundary"),
+        "test-operator",
+        "test-reference",
     )
 
 
@@ -111,7 +113,7 @@ def _receipt() -> CleanupReceipt:
         ResourceCeilings(100_000, 100, 10, 10),
         "policy-v1",
         _quiescence(),
-        {"protected": 1},
+        {"protected": 1, "present_identity_count": 1},
         (identity,),
         (protected,),
         (_source_endpoint(identity),),
@@ -142,7 +144,7 @@ def _companion_receipt() -> CleanupReceipt:
         receipt.resource_ceilings,
         receipt.policy_version,
         _quiescence(),
-        dict(receipt.protected_baseline),
+        {**dict(receipt.protected_baseline), "present_identity_count": 2},
         (activity, call),
         protected_source_endpoints=(_source_endpoint(activity), _source_endpoint(call)),
         authorized_companion_relationships=(

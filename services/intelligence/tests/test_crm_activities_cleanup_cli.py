@@ -80,6 +80,51 @@ def test_cli_has_exact_operation_signatures() -> None:
         parser.parse_args(["cleanup", "status", "--batch-size", "1"])
 
 
+def test_quiescence_registration_requires_explicit_operator_attestation() -> None:
+    parser = _parser()
+    base = [
+        "cleanup",
+        "quiescence-register",
+        "--checkpoint-id",
+        "checkpoint-a",
+        "--accepted-run-id",
+        "run-a",
+        "--snapshot-id",
+        "snapshot-a",
+        "--manifest-digest",
+        "a" * 64,
+        "--environment-id",
+        "environment-a",
+        "--database-identity",
+        "database-a",
+        "--source-key",
+        "bitrix-chat",
+        "--source-instance-id",
+        "bitrix-a",
+        "--cleanup-identity-digest",
+        "b" * 64,
+        "--boundary-digest",
+        "c" * 64,
+    ]
+    with pytest.raises(SystemExit):
+        parser.parse_args(base)
+    parsed = parser.parse_args(
+        base
+        + [
+            "--attest-writer-retired",
+            "--attest-writers-quiescent",
+            "--attestation-operator",
+            "operator-a",
+            "--attestation-reference",
+            "issue-390",
+        ]
+    )
+    assert parsed.attest_writer_retired is True
+    assert parsed.attest_writers_quiescent is True
+    assert parsed.attestation_operator == "operator-a"
+    assert parsed.attestation_reference == "issue-390"
+
+
 def test_status_main_uses_only_read_only_status_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
     expected = CleanupStatus("cleanup-a", "a" * 64, "ready", 0, 0, 0, (), None, "b" * 64, "c" * 64)
     monkeypatch.setattr(cli, "_workspace", lambda: Path("workspace"))

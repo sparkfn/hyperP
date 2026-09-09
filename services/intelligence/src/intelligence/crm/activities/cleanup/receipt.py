@@ -112,8 +112,17 @@ class CleanupReceipt:
         endpoint_ids = tuple(
             item.selected_source_record_pk for item in self.protected_source_endpoints
         )
-        if endpoint_ids != tuple(sorted(item.source_record_pk for item in self.identities)):
-            raise ValueError("protected source endpoint evidence does not exactly cover receipt")
+        identity_ids = {item.source_record_pk for item in self.identities}
+        present_count = dict(self.protected_baseline).get("present_identity_count")
+        if (
+            set(endpoint_ids) - identity_ids
+            or len(endpoint_ids) != len(set(endpoint_ids))
+            or not isinstance(present_count, int)
+            or len(endpoint_ids) != present_count
+        ):
+            raise ValueError(
+                "protected source endpoint evidence does not cover exact present receipt identities"
+            )
         if any(
             item.endpoint_source_key != self.quiescence_source_key
             for item in self.protected_source_endpoints
@@ -224,12 +233,18 @@ class CleanupReceipt:
         source_endpoints = tuple(
             sorted(set(protected_source_endpoints), key=ProtectedSourceEndpointEvidence.key)
         )
-        expected_source_endpoints = tuple(sorted(item.source_record_pk for item in ordered))
+        endpoint_ids = tuple(item.selected_source_record_pk for item in source_endpoints)
+        identity_ids = {item.source_record_pk for item in ordered}
+        present_count = dict(baseline).get("present_identity_count")
         if (
-            tuple(item.selected_source_record_pk for item in source_endpoints)
-            != expected_source_endpoints
+            set(endpoint_ids) - identity_ids
+            or len(endpoint_ids) != len(set(endpoint_ids))
+            or not isinstance(present_count, int)
+            or len(endpoint_ids) != present_count
         ):
-            raise ValueError("protected source endpoint evidence does not exactly cover receipt")
+            raise ValueError(
+                "protected source endpoint evidence does not cover exact present receipt identities"
+            )
         if any(
             item.endpoint_source_key != quiescence.source_key for item in source_endpoints
         ) or any(item.source_instance_id != quiescence.source_instance_id for item in ordered):

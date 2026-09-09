@@ -162,6 +162,10 @@ def _protected_source_endpoints(
     """Capture one exact preserved FROM_SOURCE endpoint per manifest-selected identity."""
     result: list[ProtectedSourceEndpointEvidence] = []
     for inspection in inspections:
+        if inspection.matching_node_count == 0:
+            continue
+        if inspection.matching_node_count != 1:
+            raise RuntimeError("protected source endpoint identity is ambiguous")
         candidates = tuple(
             relationship
             for relationship in inspection.incident_relationships

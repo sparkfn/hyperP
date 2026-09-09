@@ -77,6 +77,8 @@ def test_checkpoint_accessor_and_status_share_exact_outcome_evidence(tmp_path: P
         target.configured_environment_id,
         target.observed_database_identity,
         authorization.boundary_digest,
+        "test-operator",
+        "test-reference",
     )
     receipt = CleanupReceipt.create(
         "cleanup-a",
@@ -86,7 +88,7 @@ def test_checkpoint_accessor_and_status_share_exact_outcome_evidence(tmp_path: P
         ResourceCeilings(100_000, 100, 10, 10),
         "policy-v1",
         quiescence,
-        {},
+        {"present_identity_count": 1},
         (
             CleanupIdentity(
                 "source-a",
@@ -357,6 +359,8 @@ def test_real_archive_state_flow_recovers_lost_ack_and_verifies(
         "environment-a",
         "database-a",
         boundary.digest,
+        "test-operator",
+        "test-reference",
     )
     quiescence_run, _ = _publish(
         state,

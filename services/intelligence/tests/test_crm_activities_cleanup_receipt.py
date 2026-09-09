@@ -65,6 +65,8 @@ def _receipt() -> CleanupReceipt:
         target.configured_environment_id,
         target.observed_database_identity,
         authorization.boundary_digest,
+        "test-operator",
+        "test-reference",
     )
     endpoint = ProtectedSourceEndpointEvidence(
         identity.source_record_pk,
@@ -83,7 +85,7 @@ def _receipt() -> CleanupReceipt:
         ResourceCeilings(100_000, 100, 20, 100),
         "policy-v1",
         quiescence,
-        {"deals": 3, "persons": 4},
+        {"deals": 3, "persons": 4, "present_identity_count": 1},
         (identity,),
         protected_source_endpoints=(endpoint,),
     )
@@ -124,8 +126,10 @@ def _companion_receipt() -> CleanupReceipt:
             receipt.target.configured_environment_id,
             receipt.target.observed_database_identity,
             receipt.authorization.boundary_digest,
+            "test-operator",
+            "test-reference",
         ),
-        dict(receipt.protected_baseline),
+        {**dict(receipt.protected_baseline), "present_identity_count": 2},
         (activity, call),
         protected_source_endpoints=(
             ProtectedSourceEndpointEvidence(
@@ -241,8 +245,10 @@ def test_receipt_orders_companion_calls_before_activities() -> None:
             receipt.target.configured_environment_id,
             receipt.target.observed_database_identity,
             receipt.authorization.boundary_digest,
+            "test-operator",
+            "test-reference",
         ),
-        dict(receipt.protected_baseline),
+        {**dict(receipt.protected_baseline), "present_identity_count": 2},
         (activity, call),
         protected_source_endpoints=(
             ProtectedSourceEndpointEvidence(
@@ -336,3 +342,65 @@ def test_state_registered_receipt_admits_exact_canonical_artifact(tmp_path: Path
     receipt = _receipt()
     state, run_id = _state_and_artifact(tmp_path, receipt)
     assert admit_published_receipt(tmp_path, state, run_id, receipt.logical_digest) == receipt
+
+
+def test_endpoint_evidence_covers_only_exactly_present_receipt_identities() -> None:
+    present = _receipt()
+    absent = CleanupIdentity(
+        "source-absent",
+        "crm_history",
+        "bitrix-a",
+        "v1",
+        "hash-absent",
+        _digest("record-absent"),
+        _digest("refs-absent"),
+        0,
+        _digest("rels-absent"),
+        0,
+        _digest("deps-absent"),
+    )
+
+    def quiescence() -> QuiescenceEvidence:
+        return QuiescenceEvidence.create(
+            present.quiescence_run_id,
+            present.authorization.accepted_run_id,
+            present.authorization.checkpoint_id,
+            present.authorization.logical_snapshot_id,
+            present.authorization.manifest_digest,
+            present.authorization.cleanup_identity_digest,
+            present.quiescence_source_key,
+            present.quiescence_source_instance_id,
+            present.target.configured_environment_id,
+            present.target.observed_database_identity,
+            present.authorization.boundary_digest,
+            "test-operator",
+            "test-reference",
+        )
+
+    mixed = CleanupReceipt.create(
+        "cleanup-mixed",
+        present.authorization,
+        present.target,
+        2,
+        present.resource_ceilings,
+        present.policy_version,
+        quiescence(),
+        {**dict(present.protected_baseline), "present_identity_count": 1},
+        (*present.identities, absent),
+        protected_source_endpoints=present.protected_source_endpoints,
+    )
+    assert tuple(item.selected_source_record_pk for item in mixed.protected_source_endpoints) == (
+        "source-a",
+    )
+    all_absent = CleanupReceipt.create(
+        "cleanup-absent",
+        present.authorization,
+        present.target,
+        1,
+        present.resource_ceilings,
+        present.policy_version,
+        quiescence(),
+        {"present_identity_count": 0},
+        (absent,),
+    )
+    assert all_absent.protected_source_endpoints == ()

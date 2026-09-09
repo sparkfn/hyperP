@@ -15,7 +15,7 @@ RECEIPT_SCHEMA = "crm-activities-cleanup-receipt-v6"
 CHECKPOINT_SCHEMA = "crm-activities-cleanup-checkpoint-v2"
 RECONCILIATION_SCHEMA = "crm-activities-cleanup-reconciliation-v2"
 PROTECTED_PRESERVATION_SCHEMA = "crm-activities-cleanup-protected-preservation-v2"
-QUIESCENCE_EVIDENCE_SCHEMA = "crm-activities-cleanup-quiescence-v1"
+QUIESCENCE_EVIDENCE_SCHEMA = "crm-activities-cleanup-quiescence-v2"
 PROTECTED_PRESERVATION_SCOPE = "exact-selected-from-source-endpoints-and-unowned-relationships"
 SHA256_HEX = frozenset("0123456789abcdef")
 DISPOSITIONS = frozenset({"deleted", "already_absent", "retained", "conflict", "failed"})
@@ -329,6 +329,8 @@ class QuiescenceEvidence:
     writer_retired: bool
     writers_quiescent: bool
     evidence_digest: str
+    attestation_operator: str
+    attestation_reference: str
 
     def __post_init__(self) -> None:
         for value, field in (
@@ -340,6 +342,8 @@ class QuiescenceEvidence:
             (self.source_instance_id, "quiescence source_instance_id"),
             (self.environment_id, "quiescence environment_id"),
             (self.observed_database_identity, "quiescence observed_database_identity"),
+            (self.attestation_operator, "quiescence attestation_operator"),
+            (self.attestation_reference, "quiescence attestation_reference"),
         ):
             require_identifier(value, field)
         for value, field in (
@@ -371,6 +375,8 @@ class QuiescenceEvidence:
                 "boundary_digest": self.boundary_digest,
                 "writer_retired": self.writer_retired,
                 "writers_quiescent": self.writers_quiescent,
+                "attestation_operator": self.attestation_operator,
+                "attestation_reference": self.attestation_reference,
             }
         )
 
@@ -390,6 +396,8 @@ class QuiescenceEvidence:
             "boundary_digest": self.boundary_digest,
             "writer_retired": self.writer_retired,
             "writers_quiescent": self.writers_quiescent,
+            "attestation_operator": self.attestation_operator,
+            "attestation_reference": self.attestation_reference,
         }
 
     def as_dict(self) -> dict[str, object]:
@@ -425,6 +433,8 @@ class QuiescenceEvidence:
         environment_id: str,
         observed_database_identity: str,
         boundary_digest: str,
+        attestation_operator: str,
+        attestation_reference: str,
     ) -> QuiescenceEvidence:
         unsigned = {
             "schema_version": QUIESCENCE_EVIDENCE_SCHEMA,
@@ -441,6 +451,8 @@ class QuiescenceEvidence:
             "boundary_digest": boundary_digest,
             "writer_retired": True,
             "writers_quiescent": True,
+            "attestation_operator": attestation_operator,
+            "attestation_reference": attestation_reference,
         }
         return cls(
             quiescence_run_id,
@@ -457,6 +469,8 @@ class QuiescenceEvidence:
             True,
             True,
             canonical_digest(unsigned),
+            attestation_operator,
+            attestation_reference,
         )
 
     @classmethod
@@ -481,6 +495,8 @@ class QuiescenceEvidence:
                     "writer_retired",
                     "writers_quiescent",
                     "evidence_digest",
+                    "attestation_operator",
+                    "attestation_reference",
                 }
             ),
             "quiescence evidence",
@@ -504,6 +520,8 @@ class QuiescenceEvidence:
             require_true(raw["writer_retired"], "quiescence writer_retired"),
             require_true(raw["writers_quiescent"], "quiescence writers_quiescent"),
             require_digest(raw["evidence_digest"], "quiescence evidence_digest"),
+            require_identifier(raw["attestation_operator"], "quiescence attestation_operator"),
+            require_identifier(raw["attestation_reference"], "quiescence attestation_reference"),
         )
 
 

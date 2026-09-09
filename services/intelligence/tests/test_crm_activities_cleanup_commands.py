@@ -122,6 +122,8 @@ def _receipt(
         target.configured_environment_id,
         target.observed_database_identity,
         authorization.boundary_digest,
+        "test-operator",
+        "test-reference",
     )
     identities = tuple(
         CleanupIdentity(
@@ -147,7 +149,7 @@ def _receipt(
         ResourceCeilings(100_000, 100, 10, 10),
         "policy-v1",
         quiescence,
-        {"protected": 0},
+        {"protected": 0, "present_identity_count": len(keys)},
         identities,
         protected_source_endpoints=tuple(
             ProtectedSourceEndpointEvidence(
@@ -356,6 +358,8 @@ def test_receipt_admission_rejects_exact_binding_mismatch(monkeypatch: pytest.Mo
                 receipt.target.configured_environment_id,
                 receipt.target.observed_database_identity,
                 receipt.authorization.boundary_digest,
+                "test-operator",
+                "test-reference",
             ),
         )
 
