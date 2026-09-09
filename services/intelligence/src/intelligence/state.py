@@ -20,6 +20,7 @@ from intelligence.artifacts import (
     workspace_layout,
     write_manifest,
 )
+from intelligence.artifacts_manifest import RUNTIME_LIMIT_KEYS
 from intelligence.models import (
     Health,
     OutputInventory,
@@ -27,6 +28,7 @@ from intelligence.models import (
     Run,
     TerminalRunState,
 )
+from intelligence.registry import PublicMetadataValue, validate_public_metadata
 from intelligence.state_backup import (
     _contains_secret,
     create_backup,
@@ -85,16 +87,25 @@ class State:
         """Close the underlying SQLite connection."""
         self.connection.close()
 
-    def create_mutating_run(self, command: str, limits: dict[str, int] | None = None) -> Run:
+    def create_mutating_run(
+        self,
+        command: str,
+        limits: dict[str, int] | None = None,
+        command_provenance: dict[str, PublicMetadataValue] | None = None,
+    ) -> Run:
         """Claim the exclusive mutation lock or reject concurrent work."""
         run_id, now = uuid.uuid4().hex, time.time()
         effective_limits = dict(limits or DEFAULT_MANIFEST_LIMITS)
-        if set(effective_limits) != MANIFEST_LIMIT_KEYS or any(
+        if set(effective_limits) not in {RUNTIME_LIMIT_KEYS, MANIFEST_LIMIT_KEYS} or any(
             not isinstance(value, int) or isinstance(value, bool) or value < 1
             for value in effective_limits.values()
         ):
             raise ValueError("effective runtime limits are invalid")
         limits_json = canonical_json(effective_limits)
+        provenance = (
+            None if command_provenance is None else validate_public_metadata(command_provenance)
+        )
+        provenance_json = None if provenance is None else canonical_json(provenance)
         self.connection.execute("BEGIN IMMEDIATE")
         try:
             changed = self.connection.execute(
@@ -112,9 +123,19 @@ class State:
             fence = int(row[0])
             self.connection.execute(
                 "INSERT INTO runs(id, command, state, fence, created_at, heartbeat_at, started_at, "
-                "limits_json, runtime_epoch, cleanup_unresolved, execution_may_be_alive) "
-                "VALUES(?, ?, 'running', ?, ?, ?, ?, ?, ?, 0, 1)",
-                (run_id, command, fence, now, now, now, limits_json, self.runtime_epoch),
+                "limits_json, runtime_epoch, cleanup_unresolved, execution_may_be_alive, "
+                "command_provenance_json) VALUES(?, ?, 'running', ?, ?, ?, ?, ?, ?, 0, 1, ?)",
+                (
+                    run_id,
+                    command,
+                    fence,
+                    now,
+                    now,
+                    now,
+                    limits_json,
+                    self.runtime_epoch,
+                    provenance_json,
+                ),
             )
             self.connection.execute("COMMIT")
         except BaseException:
@@ -131,6 +152,7 @@ class State:
             limits=tuple(sorted(effective_limits.items())),
             runtime_epoch=self.runtime_epoch,
             execution_may_be_alive=True,
+            command_provenance=None if provenance is None else tuple(sorted(provenance.items())),
         )
 
     def mark_execution_quiescent(self, run: Run) -> None:
@@ -363,6 +385,9 @@ class State:
                         expected_started_at=run.started_at,
                         expected_limits=dict(run.limits) if run.limits else None,
                         expected_run_log=run_log_inventory(self.workspace, run.run_id),
+                        expected_command_provenance=(
+                            None if run.command_provenance is None else dict(run.command_provenance)
+                        ),
                     )
                 except (OSError, ValueError):
                     quarantine_manifest(self.workspace, run_id)
@@ -378,6 +403,9 @@ class State:
                 limits=dict(run.limits) if run.limits else {},
                 legacy_unknown_limits=not bool(run.limits),
                 run_log=run_log_inventory(self.workspace, run.run_id),
+                command_provenance=(
+                    None if run.command_provenance is None else dict(run.command_provenance)
+                ),
             )
             if recovery_state == "completed":
                 self.connection.execute("DELETE FROM accepted_outputs WHERE run_id = ?", (run_id,))

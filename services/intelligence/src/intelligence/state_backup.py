@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 import shutil
 import sqlite3
@@ -12,6 +13,7 @@ from pathlib import Path
 
 from intelligence.artifacts import MANIFEST_LIMIT_KEYS, canonical_json, read_manifest, sha256_file
 from intelligence.artifacts_core import _rename_noreplace
+from intelligence.artifacts_manifest import RUNTIME_LIMIT_KEYS
 from intelligence.models import OutputInventory, RunLogInventory, WorkspaceLayout
 from intelligence.state_publication import _validate_output
 from intelligence.state_schema import SCHEMA_VERSION
@@ -19,7 +21,7 @@ from intelligence.state_schema import SCHEMA_VERSION
 BACKUP_SCHEMA_VERSION = 1
 LEGACY_STATE_SCHEMA_VERSION = 4
 LEGACY_STATE_SCHEMA_VERSIONS = frozenset({4, 5, 6})
-VERSIONED_STATE_SCHEMA_VERSIONS = frozenset({6, SCHEMA_VERSION})
+VERSIONED_STATE_SCHEMA_VERSIONS = frozenset({6, 7, SCHEMA_VERSION})
 
 
 def create_backup(
@@ -178,7 +180,7 @@ def _validate_schema_columns(schema_version: int, columns: frozenset[str]) -> No
             "runtime_epoch",
             "cleanup_unresolved",
         },
-        SCHEMA_VERSION: {
+        7: {
             "id",
             "command",
             "state",
@@ -196,9 +198,30 @@ def _validate_schema_columns(schema_version: int, columns: frozenset[str]) -> No
             "cleanup_unresolved",
             "execution_may_be_alive",
         },
+        SCHEMA_VERSION: {
+            "id",
+            "command",
+            "state",
+            "fence",
+            "created_at",
+            "heartbeat_at",
+            "cancellation_requested",
+            "recovery_reason",
+            "manifest_json",
+            "publishing_inventory_json",
+            "started_at",
+            "ended_at",
+            "limits_json",
+            "runtime_epoch",
+            "cleanup_unresolved",
+            "execution_may_be_alive",
+            "command_provenance_json",
+        },
     }
     required = expected.get(schema_version)
-    if required is None or columns != required:
+    if required is None:
+        raise ValueError("backup snapshot runs schema is invalid")
+    if columns != required:
         raise ValueError("backup snapshot runs schema is invalid")
 
 
@@ -227,7 +250,7 @@ def _backup_evidence(root: Path, connection: sqlite3.Connection) -> tuple[tuple[
     if invalid is not None:
         raise RuntimeError("accepted output belongs to a non-completed run")
     rows = connection.execute(
-        "SELECT r.id, r.command, r.limits_json FROM runs AS r "
+        "SELECT r.id, r.command, r.limits_json, r.command_provenance_json FROM runs AS r "
         "WHERE r.state = 'completed' ORDER BY r.id"
     )
     evidence: list[tuple[Path, Path]] = []
@@ -244,7 +267,7 @@ def _backup_evidence(root: Path, connection: sqlite3.Connection) -> tuple[tuple[
                 (run_id,),
             )
         )
-        _verify_run_manifest(manifest, run_id, str(row[1]), outputs, row[2])
+        _verify_run_manifest(manifest, run_id, str(row[1]), outputs, row[2], row[3])
         evidence.append((manifest, Path("manifests") / manifest.name))
         output_root = root / "outputs" / run_id
         expected = {
@@ -384,8 +407,12 @@ def _verify_bundle_evidence(
         if state_schema_version in {5, 6} and "limits_json" not in columns:
             raise ValueError("schema backup snapshot is missing persisted limits")
         limits_column = ", limits_json" if "limits_json" in columns else ""
+        provenance_column = (
+            ", command_provenance_json" if "command_provenance_json" in columns else ""
+        )
         rows = connection.execute(
-            f"SELECT id, command{limits_column} FROM runs WHERE state = 'completed' ORDER BY id"
+            "SELECT id, command"
+            f"{limits_column}{provenance_column} FROM runs WHERE state = 'completed' ORDER BY id"
         )
         for row in rows:
             run_id = str(row["id"])
@@ -402,7 +429,17 @@ def _verify_bundle_evidence(
             manifest = backup / "evidence" / "manifests" / f"{run_id}.json"
             expected_evidence.add(Path("evidence") / "manifests" / f"{run_id}.json")
             limits_json = None if state_schema_version == 4 else row["limits_json"]
-            _verify_run_manifest(manifest, run_id, str(row["command"]), outputs, limits_json)
+            provenance_json = (
+                None if "command_provenance_json" not in columns else row["command_provenance_json"]
+            )
+            _verify_run_manifest(
+                manifest,
+                run_id,
+                str(row["command"]),
+                outputs,
+                limits_json,
+                provenance_json,
+            )
             if outputs:
                 output_root = backup / "evidence" / "outputs" / run_id
                 expected = {
@@ -438,6 +475,7 @@ def _verify_run_manifest(
     command: str,
     outputs: Sequence[OutputInventory],
     limits_json: object = None,
+    command_provenance_json: object = None,
 ) -> None:
     if path.is_symlink() or not path.is_file():
         raise ValueError("accepted run manifest is missing or unsafe")
@@ -479,6 +517,7 @@ def _verify_run_manifest(
         expected_outputs=outputs,
         expected_limits=_decode_persisted_limits(limits_json),
         expected_run_log=run_log,
+        expected_command_provenance=_decode_persisted_provenance(command_provenance_json),
     )
     entries = raw.get("outputs")
     if not isinstance(entries, list):
@@ -508,7 +547,7 @@ def _decode_persisted_limits(value: object) -> dict[str, int] | None:
         raw = json.loads(str(value))
     except json.JSONDecodeError as error:
         raise ValueError("persisted run limits are invalid") from error
-    if not isinstance(raw, dict) or set(raw) != MANIFEST_LIMIT_KEYS:
+    if not isinstance(raw, dict) or set(raw) not in {RUNTIME_LIMIT_KEYS, MANIFEST_LIMIT_KEYS}:
         raise ValueError("persisted run limits are invalid")
     limits: dict[str, int] = {}
     for key, item in raw.items():
@@ -518,6 +557,36 @@ def _decode_persisted_limits(value: object) -> dict[str, int] | None:
             raise ValueError("persisted run limits are invalid")
         limits[key] = item
     return limits
+
+
+def _decode_persisted_provenance(
+    value: object,
+) -> dict[str, str | int | float | bool | None] | None:
+    if value is None:
+        return None
+    try:
+        raw = json.loads(str(value))
+    except json.JSONDecodeError as error:
+        raise ValueError("persisted command provenance is invalid") from error
+    if not isinstance(raw, dict) or len(raw) > 32:
+        raise ValueError("persisted command provenance is invalid")
+    provenance: dict[str, str | int | float | bool | None] = {}
+    for key, item in raw.items():
+        if not isinstance(key, str) or not key or len(key) > 100:
+            raise ValueError("persisted command provenance is invalid")
+        if any(
+            marker in key.lower()
+            for marker in ("secret", "token", "password", "credential", "authorization")
+        ):
+            raise ValueError("persisted command provenance is invalid")
+        if not isinstance(item, (str, int, float, bool)) and item is not None:
+            raise ValueError("persisted command provenance is invalid")
+        if isinstance(item, float) and not math.isfinite(item):
+            raise ValueError("persisted command provenance is invalid")
+        if isinstance(item, str) and (not item or len(item) > 512):
+            raise ValueError("persisted command provenance is invalid")
+        provenance[key] = item
+    return dict(sorted(provenance.items()))
 
 
 def _assert_directory_inventory(directory: Path, expected: set[Path]) -> None:

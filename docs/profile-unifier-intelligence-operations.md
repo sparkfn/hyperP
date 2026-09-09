@@ -84,6 +84,22 @@ consume accepted deal-reference and partial-activity snapshots only and never co
 systems. See `profile-unifier-intelligence-datasets.md` for point-in-time, missingness, inventory,
 and replay rules.
 
+### Offline model workflows
+
+`intelligence train run`, `evaluate run`, and `model verify` are default-off request-scoped,
+supervised mutations. `model inspect` and `model list` are bounded artifact controls. They accept only
+the exact State-accepted #356 dataset run/ID, preserve `legacy_partial_snapshot` provenance, and
+publish inactive canonical JSON candidates/evaluations atomically. The initial categorical frequency
+recipe treats null activity evidence as missing and ignores activity-count lower-bound magnitudes.
+It is neither activated nor connected to HyperP application behavior. See
+`profile-unifier-intelligence-models.md` for recipe, held-out evaluation, and artifact rules.
+
+The fixed offline commands are `train run --dataset-id ID --accepted-run-id RUN --recipe
+categorical_frequency_v1 --seed N`, `evaluate run --model-id ID --model-run-id RUN --dataset-id ID
+--accepted-run-id RUN`, `evaluate compare --left-run-id RUN --right-run-id RUN`, and `model
+list|inspect|verify`. Mutation output includes the terminal run state and exits nonzero unless the run
+completed. On platforms where required POSIX CPU/address-space enforcement is unavailable, model
+mutations fail before creating a run rather than attempting an unbounded fallback.
 ### Manifest-gated CRM activity cleanup
 
 Cleanup is provisioned only; no command is scheduled and no deployment enables deletion. The fixed

@@ -236,6 +236,9 @@ def _terminal_manifest(
         expected_started_at=run.started_at,
         expected_limits=dict(run.limits) if run.limits else None,
         expected_run_log=run_log,
+        expected_command_provenance=(
+            None if run.command_provenance is None else dict(run.command_provenance)
+        ),
     )
 
 

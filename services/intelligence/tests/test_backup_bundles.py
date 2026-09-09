@@ -69,6 +69,7 @@ def test_actual_v4_bundle_snapshot_remains_verifiable(tmp_path: Path) -> None:
         connection.execute("ALTER TABLE runs DROP COLUMN runtime_epoch")
         connection.execute("ALTER TABLE runs DROP COLUMN cleanup_unresolved")
         connection.execute("ALTER TABLE runs DROP COLUMN execution_may_be_alive")
+        connection.execute("ALTER TABLE runs DROP COLUMN command_provenance_json")
         connection.execute("UPDATE metadata SET value = '4' WHERE key = 'schema_version'")
         connection.commit()
     finally:
@@ -77,6 +78,7 @@ def test_actual_v4_bundle_snapshot_remains_verifiable(tmp_path: Path) -> None:
     evidence_manifest_path = legacy / "evidence" / "manifests" / f"{run_id}.json"
     evidence_manifest = json.loads(evidence_manifest_path.read_text(encoding="utf-8"))
     evidence_manifest["schema_version"] = 1
+    evidence_manifest.pop("command_provenance", None)
     evidence_manifest["limits"] = {
         "max_log_bytes": 1_000_000,
         "max_output_bytes": 100_000_000,
@@ -107,7 +109,7 @@ def test_actual_v4_bundle_snapshot_remains_verifiable(tmp_path: Path) -> None:
 
 def test_actual_v5_old_envelope_bundle_remains_verifiable(tmp_path: Path) -> None:
     """Head cb589a9 old-envelope v5 bundles remain verifiable after schema v6."""
-    state, bundle, _ = _bundle(tmp_path)
+    state, bundle, run_id = _bundle(tmp_path)
     legacy = tmp_path / "legacy-v5.bundle"
     shutil.copytree(bundle, legacy)
     snapshot = legacy / "state.sqlite3"
@@ -116,11 +118,22 @@ def test_actual_v5_old_envelope_bundle_remains_verifiable(tmp_path: Path) -> Non
         connection.execute("ALTER TABLE runs DROP COLUMN runtime_epoch")
         connection.execute("ALTER TABLE runs DROP COLUMN cleanup_unresolved")
         connection.execute("ALTER TABLE runs DROP COLUMN execution_may_be_alive")
+        connection.execute("ALTER TABLE runs DROP COLUMN command_provenance_json")
         connection.execute("UPDATE metadata SET value = '5' WHERE key = 'schema_version'")
         connection.commit()
     finally:
         connection.close()
     bundle_manifest = json.loads((legacy / "manifest.json").read_text(encoding="utf-8"))
+    evidence_manifest_path = legacy / "evidence" / "manifests" / f"{run_id}.json"
+    evidence_manifest = json.loads(evidence_manifest_path.read_text(encoding="utf-8"))
+    evidence_manifest["schema_version"] = 2
+    evidence_manifest.pop("command_provenance", None)
+    evidence_manifest_path.write_text(canonical_json(evidence_manifest), encoding="utf-8")
+    for item in bundle_manifest["evidence"]:
+        if item["path"] == f"evidence/manifests/{run_id}.json":
+            item["sha256"] = sha256_file(evidence_manifest_path)
+            item["byte_count"] = evidence_manifest_path.stat().st_size
+            break
     legacy_manifest = {
         "schema_version": 5,
         "state_snapshot": {
@@ -139,19 +152,30 @@ def test_actual_v5_old_envelope_bundle_remains_verifiable(tmp_path: Path) -> Non
 
 def test_actual_v6_versioned_envelope_remains_verifiable(tmp_path: Path) -> None:
     """Backups from the immediately preceding versioned envelope remain readable."""
-    state, bundle, _ = _bundle(tmp_path)
+    state, bundle, run_id = _bundle(tmp_path)
     legacy = tmp_path / "versioned-v6.bundle"
     shutil.copytree(bundle, legacy)
     snapshot = legacy / "state.sqlite3"
     connection = sqlite3.connect(snapshot)
     try:
         connection.execute("ALTER TABLE runs DROP COLUMN execution_may_be_alive")
+        connection.execute("ALTER TABLE runs DROP COLUMN command_provenance_json")
         connection.execute("UPDATE metadata SET value = '6' WHERE key = 'schema_version'")
         connection.commit()
     finally:
         connection.close()
     manifest_path = legacy / "manifest.json"
     manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
+    evidence_manifest_path = legacy / "evidence" / "manifests" / f"{run_id}.json"
+    evidence_manifest = json.loads(evidence_manifest_path.read_text(encoding="utf-8"))
+    evidence_manifest["schema_version"] = 2
+    evidence_manifest.pop("command_provenance", None)
+    evidence_manifest_path.write_text(canonical_json(evidence_manifest), encoding="utf-8")
+    for item in manifest["evidence"]:
+        if item["path"] == f"evidence/manifests/{run_id}.json":
+            item["sha256"] = sha256_file(evidence_manifest_path)
+            item["byte_count"] = evidence_manifest_path.stat().st_size
+            break
     manifest["state_schema_version"] = 6
     manifest["state_snapshot"] = {
         "path": "state.sqlite3",
@@ -307,6 +331,47 @@ def test_bundle_rejects_custom_limit_manifest_tamper(tmp_path: Path) -> None:
                 break
         inventory_path.write_text(canonical_json(inventory), encoding="utf-8")
         with pytest.raises(ValueError, match="limits"):
+            state.verify_backup(bundle)
+    finally:
+        state.close()
+
+
+def test_bundle_rejects_command_provenance_manifest_tamper(tmp_path: Path) -> None:
+    """Backup verification binds copied terminal provenance to the SQLite admission row."""
+    runtime = IntelligenceRuntime(
+        RuntimeConfig(tmp_path, mutations_enabled=True),
+        Registry(
+            (
+                RegisteredCommand(
+                    "approved",
+                    True,
+                    bundle_success_handler,
+                    {"request_digest": "a" * 64, "workflow": "models"},
+                ),
+            )
+        ),
+    )
+    try:
+        run_id = runtime.run("approved")
+    finally:
+        runtime.close()
+    state = State(tmp_path)
+    try:
+        bundle = state.layout.backups / "provenance.bundle"
+        state.backup(bundle)
+        path = bundle / "evidence" / "manifests" / f"{run_id}.json"
+        manifest = json.loads(path.read_text(encoding="utf-8"))
+        manifest["command_provenance"]["workflow"] = "tampered"
+        path.write_text(canonical_json(manifest), encoding="utf-8")
+        inventory_path = bundle / "manifest.json"
+        inventory = json.loads(inventory_path.read_text(encoding="utf-8"))
+        for item in inventory["evidence"]:
+            if item["path"] == f"evidence/manifests/{run_id}.json":
+                item["sha256"] = sha256_file(path)
+                item["byte_count"] = path.stat().st_size
+                break
+        inventory_path.write_text(canonical_json(inventory), encoding="utf-8")
+        with pytest.raises(ValueError, match="provenance"):
             state.verify_backup(bundle)
     finally:
         state.close()

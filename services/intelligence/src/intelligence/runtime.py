@@ -7,7 +7,7 @@ import os
 import signal
 import sys
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from multiprocessing import get_context
 from multiprocessing.process import BaseProcess
 from pathlib import Path
@@ -23,9 +23,10 @@ from intelligence.artifacts import (
     scan_staged_usage,
     write_manifest,
 )
+from intelligence.artifacts_manifest import MANIFEST_LIMIT_KEYS, RUNTIME_LIMIT_KEYS
 from intelligence.config import RuntimeConfig
 from intelligence.models import Health, OutputInventory, Run, TerminalRunState
-from intelligence.registry import PRODUCTION_REGISTRY, CommandHandler, Registry
+from intelligence.registry import PRODUCTION_REGISTRY, CommandHandler, RegisteredCommand, Registry
 from intelligence.state import State
 
 _SETSID = "setsid"
@@ -73,14 +74,13 @@ class IntelligenceRuntime:
             raise RuntimeError("foundation accepts only bounded mutating command runs")
         if not self.config.mutations_enabled:
             raise RuntimeError("mutating execution is disabled")
+        limits = _effective_limits(self.config, command)
+        child_limits = _resource_limits(limits)
+        _preflight_resource_enforcement(child_limits)
         run = self.state.create_mutating_run(
             name,
-            {
-                "max_log_bytes": self.config.max_log_bytes,
-                "max_output_bytes": self.config.max_output_bytes,
-                "max_output_entries": self.config.max_output_entries,
-                "max_runtime_seconds": self.config.max_runtime_seconds,
-            },
+            limits,
+            dict(command.public_metadata),
         )
         staging = self.state.layout.staging / run.run_id
         started = time.monotonic()
@@ -88,7 +88,11 @@ class IntelligenceRuntime:
         try:
             staging.mkdir(mode=0o700, parents=True, exist_ok=False)
             self._log(run, "started", {})
-            process = _start_command(command.execute, staging)
+            process = (
+                _start_command(command.execute, staging)
+                if child_limits is None
+                else _start_command(command.execute, staging, child_limits)
+            )
             started = time.monotonic()
             terminal_state, termination_reason = self._wait_for_command(process, run, started)
             if self._precreated_manifest_exists(run.run_id):
@@ -107,11 +111,12 @@ class IntelligenceRuntime:
             if self.state.is_cancelled(run.run_id):
                 self._finish(run, "cancelled", (), "cancellation_requested")
                 return run.run_id
+            persisted_limits = dict(run.limits)
             inventory = scan_staged_outputs(
                 self.config.workspace,
                 run.run_id,
-                self.config.max_output_bytes,
-                self.config.max_output_entries,
+                persisted_limits["max_output_bytes"],
+                persisted_limits["max_output_entries"],
             )
             self.state.begin_publishing(run, inventory)
             self.state.verify_fence(run)
@@ -119,8 +124,8 @@ class IntelligenceRuntime:
                 self.config.workspace,
                 run.run_id,
                 inventory,
-                self.config.max_output_bytes,
-                self.config.max_output_entries,
+                persisted_limits["max_output_bytes"],
+                persisted_limits["max_output_entries"],
             )
             self._finish(run, "completed", published, None, publication=True)
             return run.run_id
@@ -149,7 +154,7 @@ class IntelligenceRuntime:
                     self.state.mark_execution_quiescent(run)
                 except BaseException:
                     self.state.mark_cleanup_unresolved(run)
-            terminal_state = self._terminal_state(run.run_id, started, failed=True)
+            terminal_state = self._terminal_state(run, started, failed=True)
             self._finish_if_possible(run, terminal_state, "runtime_error")
             raise
 
@@ -175,6 +180,11 @@ class IntelligenceRuntime:
                         expected_run_log=run_log_inventory(
                             self.config.workspace, recovered.run.run_id
                         ),
+                        expected_command_provenance=(
+                            None
+                            if recovered.run.command_provenance is None
+                            else dict(recovered.run.command_provenance)
+                        ),
                     )
                 except (OSError, ValueError):
                     quarantine_manifest(self.config.workspace, recovered.run.run_id)
@@ -192,12 +202,13 @@ class IntelligenceRuntime:
     ) -> tuple[TerminalRunState, str]:
         """Enforce cancellation/runtime bounds by terminating a reviewed child process."""
         try:
+            limits = dict(run.limits)
             while process.is_alive():
                 if self.state.is_cancelled(run.run_id):
                     _stop_child(process)
                     self.state.mark_execution_quiescent(run)
                     return "cancelled", "cancellation_requested"
-                if time.monotonic() - started >= self.config.max_runtime_seconds:
+                if time.monotonic() - started >= limits["max_runtime_seconds"]:
                     _stop_child(process)
                     self.state.mark_execution_quiescent(run)
                     return "timed_out", "runtime_limit_exceeded"
@@ -205,8 +216,8 @@ class IntelligenceRuntime:
                     scan_staged_usage(
                         self.config.workspace,
                         run.run_id,
-                        self.config.max_output_bytes,
-                        self.config.max_output_entries,
+                        limits["max_output_bytes"],
+                        limits["max_output_entries"],
                     )
                 except RuntimeError:
                     _stop_child(process)
@@ -311,6 +322,9 @@ class IntelligenceRuntime:
             },
             run_log=run_log_inventory(self.config.workspace, run.run_id),
             legacy_unknown_limits=not bool(run.limits),
+            command_provenance=(
+                None if run.command_provenance is None else dict(run.command_provenance)
+            ),
         )
 
     def _precreated_manifest_exists(self, run_id: str) -> bool:
@@ -332,24 +346,93 @@ class IntelligenceRuntime:
             command=run.command,
         )
 
-    def _terminal_state(
-        self, run_id: str, started: float, failed: bool = False
-    ) -> TerminalRunState:
-        if self.state.is_cancelled(run_id):
+    def _terminal_state(self, run: Run, started: float, failed: bool = False) -> TerminalRunState:
+        if self.state.is_cancelled(run.run_id):
             return "cancelled"
-        if time.monotonic() - started >= self.config.max_runtime_seconds:
+        if time.monotonic() - started >= dict(run.limits).get(
+            "max_runtime_seconds", self.config.max_runtime_seconds
+        ):
             return "timed_out"
         return "failed" if failed else "completed"
 
 
-def _start_command(handler: CommandHandler, staging: Path) -> BaseProcess:
+def _effective_limits(config: RuntimeConfig, command: RegisteredCommand) -> dict[str, int]:
+    """Intersect runtime configuration with repository-reviewed command caps."""
+    limits = {
+        "max_log_bytes": config.max_log_bytes,
+        "max_output_bytes": config.max_output_bytes,
+        "max_output_entries": config.max_output_entries,
+        "max_runtime_seconds": config.max_runtime_seconds,
+    }
+    if command.runtime_limits is not None:
+        for key, value in command.runtime_limits.items():
+            limits[key] = min(limits[key], value)
+    if command.child_limits is not None:
+        limits.update(command.child_limits)
+    if set(limits) not in {RUNTIME_LIMIT_KEYS, MANIFEST_LIMIT_KEYS}:
+        raise RuntimeError("effective runtime limits are invalid")
+    return dict(sorted(limits.items()))
+
+
+def _resource_limits(limits: Mapping[str, int]) -> Mapping[str, int] | None:
+    """Select exactly the persisted POSIX limits, never ambient configuration."""
+    resource_keys = {"max_cpu_seconds", "max_address_space_bytes"}
+    if not resource_keys.issubset(limits):
+        return None
+    return {key: limits[key] for key in sorted(resource_keys)}
+
+
+def _preflight_resource_enforcement(child_limits: Mapping[str, int] | None) -> None:
+    """Reject unavailable or impossible required resource enforcement before admission."""
+    if child_limits is None:
+        return
+    if os.name == "nt":
+        raise RuntimeError("reviewed resource enforcement is unavailable")
+    try:
+        resource = __import__("resource")
+        setrlimit_name = "setrlimit"
+        getrlimit_name = "getrlimit"
+        cpu_name = "RLIMIT_CPU"
+        address_space_name = "RLIMIT_AS"
+        infinity_name = "RLIM_INFINITY"
+        setrlimit = getattr(resource, setrlimit_name)
+        getrlimit = getattr(resource, getrlimit_name)
+        cpu = getattr(resource, cpu_name)
+        address_space = getattr(resource, address_space_name)
+        infinity = getattr(resource, infinity_name)
+        if not callable(setrlimit) or not callable(getrlimit):
+            raise TypeError("resource limits are unavailable")
+        for limit, constant in (
+            (child_limits["max_cpu_seconds"], cpu),
+            (child_limits["max_address_space_bytes"], address_space),
+        ):
+            current = getrlimit(constant)
+            if (
+                not isinstance(limit, int)
+                or isinstance(limit, bool)
+                or limit < 1
+                or not isinstance(current, tuple)
+                or len(current) != 2
+                or not isinstance(current[1], int)
+                or (current[1] != infinity and limit > current[1])
+            ):
+                raise RuntimeError("resource limits are unavailable")
+    except (ImportError, AttributeError, KeyError, OSError, TypeError, ValueError) as error:
+        raise RuntimeError("reviewed resource enforcement is unavailable") from error
+
+
+def _start_command(
+    handler: CommandHandler, staging: Path, child_limits: Mapping[str, int] | None = None
+) -> BaseProcess:
     """Start only a reviewed registry callable; no caller executable or shell is accepted."""
     parent_ready: _ReadyChannel | None = None
     child_ready: _ReadyChannel | None = None
     try:
         context = get_context("spawn")
         parent_ready, child_ready = context.Pipe(duplex=False)
-        process = context.Process(target=_child_entry, args=(handler, staging, child_ready))
+        process = context.Process(
+            target=_child_entry, args=(handler, staging, child_ready, child_limits)
+        )
     except BaseException as error:
         _close_endpoint(child_ready)
         _close_endpoint(parent_ready)
@@ -388,13 +471,19 @@ def _close_endpoint(endpoint: _ReadyChannel | None) -> None:
         pass
 
 
-def _child_entry(handler: CommandHandler, staging: Path, ready: _ReadyChannel) -> None:
+def _child_entry(
+    handler: CommandHandler,
+    staging: Path,
+    ready: _ReadyChannel,
+    child_limits: Mapping[str, int] | None,
+) -> None:
     """Run a handler in a private session with raw output and tracebacks suppressed."""
     if os.name != "nt":
         setsid = cast(object, getattr(os, _SETSID, None))
         if not callable(setsid):
             raise RuntimeError("POSIX session isolation is unavailable")
         cast(Callable[[], None], setsid)()
+    _apply_child_limits(child_limits)
     with open(os.devnull, "w", encoding="utf-8") as sink:
         sys.stdout.flush()
         sys.stderr.flush()
@@ -412,6 +501,27 @@ def _child_entry(handler: CommandHandler, staging: Path, ready: _ReadyChannel) -
 def _not_cancelled() -> bool:
     """Child cancellation is enforced by the parent supervisor rather than trusted cooperation."""
     return False
+
+
+def _apply_child_limits(child_limits: Mapping[str, int] | None) -> None:
+    """Apply reviewed POSIX CPU/address-space caps before untrusted-size materialization."""
+    if child_limits is None:
+        return
+    if os.name == "nt":
+        raise RuntimeError("reviewed resource enforcement is unavailable")
+    try:
+        resource = __import__("resource")
+        setrlimit_name, cpu_name, address_space_name = "setrlimit", "RLIMIT_CPU", "RLIMIT_AS"
+        setrlimit = cast(Callable[[int, tuple[int, int]], None], getattr(resource, setrlimit_name))
+        cpu = cast(int, getattr(resource, cpu_name))
+        address_space = cast(int, getattr(resource, address_space_name))
+        setrlimit(cpu, (child_limits["max_cpu_seconds"],) * 2)
+        setrlimit(
+            address_space,
+            (child_limits["max_address_space_bytes"],) * 2,
+        )
+    except (ImportError, AttributeError, KeyError, OSError, TypeError, ValueError) as error:
+        raise RuntimeError("reviewed resource enforcement is unavailable") from error
 
 
 def _abort_unready_child(process: BaseProcess, error: BaseException) -> NoReturn:
