@@ -324,6 +324,21 @@ def test_offset_and_fractional_activity_ordering_uses_instants() -> None:
     assert result.rows[0].seconds_since_last_eligible_archived_activity == 12_599
 
 
+def test_horizon_provenance_canonicalizes_fractional_offsets_losslessly() -> None:
+    inputs = _inputs(False)
+    feature, horizon = inputs.deals.deals
+    changed = replace(
+        horizon,
+        observed_at="2026-01-02T02:00:00.123456+02:00",
+        available_at="2026-01-02T00:00:00.123456Z",
+        first_known_at="2026-01-02T00:00:00.123456Z",
+        source_effective_at="2026-01-02T02:00:00.123456+02:00",
+    )
+    row = compute(replace(inputs, deals=replace(inputs.deals, deals=(feature, changed)))).rows[0]
+    assert row.horizon_observed_at == "2026-01-02T00:00:00.123456Z"
+    assert row.horizon_source_effective_at == "2026-01-02T00:00:00.123456Z"
+
+
 def test_logical_duplicate_and_inconsistent_lineage_fail_closed() -> None:
     inputs = _inputs(False)
     duplicate = replace(inputs.deals.deals[0], key=DealKey("bitrix-crm-deal-42", 1, "other-pk"))

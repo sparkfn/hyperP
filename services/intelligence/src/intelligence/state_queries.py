@@ -36,6 +36,18 @@ def accepted_outputs(connection: sqlite3.Connection, run_id: str) -> tuple[Outpu
     return tuple(OutputInventory(str(row[0]), str(row[1]), int(row[2])) for row in rows)
 
 
+def completed_run_ids(connection: sqlite3.Connection, command: str, limit: int) -> tuple[str, ...]:
+    if not command or not isinstance(limit, int) or isinstance(limit, bool) or limit < 1:
+        raise ValueError("completed run query is invalid")
+    rows = connection.execute(
+        "SELECT id FROM runs WHERE command = ? AND state = 'completed' ORDER BY id LIMIT ?",
+        (command, limit + 1),
+    ).fetchall()
+    if len(rows) > limit:
+        raise RuntimeError("completed run query exceeds catalog bound")
+    return tuple(str(row[0]) for row in rows)
+
+
 def is_cancelled(connection: sqlite3.Connection, run_id: str) -> bool:
     row = connection.execute(
         "SELECT cancellation_requested FROM runs WHERE id = ?", (run_id,)
