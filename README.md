@@ -35,6 +35,7 @@ is sales. Built on Neo4j for native graph traversal.
 - [Person CRM Metrics Design](./docs/profile-unifier-person-crm-metrics.md)
 - [Intelligence Runtime Architecture (single-container foundation)](./docs/profile-unifier-deal-intelligence-architecture.md)
 - [Intelligence Operations and Recovery](./docs/profile-unifier-intelligence-operations.md)
+- [Intelligence Reproducible CRM Datasets](./docs/profile-unifier-intelligence-datasets.md)
 - [CRM Activities Legacy Archive](./docs/profile-unifier-crm-activities-archive.md)
 - [CRM-deal Identity Remediation Inventory](./docs/profile-unifier-crm-deal-identity-remediation.md)
 
@@ -60,8 +61,9 @@ is sales. Built on Neo4j for native graph traversal.
 18. Person CRM Metrics Design
 19. Intelligence Runtime Architecture (single-container foundation)
 20. Intelligence Operations and Recovery
-21. CRM Activities Legacy Archive
-22. CRM-deal Identity Remediation Inventory
+21. Intelligence Reproducible CRM Datasets
+22. CRM Activities Legacy Archive
+23. CRM-deal Identity Remediation Inventory
 
 ## Current Scope
 
