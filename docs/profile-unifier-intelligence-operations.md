@@ -84,6 +84,27 @@ consume accepted deal-reference and partial-activity snapshots only and never co
 systems. See `profile-unifier-intelligence-datasets.md` for point-in-time, missingness, inventory,
 and replay rules.
 
+### Manifest-gated CRM activity cleanup
+
+Cleanup is provisioned only; no command is scheduled and no deployment enables deletion. The fixed
+operator interface is `intelligence crm activities cleanup dry-run|execute|resume|verify|status`.
+Dry run freezes `--cleanup-run-id` and `--batch-size` into an immutable, State-registered receipt.
+Execute, resume, and verify accept that logical cleanup ID and the exact receipt run/digest but never
+accept a replacement batch size. Status reads only bounded local checkpoint evidence and requires no
+Neo4j credential, environment identity, or mutation switch.
+
+Dry run and verification persist Intelligence evidence and therefore require
+`INTELLIGENCE_MUTATIONS_ENABLED=true`; they use graph reads only. Execution and resume additionally
+require `INTELLIGENCE_CRM_ACTIVITY_CLEANUP_ENABLED=true` and a matching
+`INTELLIGENCE_ENVIRONMENT_ID`. Each receipt binds the accepted archive run/snapshot/manifest, exact
+identity set, archive connection fingerprint, independently observed Neo4j database identity,
+protected baseline, ownership/dependency evidence, limits, and policy. Attempts persist immutable
+batch intent/result evidence under one logical checkpoint. Recovery never expands receipt identities;
+an uncertain acknowledgement requires exact graph reconciliation. Terminal evidence is the disjoint
+partition `authorized = deleted + already_absent + retained + conflict + failed`, with no unexplained
+remainder. Verification requires successful terminal reconciliation, selected absence, and unchanged
+protected evidence.
+
 Cancellation is accepted while a run is queued or executing. Entering `publishing` is the
 explicit non-cancellable commit point: a second connection receives a rejection rather than
 silently racing terminal publication. A stale publishing run is recovered against its durable

@@ -14,6 +14,7 @@ from intelligence.crm.activities.acceptance import (
 )
 from intelligence.crm.activities.bounded import ReadLimits
 from intelligence.crm.activities.checkpoint_limits import CheckpointLimits
+from intelligence.crm.activities.cleanup import cli as cleanup_cli
 from intelligence.crm.activities.commands import (
     Operation,
     registry,
@@ -34,6 +35,7 @@ class _SubparserAdder(Protocol):
 def add_parser(parent: _SubparserAdder) -> None:
     activities = parent.add_parser("activities")
     actions = activities.add_subparsers(dest="crm_activities_command", required=True)
+    cleanup_cli.add_parser(actions)
     for name in ("extract", "resume", "status"):
         command = actions.add_parser(name)
         command.add_argument("--snapshot-id", required=True, dest="checkpoint_id")
@@ -45,6 +47,8 @@ def add_parser(parent: _SubparserAdder) -> None:
 def main(arguments: argparse.Namespace) -> int:
     """Run one fixed CRM activities command."""
     command = str(arguments.crm_activities_command)
+    if command == "cleanup":
+        return cleanup_cli.main(arguments)
     config = RuntimeConfig.from_environment()
     if command == "status":
         print(json.dumps(_status(config.workspace, arguments.checkpoint_id), sort_keys=True))
