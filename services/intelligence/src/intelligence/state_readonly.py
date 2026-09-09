@@ -65,6 +65,10 @@ class ReadOnlyState:
     def accepted_outputs(self, run_id: str) -> tuple[OutputInventory, ...]:
         return state_queries.accepted_outputs(self._connection, run_id)
 
+    def completed_run_ids(self, command: str, limit: int) -> tuple[str, ...]:
+        """Read bounded completed run identities without creating State paths or rows."""
+        return state_queries.completed_run_ids(self._connection, command, limit)
+
 
 def _database_path(workspace: Path) -> Path:
     _directory(workspace, "Intelligence workspace")

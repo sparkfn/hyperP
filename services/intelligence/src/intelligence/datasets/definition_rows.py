@@ -9,6 +9,7 @@ from intelligence.datasets.models import (
     AcceptedInputs,
     DatasetRow,
     RowDisposition,
+    canonical_instant,
     duration_seconds,
     instant_key,
 )
@@ -161,7 +162,7 @@ def _canonical(record: DealReference | None, field: str) -> str | None:
     value = getattr(record, field)
     if value is None:
         return None
-    return instant_key(value, field)[0].isoformat().replace("+00:00", "Z")
+    return canonical_instant(value, field)
 
 
 def _activity_features(

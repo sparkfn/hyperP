@@ -79,6 +79,14 @@ def instant_key(value: str, field: str) -> tuple[datetime, Decimal]:
     return second, Decimal(f"0.{fraction or '0'}")
 
 
+def canonical_instant(value: str, field: str) -> str:
+    """Render a lossless supported source instant as UTC Z with significant fraction only."""
+    second, fraction = instant_key(value, field)
+    base = second.isoformat().replace("+00:00", "Z")
+    digits = format(fraction, "f").removeprefix("0.").rstrip("0")
+    return base if not digits else f"{base[:-1]}.{digits}Z"
+
+
 def duration_seconds(start: str, end: str) -> int:
     """Return a non-negative integer duration without fractional-time encoding."""
     end_second, end_fraction = instant_key(end, "end")

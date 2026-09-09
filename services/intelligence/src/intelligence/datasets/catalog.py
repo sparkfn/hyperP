@@ -6,7 +6,7 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
-from intelligence.artifacts import read_manifest, run_log_inventory
+from intelligence.artifacts_manifest import validate_manifest
 from intelligence.crm.activities.path_safety import confined_directory
 from intelligence.datasets.artifacts import DatasetDescriptor, parse_descriptor, verify_dataset
 from intelligence.datasets.bounds import (
@@ -21,7 +21,7 @@ from intelligence.datasets.bounds import (
     registered_tree,
 )
 from intelligence.datasets.models import MAX_CATALOG_RUNS, safe_component
-from intelligence.models import OutputInventory
+from intelligence.models import OutputInventory, RunLogInventory
 from intelligence.state_readonly import ReadOnlyState
 
 
@@ -45,7 +45,11 @@ class CatalogEntry:
 def entries(workspace: Path, budget: ReadBudget | None = None) -> tuple[CatalogEntry, ...]:
     """Enumerate bounded accepted entries; overflow never means no replay conflict."""
     read_budget = budget or _budget()
-    run_ids = _manifest_run_ids(workspace, read_budget)
+    state = ReadOnlyState.open(workspace)
+    try:
+        run_ids = state.completed_run_ids("dataset_build", MAX_CATALOG_RUNS)
+    finally:
+        state.close()
     if len(run_ids) > MAX_CATALOG_RUNS:
         raise RuntimeError("dataset catalog bound exceeded")
     state = ReadOnlyState.open(workspace)
@@ -113,7 +117,7 @@ def _run_entries(
     accepted = state.accepted_outputs(run_id)
     if not accepted:
         return []
-    _terminal_manifest(workspace, state, run_id, accepted)
+    _terminal_manifest(workspace, state, run_id, accepted, budget)
     root = _confined(workspace, ("outputs", run_id))
     _directory(root, "dataset output run")
     descriptor_directory = _confined(
@@ -214,13 +218,16 @@ def _terminal_manifest(
     state: ReadOnlyState,
     run_id: str,
     accepted: tuple[OutputInventory, ...],
+    budget: ReadBudget,
 ) -> None:
     run = state.inspect(run_id)
     if run is None:
         raise ValueError("terminal manifest run is absent from State")
     path = _confined(workspace, ("runs", "manifests")) / f"{run_id}.json"
-    read_manifest(
-        path,
+    value = canonical_json_object(path, budget, maximum_file_bytes=MAX_DESCRIPTOR_BYTES)
+    run_log = _terminal_run_log(workspace, run_id, value, budget)
+    validate_manifest(
+        value,
         expected_run_id=run_id,
         expected_command=run.command,
         expected_state="completed",
@@ -228,8 +235,36 @@ def _terminal_manifest(
         expected_created_at=run.created_at,
         expected_started_at=run.started_at,
         expected_limits=dict(run.limits) if run.limits else None,
-        expected_run_log=run_log_inventory(workspace, run_id),
+        expected_run_log=run_log,
     )
+
+
+def _terminal_run_log(
+    workspace: Path,
+    run_id: str,
+    manifest: dict[str, object],
+    budget: ReadBudget,
+) -> RunLogInventory | None:
+    value = manifest.get("run_log")
+    if value is None:
+        return None
+    if not isinstance(value, dict) or set(value) != {"path", "sha256", "byte_count"}:
+        raise ValueError("terminal manifest log evidence is invalid")
+    path_value, digest, byte_count = value.get("path"), value.get("sha256"), value.get("byte_count")
+    expected_path = f"runs/logs/{run_id}.ndjson"
+    if (
+        path_value != expected_path
+        or not isinstance(digest, str)
+        or not isinstance(byte_count, int)
+    ):
+        raise ValueError("terminal manifest log evidence is invalid")
+    path = _confined(workspace, ("runs", "logs")) / f"{run_id}.ndjson"
+    if (
+        path.lstat().st_size != byte_count
+        or digest_file(path, budget, maximum_file_bytes=MAX_DESCRIPTOR_BYTES) != digest
+    ):
+        raise ValueError("terminal manifest log evidence is invalid")
+    return RunLogInventory(expected_path, digest, byte_count)
 
 
 def _files(root: Path, budget: ReadBudget, label: str) -> tuple[Path, ...]:
