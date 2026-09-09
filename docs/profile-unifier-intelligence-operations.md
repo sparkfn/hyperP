@@ -76,6 +76,14 @@ sealed selection boundary, complete disposition reconciliation, and final drift 
 `profile-unifier-crm-activities-archive.md`; installing the capability does not perform a live
 source extraction.
 
+### CRM intelligence datasets
+
+`intelligence dataset build|verify|list|inspect` is the fixed dataset surface. Build and verify are
+default-off supervised jobs; list and inspect are bounded read-only State/artifact controls. They
+consume accepted deal-reference and partial-activity snapshots only and never connect to source
+systems. See `profile-unifier-intelligence-datasets.md` for point-in-time, missingness, inventory,
+and replay rules.
+
 Cancellation is accepted while a run is queued or executing. Entering `publishing` is the
 explicit non-cancellable commit point: a second connection receives a rejection rather than
 silently racing terminal publication. A stale publishing run is recovered against its durable

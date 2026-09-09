@@ -17,6 +17,7 @@ from intelligence.crm_deal_refs.cli import (
     add_crm_deal_refs_domain_parser,
     run_crm_deal_refs,
 )
+from intelligence.datasets import cli as datasets_cli
 from intelligence.models import OutputInventory, Run
 from intelligence.runtime import IntelligenceRuntime
 
@@ -42,6 +43,7 @@ def build_parser() -> argparse.ArgumentParser:
     crm_domains = crm.add_subparsers(dest="crm_domain", required=True)
     add_crm_deal_refs_domain_parser(crm_domains)
     add_crm_activities_parser(crm_domains)
+    datasets_cli.add_parser(commands)
     run = commands.add_parser("run")
     run.add_argument("name")
     return parser
@@ -52,6 +54,8 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     if arguments.command == "crm" and arguments.crm_domain == "activities":
         return crm_activities_cli.main(arguments)
+    if arguments.command == "dataset":
+        return datasets_cli.main(arguments)
     runtime = IntelligenceRuntime(RuntimeConfig.from_environment())
     try:
         if arguments.command == "crm":
