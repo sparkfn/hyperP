@@ -4,10 +4,17 @@ from __future__ import annotations
 
 import argparse
 import json
+from pathlib import Path
 from typing import Protocol
 
 from intelligence.config import RuntimeConfig
 from intelligence.datasets.admission import admit
+from intelligence.datasets.bounds import (
+    MAX_DESCRIPTOR_BYTES,
+    ReadBudget,
+    canonical_json_object,
+    digest_file,
+)
 from intelligence.datasets.catalog import find, find_run, list_entries
 from intelligence.datasets.commands import build_registry, verify_registry
 from intelligence.datasets.models import (
@@ -97,6 +104,7 @@ def _verify(config: RuntimeConfig, dataset_id: str, accepted_run_id: str) -> int
         run_id = scoped.run("dataset_verify")
     finally:
         scoped.close()
+    _verified_run_evidence(config.workspace, run_id, entry)
     print(
         json.dumps({"dataset_id": dataset_id, "run_id": run_id, "verified": True}, sort_keys=True)
     )
@@ -170,3 +178,65 @@ def _integer(value: dict[str, object], key: str) -> int:
     if not isinstance(result, int) or isinstance(result, bool):
         raise ValueError(f"{key} is invalid")
     return result
+
+
+def _verified_run_evidence(workspace: Path, run_id: str, entry: object) -> None:
+    from intelligence.crm.activities.path_safety import confined_file
+    from intelligence.datasets.catalog import CatalogEntry
+    from intelligence.datasets.models import canonical_digest, safe_component
+    from intelligence.state_readonly import ReadOnlyState
+
+    if not isinstance(entry, CatalogEntry):
+        raise ValueError("dataset catalog entry is invalid")
+    state = ReadOnlyState.open(workspace)
+    try:
+        run = state.inspect(run_id)
+        outputs = state.accepted_outputs(run_id)
+    finally:
+        state.close()
+    relative = f"outputs/{run_id}/verifications/datasets/{entry.descriptor.dataset_id}.json"
+    if (
+        run is None
+        or run.state != "completed"
+        or run.command != "dataset_verify"
+        or len(outputs) != 1
+    ):
+        raise RuntimeError("dataset verification did not complete successfully")
+    output = outputs[0]
+    parts = ("outputs", run_id, "verifications", "datasets", f"{entry.descriptor.dataset_id}.json")
+    for part in parts:
+        safe_component(part, "verification path component")
+    path = confined_file(workspace, parts)
+    if (
+        output.relative_path != relative
+        or output.byte_count > MAX_DESCRIPTOR_BYTES
+        or path.lstat().st_size != output.byte_count
+    ):
+        raise RuntimeError("dataset verification output is not State-bound")
+    budget = ReadBudget(MAX_DESCRIPTOR_BYTES * 2, 2, 1)
+    if digest_file(path, budget, maximum_file_bytes=MAX_DESCRIPTOR_BYTES) != output.sha256:
+        raise RuntimeError("dataset verification output is not State-bound")
+    value = canonical_json_object(path, budget, maximum_file_bytes=MAX_DESCRIPTOR_BYTES)
+    expected = {
+        "accepted_dataset_run_id",
+        "dataset_id",
+        "descriptor_digest",
+        "manifest_digest",
+        "schema_version",
+        "verified",
+        "digest",
+    }
+    if set(value) != expected or value.get("schema_version") != "crm-deal-state-verification-v1":
+        raise RuntimeError("dataset verification output is invalid")
+    unsigned = dict(value)
+    digest = unsigned.pop("digest")
+    if (
+        value.get("accepted_dataset_run_id") != entry.descriptor.run_id
+        or value.get("dataset_id") != entry.descriptor.dataset_id
+        or value.get("descriptor_digest") != entry.descriptor.digest
+        or value.get("manifest_digest") != entry.descriptor.manifest_digest
+        or value.get("verified") is not True
+        or not isinstance(digest, str)
+        or digest != canonical_digest(unsigned)
+    ):
+        raise RuntimeError("dataset verification output is not bound to descriptor")

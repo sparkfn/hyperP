@@ -10,7 +10,7 @@ from intelligence.datasets.models import (
     DatasetRow,
     RowDisposition,
     duration_seconds,
-    parse_utc,
+    parse_instant,
 )
 from intelligence.datasets.selection import Selection
 
@@ -57,15 +57,18 @@ def row(
         None if feature_record is None else feature_record.key.source_record_pk,
         None if horizon_record is None else horizon_record.key.source_record_pk,
         None if identity is None else identity.hyperp_person_id,
+        None if identity is None else identity.global_revision,
         None if feature_record is None else feature_record.category_id,
         None if feature_record is None else feature_record.stage_id,
         None if feature_record is None else feature_record.stage_semantic_id,
         _age(feature_record, "source_event_at", inputs.request.feature_cutoff),
         _age(feature_record, "source_effective_at", inputs.request.feature_cutoff),
+        _age(horizon_record, "source_effective_at", inputs.request.label_cutoff),
         count,
         calls,
         age,
         "legacy_partial_snapshot",
+        _join_corroboration(activities),
         missingness,
         identity_reason,
         feature.reason,
@@ -107,8 +110,10 @@ def _eligible_identity(record: IdentityRevision, cutoff: str) -> bool:
     if any(value is None for value in values):
         return False
     try:
-        limit = parse_utc(cutoff, "cutoff")
-        return all(parse_utc(str(value), "identity temporal evidence") <= limit for value in values)
+        limit = parse_instant(cutoff, "cutoff")
+        return all(
+            parse_instant(str(value), "identity temporal evidence") <= limit for value in values
+        )
     except ValueError:
         return False
 
@@ -117,10 +122,10 @@ def _identity_order(record: IdentityRevision) -> tuple[object, ...]:
     if record.effective_at is None or record.available_at is None or record.first_known_at is None:
         raise ValueError("ineligible identity cannot be ordered")
     return (
-        parse_utc(record.effective_at, "identity effective"),
-        parse_utc(record.available_at, "identity available"),
-        parse_utc(record.first_known_at, "identity known"),
         record.global_revision,
+        record.resolution_revision,
+        parse_instant(record.available_at, "identity available"),
+        parse_instant(record.first_known_at, "identity known"),
     )
 
 
@@ -150,8 +155,19 @@ def _activity_features(
     calls = tuple(item for item in values if item.record_type == "call")
     if not activities:
         return None, None, None, "no_eligible_partial_archive_evidence"
-    newest = max(item.event_at for item in activities)
+    newest = max(
+        activities, key=lambda item: parse_instant(item.event_at, "activity event")
+    ).event_at
     return len(activities), len(calls) if calls else None, duration_seconds(newest, cutoff), None
+
+
+def _join_corroboration(values: tuple[ActivityEvidence, ...]) -> str:
+    states = {item.join_corroboration for item in values}
+    if not states:
+        return "none"
+    if len(states) == 1:
+        return next(iter(states))
+    return "mixed"
 
 
 def _label(selection: Selection) -> tuple[str | None, str | None]:

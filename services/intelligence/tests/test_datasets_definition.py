@@ -157,6 +157,8 @@ def test_independent_horizon_label_and_partial_activity_lower_bound() -> None:
     assert row.companion_call_count_lower_bound is None
     assert row.feature_source_record_pk == "pk-1"
     assert row.horizon_source_record_pk == "pk-2"
+    assert row.selected_identity_global_revision == 1
+    assert row.horizon_version_age_seconds == 43_200
 
 
 def test_absent_partial_archive_evidence_is_null_not_zero_and_digest_is_stable() -> None:
@@ -230,6 +232,94 @@ def test_source_record_id_lineage_is_distinct_from_entity_id_and_graph_conflicts
     assert result.dispositions[0]["primary_disposition"] == "feature_included"
 
 
+def test_join_corroboration_is_exact_and_calls_inherit_parent_state() -> None:
+    inputs = _inputs(True)
+    history = inputs.activities.records[0]
+    assert compute(inputs).rows[0].included_activity_join_corroboration == "stored_parent_only"
+    graph = ParentReference(
+        None, "bitrix-primary", "bitrix-crm-deal-42", "crm_deal", "CHILD_OF", "bitrix_chat"
+    )
+    corroborated = replace(history, child_parents=(graph,))
+    result = compute(
+        replace(inputs, activities=replace(inputs.activities, records=(corroborated,)))
+    )
+    assert result.rows[0].included_activity_join_corroboration == "stored_parent_graph_corroborated"
+    non_deal = replace(graph, record_type="other")
+    result = compute(
+        replace(
+            inputs,
+            activities=replace(
+                inputs.activities, records=(replace(history, child_parents=(non_deal,)),)
+            ),
+        )
+    )
+    assert result.rows[0].included_activity_join_corroboration == "stored_parent_only"
+    parent = ParentReference(
+        history.source_record_pk,
+        "bitrix-primary",
+        history.source_record_id,
+        "crm_history",
+        "CHILD_OF",
+        "bitrix_chat",
+    )
+    call = replace(
+        history,
+        source_record_pk="call-c",
+        source_record_id="call-c",
+        record_type="call",
+        stored_parent=replace(parent, source_record_pk=None, relationship="STORED_PARENT"),
+        child_parents=(parent,),
+        details_parents=(replace(parent, relationship="DETAILS_HISTORY_ITEM"),),
+    )
+    result = compute(
+        replace(
+            inputs,
+            activities=replace(
+                inputs.activities,
+                records=(corroborated, call),
+                accepted_ids=frozenset({"activity-a", "call-c"}),
+            ),
+        )
+    )
+    assert result.rows[0].included_activity_join_corroboration == "stored_parent_graph_corroborated"
+    second = replace(
+        history,
+        source_record_pk="activity-b",
+        source_record_id="history-b",
+        event_at="2026-01-01T05:00:00Z",
+    )
+    result = compute(
+        replace(
+            inputs,
+            activities=replace(
+                inputs.activities,
+                records=(corroborated, second),
+                accepted_ids=frozenset({"activity-a", "activity-b"}),
+            ),
+        )
+    )
+    assert result.rows[0].included_activity_join_corroboration == "mixed"
+
+
+def test_offset_and_fractional_activity_ordering_uses_instants() -> None:
+    inputs = _inputs(True)
+    early = replace(
+        inputs.activities.records[0], source_record_pk="early", event_at="2026-01-01T10:00:00+02:00"
+    )
+    late = replace(
+        inputs.activities.records[0], source_record_pk="late", event_at="2026-01-01T08:30:00.123Z"
+    )
+    result = compute(
+        replace(
+            inputs,
+            activities=replace(
+                inputs.activities, records=(early, late), accepted_ids=frozenset({"early", "late"})
+            ),
+        )
+    )
+    assert result.rows[0].seconds_since_last_eligible_archived_activity == 12_599
+
+
 def test_logical_duplicate_and_inconsistent_lineage_fail_closed() -> None:
     inputs = _inputs(False)
     duplicate = replace(inputs.deals.deals[0], key=DealKey("bitrix-crm-deal-42", 1, "other-pk"))
@@ -266,6 +356,15 @@ def test_identity_supersession_and_future_evidence_never_fall_back() -> None:
     leaked = replace(future, effective_at="2026-01-03T00:00:00Z")
     result = compute(replace(inputs, deals=replace(inputs.deals, identities=(prior, leaked))))
     assert result.rows[0].person_id == prior.hyperp_person_id
+
+    backdated = replace(
+        future,
+        effective_at="2025-12-01T00:00:00Z",
+        available_at="2026-01-01T06:00:00Z",
+        first_known_at="2026-01-01T06:00:00Z",
+    )
+    result = compute(replace(inputs, deals=replace(inputs.deals, identities=(prior, backdated))))
+    assert result.rows[0].identity_reason == "identity_unresolved"
 
 
 def test_graph_only_multiple_and_unresolved_parents_have_specific_exclusions() -> None:
@@ -330,6 +429,33 @@ def test_companion_call_and_post_cutoff_activity_do_not_leak_features() -> None:
     result = compute(replace(inputs, activities=replace(inputs.activities, records=(future,))))
     assert result.rows[0].archived_activity_count_lower_bound is None
     assert result.dispositions[0]["primary_disposition"] == "temporally_excluded"
+
+    eligible = history
+    late_parent = replace(history, source_record_pk="late-history", event_at="2026-01-01T18:00:00Z")
+    late_reference = replace(parent, source_record_pk="late-history", source_record_id="history-a")
+    late_call = replace(
+        call,
+        source_record_pk="late-call",
+        child_parents=(late_reference,),
+        details_parents=(replace(late_reference, relationship="DETAILS_HISTORY_ITEM"),),
+    )
+    result = compute(
+        replace(
+            inputs,
+            activities=replace(
+                inputs.activities,
+                records=(eligible, late_parent, late_call),
+                accepted_ids=frozenset({"activity-a", "late-history", "late-call"}),
+            ),
+        )
+    )
+    assert result.rows[0].companion_call_count_lower_bound is None
+    assert (
+        next(item for item in result.dispositions if item["source_record_pk"] == "late-call")[
+            "primary_disposition"
+        ]
+        == "join_excluded"
+    )
 
 
 def test_competing_source_lineages_for_one_entity_fail_closed() -> None:

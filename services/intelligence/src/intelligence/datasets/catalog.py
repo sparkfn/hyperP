@@ -6,6 +6,7 @@ import stat
 from dataclasses import dataclass
 from pathlib import Path
 
+from intelligence.crm.activities.path_safety import confined_directory
 from intelligence.datasets.artifacts import DatasetDescriptor, parse_descriptor, verify_dataset
 from intelligence.datasets.bounds import (
     MAX_ARTIFACT_BYTES,
@@ -42,7 +43,7 @@ class CatalogEntry:
 
 def entries(workspace: Path, budget: ReadBudget | None = None) -> tuple[CatalogEntry, ...]:
     """Enumerate bounded accepted entries; overflow never means no replay conflict."""
-    outputs = workspace / "outputs"
+    outputs = _confined(workspace, ("outputs",))
     _directory(outputs, "dataset outputs")
     read_budget = budget or _budget()
     runs = _children(outputs, read_budget, "dataset output run")
@@ -71,9 +72,9 @@ def find(workspace: Path, dataset_id: str, run_id: str) -> CatalogEntry:
 def find_run(workspace: Path, run_id: str) -> CatalogEntry:
     """Resolve exactly one accepted dataset from one bounded named run directory."""
     safe_component(run_id, "dataset run")
-    outputs = workspace / "outputs"
+    outputs = _confined(workspace, ("outputs",))
     _directory(outputs, "dataset outputs")
-    root = outputs / run_id
+    root = _confined(workspace, ("outputs", run_id))
     _directory(root, "dataset output run")
     state = ReadOnlyState.open(workspace)
     try:
@@ -115,19 +116,24 @@ def _run_entries(
     run = state.inspect(run_id)
     if run is None or run.state != "completed" or run.command != "dataset_build":
         return []
-    descriptor_directory = root / "acceptance-descriptors" / "datasets"
-    if not descriptor_directory.exists():
+    accepted = state.accepted_outputs(run_id)
+    if not accepted:
         return []
+    descriptor_directory = _confined(
+        workspace,
+        ("outputs", run_id, "acceptance-descriptors", "datasets"),
+    )
+    if not descriptor_directory.exists():
+        raise ValueError("accepted dataset build is missing its descriptor directory")
     _directory(descriptor_directory, "dataset descriptor directory")
     paths = _files(descriptor_directory, budget, "dataset descriptor")
     if len(paths) > 1:
         raise ValueError("dataset run has multiple acceptance descriptors")
     if not paths:
-        return []
+        raise ValueError("accepted dataset build is missing its descriptor")
     path = paths[0]
     if path.suffix != ".json":
         raise ValueError("dataset descriptor path is invalid")
-    accepted = state.accepted_outputs(run_id)
     descriptor_output = _registered_descriptor_output(accepted, run_id, path.name)
     metadata = path.lstat()
     if metadata.st_size != descriptor_output.byte_count or metadata.st_size > MAX_DESCRIPTOR_BYTES:
@@ -158,7 +164,7 @@ def _run_entries(
     )
     if accepted != expected:
         raise ValueError("dataset descriptor inventory conflicts with State acceptance")
-    dataset_root = workspace / "outputs" / run_id / "datasets" / descriptor.dataset_id
+    dataset_root = _confined(workspace, ("outputs", run_id, "datasets", descriptor.dataset_id))
     registered_tree(
         dataset_root,
         f"datasets/{descriptor.dataset_id}/",
@@ -222,3 +228,9 @@ def _budget() -> ReadBudget:
         max(MAX_ARTIFACT_ENTRIES, MAX_CATALOG_RUNS * 3),
         MAX_ARTIFACT_ROWS,
     )
+
+
+def _confined(workspace: Path, parts: tuple[str, ...]) -> Path:
+    for part in parts:
+        safe_component(part, "dataset path component")
+    return confined_directory(workspace, parts, create=False)

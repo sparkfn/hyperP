@@ -8,6 +8,7 @@ from typing import Protocol
 
 from intelligence.crm.activities.acceptance import accepted_publication
 from intelligence.crm.activities.bounded import ReadLimits, accepted_snapshot, verify_snapshot_input
+from intelligence.crm.activities.model_parsing import parse_boundary
 from intelligence.crm.activities.snapshot_verifier import snapshot_inventory, verify_snapshot
 from intelligence.crm_deal_refs.checkpoints import require_confined_directory
 from intelligence.crm_deal_refs.commands import accepted_snapshot_root
@@ -18,6 +19,7 @@ from intelligence.datasets.admission_codec import (
     deal_reference,
     identity_revision,
     inventory_dict,
+    json_document,
     verified_selected_count,
 )
 from intelligence.datasets.bounds import (
@@ -128,6 +130,18 @@ def admit_activities(runtime: _RuntimeReader, checkpoint_id: str) -> ActivityInp
         _ACTIVITY_LIMITS,
         verified_selected_count(snapshot, descriptor.snapshot_inventory, prefix),
     )
+    boundary = parse_boundary(
+        json_document(
+            snapshot / "boundary.json",
+            ReadBudget(MAX_INPUT_FILE_BYTES, 1, MAX_ACTIVITY_RECORDS),
+        )
+    )
+    if (
+        boundary.request != descriptor.request
+        or boundary.logical_snapshot_id != descriptor.snapshot_id
+        or boundary.digest != descriptor.boundary_digest
+    ):
+        raise ValueError("activity boundary conflicts with accepted descriptor")
     evidence = verify_snapshot(snapshot)
     if evidence.get("manifest_digest") != descriptor.manifest_digest:
         raise ValueError("activity manifest digest differs from its accepted descriptor")
@@ -138,6 +152,12 @@ def admit_activities(runtime: _RuntimeReader, checkpoint_id: str) -> ActivityInp
     if inventory != descriptor.snapshot_inventory:
         raise ValueError("activity snapshot inventory differs from its accepted descriptor")
     rows = activity_rows(snapshot, _record_pages)
+    if any(
+        record.source_key != boundary.request.source_key
+        or record.source_instance_id != boundary.request.source_instance_id
+        for record in rows.records
+    ):
+        raise ValueError("activity record source conflicts with accepted boundary")
     if len(rows.records) > MAX_ACTIVITY_RECORDS:
         raise ValueError("activity record count exceeds dataset admission bound")
     return ActivityInput(
