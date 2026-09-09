@@ -17,6 +17,8 @@ from intelligence.crm.activities.cleanup.types import (
     CleanupIdentity,
     CleanupTarget,
     ProtectedPreservationProof,
+    ProtectedSourceEndpointEvidence,
+    QuiescenceEvidence,
     ResourceCeilings,
     canonical_digest,
     exact_keys,
@@ -54,8 +56,14 @@ class CleanupReceipt:
     batch_size: int
     resource_ceilings: ResourceCeilings
     policy_version: str
+    quiescence_run_id: str
+    quiescence_evidence_digest: str
+    quiescence_identity_digest: str
+    quiescence_source_key: str
+    quiescence_source_instance_id: str
     protected_baseline: tuple[tuple[str, int], ...]
     protected_evidence: tuple[ProtectedEvidence, ...]
+    protected_source_endpoints: tuple[ProtectedSourceEndpointEvidence, ...]
     identities: tuple[CleanupIdentity, ...]
     identity_digest: str
     relationship_digest: str
@@ -68,6 +76,11 @@ class CleanupReceipt:
         if not 1 <= self.batch_size <= self.resource_ceilings.max_batch_size:
             raise ValueError("receipt batch_size is outside frozen ceiling")
         require_identifier(self.policy_version, "policy_version")
+        require_identifier(self.quiescence_run_id, "quiescence_run_id")
+        require_digest(self.quiescence_evidence_digest, "quiescence_evidence_digest")
+        require_digest(self.quiescence_identity_digest, "quiescence_identity_digest")
+        require_identifier(self.quiescence_source_key, "quiescence_source_key")
+        require_identifier(self.quiescence_source_instance_id, "quiescence_source_instance_id")
         if tuple(sorted(self.protected_baseline)) != self.protected_baseline:
             raise ValueError("protected baseline is not canonical")
         if any(
@@ -80,6 +93,15 @@ class CleanupReceipt:
             != self.protected_evidence
         ):
             raise ValueError("protected evidence is not canonical")
+        if (
+            tuple(
+                sorted(
+                    set(self.protected_source_endpoints), key=ProtectedSourceEndpointEvidence.key
+                )
+            )
+            != self.protected_source_endpoints
+        ):
+            raise ValueError("protected source endpoint evidence is not canonical")
         keys = tuple(item.source_record_pk for item in self.identities)
         if self.identities != tuple(sorted(self.identities, key=_cleanup_order)) or len(
             set(keys)
@@ -87,6 +109,19 @@ class CleanupReceipt:
             raise ValueError("receipt identities are not ordered and unique")
         if len(self.identities) > self.resource_ceilings.max_batches * self.batch_size:
             raise ValueError("receipt identities exceed frozen batch ceiling")
+        endpoint_ids = tuple(
+            item.selected_source_record_pk for item in self.protected_source_endpoints
+        )
+        if endpoint_ids != tuple(sorted(item.source_record_pk for item in self.identities)):
+            raise ValueError("protected source endpoint evidence does not exactly cover receipt")
+        if any(
+            item.endpoint_source_key != self.quiescence_source_key
+            for item in self.protected_source_endpoints
+        ) or any(
+            item.source_instance_id != self.quiescence_source_instance_id
+            for item in self.identities
+        ):
+            raise ValueError("protected source endpoint evidence conflicts with receipt quiescence")
         companions = tuple(item.key() for item in self.authorized_companion_relationships)
         if companions != tuple(sorted(set(companions))):
             raise ValueError("authorized companion relationships are not canonical")
@@ -122,8 +157,16 @@ class CleanupReceipt:
             "batch_size": self.batch_size,
             "resource_ceilings": self.resource_ceilings.as_dict(),
             "policy_version": self.policy_version,
+            "quiescence_run_id": self.quiescence_run_id,
+            "quiescence_evidence_digest": self.quiescence_evidence_digest,
+            "quiescence_identity_digest": self.quiescence_identity_digest,
+            "quiescence_source_key": self.quiescence_source_key,
+            "quiescence_source_instance_id": self.quiescence_source_instance_id,
             "protected_baseline": dict(self.protected_baseline),
             "protected_evidence": [_protected_dict(item) for item in self.protected_evidence],
+            "protected_source_endpoints": [
+                item.as_dict() for item in self.protected_source_endpoints
+            ],
             "protected_preservation": self.protected_preservation.as_dict(),
             "authorized_companion_relationships": [
                 item.as_dict() for item in self.authorized_companion_relationships
@@ -140,7 +183,7 @@ class CleanupReceipt:
     @property
     def protected_preservation(self) -> ProtectedPreservationProof:
         """Summarize only receipt-captured protected relationships, never a graph class."""
-        return _protected_preservation(self.protected_evidence)
+        return _protected_preservation(self.protected_evidence, self.protected_source_endpoints)
 
     @property
     def authorized_companion_relationship_digest(self) -> str:
@@ -161,12 +204,15 @@ class CleanupReceipt:
         batch_size: int,
         resource_ceilings: ResourceCeilings,
         policy_version: str,
+        quiescence: QuiescenceEvidence,
         protected_baseline: Mapping[str, int],
         identities: Sequence[CleanupIdentity],
         protected_evidence: Sequence[ProtectedEvidence] = (),
+        protected_source_endpoints: Sequence[ProtectedSourceEndpointEvidence] = (),
         authorized_companion_relationships: Sequence[AuthorizedCompanionRelationship] = (),
     ) -> CleanupReceipt:
         require_identifier(cleanup_run_id, "cleanup_run_id")
+        quiescence.require_matches(authorization, target)
         ordered = tuple(sorted(identities, key=_cleanup_order))
         baseline = tuple(
             sorted(
@@ -175,6 +221,21 @@ class CleanupReceipt:
             )
         )
         protected = tuple(sorted(set(protected_evidence), key=ProtectedEvidence.key))
+        source_endpoints = tuple(
+            sorted(set(protected_source_endpoints), key=ProtectedSourceEndpointEvidence.key)
+        )
+        expected_source_endpoints = tuple(sorted(item.source_record_pk for item in ordered))
+        if (
+            tuple(item.selected_source_record_pk for item in source_endpoints)
+            != expected_source_endpoints
+        ):
+            raise ValueError("protected source endpoint evidence does not exactly cover receipt")
+        if any(
+            item.endpoint_source_key != quiescence.source_key for item in source_endpoints
+        ) or any(item.source_instance_id != quiescence.source_instance_id for item in ordered):
+            raise ValueError(
+                "protected source endpoint evidence conflicts with quiescence identity"
+            )
         supplied_companions = tuple(authorized_companion_relationships)
         companions = tuple(sorted(supplied_companions, key=AuthorizedCompanionRelationship.key))
         if (
@@ -211,9 +272,17 @@ class CleanupReceipt:
             "batch_size": batch_size,
             "resource_ceilings": resource_ceilings.as_dict(),
             "policy_version": policy_version,
+            "quiescence_run_id": quiescence.quiescence_run_id,
+            "quiescence_evidence_digest": quiescence.evidence_digest,
+            "quiescence_identity_digest": quiescence.identity_digest,
+            "quiescence_source_key": quiescence.source_key,
+            "quiescence_source_instance_id": quiescence.source_instance_id,
             "protected_baseline": dict(baseline),
             "protected_evidence": [_protected_dict(item) for item in protected],
-            "protected_preservation": _protected_preservation(protected).as_dict(),
+            "protected_source_endpoints": [item.as_dict() for item in source_endpoints],
+            "protected_preservation": _protected_preservation(
+                protected, source_endpoints
+            ).as_dict(),
             "authorized_companion_relationships": [item.as_dict() for item in companions],
             "authorized_companion_relationship_digest": _authorized_companion_digest(companions),
             "identities": [item.as_dict() for item in ordered],
@@ -228,8 +297,14 @@ class CleanupReceipt:
             batch_size,
             resource_ceilings,
             policy_version,
+            quiescence.quiescence_run_id,
+            quiescence.evidence_digest,
+            quiescence.identity_digest,
+            quiescence.source_key,
+            quiescence.source_instance_id,
             baseline,
             protected,
+            source_endpoints,
             ordered,
             identity_digest,
             relationship_digest,
@@ -250,8 +325,14 @@ class CleanupReceipt:
                 "batch_size",
                 "resource_ceilings",
                 "policy_version",
+                "quiescence_run_id",
+                "quiescence_evidence_digest",
+                "quiescence_identity_digest",
+                "quiescence_source_key",
+                "quiescence_source_instance_id",
                 "protected_baseline",
                 "protected_evidence",
+                "protected_source_endpoints",
                 "protected_preservation",
                 "authorized_companion_relationships",
                 "authorized_companion_relationship_digest",
@@ -267,15 +348,20 @@ class CleanupReceipt:
             raise ValueError("cleanup receipt schema is unsupported")
         baseline = require_mapping(raw["protected_baseline"], "protected baseline")
         evidence = raw["protected_evidence"]
+        source_endpoints = raw["protected_source_endpoints"]
         companions = raw["authorized_companion_relationships"]
         identities = raw["identities"]
         if (
             not isinstance(evidence, list)
+            or not isinstance(source_endpoints, list)
             or not isinstance(companions, list)
             or not isinstance(identities, list)
         ):
             raise ValueError("receipt collections are invalid")
         parsed_evidence = tuple(_protected_parse(item) for item in evidence)
+        parsed_source_endpoints = tuple(
+            ProtectedSourceEndpointEvidence.parse(item) for item in source_endpoints
+        )
         parsed_companions = tuple(
             AuthorizedCompanionRelationship.parse(item) for item in companions
         )
@@ -286,7 +372,7 @@ class CleanupReceipt:
             raise ValueError("authorized companion relationship digest conflicts")
         if ProtectedPreservationProof.parse(
             raw["protected_preservation"]
-        ) != _protected_preservation(parsed_evidence):
+        ) != _protected_preservation(parsed_evidence, parsed_source_endpoints):
             raise ValueError("protected preservation proof conflicts with protected evidence")
         return cls(
             require_identifier(raw["cleanup_run_id"], "cleanup_run_id"),
@@ -295,6 +381,13 @@ class CleanupReceipt:
             require_count(raw["batch_size"], "batch_size"),
             ResourceCeilings.parse(raw["resource_ceilings"]),
             require_identifier(raw["policy_version"], "policy_version"),
+            require_identifier(raw["quiescence_run_id"], "quiescence_run_id"),
+            require_digest(raw["quiescence_evidence_digest"], "quiescence_evidence_digest"),
+            require_digest(raw["quiescence_identity_digest"], "quiescence_identity_digest"),
+            require_identifier(raw["quiescence_source_key"], "quiescence_source_key"),
+            require_identifier(
+                raw["quiescence_source_instance_id"], "quiescence_source_instance_id"
+            ),
             tuple(
                 sorted(
                     (key, require_count(item, "protected baseline count"))
@@ -302,6 +395,7 @@ class CleanupReceipt:
                 )
             ),
             parsed_evidence,
+            parsed_source_endpoints,
             tuple(CleanupIdentity.parse(item) for item in identities),
             require_digest(raw["identity_digest"], "identity_digest"),
             require_digest(raw["relationship_digest"], "relationship_digest"),
@@ -376,14 +470,18 @@ def _protected_dict(value: ProtectedEvidence) -> dict[str, object]:
 
 def _protected_preservation(
     evidence: Sequence[ProtectedEvidence],
+    source_endpoints: Sequence[ProtectedSourceEndpointEvidence],
 ) -> ProtectedPreservationProof:
     selected = tuple(sorted({item.selected_source_record_pk for item in evidence}))
     relationships = [_protected_dict(item) for item in evidence]
+    endpoints = [item.as_dict() for item in source_endpoints]
     return ProtectedPreservationProof(
         len(selected),
         canonical_digest(list(selected)),
         len(relationships),
         canonical_digest(relationships),
+        len(endpoints),
+        canonical_digest(endpoints),
     )
 
 

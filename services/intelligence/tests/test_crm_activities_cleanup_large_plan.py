@@ -131,6 +131,34 @@ def test_reverse_lexical_call_and_parent_are_kept_together_across_chunk_boundary
     assert repository.plan_calls[-1] == ("m-parent", "z-call")
 
 
+def test_interleaved_components_are_sorted_within_groups_across_repository_boundary() -> None:
+    parent = _identity("a-parent")
+    independent = tuple(_identity(f"b-independent-{index:04d}") for index in range(999))
+    call = _identity("z-call", record_type="call", parents=(parent.source_record_pk,))
+    identities = (parent, *independent, call)
+    repository = _Repository()
+
+    result = plan_cleanup(identities, repository, len(identities))
+
+    first = (
+        parent.source_record_pk,
+        *(item.source_record_pk for item in independent[:-1]),
+        call.source_record_pk,
+    )
+    second = (independent[-1].source_record_pk,)
+    assert result.components == (first, second)
+    assert repository.inspect_calls == [first, second]
+    assert repository.plan_calls == [first, second]
+    assert all(
+        values == tuple(sorted(values)) and len(values) <= MAX_BATCH_IDENTITIES
+        for values in repository.inspect_calls
+    )
+    assert all(
+        values == tuple(sorted(values)) and len(values) <= MAX_BATCH_IDENTITIES
+        for values in repository.plan_calls
+    )
+
+
 def test_merged_global_evidence_is_deterministic_across_component_chunk_sizes() -> None:
     identities = tuple(_identity(f"a-{index:03d}") for index in range(19)) + (
         _identity("m-parent"),

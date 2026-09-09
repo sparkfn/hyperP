@@ -8,12 +8,15 @@ from typing import Literal, cast
 from intelligence.crm.activities.cleanup.admission import AdmittedArchive
 from intelligence.crm.activities.cleanup.config import CleanupConfig
 from intelligence.crm.activities.cleanup.models import CleanupRequest
+from intelligence.crm.activities.cleanup.quiescence import admit_published_quiescence
 from intelligence.crm.activities.cleanup.receipt import CleanupReceipt, admit_published_receipt
 from intelligence.crm.activities.cleanup.types import (
     AuthorizedCompanionRelationship,
     CleanupAuthorization,
     CleanupIdentity,
     CleanupTarget,
+    ProtectedSourceEndpointEvidence,
+    QuiescenceEvidence,
     ResourceCeilings,
     canonical_digest,
 )
@@ -104,6 +107,7 @@ def _create_receipt(
     admitted: AdmittedArchive,
     plan: CleanupPlan,
     inspections: tuple[ExactRecordInspection, ...],
+    quiescence: QuiescenceEvidence,
 ) -> CleanupReceipt:
     ceilings = ResourceCeilings(
         config.archive.max_checkpoint_bytes,
@@ -112,6 +116,7 @@ def _create_receipt(
         1_000,
     )
     companions = _authorized_companion_relationships(admitted, plan, inspections)
+    source_endpoints = _protected_source_endpoints(inspections, quiescence)
     return CleanupReceipt.create(
         cleanup_run_id,
         authorization,
@@ -119,11 +124,67 @@ def _create_receipt(
         batch_size,
         ceilings,
         "crm-activities-cleanup-v1",
+        quiescence,
         _inspection_counts(inspections, len(plan.protected_evidence)),
         _receipt_identities(admitted, plan, inspections, companions),
         plan.protected_evidence,
+        source_endpoints,
         companions,
     )
+
+
+def _quiescence(
+    state: State,
+    quiescence_run_id: str | None,
+    quiescence_digest: str | None,
+    authorization: CleanupAuthorization,
+    target: CleanupTarget,
+) -> QuiescenceEvidence:
+    """Admit the one State-registered operational proof bound to this cleanup request."""
+    if not isinstance(quiescence_run_id, str) or not isinstance(quiescence_digest, str):
+        raise RuntimeError("cleanup requires State quiescence run ID and evidence digest")
+    evidence = admit_published_quiescence(
+        state.workspace, state, quiescence_run_id, quiescence_digest
+    )
+    try:
+        evidence.require_matches(authorization, target)
+    except ValueError as error:
+        raise RuntimeError(
+            "cleanup quiescence does not bind admitted authorization and target"
+        ) from error
+    return evidence
+
+
+def _protected_source_endpoints(
+    inspections: Sequence[ExactRecordInspection],
+    quiescence: QuiescenceEvidence,
+) -> tuple[ProtectedSourceEndpointEvidence, ...]:
+    """Capture one exact preserved FROM_SOURCE endpoint per manifest-selected identity."""
+    result: list[ProtectedSourceEndpointEvidence] = []
+    for inspection in inspections:
+        candidates = tuple(
+            relationship
+            for relationship in inspection.incident_relationships
+            if relationship.relationship_type == "FROM_SOURCE"
+            and relationship.direction == "outbound"
+            and "SourceSystem" in relationship.other_endpoint.labels
+            and relationship.other_endpoint.source_key == quiescence.source_key
+        )
+        if len(candidates) != 1:
+            raise RuntimeError("cleanup identity lacks one exact preserved FROM_SOURCE endpoint")
+        endpoint = candidates[0].other_endpoint
+        result.append(
+            ProtectedSourceEndpointEvidence(
+                inspection.source_record_pk,
+                candidates[0].relationship_element_id,
+                "FROM_SOURCE",
+                "outbound",
+                endpoint.element_id,
+                endpoint.labels,
+                quiescence.source_key,
+            )
+        )
+    return tuple(sorted(result, key=ProtectedSourceEndpointEvidence.key))
 
 
 def _inspection_counts(
@@ -391,6 +452,7 @@ def _receipt(
     authorization: CleanupAuthorization,
     target: CleanupTarget,
     request: CleanupRequest,
+    quiescence: QuiescenceEvidence,
 ) -> CleanupReceipt:
     if not isinstance(receipt_run_id, str) or not isinstance(receipt_digest, str):
         raise RuntimeError("cleanup requires State receipt run ID and logical digest")
@@ -399,8 +461,15 @@ def _receipt(
         result.cleanup_run_id != cleanup_run_id
         or result.authorization != authorization
         or result.target != target
+        or result.quiescence_run_id != quiescence.quiescence_run_id
+        or result.quiescence_evidence_digest != quiescence.evidence_digest
+        or result.quiescence_identity_digest != quiescence.identity_digest
+        or result.quiescence_source_key != quiescence.source_key
+        or result.quiescence_source_instance_id != quiescence.source_instance_id
     ):
-        raise RuntimeError("cleanup receipt does not bind admitted authorization and target")
+        raise RuntimeError(
+            "cleanup receipt does not bind admitted authorization, target, and quiescence"
+        )
     if result.batch_size != request.batch_size:
         raise RuntimeError("cleanup request cannot override receipt batch size")
     return result

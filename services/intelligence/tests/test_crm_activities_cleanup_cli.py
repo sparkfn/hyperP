@@ -39,6 +39,10 @@ def test_cli_has_exact_operation_signatures() -> None:
             "cleanup-a",
             "--batch-size",
             "1",
+            "--quiescence-run-id",
+            "quiescence-a",
+            "--quiescence-digest",
+            "c" * 64,
         ]
     )
     assert dry.batch_size == 1
@@ -64,15 +68,20 @@ def test_cli_has_exact_operation_signatures() -> None:
             "receipt-a",
             "--receipt-digest",
             "b" * 64,
+            "--quiescence-run-id",
+            "quiescence-a",
+            "--quiescence-digest",
+            "c" * 64,
         ]
     )
     assert not hasattr(execute, "batch_size")
+    assert execute.quiescence_run_id == "quiescence-a"
     with pytest.raises(SystemExit):
         parser.parse_args(["cleanup", "status", "--batch-size", "1"])
 
 
 def test_status_main_uses_only_read_only_status_adapter(monkeypatch: pytest.MonkeyPatch) -> None:
-    expected = CleanupStatus("cleanup-a", "a" * 64, "ready", 0, 0, 0, (), None)
+    expected = CleanupStatus("cleanup-a", "a" * 64, "ready", 0, 0, 0, (), None, "b" * 64, "c" * 64)
     monkeypatch.setattr(cli, "_workspace", lambda: Path("workspace"))
     monkeypatch.setattr(cli, "read_status", lambda _workspace, _run: expected)
     arguments = argparse.Namespace(

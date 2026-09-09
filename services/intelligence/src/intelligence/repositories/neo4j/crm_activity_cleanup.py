@@ -7,6 +7,7 @@ from typing import Literal, Protocol, cast
 
 from neo4j import READ_ACCESS, Driver, GraphDatabase, ManagedTransaction
 
+from intelligence.crm.activities.cleanup.types import ProtectedSourceEndpointEvidence
 from intelligence.graph.queries.crm_activity_cleanup import (
     DATABASE_IDENTITY,
     DELETE_NODES_BY_ELEMENT_IDS,
@@ -15,6 +16,7 @@ from intelligence.graph.queries.crm_activity_cleanup import (
     LOCK_IDENTITIES_FOR_REVALIDATION,
     LOCK_SOURCE_SYSTEMS_FOR_REVALIDATION,
     VERIFY_PROTECTED,
+    VERIFY_PROTECTED_SOURCE_ENDPOINTS,
 )
 from intelligence.repositories.protocols.crm_activity_cleanup import (
     MAX_AUTHORIZED_IDENTITIES,
@@ -31,6 +33,7 @@ from intelligence.repositories.protocols.crm_activity_cleanup import (
     ParentIdentity,
     ProtectedEvidence,
     RecordOutcome,
+    canonical_expected_deletions,
 )
 
 
@@ -184,7 +187,8 @@ class Neo4jCrmActivityCleanupRepository:
         database_identity: str,
         expected: tuple[ExpectedDeletionFact, ...],
     ) -> BatchOutcome:
-        return self.delete_batch_with_required_absences(database_identity, expected, ())
+        canonical_expected = canonical_expected_deletions(expected)
+        return self.delete_batch_with_required_absences(database_identity, canonical_expected, ())
 
     def delete_batch_with_required_absences(
         self,
@@ -194,6 +198,7 @@ class Neo4jCrmActivityCleanupRepository:
     ) -> BatchOutcome:
         if not database_identity:
             raise ValueError("expected database identity is required")
+        expected = canonical_expected_deletions(expected)
         _validate_expected(expected)
         _validate_required_absent(expected, required_absent)
         if not expected and not required_absent:
@@ -225,6 +230,52 @@ class Neo4jCrmActivityCleanupRepository:
             rows = tuple(cast(_Result, session.run(VERIFY_PROTECTED, parameters)))
         actual = tuple(_protected_from_row(row.data()) for row in rows)
         return tuple(item for item in protected if item not in actual)
+
+    def verify_protected_source_endpoints(
+        self, endpoints: tuple[ProtectedSourceEndpointEvidence, ...]
+    ) -> tuple[ProtectedSourceEndpointEvidence, ...]:
+        if not endpoints:
+            return ()
+        parameters = {
+            "endpoints": [item.as_dict() for item in endpoints],
+        }
+        with self._driver.session(
+            database=self._database, default_access_mode=READ_ACCESS
+        ) as session:
+            rows = tuple(cast(_Result, session.run(VERIFY_PROTECTED_SOURCE_ENDPOINTS, parameters)))
+        actual: set[tuple[object, object, object, object, object, tuple[object, ...], object]] = (
+            set()
+        )
+        for row in rows:
+            values = row.data()
+            labels = values.get("endpoint_labels")
+            actual.add(
+                (
+                    values.get("selected_source_record_pk"),
+                    values.get("relationship_element_id"),
+                    values.get("relationship_type"),
+                    values.get("direction"),
+                    values.get("endpoint_element_id"),
+                    tuple(sorted(labels))
+                    if isinstance(labels, list) and all(isinstance(label, str) for label in labels)
+                    else (),
+                    values.get("endpoint_source_key"),
+                )
+            )
+        return tuple(
+            item
+            for item in endpoints
+            if (
+                item.selected_source_record_pk,
+                item.relationship_element_id,
+                item.relationship_type,
+                item.direction,
+                item.endpoint_element_id,
+                item.endpoint_labels,
+                item.endpoint_source_key,
+            )
+            not in actual
+        )
 
     def _delete_transaction(
         self,

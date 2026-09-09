@@ -17,6 +17,8 @@ from intelligence.crm.activities.cleanup.types import (
     CleanupAuthorization,
     CleanupIdentity,
     CleanupTarget,
+    ProtectedSourceEndpointEvidence,
+    QuiescenceEvidence,
     ResourceCeilings,
     canonical_digest,
 )
@@ -51,6 +53,28 @@ def _receipt() -> CleanupReceipt:
         1,
         _digest("dependencies"),
     )
+    quiescence = QuiescenceEvidence.create(
+        "quiescence-run",
+        authorization.accepted_run_id,
+        authorization.checkpoint_id,
+        authorization.logical_snapshot_id,
+        authorization.manifest_digest,
+        authorization.cleanup_identity_digest,
+        "bitrix-source",
+        identity.source_instance_id,
+        target.configured_environment_id,
+        target.observed_database_identity,
+        authorization.boundary_digest,
+    )
+    endpoint = ProtectedSourceEndpointEvidence(
+        identity.source_record_pk,
+        "from-source-a",
+        "FROM_SOURCE",
+        "outbound",
+        "source-system-a",
+        ("SourceSystem",),
+        quiescence.source_key,
+    )
     return CleanupReceipt.create(
         "cleanup-a",
         authorization,
@@ -58,8 +82,10 @@ def _receipt() -> CleanupReceipt:
         10,
         ResourceCeilings(100_000, 100, 20, 100),
         "policy-v1",
+        quiescence,
         {"deals": 3, "persons": 4},
         (identity,),
+        protected_source_endpoints=(endpoint,),
     )
 
 
@@ -86,8 +112,41 @@ def _companion_receipt() -> CleanupReceipt:
         receipt.batch_size,
         receipt.resource_ceilings,
         receipt.policy_version,
+        QuiescenceEvidence.create(
+            receipt.quiescence_run_id,
+            receipt.authorization.accepted_run_id,
+            receipt.authorization.checkpoint_id,
+            receipt.authorization.logical_snapshot_id,
+            receipt.authorization.manifest_digest,
+            receipt.authorization.cleanup_identity_digest,
+            receipt.quiescence_source_key,
+            receipt.quiescence_source_instance_id,
+            receipt.target.configured_environment_id,
+            receipt.target.observed_database_identity,
+            receipt.authorization.boundary_digest,
+        ),
         dict(receipt.protected_baseline),
         (activity, call),
+        protected_source_endpoints=(
+            ProtectedSourceEndpointEvidence(
+                call.source_record_pk,
+                "from-source-call-a",
+                "FROM_SOURCE",
+                "outbound",
+                "source-system-a",
+                ("SourceSystem",),
+                receipt.quiescence_source_key,
+            ),
+            ProtectedSourceEndpointEvidence(
+                activity.source_record_pk,
+                "from-source-activity-a",
+                "FROM_SOURCE",
+                "outbound",
+                "source-system-a",
+                ("SourceSystem",),
+                receipt.quiescence_source_key,
+            ),
+        ),
         authorized_companion_relationships=(
             AuthorizedCompanionRelationship(
                 "child-edge-a",
@@ -170,8 +229,41 @@ def test_receipt_orders_companion_calls_before_activities() -> None:
         receipt.batch_size,
         receipt.resource_ceilings,
         receipt.policy_version,
+        QuiescenceEvidence.create(
+            receipt.quiescence_run_id,
+            receipt.authorization.accepted_run_id,
+            receipt.authorization.checkpoint_id,
+            receipt.authorization.logical_snapshot_id,
+            receipt.authorization.manifest_digest,
+            receipt.authorization.cleanup_identity_digest,
+            receipt.quiescence_source_key,
+            receipt.quiescence_source_instance_id,
+            receipt.target.configured_environment_id,
+            receipt.target.observed_database_identity,
+            receipt.authorization.boundary_digest,
+        ),
         dict(receipt.protected_baseline),
         (activity, call),
+        protected_source_endpoints=(
+            ProtectedSourceEndpointEvidence(
+                call.source_record_pk,
+                "from-source-call-a",
+                "FROM_SOURCE",
+                "outbound",
+                "source-system-a",
+                ("SourceSystem",),
+                receipt.quiescence_source_key,
+            ),
+            ProtectedSourceEndpointEvidence(
+                activity.source_record_pk,
+                "from-source-activity-a",
+                "FROM_SOURCE",
+                "outbound",
+                "source-system-a",
+                ("SourceSystem",),
+                receipt.quiescence_source_key,
+            ),
+        ),
     )
     assert [item.record_type for item in reordered.identities] == ["call", "crm_history"]
 

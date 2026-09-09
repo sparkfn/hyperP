@@ -22,6 +22,8 @@ class CleanupStatus:
     attempt_count: int
     outcome_counts: tuple[tuple[str, int], ...]
     reconciliation: tuple[tuple[str, int], ...] | None
+    quiescence_evidence_digest: str
+    protected_preservation_digest: str
 
     def as_dict(self) -> dict[str, object]:
         return {
@@ -33,6 +35,8 @@ class CleanupStatus:
             "attempt_count": self.attempt_count,
             "outcome_counts": dict(self.outcome_counts),
             "reconciliation": None if self.reconciliation is None else dict(self.reconciliation),
+            "quiescence_evidence_digest": self.quiescence_evidence_digest,
+            "protected_preservation_digest": self.protected_preservation_digest,
         }
 
 
@@ -52,6 +56,8 @@ def read_status(workspace: Path, cleanup_run_id: str) -> CleanupStatus:
         len(evidence.attempts),
         counts,
         _reconciliation(root, checkpoint),
+        checkpoint.receipt.quiescence_evidence_digest,
+        checkpoint.receipt.protected_preservation.relationship_digest,
     )
 
 

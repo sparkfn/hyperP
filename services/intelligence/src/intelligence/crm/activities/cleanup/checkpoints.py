@@ -208,6 +208,9 @@ def initialize(root: Path, cleanup_run_id: str, receipt: CleanupReceipt) -> Clea
                 "target": receipt.target.as_dict(),
                 "batch_size": receipt.batch_size,
                 "resource_ceilings": receipt.resource_ceilings.as_dict(),
+                "quiescence_run_id": receipt.quiescence_run_id,
+                "quiescence_evidence_digest": receipt.quiescence_evidence_digest,
+                "quiescence_identity_digest": receipt.quiescence_identity_digest,
             }
         ),
     }
@@ -342,6 +345,8 @@ def write_reconciliation(
         tuple(item.source_record_pk for item in checkpoint.receipt.identities),
         checkpoint.receipt_digest,
     )
+    if parsed.protected_preservation != checkpoint.receipt.protected_preservation:
+        raise RuntimeError("cleanup reconciliation preservation proof conflicts with receipt")
     evidence = durable_outcomes(root, checkpoint)
     verify_durable_partition(
         parsed, checkpoint.receipt_digest, evidence.outcomes, evidence.failure_codes
@@ -458,6 +463,8 @@ def _validated_reconciliation(root: Path, checkpoint: CleanupCheckpoint) -> Reco
         tuple(item.source_record_pk for item in checkpoint.receipt.identities),
         checkpoint.receipt_digest,
     )
+    if parsed.protected_preservation != checkpoint.receipt.protected_preservation:
+        raise RuntimeError("cleanup reconciliation preservation proof conflicts with receipt")
     evidence = _durable_outcomes(root, checkpoint)
     verify_durable_partition(
         parsed, checkpoint.receipt_digest, evidence.outcomes, evidence.failure_codes
@@ -495,6 +502,9 @@ def _request_digest(receipt: CleanupReceipt) -> str:
             "target": receipt.target.as_dict(),
             "batch_size": receipt.batch_size,
             "resource_ceilings": receipt.resource_ceilings.as_dict(),
+            "quiescence_run_id": receipt.quiescence_run_id,
+            "quiescence_evidence_digest": receipt.quiescence_evidence_digest,
+            "quiescence_identity_digest": receipt.quiescence_identity_digest,
         }
     )
 

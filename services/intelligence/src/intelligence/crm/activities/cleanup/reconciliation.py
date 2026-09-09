@@ -8,6 +8,7 @@ from dataclasses import dataclass
 from intelligence.crm.activities.cleanup.types import (
     DISPOSITIONS,
     RECONCILIATION_SCHEMA,
+    ProtectedPreservationProof,
     canonical_digest,
     exact_keys,
     require_count,
@@ -28,6 +29,7 @@ class Reconciliation:
     failure_codes: tuple[tuple[str, str], ...]
     before_counts: tuple[tuple[str, int], ...]
     after_counts: tuple[tuple[str, int], ...]
+    protected_preservation: ProtectedPreservationProof
     outcome_digest: str
 
     def __post_init__(self) -> None:
@@ -76,6 +78,7 @@ class Reconciliation:
             "failure_codes": dict(self.failure_codes),
             "before_counts": dict(self.before_counts),
             "after_counts": dict(self.after_counts),
+            "protected_preservation": self.protected_preservation.as_dict(),
             "counts": counts,
             "authorized_count": len(self.outcomes),
             "unexplained_remainder": 0,
@@ -90,6 +93,7 @@ def reconcile(
     failure_codes: Mapping[str, str],
     before_counts: Mapping[str, int],
     after_counts: Mapping[str, int],
+    protected_preservation: ProtectedPreservationProof,
 ) -> Reconciliation:
     expected = tuple(sorted(authorized_identities))
     if tuple(sorted(outcomes)) != expected or len(expected) != len(set(expected)):
@@ -122,6 +126,7 @@ def reconcile(
                 (key, require_count(value, "after count")) for key, value in after_counts.items()
             )
         ),
+        protected_preservation,
         canonical_digest({"outcomes": dict(ordered), "failure_codes": dict(codes)}),
     )
 
@@ -141,6 +146,7 @@ def parse_reconciliation(
             "failure_codes",
             "before_counts",
             "after_counts",
+            "protected_preservation",
             "counts",
             "authorized_count",
             "unexplained_remainder",
@@ -187,6 +193,7 @@ def parse_reconciliation(
         ),
         tuple((key, require_count(value, "before count")) for key, value in before.items()),
         tuple((key, require_count(value, "after count")) for key, value in after.items()),
+        ProtectedPreservationProof.parse(raw["protected_preservation"]),
         require_digest(raw["outcome_digest"], "outcome_digest"),
     )
 
