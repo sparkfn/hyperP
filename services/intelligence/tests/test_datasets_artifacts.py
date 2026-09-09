@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 
 import pytest
-from intelligence.artifacts import canonical_json
+from intelligence.artifacts import canonical_json, write_manifest
 from intelligence.artifacts_staging import publish_inventory, scan_staged_outputs
 from intelligence.datasets.artifact_codec import descriptor_relative_path
 from intelligence.datasets.artifact_io import inventory
@@ -35,6 +35,16 @@ def _publish_dataset(workspace: Path) -> tuple[str, object]:
         state.begin_publishing(run, inventory)
         published = publish_inventory(workspace, run.run_id, inventory, 100_000_000)
         state.complete_publication(run, published, {"dataset_id": artifact.descriptor.dataset_id})
+        write_manifest(
+            workspace,
+            run.run_id,
+            "dataset_build",
+            "completed",
+            outputs=published,
+            created_at=run.created_at,
+            started_at=run.started_at,
+            limits=dict(run.limits),
+        )
         return run.run_id, artifact.descriptor
     finally:
         state.close()

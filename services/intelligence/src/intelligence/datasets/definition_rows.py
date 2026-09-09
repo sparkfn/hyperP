@@ -10,7 +10,7 @@ from intelligence.datasets.models import (
     DatasetRow,
     RowDisposition,
     duration_seconds,
-    parse_instant,
+    instant_key,
 )
 from intelligence.datasets.selection import Selection
 
@@ -31,7 +31,7 @@ def select_identity(
         return None, "identity_ambiguous_latest_revision"
     newest = latest[0]
     if newest.link_status != "resolved" or not newest.person_reference_eligible:
-        return None, f"identity_{newest.link_status}"
+        return newest, f"identity_{newest.link_status}"
     if newest.hyperp_person_id is None:
         raise ValueError("eligible resolved identity lacks Person reference")
     return newest, None
@@ -56,14 +56,21 @@ def row(
         source_entity_id,
         None if feature_record is None else feature_record.key.source_record_pk,
         None if horizon_record is None else horizon_record.key.source_record_pk,
-        None if identity is None else identity.hyperp_person_id,
+        None if identity is None or identity_reason is not None else identity.hyperp_person_id,
         None if identity is None else identity.global_revision,
+        None if identity is None else identity.event_id,
         None if feature_record is None else feature_record.category_id,
         None if feature_record is None else feature_record.stage_id,
         None if feature_record is None else feature_record.stage_semantic_id,
         _age(feature_record, "source_event_at", inputs.request.feature_cutoff),
         _age(feature_record, "source_effective_at", inputs.request.feature_cutoff),
         _age(horizon_record, "source_effective_at", inputs.request.label_cutoff),
+        None if horizon_record is None else horizon_record.key.source_record_id,
+        None if horizon_record is None else horizon_record.key.source_record_version,
+        _canonical(horizon_record, "observed_at"),
+        _canonical(horizon_record, "available_at"),
+        _canonical(horizon_record, "first_known_at"),
+        _canonical(horizon_record, "source_effective_at"),
         count,
         calls,
         age,
@@ -110,9 +117,9 @@ def _eligible_identity(record: IdentityRevision, cutoff: str) -> bool:
     if any(value is None for value in values):
         return False
     try:
-        limit = parse_instant(cutoff, "cutoff")
+        limit = instant_key(cutoff, "cutoff")
         return all(
-            parse_instant(str(value), "identity temporal evidence") <= limit for value in values
+            instant_key(str(value), "identity temporal evidence") <= limit for value in values
         )
     except ValueError:
         return False
@@ -124,8 +131,8 @@ def _identity_order(record: IdentityRevision) -> tuple[object, ...]:
     return (
         record.global_revision,
         record.resolution_revision,
-        parse_instant(record.available_at, "identity available"),
-        parse_instant(record.first_known_at, "identity known"),
+        instant_key(record.available_at, "identity available"),
+        instant_key(record.first_known_at, "identity known"),
     )
 
 
@@ -134,7 +141,7 @@ def _row_disposition(
 ) -> RowDisposition:
     if feature is None:
         return "ineligible"
-    if identity is None:
+    if identity is None or identity.hyperp_person_id is None:
         return "unresolved"
     if label is None:
         return "censored"
@@ -148,6 +155,15 @@ def _age(record: DealReference | None, field: str, cutoff: str) -> int | None:
     return None if value is None else duration_seconds(value, cutoff)
 
 
+def _canonical(record: DealReference | None, field: str) -> str | None:
+    if record is None:
+        return None
+    value = getattr(record, field)
+    if value is None:
+        return None
+    return instant_key(value, field)[0].isoformat().replace("+00:00", "Z")
+
+
 def _activity_features(
     values: tuple[ActivityEvidence, ...], cutoff: str
 ) -> tuple[int | None, int | None, int | None, str | None]:
@@ -155,9 +171,7 @@ def _activity_features(
     calls = tuple(item for item in values if item.record_type == "call")
     if not activities:
         return None, None, None, "no_eligible_partial_archive_evidence"
-    newest = max(
-        activities, key=lambda item: parse_instant(item.event_at, "activity event")
-    ).event_at
+    newest = max(activities, key=lambda item: instant_key(item.event_at, "activity event")).event_at
     return len(activities), len(calls) if calls else None, duration_seconds(newest, cutoff), None
 
 
