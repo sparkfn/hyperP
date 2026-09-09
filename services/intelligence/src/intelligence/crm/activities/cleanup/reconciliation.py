@@ -16,6 +16,8 @@ from intelligence.crm.activities.cleanup.types import (
     require_mapping,
 )
 
+_FAILURE_DISPOSITIONS = frozenset({"failed", "retained", "conflict"})
+
 
 @dataclass(frozen=True)
 class Reconciliation:
@@ -36,9 +38,13 @@ class Reconciliation:
             raise ValueError("reconciliation outcomes are not canonical")
         if set(value for _, value in self.outcomes) - DISPOSITIONS:
             raise ValueError("reconciliation disposition is invalid")
-        if tuple(sorted(self.failure_codes)) != self.failure_codes or set(
-            key for key, _ in self.failure_codes
-        ) - set(key for key, _ in self.outcomes):
+        expected_failure_codes = {
+            key for key, disposition in self.outcomes if disposition in _FAILURE_DISPOSITIONS
+        }
+        if (
+            tuple(sorted(self.failure_codes)) != self.failure_codes
+            or {key for key, _ in self.failure_codes} != expected_failure_codes
+        ):
             raise ValueError("reconciliation failure codes are invalid")
         for key, value in (*self.outcomes, *self.failure_codes):
             require_identifier(key, "reconciliation identity")
@@ -90,6 +96,12 @@ def reconcile(
         raise RuntimeError("reconciliation does not cover the exact authorized identity set")
     if set(outcomes.values()) - DISPOSITIONS or set(failure_codes) - set(expected):
         raise RuntimeError("reconciliation has unknown outcomes")
+    if set(failure_codes) != {
+        identity
+        for identity, disposition in outcomes.items()
+        if disposition in _FAILURE_DISPOSITIONS
+    }:
+        raise RuntimeError("reconciliation failure codes are incomplete")
     for identity, code in failure_codes.items():
         if outcomes[identity] not in {"failed", "retained", "conflict"}:
             raise RuntimeError("reconciliation failure code has successful outcome")
@@ -114,7 +126,12 @@ def reconcile(
     )
 
 
-def parse_reconciliation(value: object, authorized_identities: Sequence[str]) -> Reconciliation:
+def parse_reconciliation(
+    value: object,
+    authorized_identities: Sequence[str],
+    expected_receipt_digest: str | None = None,
+) -> Reconciliation:
+    """Parse a canonical reconciliation and optionally bind it to one receipt digest."""
     raw = require_mapping(value, "cleanup reconciliation")
     expected = frozenset(
         {
@@ -139,20 +156,58 @@ def parse_reconciliation(value: object, authorized_identities: Sequence[str]) ->
     )
     outcomes, failures, before, after, counts = mappings
     expected_ids = tuple(sorted(authorized_identities))
-    if tuple(outcomes) != expected_ids or raw["authorized_count"] != len(expected_ids):
+    if (
+        len(set(expected_ids)) != len(expected_ids)
+        or set(outcomes) != set(expected_ids)
+        or require_count(raw["authorized_count"], "authorized_count") != len(expected_ids)
+    ):
         raise ValueError("cleanup reconciliation is incomplete")
-    if raw["unexplained_remainder"] != 0 or set(counts) != DISPOSITIONS:
+    if (
+        require_count(raw["unexplained_remainder"], "unexplained_remainder") != 0
+        or set(counts) != DISPOSITIONS
+    ):
         raise ValueError("cleanup reconciliation is unbalanced")
     if any(
         counts[name] != sum(1 for item in outcomes.values() if item == name)
         for name in DISPOSITIONS
     ):
         raise ValueError("cleanup reconciliation counts are unbalanced")
+    receipt_digest = require_digest(raw["receipt_digest"], "receipt_digest")
+    if expected_receipt_digest is not None and receipt_digest != require_digest(
+        expected_receipt_digest, "expected receipt_digest"
+    ):
+        raise ValueError("cleanup reconciliation receipt binding conflicts")
     return Reconciliation(
-        require_digest(raw["receipt_digest"], "receipt_digest"),
-        tuple((key, require_identifier(item, "outcome")) for key, item in outcomes.items()),
-        tuple((key, require_identifier(item, "failure code")) for key, item in failures.items()),
+        receipt_digest,
+        tuple(sorted((key, require_identifier(item, "outcome")) for key, item in outcomes.items())),
+        tuple(
+            sorted(
+                (key, require_identifier(item, "failure code")) for key, item in failures.items()
+            )
+        ),
         tuple((key, require_count(value, "before count")) for key, value in before.items()),
         tuple((key, require_count(value, "after count")) for key, value in after.items()),
         require_digest(raw["outcome_digest"], "outcome_digest"),
     )
+
+
+def verify_durable_partition(
+    reconciliation: Reconciliation,
+    receipt_digest: str,
+    durable_outcomes: Sequence[tuple[str, str]],
+    durable_failure_codes: Sequence[tuple[str, str]],
+) -> None:
+    """Prove that reconciliation is the complete outcome/failure partition from durable batches."""
+    expected_digest = require_digest(receipt_digest, "receipt_digest")
+    outcomes = tuple(sorted(durable_outcomes))
+    failure_codes = tuple(sorted(durable_failure_codes))
+    if len({key for key, _ in outcomes}) != len(outcomes):
+        raise ValueError("durable cleanup outcomes are duplicated")
+    if len({key for key, _ in failure_codes}) != len(failure_codes):
+        raise ValueError("durable cleanup failure codes are duplicated")
+    if (
+        reconciliation.receipt_digest != expected_digest
+        or reconciliation.outcomes != outcomes
+        or reconciliation.failure_codes != failure_codes
+    ):
+        raise ValueError("cleanup reconciliation conflicts with durable batch evidence")

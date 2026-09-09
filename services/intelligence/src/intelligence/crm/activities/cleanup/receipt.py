@@ -12,9 +12,11 @@ from intelligence.artifacts import canonical_json
 from intelligence.crm.activities.bounded import ReadBudget, ReadLimits, read_published_evidence
 from intelligence.crm.activities.cleanup.types import (
     RECEIPT_SCHEMA,
+    AuthorizedCompanionRelationship,
     CleanupAuthorization,
     CleanupIdentity,
     CleanupTarget,
+    ProtectedPreservationProof,
     ResourceCeilings,
     canonical_digest,
     exact_keys,
@@ -59,6 +61,7 @@ class CleanupReceipt:
     relationship_digest: str
     dependency_digest: str
     logical_digest: str
+    authorized_companion_relationships: tuple[AuthorizedCompanionRelationship, ...] = ()
 
     def __post_init__(self) -> None:
         require_identifier(self.cleanup_run_id, "cleanup_run_id")
@@ -84,6 +87,22 @@ class CleanupReceipt:
             raise ValueError("receipt identities are not ordered and unique")
         if len(self.identities) > self.resource_ceilings.max_batches * self.batch_size:
             raise ValueError("receipt identities exceed frozen batch ceiling")
+        companions = tuple(item.key() for item in self.authorized_companion_relationships)
+        if companions != tuple(sorted(set(companions))):
+            raise ValueError("authorized companion relationships are not canonical")
+        if len(
+            {item.relationship_element_id for item in self.authorized_companion_relationships}
+        ) != len(companions):
+            raise ValueError("authorized companion relationship identities are duplicated")
+        if len(companions) > len(self.identities) * 2:
+            raise ValueError("authorized companion relationships exceed identity ceiling")
+        identity_types = {item.source_record_pk: item.record_type for item in self.identities}
+        for relationship in self.authorized_companion_relationships:
+            if (
+                identity_types.get(relationship.call_source_record_pk) != "call"
+                or identity_types.get(relationship.activity_source_record_pk) != "crm_history"
+            ):
+                raise ValueError("authorized companion relationship is outside receipt identities")
         for value, field in (
             (self.identity_digest, "identity_digest"),
             (self.relationship_digest, "relationship_digest"),
@@ -105,11 +124,28 @@ class CleanupReceipt:
             "policy_version": self.policy_version,
             "protected_baseline": dict(self.protected_baseline),
             "protected_evidence": [_protected_dict(item) for item in self.protected_evidence],
+            "protected_preservation": self.protected_preservation.as_dict(),
+            "authorized_companion_relationships": [
+                item.as_dict() for item in self.authorized_companion_relationships
+            ],
+            "authorized_companion_relationship_digest": (
+                self.authorized_companion_relationship_digest
+            ),
             "identities": [item.as_dict() for item in self.identities],
             "identity_digest": self.identity_digest,
             "relationship_digest": self.relationship_digest,
             "dependency_digest": self.dependency_digest,
         }
+
+    @property
+    def protected_preservation(self) -> ProtectedPreservationProof:
+        """Summarize only receipt-captured protected relationships, never a graph class."""
+        return _protected_preservation(self.protected_evidence)
+
+    @property
+    def authorized_companion_relationship_digest(self) -> str:
+        """Digest only the finite original-plan call-to-activity edge authorization."""
+        return _authorized_companion_digest(self.authorized_companion_relationships)
 
     def as_dict(self) -> dict[str, object]:
         value = self.unsigned_dict()
@@ -128,6 +164,7 @@ class CleanupReceipt:
         protected_baseline: Mapping[str, int],
         identities: Sequence[CleanupIdentity],
         protected_evidence: Sequence[ProtectedEvidence] = (),
+        authorized_companion_relationships: Sequence[AuthorizedCompanionRelationship] = (),
     ) -> CleanupReceipt:
         require_identifier(cleanup_run_id, "cleanup_run_id")
         ordered = tuple(sorted(identities, key=_cleanup_order))
@@ -138,6 +175,13 @@ class CleanupReceipt:
             )
         )
         protected = tuple(sorted(set(protected_evidence), key=ProtectedEvidence.key))
+        supplied_companions = tuple(authorized_companion_relationships)
+        companions = tuple(sorted(supplied_companions, key=AuthorizedCompanionRelationship.key))
+        if (
+            tuple(sorted(set(supplied_companions), key=AuthorizedCompanionRelationship.key))
+            != companions
+        ):
+            raise ValueError("authorized companion relationships are not unique")
         identity_digest = canonical_digest([item.as_dict() for item in ordered])
         relationship_digest = canonical_digest(
             [
@@ -169,6 +213,9 @@ class CleanupReceipt:
             "policy_version": policy_version,
             "protected_baseline": dict(baseline),
             "protected_evidence": [_protected_dict(item) for item in protected],
+            "protected_preservation": _protected_preservation(protected).as_dict(),
+            "authorized_companion_relationships": [item.as_dict() for item in companions],
+            "authorized_companion_relationship_digest": _authorized_companion_digest(companions),
             "identities": [item.as_dict() for item in ordered],
             "identity_digest": identity_digest,
             "relationship_digest": relationship_digest,
@@ -188,6 +235,7 @@ class CleanupReceipt:
             relationship_digest,
             dependency_digest,
             canonical_digest(unsigned),
+            companions,
         )
 
     @classmethod
@@ -204,6 +252,9 @@ class CleanupReceipt:
                 "policy_version",
                 "protected_baseline",
                 "protected_evidence",
+                "protected_preservation",
+                "authorized_companion_relationships",
+                "authorized_companion_relationship_digest",
                 "identities",
                 "identity_digest",
                 "relationship_digest",
@@ -216,9 +267,27 @@ class CleanupReceipt:
             raise ValueError("cleanup receipt schema is unsupported")
         baseline = require_mapping(raw["protected_baseline"], "protected baseline")
         evidence = raw["protected_evidence"]
+        companions = raw["authorized_companion_relationships"]
         identities = raw["identities"]
-        if not isinstance(evidence, list) or not isinstance(identities, list):
+        if (
+            not isinstance(evidence, list)
+            or not isinstance(companions, list)
+            or not isinstance(identities, list)
+        ):
             raise ValueError("receipt collections are invalid")
+        parsed_evidence = tuple(_protected_parse(item) for item in evidence)
+        parsed_companions = tuple(
+            AuthorizedCompanionRelationship.parse(item) for item in companions
+        )
+        if require_digest(
+            raw["authorized_companion_relationship_digest"],
+            "authorized companion relationship digest",
+        ) != _authorized_companion_digest(parsed_companions):
+            raise ValueError("authorized companion relationship digest conflicts")
+        if ProtectedPreservationProof.parse(
+            raw["protected_preservation"]
+        ) != _protected_preservation(parsed_evidence):
+            raise ValueError("protected preservation proof conflicts with protected evidence")
         return cls(
             require_identifier(raw["cleanup_run_id"], "cleanup_run_id"),
             CleanupAuthorization.parse(raw["authorization"]),
@@ -232,12 +301,13 @@ class CleanupReceipt:
                     for key, item in baseline.items()
                 )
             ),
-            tuple(_protected_parse(item) for item in evidence),
+            parsed_evidence,
             tuple(CleanupIdentity.parse(item) for item in identities),
             require_digest(raw["identity_digest"], "identity_digest"),
             require_digest(raw["relationship_digest"], "relationship_digest"),
             require_digest(raw["dependency_digest"], "dependency_digest"),
             require_digest(raw["logical_digest"], "logical_digest"),
+            parsed_companions,
         )
 
 
@@ -295,13 +365,32 @@ def _protected_dict(value: ProtectedEvidence) -> dict[str, object]:
                 "source_record_pk": endpoint.source_record_pk,
                 "person_id": endpoint.person_id,
                 "identifier_type": endpoint.identifier_type,
-                "identifier_value": endpoint.identifier_value,
+                "identifier_comparison_token": endpoint.identifier_comparison_token,
                 "source_key": endpoint.source_key,
                 "review_case_id": endpoint.review_case_id,
                 "match_decision_id": endpoint.match_decision_id,
             },
         },
     }
+
+
+def _protected_preservation(
+    evidence: Sequence[ProtectedEvidence],
+) -> ProtectedPreservationProof:
+    selected = tuple(sorted({item.selected_source_record_pk for item in evidence}))
+    relationships = [_protected_dict(item) for item in evidence]
+    return ProtectedPreservationProof(
+        len(selected),
+        canonical_digest(list(selected)),
+        len(relationships),
+        canonical_digest(relationships),
+    )
+
+
+def _authorized_companion_digest(
+    relationships: Sequence[AuthorizedCompanionRelationship],
+) -> str:
+    return canonical_digest([item.as_dict() for item in relationships])
 
 
 def _protected_parse(value: object) -> ProtectedEvidence:
@@ -321,7 +410,7 @@ def _protected_parse(value: object) -> ProtectedEvidence:
             "source_record_pk",
             "person_id",
             "identifier_type",
-            "identifier_value",
+            "identifier_comparison_token",
             "source_key",
             "review_case_id",
             "match_decision_id",
@@ -346,7 +435,10 @@ def _protected_parse(value: object) -> ProtectedEvidence:
                 _optional(endpoint["source_record_pk"], "endpoint source_record_pk"),
                 _optional(endpoint["person_id"], "endpoint person_id"),
                 _optional(endpoint["identifier_type"], "endpoint identifier_type"),
-                _optional(endpoint["identifier_value"], "endpoint identifier_value"),
+                _optional(
+                    endpoint["identifier_comparison_token"],
+                    "endpoint identifier comparison token",
+                ),
                 _optional(endpoint["source_key"], "endpoint source_key"),
                 _optional(endpoint["review_case_id"], "endpoint review_case_id"),
                 _optional(endpoint["match_decision_id"], "endpoint match_decision_id"),

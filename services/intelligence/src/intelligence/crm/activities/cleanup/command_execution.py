@@ -9,7 +9,7 @@ from pathlib import Path
 from intelligence.artifacts import canonical_json
 from intelligence.crm.activities.cleanup import checkpoints
 from intelligence.crm.activities.cleanup.receipt import CleanupReceipt
-from intelligence.crm.activities.cleanup.reconciliation import parse_reconciliation, reconcile
+from intelligence.crm.activities.cleanup.reconciliation import reconcile
 from intelligence.crm.activities.cleanup.types import canonical_digest
 from intelligence.registry import Cancelled
 from intelligence.repositories.protocols.crm_activity_cleanup import (
@@ -20,6 +20,7 @@ from intelligence.repositories.protocols.crm_activity_cleanup import (
     ExpectedDeletionFact,
     LiveTargetIdentity,
     RecordOutcome,
+    RequiredAbsenceCrmActivityCleanupRepository,
 )
 
 _READY = "ready_for_batch_mutation"
@@ -29,7 +30,7 @@ def _execute(
     receipt: CleanupReceipt,
     cleanup_run_id: str | None,
     workspace: Path,
-    repository: CrmActivityCleanupRepository,
+    repository: RequiredAbsenceCrmActivityCleanupRepository,
     identities: tuple[LiveTargetIdentity, ...],
     plan: CleanupPlan,
     attempt_run_id: str,
@@ -43,15 +44,26 @@ def _execute(
         else checkpoints.initialize(root, run_id, receipt)
     )
     checkpoints.record_attempt(root, checkpoint, attempt_run_id)
+    checkpoint = checkpoints.recover_durable_results(root, checkpoint)
+    _assert_processed_prefix_absent(root, checkpoint, repository)
     checkpoint = _resolve_lost_ack(root, checkpoint, repository, identities)
     if checkpoint.phase == "reconciled":
+        _assert_processed_prefix_absent(root, checkpoint, repository)
         return
     expected = {item.target.source_record_pk: item for item in plan.expected_deletions}
     planned = {item.source_record_pk: item for item in plan.outcomes}
     while checkpoint.cursor < len(receipt.identities):
         if cancelled():
             raise RuntimeError("cleanup cancellation was requested")
-        checkpoint = _batch(root, checkpoint, repository, expected, planned)
+        _assert_processed_prefix_absent(root, checkpoint, repository)
+        checkpoint = _batch(
+            root,
+            checkpoint,
+            repository,
+            expected,
+            planned,
+            {item.source_record_pk: item for item in identities},
+        )
     outcomes, codes = _checkpoint_outcomes(root, checkpoint)
     final_inspections = repository.inspect(
         tuple(sorted(item.source_record_pk for item in receipt.identities))
@@ -66,6 +78,25 @@ def _execute(
         _after_counts(receipt, final_inspections, missing_protected),
     )
     checkpoints.write_reconciliation(root, checkpoint, reconciliation.as_dict())
+
+
+def _assert_processed_prefix_absent(
+    root: Path,
+    checkpoint: checkpoints.CleanupCheckpoint,
+    repository: CrmActivityCleanupRepository,
+) -> None:
+    """Fail closed if a previously deleted/absent identity reappears or drifts."""
+    outcomes = dict(checkpoints.durable_outcomes(root, checkpoint).outcomes)
+    keys = tuple(
+        item.source_record_pk
+        for item in checkpoint.receipt.identities[: checkpoint.cursor]
+        if outcomes.get(item.source_record_pk) in {"deleted", "already_absent"}
+    )
+    if not keys:
+        return
+    inspected = repository.inspect(tuple(sorted(keys)))
+    if any(item.matching_node_count != 0 for item in inspected):
+        raise RuntimeError("processed cleanup identity reappeared or drifted")
 
 
 def _resolve_lost_ack(
@@ -103,9 +134,10 @@ def _resolve_lost_ack(
 def _batch(
     root: Path,
     checkpoint: checkpoints.CleanupCheckpoint,
-    repository: CrmActivityCleanupRepository,
+    repository: RequiredAbsenceCrmActivityCleanupRepository,
     expected: Mapping[str, ExpectedDeletionFact],
     planned: Mapping[str, RecordOutcome],
+    identity_by_key: Mapping[str, LiveTargetIdentity],
 ) -> checkpoints.CleanupCheckpoint:
     ordinal = checkpoint.batch_count + 1
     batch = checkpoint.receipt.identities[
@@ -125,13 +157,51 @@ def _batch(
         for key in keys
         if planned[key].reason_code == _READY
     )
+    current_required_absent = tuple(
+        identity_by_key[key] for key in keys if planned[key].classification == "already_absent"
+    )
+    durable_outcomes = dict(checkpoints.durable_outcomes(root, checkpoint).outcomes)
+    prefix_required_absent = tuple(
+        identity_by_key[item.source_record_pk]
+        for item in checkpoint.receipt.identities[: checkpoint.cursor]
+        if durable_outcomes.get(item.source_record_pk) in {"deleted", "already_absent"}
+    )
+    required_absent = tuple(
+        sorted(
+            {
+                item.source_record_pk: item
+                for item in (*prefix_required_absent, *current_required_absent)
+            }.values(),
+            key=lambda item: item.source_record_pk,
+        )
+    )
     database_identity = checkpoint.receipt.target.observed_database_identity
     if repository.database_identity() != database_identity:
         raise RuntimeError("live database identity changed before cleanup batch")
-    returned = repository.delete_batch(database_identity, facts)
+    returned = (
+        repository.delete_batch(database_identity, facts)
+        if not required_absent
+        else repository.delete_batch_with_required_absences(
+            database_identity,
+            facts,
+            tuple(sorted(required_absent, key=lambda item: item.source_record_pk)),
+        )
+    )
     if returned.database_identity != database_identity:
         raise RuntimeError("cleanup batch reported a different database identity")
-    outcomes, codes = _combine(keys, planned, returned)
+    returned_by_id = {item.source_record_pk: item for item in returned.outcomes}
+    guard_keys = {item.source_record_pk for item in prefix_required_absent}
+    if any(
+        returned_by_id.get(key) is None or returned_by_id[key].classification != "already_absent"
+        for key in guard_keys
+    ):
+        raise RuntimeError("processed cleanup identity reappeared during mutation batch")
+    current_outcome = BatchOutcome(
+        returned.database_identity,
+        tuple(item for item in returned.outcomes if item.source_record_pk in set(keys)),
+        returned.mutation_applied,
+    )
+    outcomes, codes = _combine(keys, planned, current_outcome)
     return checkpoints.write_batch_result(root, checkpoint, ordinal, outcomes, codes)
 
 
@@ -204,6 +274,12 @@ def _combine(
                 outcomes[key] = item.classification
                 if item.classification in {"retained", "conflict", "failed"}:
                     codes[key] = item.reason_code
+        elif initial.classification == "already_absent" and item is not None:
+            if item.classification != "already_absent":
+                outcomes[key] = item.classification
+                codes[key] = item.reason_code
+            else:
+                outcomes[key] = "already_absent"
         elif item is not None:
             raise RuntimeError("batch returned an outcome for a non-mutation target")
         else:
@@ -233,9 +309,15 @@ def _verify(
     checkpoint = checkpoints.load(root, run_id, receipt)
     if checkpoint.phase != "reconciled":
         raise RuntimeError("cleanup verification requires completed reconciliation")
-    reconciliation = parse_reconciliation(
-        _read(root / "reconciliation.json"),
-        tuple(item.source_record_pk for item in receipt.identities),
+    reconciliation = checkpoints.load_reconciliation(root, checkpoint)
+    durable = checkpoints.durable_outcomes(root, checkpoint)
+    from intelligence.crm.activities.cleanup.reconciliation import verify_durable_partition
+
+    verify_durable_partition(
+        reconciliation,
+        receipt.logical_digest,
+        durable.outcomes,
+        durable.failure_codes,
     )
     if any(value not in {"deleted", "already_absent"} for _, value in reconciliation.outcomes):
         raise RuntimeError("cleanup verification rejects retained, conflict, or failed outcomes")

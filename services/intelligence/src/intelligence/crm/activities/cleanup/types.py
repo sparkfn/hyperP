@@ -11,9 +11,10 @@ from intelligence.artifacts import canonical_json
 from intelligence.crm.activities.models import validate_snapshot_id
 
 ReceiptDisposition = Literal["deleted", "already_absent", "retained", "conflict", "failed"]
-RECEIPT_SCHEMA = "crm-activities-cleanup-receipt-v2"
+RECEIPT_SCHEMA = "crm-activities-cleanup-receipt-v5"
 CHECKPOINT_SCHEMA = "crm-activities-cleanup-checkpoint-v1"
 RECONCILIATION_SCHEMA = "crm-activities-cleanup-reconciliation-v1"
+PROTECTED_PRESERVATION_SCHEMA = "crm-activities-cleanup-protected-preservation-v1"
 SHA256_HEX = frozenset("0123456789abcdef")
 DISPOSITIONS = frozenset({"deleted", "already_absent", "retained", "conflict", "failed"})
 
@@ -51,6 +52,132 @@ def require_mapping(value: object, field: str) -> Mapping[str, object]:
 def exact_keys(value: Mapping[str, object], expected: frozenset[str], field: str) -> None:
     if set(value) != expected:
         raise ValueError(f"{field} schema is invalid")
+
+
+@dataclass(frozen=True)
+class ProtectedPreservationProof:
+    """Bounded proof summary for the exact protected relationships in a receipt."""
+
+    selected_identity_count: int
+    selected_identity_digest: str
+    relationship_count: int
+    relationship_digest: str
+
+    def __post_init__(self) -> None:
+        require_count(self.selected_identity_count, "protected selected identity count")
+        require_count(self.relationship_count, "protected relationship count")
+        require_digest(self.selected_identity_digest, "protected selected identity digest")
+        require_digest(self.relationship_digest, "protected relationship digest")
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "schema_version": PROTECTED_PRESERVATION_SCHEMA,
+            "selected_identity_count": self.selected_identity_count,
+            "selected_identity_digest": self.selected_identity_digest,
+            "relationship_count": self.relationship_count,
+            "relationship_digest": self.relationship_digest,
+        }
+
+    @classmethod
+    def parse(cls, value: object) -> ProtectedPreservationProof:
+        raw = require_mapping(value, "protected preservation proof")
+        exact_keys(
+            raw,
+            frozenset(
+                {
+                    "schema_version",
+                    "selected_identity_count",
+                    "selected_identity_digest",
+                    "relationship_count",
+                    "relationship_digest",
+                }
+            ),
+            "protected preservation proof",
+        )
+        if raw["schema_version"] != PROTECTED_PRESERVATION_SCHEMA:
+            raise ValueError("protected preservation proof schema is unsupported")
+        return cls(
+            require_count(raw["selected_identity_count"], "protected selected identity count"),
+            require_digest(raw["selected_identity_digest"], "protected selected identity digest"),
+            require_count(raw["relationship_count"], "protected relationship count"),
+            require_digest(raw["relationship_digest"], "protected relationship digest"),
+        )
+
+
+@dataclass(frozen=True)
+class AuthorizedCompanionRelationship:
+    """Safe exact evidence for one cleanup-authorized call-to-activity parent edge."""
+
+    relationship_element_id: str
+    relationship_type: Literal["CHILD_OF", "DETAILS_HISTORY_ITEM"]
+    call_source_record_pk: str
+    activity_source_record_pk: str
+    call_direction: Literal["outbound"]
+    activity_direction: Literal["inbound"]
+
+    def __post_init__(self) -> None:
+        require_identifier(self.relationship_element_id, "authorized companion relationship")
+        require_identifier(self.call_source_record_pk, "authorized companion call")
+        require_identifier(self.activity_source_record_pk, "authorized companion activity")
+        if self.call_source_record_pk == self.activity_source_record_pk:
+            raise ValueError("authorized companion endpoints must differ")
+        if self.relationship_type not in {"CHILD_OF", "DETAILS_HISTORY_ITEM"}:
+            raise ValueError("authorized companion relationship type is invalid")
+        if self.call_direction != "outbound" or self.activity_direction != "inbound":
+            raise ValueError("authorized companion relationship direction is invalid")
+
+    def key(self) -> tuple[str, str, str, str, str, str]:
+        return (
+            self.relationship_element_id,
+            self.relationship_type,
+            self.call_source_record_pk,
+            self.activity_source_record_pk,
+            self.call_direction,
+            self.activity_direction,
+        )
+
+    def as_dict(self) -> dict[str, object]:
+        return {
+            "relationship_element_id": self.relationship_element_id,
+            "relationship_type": self.relationship_type,
+            "call_source_record_pk": self.call_source_record_pk,
+            "activity_source_record_pk": self.activity_source_record_pk,
+            "call_direction": self.call_direction,
+            "activity_direction": self.activity_direction,
+        }
+
+    @classmethod
+    def parse(cls, value: object) -> AuthorizedCompanionRelationship:
+        raw = require_mapping(value, "authorized companion relationship")
+        exact_keys(
+            raw,
+            frozenset(
+                {
+                    "relationship_element_id",
+                    "relationship_type",
+                    "call_source_record_pk",
+                    "activity_source_record_pk",
+                    "call_direction",
+                    "activity_direction",
+                }
+            ),
+            "authorized companion relationship",
+        )
+        relationship_type = raw["relationship_type"]
+        if relationship_type not in {"CHILD_OF", "DETAILS_HISTORY_ITEM"}:
+            raise ValueError("authorized companion relationship type is invalid")
+        call_direction = raw["call_direction"]
+        activity_direction = raw["activity_direction"]
+        if call_direction != "outbound" or activity_direction != "inbound":
+            raise ValueError("authorized companion relationship direction is invalid")
+        return cls(
+            require_identifier(raw["relationship_element_id"], "authorized companion relationship"),
+            cast(Literal["CHILD_OF", "DETAILS_HISTORY_ITEM"], relationship_type),
+            require_identifier(raw["call_source_record_pk"], "authorized companion call"),
+            require_identifier(raw["activity_source_record_pk"], "authorized companion activity"),
+            call_direction,
+            activity_direction,
+        )
 
 
 @dataclass(frozen=True)
