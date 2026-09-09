@@ -55,6 +55,8 @@ def _receipt() -> CleanupReceipt:
         "environment-a",
         "database-a",
         canonical_digest("boundary"),
+        "test-operator",
+        "test-reference",
     )
     endpoint = ProtectedSourceEndpointEvidence(
         "source-a",
@@ -73,7 +75,7 @@ def _receipt() -> CleanupReceipt:
         ResourceCeilings(100_000, 100, 10, 10),
         "policy-v1",
         quiescence,
-        {},
+        {"present_identity_count": 1},
         (identity,),
         protected_source_endpoints=(endpoint,),
     )

@@ -103,6 +103,8 @@ def _write_registration(template: QuiescenceEvidence, staging: Path, cancelled: 
         template.environment_id,
         template.observed_database_identity,
         template.boundary_digest,
+        template.attestation_operator,
+        template.attestation_reference,
     )
     target = staging.joinpath(*quiescence_relative_path(staging.name).split("/"))
     target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)

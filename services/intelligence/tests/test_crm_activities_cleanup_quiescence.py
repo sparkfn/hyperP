@@ -36,6 +36,8 @@ def _evidence() -> QuiescenceEvidence:
         "environment-a",
         "database-a",
         _digest("boundary"),
+        "test-operator",
+        "test-reference",
     )
 
 
