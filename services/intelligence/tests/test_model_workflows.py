@@ -18,6 +18,7 @@ from intelligence.model_workflows.core import (
     write_evaluation,
     write_train,
 )
+from intelligence.model_workflows.dataset_admission import DatasetPin
 from intelligence.models import Run
 from intelligence.registry import Registry
 
@@ -192,6 +193,37 @@ def test_parent_train_admission_metadata_contains_exact_source_snapshot_pins() -
     assert command.public_metadata["activity_logical_snapshot_id"] == "snapshot"
 
 
+def test_train_registry_does_not_capture_materialized_dataset_rows() -> None:
+    dataset = _dataset()
+    pin = DatasetPin(
+        dataset.request,
+        {
+            "inputs": {
+                "deal_refs": {
+                    "run_id": "deal",
+                    "boundary_digest": "a" * 64,
+                    "inventory_digest": "b" * 64,
+                    "snapshot_manifest_digest": "c" * 64,
+                },
+                "activities": {
+                    "checkpoint_id": "check",
+                    "accepted_run_id": "activity",
+                    "logical_snapshot_id": "snap",
+                    "boundary_digest": "d" * 64,
+                    "descriptor_digest": "e" * 64,
+                    "inventory_digest": "f" * 64,
+                    "manifest_digest": "0" * 64,
+                },
+            }
+        },
+        dataset.manifest_digest,
+        dataset.content_digest,
+    )
+    handler = train_registry(pin).get("train_run").execute
+    assert hasattr(handler, "args")
+    assert all(not isinstance(value, tuple) or value != dataset.rows for value in handler.args)
+
+
 def test_cli_run_returns_nonzero_for_noncompleted_terminal_state(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
 ) -> None:
@@ -215,3 +247,49 @@ def test_cli_run_returns_nonzero_for_noncompleted_terminal_state(
         == 1
     )
     assert '"state": "cancelled"' in capsys.readouterr().out
+
+
+def test_f1_merged_producer_fingerprint_remains_provenance() -> None:
+    merged = "304ff6b45e8c209eb006841016aa3393f7ac4b73f0721ef96a2b97483746a671"
+    dataset = _dataset()
+    config = {
+        "code_contract_fingerprint": merged,
+        "inputs": {
+            "deal_refs": {
+                "run_id": "deal",
+                "boundary_digest": "a" * 64,
+                "inventory_digest": "b" * 64,
+                "snapshot_manifest_digest": "c" * 64,
+            },
+            "activities": {
+                "checkpoint_id": "check",
+                "accepted_run_id": "activity",
+                "logical_snapshot_id": "snap",
+                "boundary_digest": "d" * 64,
+                "descriptor_digest": "e" * 64,
+                "inventory_digest": "f" * 64,
+                "manifest_digest": "0" * 64,
+            },
+        },
+    }
+    pin = DatasetPin(dataset.request, config, dataset.manifest_digest, dataset.content_digest)
+    assert pin.config["code_contract_fingerprint"] == merged
+
+
+def test_f8_comparison_child_detects_recomputed_input_drift(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    from intelligence.model_workflows import commands
+
+    comparison = {"comparison_id": "comparison-x", "logical": {}}
+    monkeypatch.setattr(
+        commands,
+        "write_comparison",
+        lambda *_args: (_ for _ in ()).throw(AssertionError("must not write")),
+    )
+    monkeypatch.setattr(
+        "intelligence.model_workflows.comparison.compare",
+        lambda *_args: {"comparison_id": "comparison-y", "logical": {}},
+    )
+    with pytest.raises(RuntimeError, match="comparison_input_drift"):
+        commands._compare(comparison, "left", "right", tmp_path, lambda: False)

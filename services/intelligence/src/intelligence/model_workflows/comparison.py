@@ -21,7 +21,7 @@ def compare(workspace: Path, left_run_id: str, right_run_id: str) -> dict[str, o
     right_entry = evaluation_for_run(workspace, right_run_id)
     left_logical = _mapping(left_entry.evaluation.get("logical"))
     right_logical = _mapping(right_entry.evaluation.get("logical"))
-    keys = ("population_digest", "labels", "metrics_contract")
+    keys = ("dataset", "population_digest", "labels", "metrics_contract")
     mismatches = tuple(key for key in keys if left_logical.get(key) != right_logical.get(key))
     if mismatches:
         raise ValueError("incompatible_evaluation_contract:" + ",".join(mismatches))

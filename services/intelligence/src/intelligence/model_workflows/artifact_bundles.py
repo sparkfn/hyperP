@@ -40,7 +40,7 @@ from intelligence.models import OutputInventory
 
 def artifact_budget() -> ReadBudget:
     """Return a conservative non-resettable read budget for one model run."""
-    return ReadBudget(MAX_ARTIFACT_BYTES, MAX_ARTIFACT_ENTRIES, MAX_MODEL_ROWS)
+    return ReadBudget(MAX_ARTIFACT_BYTES * 3, MAX_ARTIFACT_ENTRIES * 3, MAX_MODEL_ROWS * 3)
 
 
 def verify_train_bundle(

@@ -10,6 +10,7 @@ from intelligence.config import RuntimeConfig
 from intelligence.model_workflows.catalog import find as find_model
 from intelligence.model_workflows.catalog import list_entries
 from intelligence.model_workflows.commands import (
+    ModelPin,
     comparison_registry,
     evaluation_registry,
     train_registry,
@@ -21,8 +22,9 @@ from intelligence.model_workflows.contracts import (
     EvaluationRequest,
     TrainRequest,
     VerifyRequest,
+    digest,
 )
-from intelligence.model_workflows.dataset_admission import admit_dataset
+from intelligence.model_workflows.dataset_admission import admit_dataset_metadata
 from intelligence.runtime import IntelligenceRuntime
 
 
@@ -58,14 +60,16 @@ def main(arguments: argparse.Namespace) -> int:
             arguments.dataset_id, arguments.accepted_run_id, arguments.recipe, arguments.seed
         )
         return _run(
-            config, train_registry(admit_dataset(config.workspace, train_request)), "train_run"
+            config,
+            train_registry(admit_dataset_metadata(config.workspace, train_request)),
+            "train_run",
         )
     if arguments.command == "evaluate" and arguments.evaluate_action == "run":
         evaluation_request = _evaluation_request(arguments)
         model = find_model(
             config.workspace, evaluation_request.model_id, evaluation_request.model_run_id
         )
-        dataset = admit_dataset(
+        dataset = admit_dataset_metadata(
             config.workspace,
             TrainRequest(
                 evaluation_request.dataset_id,
@@ -74,7 +78,11 @@ def main(arguments: argparse.Namespace) -> int:
                 _seed(model.candidate),
             ),
         )
-        return _run(config, evaluation_registry(evaluation_request, dataset, model), "evaluate_run")
+        return _run(
+            config,
+            evaluation_registry(evaluation_request, dataset, _model_pin(model)),
+            "evaluate_run",
+        )
     if arguments.command == "evaluate" and arguments.evaluate_action == "compare":
         return _run(
             config,
@@ -91,10 +99,12 @@ def main(arguments: argparse.Namespace) -> int:
             config,
             verify_registry(
                 verification_request,
-                find_model(
-                    config.workspace,
-                    verification_request.model_id,
-                    verification_request.model_run_id,
+                _model_pin(
+                    find_model(
+                        config.workspace,
+                        verification_request.model_id,
+                        verification_request.model_run_id,
+                    )
                 ),
             ),
             "model_verify",
@@ -149,6 +159,16 @@ def _seed(model: Mapping[str, object]) -> int:
     if not isinstance(seed, int) or isinstance(seed, bool):
         raise ValueError("model seed is invalid")
     return seed
+
+
+def _model_pin(model: object) -> ModelPin:
+    from intelligence.model_workflows.catalog import ModelEntry
+
+    if not isinstance(model, ModelEntry):
+        raise ValueError("model catalog entry is invalid")
+    return ModelPin(
+        model.model_id, model.run_id, digest(model.candidate.get("logical")), _seed(model.candidate)
+    )
 
 
 def _dataset_args(parser: argparse.ArgumentParser) -> None:

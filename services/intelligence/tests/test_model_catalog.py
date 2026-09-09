@@ -235,3 +235,27 @@ def test_evaluation_catalog_rejects_self_consistent_nonheldout_population(tmp_pa
         state.close()
     with pytest.raises(ValueError, match="independent evaluation population is incompatible"):
         catalog.evaluation_for_run(tmp_path, run.run_id)
+
+
+def test_f3_two_real_model_publications_list_without_budget_exhaustion(tmp_path: Path) -> None:
+    first_run, first_model = _publish(tmp_path)
+    second_run, second_model = _publish(tmp_path)
+    listed = catalog.list_entries(tmp_path, 10)
+    assert {(entry.run_id, entry.model_id) for entry in listed} == {
+        (first_run, first_model),
+        (second_run, second_model),
+    }
+    bundle = verify_train_bundle(tmp_path / "outputs" / first_run, first_run)
+    catalog.check_model_replay_conflict(tmp_path, bundle)
+
+
+def test_f4_catalog_accepts_exact_heldout_population_from_train_run(tmp_path: Path) -> None:
+    run_id, model_id = _publish(tmp_path)
+    model = catalog.find(tmp_path, model_id, run_id)
+    evaluation = catalog.evaluation_for_run(tmp_path, run_id)
+    population = model.candidate["logical"]["population"]
+    assert evaluation.evaluation["logical"]["population_members"] == population["held_out_members"]
+    assert (
+        evaluation.evaluation["logical"]["population_digest"]
+        == population["held_out_membership_digest"]
+    )

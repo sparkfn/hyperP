@@ -26,7 +26,13 @@ from intelligence.artifacts import (
 from intelligence.artifacts_manifest import MANIFEST_LIMIT_KEYS, RUNTIME_LIMIT_KEYS
 from intelligence.config import RuntimeConfig
 from intelligence.models import Health, OutputInventory, Run, TerminalRunState
-from intelligence.registry import PRODUCTION_REGISTRY, CommandHandler, RegisteredCommand, Registry
+from intelligence.registry import (
+    PRODUCTION_REGISTRY,
+    CommandHandler,
+    RegisteredCommand,
+    Registry,
+    SafeRejectionError,
+)
 from intelligence.state import State
 
 _SETSID = "setsid"
@@ -88,13 +94,18 @@ class IntelligenceRuntime:
         try:
             staging.mkdir(mode=0o700, parents=True, exist_ok=False)
             self._log(run, "started", {})
-            process = (
-                _start_command(command.execute, staging)
-                if child_limits is None
-                else _start_command(command.execute, staging, child_limits)
-            )
+            if child_limits is None and not command.rejection_codes:
+                process = _start_command(command.execute, staging)
+            elif child_limits is None:
+                process = _start_command(command.execute, staging, None, command.rejection_codes)
+            else:
+                process = _start_command(
+                    command.execute, staging, child_limits, command.rejection_codes
+                )
             started = time.monotonic()
-            terminal_state, termination_reason = self._wait_for_command(process, run, started)
+            terminal_state, termination_reason = self._wait_for_command(
+                process, run, started, command
+            )
             if self._precreated_manifest_exists(run.run_id):
                 try:
                     quarantine_manifest(self.config.workspace, run.run_id)
@@ -198,7 +209,7 @@ class IntelligenceRuntime:
             self.state.finalize_reconciled(recovered.run, manifest, recovered.outputs)
 
     def _wait_for_command(
-        self, process: BaseProcess, run: Run, started: float
+        self, process: BaseProcess, run: Run, started: float, command: RegisteredCommand
     ) -> tuple[TerminalRunState, str]:
         """Enforce cancellation/runtime bounds by terminating a reviewed child process."""
         try:
@@ -239,11 +250,9 @@ class IntelligenceRuntime:
                     "reviewed child process group cleanup failed"
                 ) from error
             self.state.mark_execution_quiescent(run)
-            return (
-                ("completed", "completed")
-                if process.exitcode == 0
-                else ("failed", "command_failed")
-            )
+            if process.exitcode == 0:
+                return "completed", "completed"
+            return "failed", _rejection_reason(process.exitcode, command)
         except CleanupUnresolvedError:
             raise
         except BaseException as error:
@@ -270,7 +279,16 @@ class IntelligenceRuntime:
         publication: bool = False,
     ) -> None:
         try:
-            self._log(run, "terminal", {"state": state})
+            details: dict[str, str] = (
+                {"state": str(state)}
+                if state == "completed"
+                else {
+                    "metrics_status": "unavailable",
+                    "reason": reason or "command_failed",
+                    "state": str(state),
+                }
+            )
+            self._log(run, "terminal", details)
         except (OSError, RuntimeError):
             # Terminal state and parent-owned manifest evidence must not depend
             # on a best-effort terminal log append.
@@ -422,7 +440,10 @@ def _preflight_resource_enforcement(child_limits: Mapping[str, int] | None) -> N
 
 
 def _start_command(
-    handler: CommandHandler, staging: Path, child_limits: Mapping[str, int] | None = None
+    handler: CommandHandler,
+    staging: Path,
+    child_limits: Mapping[str, int] | None = None,
+    rejection_codes: tuple[str, ...] = (),
 ) -> BaseProcess:
     """Start only a reviewed registry callable; no caller executable or shell is accepted."""
     parent_ready: _ReadyChannel | None = None
@@ -431,7 +452,7 @@ def _start_command(
         context = get_context("spawn")
         parent_ready, child_ready = context.Pipe(duplex=False)
         process = context.Process(
-            target=_child_entry, args=(handler, staging, child_ready, child_limits)
+            target=_child_entry, args=(handler, staging, child_ready, child_limits, rejection_codes)
         )
     except BaseException as error:
         _close_endpoint(child_ready)
@@ -476,6 +497,7 @@ def _child_entry(
     staging: Path,
     ready: _ReadyChannel,
     child_limits: Mapping[str, int] | None,
+    rejection_codes: tuple[str, ...],
 ) -> None:
     """Run a handler in a private session with raw output and tracebacks suppressed."""
     if os.name != "nt":
@@ -494,8 +516,20 @@ def _child_entry(
                 ready.send(True)
                 ready.close()
                 handler(staging, _not_cancelled)
+            except SafeRejectionError as error:
+                try:
+                    index = rejection_codes.index(error.code)
+                except ValueError:
+                    sys.exit(1)
+                sys.exit(20 + index)
             except BaseException:
                 sys.exit(1)
+
+
+def _rejection_reason(exitcode: int | None, command: RegisteredCommand) -> str:
+    if exitcode is not None and 20 <= exitcode < 20 + len(command.rejection_codes):
+        return command.rejection_codes[exitcode - 20]
+    return "command_failed"
 
 
 def _not_cancelled() -> bool:

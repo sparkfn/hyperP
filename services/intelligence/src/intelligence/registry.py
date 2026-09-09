@@ -20,6 +20,14 @@ _MAX_PUBLIC_METADATA_ITEMS = 32
 _MAX_PUBLIC_METADATA_VALUE_LENGTH = 512
 
 
+class SafeRejectionError(RuntimeError):
+    """One reviewed, stable pre-publication model-domain rejection code."""
+
+    def __init__(self, code: str) -> None:
+        super().__init__(code)
+        self.code = code
+
+
 def validate_public_metadata(
     value: Mapping[str, PublicMetadataValue],
 ) -> dict[str, PublicMetadataValue]:
@@ -55,6 +63,7 @@ class RegisteredCommand:
     public_metadata: Mapping[str, PublicMetadataValue]
     child_limits: ChildLimits | None = None
     runtime_limits: RuntimeLimits | None = None
+    rejection_codes: tuple[str, ...] = ()
 
     def __post_init__(self) -> None:
         if not self.name.isidentifier() or self.name.startswith("_"):
@@ -76,6 +85,12 @@ class RegisteredCommand:
             )
         ):
             raise ValueError("command runtime limits are invalid")
+        if (
+            len(self.rejection_codes) > 20
+            or any(not code.isidentifier() or code.startswith("_") for code in self.rejection_codes)
+            or len(self.rejection_codes) != len(set(self.rejection_codes))
+        ):
+            raise ValueError("command rejection codes are invalid")
 
 
 class Registry:
