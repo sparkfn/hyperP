@@ -265,7 +265,14 @@ def _verify_population(
 
 
 def _verify_missingness(candidate: dict[str, JsonValue], missingness: dict[str, JsonValue]) -> None:
-    expected = {"activity_coverage", "digest", "features", "provenance", "schema_version"}
+    expected = {
+        "activity_coverage",
+        "digest",
+        "features",
+        "provenance",
+        "schema_version",
+        "summaries",
+    }
     if set(missingness) != expected or missingness["schema_version"] != MISSINGNESS_SCHEMA:
         raise ValueError("missingness artifact schema is invalid")
     unsigned = dict(missingness)
@@ -281,6 +288,43 @@ def _verify_missingness(candidate: dict[str, JsonValue], missingness: dict[str, 
     logical = _mapping(candidate["logical"], "model logical")
     if _mapping(logical["dataset"], "model dataset").get("provenance") != ACTIVITY_PROVENANCE:
         raise ValueError("missingness artifact does not match candidate provenance")
+    summaries = missingness["summaries"]
+    population = _mapping(logical["population"], "model population")
+    if not isinstance(summaries, dict) or set(summaries) != {"training", "held_out"}:
+        raise ValueError("missingness summaries are invalid")
+    expected_denominators = {
+        "training": len(_digest_list(population["training_members"], "training membership")),
+        "held_out": len(_digest_list(population["held_out_members"], "held-out membership")),
+    }
+    for partition, denominator in expected_denominators.items():
+        summary = summaries[partition]
+        if (
+            not isinstance(summary, dict)
+            or summary.get("denominator") != denominator
+            or not isinstance(summary.get("features"), dict)
+            or not isinstance(summary.get("reasons"), dict)
+        ):
+            raise ValueError("missingness summaries are invalid")
+        feature_summary = summary["features"]
+        if not isinstance(feature_summary, dict) or set(feature_summary) != set(FEATURES):
+            raise ValueError("missingness summaries are invalid")
+        for feature in FEATURES:
+            counts = feature_summary[feature]
+            if (
+                not isinstance(counts, dict)
+                or set(counts) != {"denominator", "missing"}
+                or counts.get("denominator") != denominator
+                or not isinstance(counts.get("missing"), int)
+                or isinstance(counts.get("missing"), bool)
+            ):
+                raise ValueError("missingness summaries are invalid")
+            missing = counts["missing"]
+            if (
+                not isinstance(missing, int)
+                or isinstance(missing, bool)
+                or not 0 <= missing <= denominator
+            ):
+                raise ValueError("missingness summaries are invalid")
 
 
 def _verify_comparison(

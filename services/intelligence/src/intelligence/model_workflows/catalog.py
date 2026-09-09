@@ -317,6 +317,8 @@ def _verify_comparison_evaluations(
         or logical.get("population_digest") != right_logical.get("population_digest")
         or logical.get("metrics_contract") != left_logical.get("metrics_contract")
         or logical.get("metrics_contract") != right_logical.get("metrics_contract")
+        or left_logical.get("labels") != right_logical.get("labels")
+        or left_logical.get("dataset") != right_logical.get("dataset")
     ):
         raise ValueError("comparison evaluation linkage is invalid")
 
@@ -347,6 +349,19 @@ def _accepted_run_any(
         state.close()
     if run is None or run.state != "completed" or run.command not in commands or not accepted:
         raise ValueError("model workflow run is not accepted")
+    root = output_run_root(workspace, run_id)
+    budget = artifact_budget()
+    for item in accepted:
+        prefix = f"outputs/{run_id}/"
+        if not item.relative_path.startswith(prefix):
+            raise ValueError("State output path is invalid")
+        path = root / item.relative_path.removeprefix(prefix)
+        metadata = regular_file(path, "State registered model output")
+        if (
+            metadata.st_size != item.byte_count
+            or digest_file(path, budget, maximum_file_bytes=MAX_DESCRIPTOR_BYTES) != item.sha256
+        ):
+            raise ValueError("State registered model output checksum is invalid")
     return run, accepted
 
 

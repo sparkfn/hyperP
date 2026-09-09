@@ -31,14 +31,36 @@ def inventory(path: Path, relative: str) -> dict[str, JsonValue]:
     }
 
 
-def missingness() -> dict[str, JsonValue]:
+def missingness(
+    training: tuple[dict[str, object], ...], held_out: tuple[dict[str, object], ...]
+) -> dict[str, JsonValue]:
+    """Persist policy plus deterministic per-partition feature missingness summaries."""
+    summaries = {"training": _summary(training), "held_out": _summary(held_out)}
     unsigned = {
         "activity_coverage": "legacy_partial_snapshot",
         "features": list(FEATURES),
         "provenance": ACTIVITY_PROVENANCE,
         "schema_version": MISSINGNESS_SCHEMA,
+        "summaries": summaries,
     }
     return cast(dict[str, JsonValue], {**unsigned, "digest": digest(unsigned)})
+
+
+def _summary(rows: tuple[dict[str, object], ...]) -> dict[str, JsonValue]:
+    feature_counts: dict[str, JsonValue] = {}
+    for feature in FEATURES:
+        missing = sum(1 for row in rows if row.get(feature) is None)
+        feature_counts[feature] = {"denominator": len(rows), "missing": missing}
+    reasons: dict[str, int] = {}
+    for row in rows:
+        value = row.get("activity_missingness_reason")
+        if isinstance(value, str):
+            reasons[value] = reasons.get(value, 0) + 1
+    return {
+        "denominator": len(rows),
+        "features": feature_counts,
+        "reasons": dict(sorted(reasons.items())),
+    }
 
 
 def _write(path: Path, payload: bytes) -> None:

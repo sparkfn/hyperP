@@ -23,7 +23,6 @@ FEATURES = (
     "stage_id",
     "stage_semantic_id",
     "activity_missingness_reason",
-    "included_activity_join_corroboration",
 )
 CHILD_LIMITS = {"max_cpu_seconds": 10, "max_address_space_bytes": 512 * 1024 * 1024}
 RUNTIME_LIMITS = {

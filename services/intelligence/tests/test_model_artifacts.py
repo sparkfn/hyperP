@@ -158,6 +158,18 @@ def _bundle(
         "features": list(FEATURES),
         "provenance": ACTIVITY_PROVENANCE,
         "schema_version": MISSINGNESS_SCHEMA,
+        "summaries": {
+            "training": {
+                "denominator": 2,
+                "features": {feature: {"denominator": 2, "missing": 2} for feature in FEATURES},
+                "reasons": {},
+            },
+            "held_out": {
+                "denominator": 1,
+                "features": {feature: {"denominator": 1, "missing": 1} for feature in FEATURES},
+                "reasons": {},
+            },
+        },
     }
     _write(
         root / "models" / model_id / "missingness.json",
@@ -402,3 +414,16 @@ def test_comparison_descriptor_binds_request_and_exact_inventory(tmp_path: Path)
         from intelligence.model_workflows.artifacts import parse_comparison_descriptor
 
         parse_comparison_descriptor(descriptor, "comparison-run")
+
+
+def test_f11_missingness_summary_tamper_is_rejected(tmp_path: Path) -> None:
+    model_id, _ = _bundle(tmp_path)
+    path = tmp_path / "models" / model_id / "missingness.json"
+    value = json.loads(path.read_text(encoding="utf-8"))
+    value["summaries"]["training"]["denominator"] = 999
+    unsigned = dict(value)
+    unsigned.pop("digest")
+    value["digest"] = digest(unsigned)
+    path.write_text(canonical_json(value), encoding="utf-8")
+    with pytest.raises(ValueError, match="missingness summaries"):
+        verify_train_bundle(tmp_path, "train-run")

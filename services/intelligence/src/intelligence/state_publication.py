@@ -41,7 +41,9 @@ def _row_to_run(row: sqlite3.Row) -> Run:
                 raise RuntimeError("run limits are corrupt")
             parsed.append((key, value))
         limits = tuple(sorted(parsed))
-    provenance_value = row["command_provenance_json"]
+    provenance_value = (
+        row["command_provenance_json"] if "command_provenance_json" in row.keys() else None
+    )
     provenance: tuple[tuple[str, str | int | float | bool | None], ...] | None = None
     if provenance_value is not None:
         try:

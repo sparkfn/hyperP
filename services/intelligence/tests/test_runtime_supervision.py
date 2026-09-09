@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import multiprocessing
 import os
 import signal
@@ -15,7 +16,13 @@ import pytest
 from intelligence import runtime as runtime_module
 from intelligence.artifacts import workspace_layout
 from intelligence.config import RuntimeConfig
-from intelligence.registry import Cancelled, CommandHandler, RegisteredCommand, Registry
+from intelligence.registry import (
+    Cancelled,
+    CommandHandler,
+    RegisteredCommand,
+    Registry,
+    SafeRejectionError,
+)
 from intelligence.runtime import IntelligenceRuntime
 from intelligence.state import State
 
@@ -30,6 +37,18 @@ def failure_handler(directory: Path, cancelled: Cancelled) -> None:
     """Fail predictably in the child process."""
     del directory, cancelled
     raise RuntimeError("expected failure")
+
+
+def safe_rejection_handler(directory: Path, cancelled: Cancelled) -> None:
+    """Return one reviewed safe rejection without exposing child exception text."""
+    del directory, cancelled
+    raise SafeRejectionError("dataset_drift")
+
+
+def secret_failure_handler(directory: Path, cancelled: Cancelled) -> None:
+    """Fail with secret-shaped text which must remain suppressed."""
+    del directory, cancelled
+    raise RuntimeError("api_secret=never-persist-this")
 
 
 def uncooperative_handler(directory: Path, cancelled: Cancelled) -> None:
@@ -103,6 +122,7 @@ def _runtime(
     child_limits: dict[str, int] | None = None,
     runtime_limits: dict[str, int] | None = None,
     metadata: dict[str, str | int | float | bool | None] | None = None,
+    rejection_codes: tuple[str, ...] = (),
     output_bytes: int = 100_000_000,
 ) -> IntelligenceRuntime:
     command = RegisteredCommand(
@@ -112,6 +132,7 @@ def _runtime(
         {} if metadata is None else metadata,
         child_limits,
         runtime_limits,
+        rejection_codes,
     )
     return IntelligenceRuntime(
         RuntimeConfig(
@@ -433,6 +454,54 @@ def test_preflight_resource_failure_occurs_before_run_admission(
         assert runtime.health().healthy
     finally:
         runtime.close()
+
+
+def test_safe_rejection_terminal_evidence_is_bounded_and_provenanced(tmp_path: Path) -> None:
+    runtime = _runtime(
+        tmp_path,
+        safe_rejection_handler,
+        metadata={"code_fingerprint": "a" * 64, "failure_metrics_status": "unavailable"},
+        rejection_codes=("dataset_drift",),
+    )
+    try:
+        with pytest.raises(RuntimeError, match="process failed"):
+            runtime.run("approved")
+        run = runtime.state.connection.execute("SELECT id FROM runs").fetchone()
+        assert run is not None
+        manifest = json.loads((runtime.state.layout.manifests / f"{run[0]}.json").read_text())
+        assert manifest["reason"] == "dataset_drift"
+        assert manifest["command_provenance"]["code_fingerprint"] == "a" * 64
+        assert manifest["command_provenance"]["failure_metrics_status"] == "unavailable"
+        log = (runtime.state.layout.logs / f"{run[0]}.ndjson").read_text()
+        assert '"metrics_status":"unavailable"' in log and '"reason":"dataset_drift"' in log
+    finally:
+        runtime.close()
+
+
+def test_generic_secret_failure_stays_command_failed_without_raw_text(tmp_path: Path) -> None:
+    runtime = _runtime(
+        tmp_path,
+        secret_failure_handler,
+        metadata={"code_fingerprint": "b" * 64, "failure_metrics_status": "unavailable"},
+    )
+    try:
+        with pytest.raises(RuntimeError):
+            runtime.run("approved")
+        run = runtime.state.connection.execute("SELECT id FROM runs").fetchone()
+        assert run is not None
+        evidence = (runtime.state.layout.manifests / f"{run[0]}.json").read_text()
+        log = (runtime.state.layout.logs / f"{run[0]}.ndjson").read_text()
+        assert '"reason":"command_failed"' in evidence
+        assert "api_secret" not in evidence and "api_secret" not in log
+    finally:
+        runtime.close()
+
+
+def test_rejection_exitcode_outside_allowlist_is_generic() -> None:
+    command = RegisteredCommand(
+        "approved", True, success_handler, {}, rejection_codes=("dataset_drift",)
+    )
+    assert runtime_module._rejection_reason(99, command) == "command_failed"
 
 
 @pytest.mark.skipif(sys.platform != "linux", reason="resource enforcement must execute on Linux CI")

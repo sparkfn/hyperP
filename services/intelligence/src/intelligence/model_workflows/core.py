@@ -162,13 +162,15 @@ def write_train(staging: Path, dataset: AdmittedDataset) -> tuple[str, str]:
     evaluation_path = staging / "evaluations" / evaluation_id / "evaluation.json"
     _write(model_path, model)
     _write(evaluation_path, evaluation)
-    population = _mapping(_mapping(model["logical"], "logical").get("population"), "population")
+    population_value = _mapping(
+        _mapping(model["logical"], "logical").get("population"), "population"
+    )
     member_values: list[dict[str, object]] = []
-    for item in _strings(population.get("training_members")):
+    for item in _strings(population_value.get("training_members")):
         member_values.append(
             {"membership_hash": item, "partition": "training", "schema_version": POPULATION_SCHEMA}
         )
-    for item in _strings(population.get("held_out_members")):
+    for item in _strings(population_value.get("held_out_members")):
         member_values.append(
             {"membership_hash": item, "partition": "held_out", "schema_version": POPULATION_SCHEMA}
         )
@@ -177,9 +179,10 @@ def write_train(staging: Path, dataset: AdmittedDataset) -> tuple[str, str]:
         staging / "models" / model_id / "population.ndjson",
         members,
     )
+    training_rows, held_out_rows, _exclusions = population(dataset)
     _write(
         staging / "models" / model_id / "missingness.json",
-        _missingness(),
+        _missingness(training_rows, held_out_rows),
     )
     evaluation_descriptor = descriptor_value(
         EVALUATION_DESCRIPTOR_SCHEMA,
@@ -268,13 +271,12 @@ def write_evaluation(staging: Path, request: EvaluationRequest, model: Mapping[s
         staging.parent.parent,
         TrainRequest(request.dataset_id, request.accepted_run_id, RECIPE, _seed(model)),
     )
-    held = set(
-        _strings(
-            _mapping(_mapping(model["logical"], "logical")["population"], "population").get(
-                "held_out_members"
-            )
+    held_members = _strings(
+        _mapping(_mapping(model["logical"], "logical")["population"], "population").get(
+            "held_out_members"
         )
     )
+    held = set(held_members)
     training = set(
         _strings(
             _mapping(_mapping(model["logical"], "logical")["population"], "population").get(
@@ -284,8 +286,17 @@ def write_evaluation(staging: Path, request: EvaluationRequest, model: Mapping[s
     )
     if held & training:
         raise ValueError("model training and held-out populations overlap")
-    rows = tuple(row for row in dataset.rows if _membership_hash(row) in held)
-    if not rows or any(_membership_hash(row) in training for row in rows):
+    by_member = {_membership_hash(row): row for row in dataset.rows}
+    if len(by_member) != len(dataset.rows) or any(
+        member not in by_member for member in held_members
+    ):
+        raise ValueError("evaluation population is incompatible")
+    rows = tuple(by_member[member] for member in held_members)
+    if (
+        not rows
+        or len(rows) != len(held_members)
+        or any(_membership_hash(row) in training for row in rows)
+    ):
         raise ValueError("evaluation population is incompatible")
     evaluation = evaluate_model(model, rows, dataset.pin(), "independent_held_out_replay")
     evaluation_id = _text(evaluation.get("evaluation_id"), "evaluation id")

@@ -8,7 +8,7 @@ from pathlib import Path
 from intelligence.datasets.artifact_io import ndjson
 from intelligence.datasets.bounds import ReadBudget
 from intelligence.datasets.catalog import find
-from intelligence.datasets.models import current_config_compatible
+from intelligence.datasets.models import parse_config
 from intelligence.model_workflows.contracts import ACTIVITY_PROVENANCE, TrainRequest, digest
 
 
@@ -60,7 +60,9 @@ class AdmittedDataset:
 def admit_dataset(workspace: Path, request: TrainRequest) -> AdmittedDataset:
     """Require exact State acceptance, schema, coverage, and content checksums before recipes."""
     entry = find(workspace, request.dataset_id, request.accepted_run_id)
-    current_config_compatible(entry.descriptor.inputs)
+    # Dataset producer code fingerprints are immutable provenance, not a consumer
+    # compatibility gate: #357 must consume accepted merged #356 datasets.
+    parse_config(entry.descriptor.inputs)
     manifest = entry.manifest
     if manifest.get("provenance") != {"activity": ACTIVITY_PROVENANCE}:
         raise ValueError("dataset partial-coverage provenance is incompatible")
@@ -76,3 +78,36 @@ def admit_dataset(workspace: Path, request: TrainRequest) -> AdmittedDataset:
     return AdmittedDataset(
         request, entry.descriptor.inputs, entry.descriptor.manifest_digest, content, tuple(rows)
     )
+
+
+@dataclass(frozen=True)
+class DatasetPin:
+    """Bounded parent-side dataset identity; deliberately excludes materialized rows."""
+
+    request: TrainRequest
+    config: dict[str, object]
+    manifest_digest: str
+    content_digest: str
+
+    def pin(self) -> dict[str, object]:
+        return AdmittedDataset(
+            self.request, self.config, self.manifest_digest, self.content_digest, ()
+        ).pin()
+
+    def source_pin_scalars(self) -> dict[str, str]:
+        return AdmittedDataset(
+            self.request, self.config, self.manifest_digest, self.content_digest, ()
+        ).source_pin_scalars()
+
+
+def admit_dataset_metadata(workspace: Path, request: TrainRequest) -> DatasetPin:
+    """Read bounded descriptor/manifest metadata without materializing dataset rows."""
+    entry = find(workspace, request.dataset_id, request.accepted_run_id)
+    parse_config(entry.descriptor.inputs)
+    manifest = entry.manifest
+    if manifest.get("provenance") != {"activity": ACTIVITY_PROVENANCE}:
+        raise ValueError("dataset partial-coverage provenance is incompatible")
+    content = manifest.get("content_digest")
+    if not isinstance(content, str) or len(content) != 64:
+        raise ValueError("dataset content digest is invalid")
+    return DatasetPin(request, entry.descriptor.inputs, entry.descriptor.manifest_digest, content)
