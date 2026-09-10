@@ -35,6 +35,7 @@ class ModelAcceptanceDescriptor:
     request_digest: str
     model_logical_digest: str
     evaluation_logical_digest: str
+    missingness_digest: str
     inventory: tuple[OutputInventory, ...]
     raw: dict[str, JsonValue]
 
@@ -92,6 +93,7 @@ def parse_model_descriptor(
         "inventory",
         "model_id",
         "model_logical_digest",
+        "missingness_digest",
         "recipe",
         "recipe_version",
         "request_digest",
@@ -129,6 +131,7 @@ def parse_model_descriptor(
         _digest(value["request_digest"], "model request digest"),
         _digest(value["model_logical_digest"], "model logical digest"),
         _digest(value["evaluation_logical_digest"], "evaluation logical digest"),
+        _digest(value["missingness_digest"], "missingness digest"),
         _inventory(value["inventory"], "model descriptor inventory"),
         value,
     )

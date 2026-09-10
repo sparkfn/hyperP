@@ -8,9 +8,10 @@ import pytest
 from intelligence.cli import build_parser
 from intelligence.config import RuntimeConfig
 from intelligence.model_workflows import cli as model_cli
+from intelligence.model_workflows import commands
 from intelligence.model_workflows.commands import train_registry
 from intelligence.model_workflows.comparison import compare
-from intelligence.model_workflows.contracts import RECIPE, TrainRequest
+from intelligence.model_workflows.contracts import RECIPE, EvaluationRequest, TrainRequest
 from intelligence.model_workflows.core import (
     AdmittedDataset,
     train_bundle,
@@ -18,9 +19,13 @@ from intelligence.model_workflows.core import (
     write_evaluation,
     write_train,
 )
-from intelligence.model_workflows.dataset_admission import DatasetPin
+from intelligence.model_workflows.dataset_admission import (
+    DatasetPin,
+    admit_dataset_metadata,
+)
 from intelligence.models import Run
 from intelligence.registry import Registry
+from test_datasets_artifacts import _publish_dataset
 
 
 def _dataset() -> AdmittedDataset:
@@ -34,6 +39,7 @@ def _dataset() -> AdmittedDataset:
                 "category_id": "cat-a" if index % 2 else "cat-b",
                 "companion_call_count_lower_bound": None,
                 "disposition": "labeled",
+                "feature_source_record_pk": f"feature-{index}",
                 "included_activity_join_corroboration": "stored_parent_only",
                 "label": ("won", "lost", "open")[index % 3],
                 "person_id": f"person-{index}",
@@ -279,7 +285,6 @@ def test_f1_merged_producer_fingerprint_remains_provenance() -> None:
 def test_f8_comparison_child_detects_recomputed_input_drift(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    from intelligence.model_workflows import commands
 
     comparison = {"comparison_id": "comparison-x", "logical": {}}
     monkeypatch.setattr(
@@ -291,5 +296,52 @@ def test_f8_comparison_child_detects_recomputed_input_drift(
         "intelligence.model_workflows.comparison.compare",
         lambda *_args: {"comparison_id": "comparison-y", "logical": {}},
     )
-    with pytest.raises(RuntimeError, match="comparison_input_drift"):
+    with pytest.raises(RuntimeError, match="comparison_drift"):
         commands._compare(comparison, "left", "right", tmp_path, lambda: False)
+
+
+def test_r4_ineligible_heldout_member_rejects_whole_evaluation(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    model, _ = train_bundle(_dataset())
+    dataset = _dataset()
+    held = model["logical"]["population"]["held_out_members"]
+    assert isinstance(held, list) and held
+    for index, row in enumerate(dataset.rows):
+        if (
+            __import__(
+                "intelligence.model_workflows.population", fromlist=["membership_hash"]
+            ).membership_hash(row)
+            == held[0]
+        ):
+            rows = list(dataset.rows)
+            rows[index] = {**row, "feature_source_record_pk": None}
+            dataset = AdmittedDataset(
+                dataset.request,
+                dataset.config,
+                dataset.manifest_digest,
+                dataset.content_digest,
+                tuple(rows),
+            )
+            break
+    monkeypatch.setattr("intelligence.model_workflows.core.admit_dataset", lambda *_args: dataset)
+    with pytest.raises(ValueError, match="evaluation population is incompatible"):
+        write_evaluation(tmp_path, EvaluationRequest("model", "run", "dataset-a", "run-a"), model)
+
+
+def test_r5_parent_metadata_admission_never_opens_dataset_populations(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    run_id, descriptor = _publish_dataset(tmp_path)
+    opened: list[Path] = []
+    original_open = Path.open
+
+    def track_open(path: Path, *args: object, **kwargs: object) -> object:
+        if path.name in {"rows.ndjson", "dispositions.ndjson"}:
+            opened.append(path)
+        return original_open(path, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "open", track_open)
+    pin = admit_dataset_metadata(tmp_path, TrainRequest(descriptor.dataset_id, run_id, RECIPE, 7))
+    assert pin.request.dataset_id == descriptor.dataset_id
+    assert opened == []

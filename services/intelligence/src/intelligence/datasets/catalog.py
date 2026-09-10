@@ -72,6 +72,98 @@ def find(workspace: Path, dataset_id: str, run_id: str) -> CatalogEntry:
     return entry
 
 
+def find_metadata(workspace: Path, dataset_id: str, run_id: str) -> CatalogEntry:
+    """Read exact accepted dataset metadata without opening rows or dispositions payloads."""
+    safe_component(dataset_id, "dataset id")
+    safe_component(run_id, "dataset run")
+    state = ReadOnlyState.open(workspace)
+    try:
+        run = state.inspect(run_id)
+        accepted = state.accepted_outputs(run_id)
+        if (
+            run is None
+            or run.state != "completed"
+            or run.command != "dataset_build"
+            or not accepted
+        ):
+            raise ValueError("accepted dataset publication is absent")
+        budget = _budget()
+        _terminal_manifest(workspace, state, run_id, accepted, budget)
+    finally:
+        state.close()
+    descriptor_directory = _confined(
+        workspace, ("outputs", run_id, "acceptance-descriptors", "datasets")
+    )
+    descriptor_path = descriptor_directory / f"{dataset_id}.json"
+    descriptor_output = _registered_descriptor_output(accepted, run_id, descriptor_path.name)
+    if (
+        descriptor_path.lstat().st_size != descriptor_output.byte_count
+        or digest_file(descriptor_path, budget, maximum_file_bytes=MAX_DESCRIPTOR_BYTES)
+        != descriptor_output.sha256
+    ):
+        raise ValueError("dataset descriptor checksum conflicts with State")
+    descriptor = parse_descriptor(
+        canonical_json_object(descriptor_path, budget, maximum_file_bytes=MAX_DESCRIPTOR_BYTES)
+    )
+    if descriptor.run_id != run_id or descriptor.dataset_id != dataset_id:
+        raise ValueError("dataset descriptor linkage is invalid")
+    expected = tuple(
+        sorted(
+            (
+                descriptor_output,
+                *(
+                    OutputInventory(
+                        f"outputs/{run_id}/{item.relative_path}", item.sha256, item.byte_count
+                    )
+                    for item in descriptor.dataset_inventory
+                ),
+            ),
+            key=lambda item: item.relative_path,
+        )
+    )
+    if accepted != expected:
+        raise ValueError("dataset descriptor inventory conflicts with State acceptance")
+    root = _confined(workspace, ("outputs", run_id, "datasets", dataset_id))
+    _directory(root, "dataset output root")
+    manifest_path = root / "manifest.json"
+    config_path = root / "config.json"
+    schema_path = root / "schema.json"
+    definition_path = root / "definition.json"
+    metadata_names = {
+        "manifest.json",
+        "config.json",
+        "schema.json",
+        "definition.json",
+        "rows.ndjson",
+        "dispositions.ndjson",
+    }
+    _metadata_tree(root, metadata_names, budget)
+    manifest = canonical_json_object(
+        manifest_path, budget, maximum_file_bytes=MAX_ARTIFACT_FILE_BYTES
+    )
+    from intelligence.datasets.artifact_validation import manifest_shape
+    from intelligence.datasets.models import parse_config
+
+    manifest_shape(manifest)
+    if (
+        manifest.get("dataset_id") != dataset_id
+        or manifest.get("config") != descriptor.inputs
+        or parse_config(
+            canonical_json_object(config_path, budget, maximum_file_bytes=MAX_ARTIFACT_FILE_BYTES)
+        )
+        != descriptor.inputs
+    ):
+        raise ValueError("dataset metadata linkage is invalid")
+    if (
+        digest_file(manifest_path, budget, maximum_file_bytes=MAX_ARTIFACT_FILE_BYTES)
+        != descriptor.manifest_digest
+    ):
+        raise ValueError("dataset manifest checksum is invalid")
+    canonical_json_object(schema_path, budget, maximum_file_bytes=MAX_ARTIFACT_FILE_BYTES)
+    canonical_json_object(definition_path, budget, maximum_file_bytes=MAX_ARTIFACT_FILE_BYTES)
+    return CatalogEntry(run_id, descriptor, manifest)
+
+
 def find_run(workspace: Path, run_id: str) -> CatalogEntry:
     """Resolve exactly one accepted dataset from one bounded named run directory."""
     safe_component(run_id, "dataset run")
@@ -292,6 +384,15 @@ def _directory(path: Path, label: str) -> None:
     metadata = path.lstat()
     if stat.S_ISLNK(metadata.st_mode) or not stat.S_ISDIR(metadata.st_mode):
         raise ValueError(f"{label} is unsafe")
+
+
+def _metadata_tree(root: Path, names: set[str], budget: ReadBudget) -> None:
+    """Preflight exact files without opening NDJSON payloads during metadata admission."""
+    actual = {
+        path.relative_to(root).as_posix() for path in _files(root, budget, "dataset metadata")
+    }
+    if actual != names:
+        raise ValueError("dataset metadata inventory is incomplete")
 
 
 def _budget() -> ReadBudget:

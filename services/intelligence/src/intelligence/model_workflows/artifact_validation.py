@@ -300,6 +300,7 @@ def _verify_missingness(candidate: dict[str, JsonValue], missingness: dict[str, 
         summary = summaries[partition]
         if (
             not isinstance(summary, dict)
+            or set(summary) != {"denominator", "features", "reasons"}
             or summary.get("denominator") != denominator
             or not isinstance(summary.get("features"), dict)
             or not isinstance(summary.get("reasons"), dict)
@@ -314,17 +315,74 @@ def _verify_missingness(candidate: dict[str, JsonValue], missingness: dict[str, 
                 not isinstance(counts, dict)
                 or set(counts) != {"denominator", "missing"}
                 or counts.get("denominator") != denominator
-                or not isinstance(counts.get("missing"), int)
-                or isinstance(counts.get("missing"), bool)
             ):
                 raise ValueError("missingness summaries are invalid")
-            missing = counts["missing"]
+            missing = counts.get("missing")
             if (
                 not isinstance(missing, int)
                 or isinstance(missing, bool)
                 or not 0 <= missing <= denominator
             ):
                 raise ValueError("missingness summaries are invalid")
+        reasons = summary["reasons"]
+        if not isinstance(reasons, dict):
+            raise ValueError("missingness summaries are invalid")
+        reason_total = 0
+        for reason, count in reasons.items():
+            if (
+                not isinstance(reason, str)
+                or not reason
+                or len(reason) > 1024
+                or not isinstance(count, int)
+                or isinstance(count, bool)
+                or count < 0
+            ):
+                raise ValueError("missingness summaries are invalid")
+            reason_total += count
+        activity = feature_summary["activity_missingness_reason"]
+        if not isinstance(activity, dict):
+            raise ValueError("missingness summaries are invalid")
+        activity_missing = activity.get("missing")
+        if not isinstance(activity_missing, int) or reason_total != denominator - activity_missing:
+            raise ValueError("missingness reason balance is invalid")
+        if partition == "training":
+            _verify_training_missingness(logical, feature_summary, reasons)
+
+
+def _verify_training_missingness(
+    logical: dict[str, JsonValue],
+    summary: dict[str, JsonValue],
+    reasons: dict[str, JsonValue],
+) -> None:
+    rules = logical.get("rules")
+    if not isinstance(rules, list):
+        raise ValueError("missingness summaries are invalid")
+    expected_missing = {feature: 0 for feature in FEATURES}
+    expected_reasons: dict[str, int] = {}
+    for rule in rules:
+        if not isinstance(rule, dict):
+            raise ValueError("missingness summaries are invalid")
+        features, counts = rule.get("features"), rule.get("label_counts")
+        if not isinstance(features, dict) or not isinstance(counts, dict):
+            raise ValueError("missingness summaries are invalid")
+        weight = sum(
+            value
+            for value in counts.values()
+            if isinstance(value, int) and not isinstance(value, bool)
+        )
+        for feature in FEATURES:
+            value = features.get(feature)
+            if value is None:
+                expected_missing[feature] += weight
+        reason = features.get("activity_missingness_reason")
+        if isinstance(reason, str):
+            expected_reasons[reason] = expected_reasons.get(reason, 0) + weight
+    for feature in FEATURES:
+        counts = summary[feature]
+        if not isinstance(counts, dict) or counts.get("missing") != expected_missing[feature]:
+            raise ValueError("missingness training counts are invalid")
+    if reasons != expected_reasons:
+        raise ValueError("missingness training reasons are invalid")
 
 
 def _verify_comparison(

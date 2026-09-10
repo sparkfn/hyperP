@@ -100,9 +100,12 @@ def _registry(
                 rejection_codes=(
                     "dataset_drift",
                     "model_drift",
+                    "comparison_drift",
                     "replay_conflict",
                     "incompatible_population",
                     "cancelled_before_work",
+                    "malformed_artifact",
+                    "incompatible_target",
                 ),
             ),
         )
@@ -150,14 +153,21 @@ def _model_metadata(
 
 def _train(dataset: DatasetPin, staging: Path, cancelled: Cancelled) -> None:
     if cancelled():
-        raise RuntimeError("cancelled_before_training")
-    admitted = admit_dataset(staging.parent.parent, dataset.request)
+        raise SafeRejectionError("cancelled_before_work")
+    try:
+        admitted = admit_dataset(staging.parent.parent, dataset.request)
+    except (ValueError, RuntimeError) as error:
+        raise SafeRejectionError("malformed_artifact") from error
     if admitted.pin() != dataset.pin():
         raise SafeRejectionError("dataset_drift")
-    write_train(staging, admitted)
-    check_staged_train_replay(staging.parent.parent, staging.name)
-    if admit_dataset(staging.parent.parent, dataset.request).pin() != dataset.pin():
-        raise RuntimeError("dataset_drift_before_publication")
+    try:
+        write_train(staging, admitted)
+    except ValueError as error:
+        if str(error) == "insufficient deterministic held-out partitions":
+            raise SafeRejectionError("incompatible_population") from error
+        raise SafeRejectionError("malformed_artifact") from error
+    _check_train_replay(staging)
+    _require_dataset_pin(staging.parent.parent, dataset)
 
 
 def _evaluate(
@@ -168,28 +178,40 @@ def _evaluate(
     cancelled: Cancelled,
 ) -> None:
     if cancelled():
-        raise RuntimeError("cancelled_before_evaluation")
-    candidate = load_model(staging.parent.parent, model.model_id, model.run_id)
+        raise SafeRejectionError("cancelled_before_work")
+    try:
+        candidate = load_model(staging.parent.parent, model.model_id, model.run_id)
+    except (ValueError, RuntimeError) as error:
+        raise SafeRejectionError("malformed_artifact") from error
     if digest(candidate.get("logical")) != model.logical_digest:
         raise SafeRejectionError("model_drift")
-    admitted = admit_dataset(staging.parent.parent, dataset.request)
+    try:
+        admitted = admit_dataset(staging.parent.parent, dataset.request)
+    except (ValueError, RuntimeError) as error:
+        raise SafeRejectionError("malformed_artifact") from error
     if admitted.pin() != dataset.pin():
         raise SafeRejectionError("dataset_drift")
-    write_evaluation(staging, request, candidate)
-    check_staged_evaluation_replay(staging.parent.parent, staging.name)
-    if admit_dataset(staging.parent.parent, dataset.request).pin() != dataset.pin():
-        raise RuntimeError("dataset_drift_before_publication")
+    try:
+        write_evaluation(staging, request, candidate)
+    except ValueError as error:
+        if str(error) in {
+            "evaluation population is incompatible",
+            "model training and held-out populations overlap",
+        }:
+            raise SafeRejectionError("incompatible_population") from error
+        raise SafeRejectionError("malformed_artifact") from error
+    _check_evaluation_replay(staging)
+    _require_dataset_pin(staging.parent.parent, dataset)
 
 
 def _verify(request: VerifyRequest, model: ModelPin, staging: Path, cancelled: Cancelled) -> None:
     if cancelled():
-        raise RuntimeError("cancelled_before_verification")
-    if (
-        digest(
-            load_model(staging.parent.parent, request.model_id, request.model_run_id).get("logical")
-        )
-        != model.logical_digest
-    ):
+        raise SafeRejectionError("cancelled_before_work")
+    try:
+        candidate = load_model(staging.parent.parent, request.model_id, request.model_run_id)
+    except (ValueError, RuntimeError) as error:
+        raise SafeRejectionError("malformed_artifact") from error
+    if digest(candidate.get("logical")) != model.logical_digest:
         raise SafeRejectionError("model_drift")
     target = staging / "verifications" / "models" / f"{request.model_id}.json"
     target.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
@@ -207,14 +229,64 @@ def _compare(
     cancelled: Cancelled,
 ) -> None:
     if cancelled():
-        raise RuntimeError("cancelled_before_comparison")
+        raise SafeRejectionError("cancelled_before_work")
     from intelligence.model_workflows.comparison import compare
 
-    recomputed = compare(staging.parent.parent, left_run_id, right_run_id)
+    try:
+        recomputed = compare(staging.parent.parent, left_run_id, right_run_id)
+    except ValueError as error:
+        if str(error).startswith("incompatible_evaluation_contract:"):
+            raise SafeRejectionError("incompatible_target") from error
+        raise SafeRejectionError("malformed_artifact") from error
+    except RuntimeError as error:
+        raise SafeRejectionError("malformed_artifact") from error
     if recomputed != comparison:
-        raise RuntimeError("comparison_input_drift_before_publication")
-    write_comparison(staging, recomputed, left_run_id, right_run_id)
-    check_staged_comparison_replay(staging.parent.parent, staging.name)
+        raise SafeRejectionError("comparison_drift")
+    try:
+        write_comparison(staging, recomputed, left_run_id, right_run_id)
+    except ValueError as error:
+        raise SafeRejectionError("malformed_artifact") from error
+    _check_comparison_replay(staging)
+
+
+def _require_dataset_pin(workspace: Path, dataset: DatasetPin) -> None:
+    """Re-admit before publication and reject either drift or malformed evidence."""
+    try:
+        admitted = admit_dataset(workspace, dataset.request)
+    except (ValueError, RuntimeError) as error:
+        raise SafeRejectionError("malformed_artifact") from error
+    if admitted.pin() != dataset.pin():
+        raise SafeRejectionError("dataset_drift")
+
+
+def _check_train_replay(staging: Path) -> None:
+    """Map only the known immutable replay conflict from staged train verification."""
+    try:
+        check_staged_train_replay(staging.parent.parent, staging.name)
+    except RuntimeError as error:
+        if str(error) == "model replay conflicts with immutable accepted content":
+            raise SafeRejectionError("replay_conflict") from error
+        raise
+
+
+def _check_evaluation_replay(staging: Path) -> None:
+    """Map only the known immutable replay conflict from staged evaluation verification."""
+    try:
+        check_staged_evaluation_replay(staging.parent.parent, staging.name)
+    except RuntimeError as error:
+        if str(error) == "evaluation replay conflicts with immutable accepted content":
+            raise SafeRejectionError("replay_conflict") from error
+        raise
+
+
+def _check_comparison_replay(staging: Path) -> None:
+    """Map only the known immutable replay conflict from staged comparison verification."""
+    try:
+        check_staged_comparison_replay(staging.parent.parent, staging.name)
+    except RuntimeError as error:
+        if str(error) == "comparison replay conflicts with immutable accepted content":
+            raise SafeRejectionError("replay_conflict") from error
+        raise
 
 
 def _text(value: object) -> str:
