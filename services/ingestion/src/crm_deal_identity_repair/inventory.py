@@ -15,11 +15,15 @@ from src.crm_deal_identity_repair.classifier import (
 )
 from src.crm_deal_identity_repair.digests import object_digest
 from src.crm_deal_identity_repair.models import RepairInventoryItem, RepairPartition
+from src.crm_deal_identity_repair.qualification_inventory import inventory_payload_fingerprints
 from src.graph.queries.crm_deal_identity_repair import (
     INVENTORY_ACTIVE_CRM_DEALS,
     INVENTORY_CRM_DEAL_PROJECTIONS,
     INVENTORY_INVALID_CRM_DEAL_SOURCE_RECORD_PKS,
     INVENTORY_STALE_RUN_CONTROL_PLANE,
+)
+from src.graph.queries.crm_deal_identity_repair_verification import (
+    READ_NEGATIVE_CONTROL_FULL_STATE,
 )
 from src.models import JsonValue
 
@@ -155,33 +159,12 @@ def collect_repair_inventory(
     cleanup: list[RepairInventoryItem] = []
     clean: list[RepairInventoryItem] = []
     for item in observed:
-        partition = classify_inventory_item(item)
-        ownership_condition, cleanup_condition = inventory_conditions(item)
-        conditions: tuple[RepairPartition, ...]
-        if ownership_condition and cleanup_condition:
-            conditions = ("ownership_repair", "projection_cleanup")
-        elif ownership_condition:
-            conditions = ("ownership_repair",)
-        elif cleanup_condition:
-            conditions = ("projection_cleanup",)
-        else:
-            conditions = ("negative_control",)
-        partitioned = RepairInventoryItem(
-            source_system=item.source_system,
-            source_record_id=item.source_record_id,
-            source_record_pk=item.source_record_pk,
-            deal_id=item.deal_id,
-            partition=partition,
-            repair_conditions=conditions,
-            graph_fingerprint=item.graph_fingerprint,
-            stored_payload_fingerprint=item.stored_payload_fingerprint,
-            payload=item.payload,
-        )
-        if ownership_condition:
+        partitioned = _partitioned_item(item)
+        if "ownership_repair" in partitioned.repair_conditions:
             ownership.append(partitioned)
-        if cleanup_condition:
+        if "projection_cleanup" in partitioned.repair_conditions:
             cleanup.append(partitioned)
-        if not ownership_condition and not cleanup_condition:
+        if partitioned.repair_conditions == ("negative_control",):
             clean.append(partitioned)
     authoritative = tuple(item for item in observed if _is_authoritative_item(item))
     active_link_counts = tuple(_active_link_count(item) for item in authoritative)
@@ -264,6 +247,81 @@ def _item_from_record(
         ),
         payload=payload,
     )
+
+
+def _partitioned_item(item: RepairInventoryItem) -> RepairInventoryItem:
+    """Apply the canonical classifier to an inventory item with frozen fingerprints."""
+    partition = classify_inventory_item(item)
+    ownership_condition, cleanup_condition = inventory_conditions(item)
+    conditions: tuple[RepairPartition, ...]
+    if ownership_condition and cleanup_condition:
+        conditions = ("ownership_repair", "projection_cleanup")
+    elif ownership_condition:
+        conditions = ("ownership_repair",)
+    elif cleanup_condition:
+        conditions = ("projection_cleanup",)
+    else:
+        conditions = ("negative_control",)
+    return RepairInventoryItem(
+        source_system=item.source_system,
+        source_record_id=item.source_record_id,
+        source_record_pk=item.source_record_pk,
+        deal_id=item.deal_id,
+        partition=partition,
+        repair_conditions=conditions,
+        graph_fingerprint=item.graph_fingerprint,
+        stored_payload_fingerprint=item.stored_payload_fingerprint,
+        payload=item.payload,
+    )
+
+
+def current_inventory_item(
+    tx: ManagedTransaction,
+    source_record_pk: str,
+    closure_source_record_pks: tuple[str, ...],
+) -> RepairInventoryItem | None:
+    """Read one exact CRM-deal inventory item and its descendant closure.
+
+    This is the targeted counterpart to ``collect_repair_inventory``; it issues a
+    single full-state query scoped to the requested primary key and its frozen
+    descendant closure, then rebuilds the payload and fingerprints through the same
+    functions used by the verification path.
+    """
+    items: list[dict[str, JsonValue]] = [
+        {
+            "source_record_pk": source_record_pk,
+            "closure_source_record_pks": list(closure_source_record_pks),
+        }
+    ]
+    for record in tx.run(READ_NEGATIVE_CONTROL_FULL_STATE, items=items):
+        if _required_string(record, "source_record_pk") != source_record_pk:
+            continue
+        source_properties = _json_value(record.get("source_properties"))
+        if not isinstance(source_properties, dict):
+            return None
+        payload = rebuild_inventory_payload(
+            source_properties,
+            _sorted_json_objects(record.get("linked_people"), "linked_people"),
+            _sorted_json_objects(record.get("projections"), "projections"),
+            _sorted_json_objects(record.get("logical_versions"), "logical_versions"),
+            _sorted_json_objects(record.get("descendants"), "descendants"),
+            _sorted_json_objects(record.get("decisions_and_reviews"), "decisions_and_reviews"),
+            _sorted_json_objects(record.get("owner_impacts"), "owner_impacts"),
+        )
+        graph_fingerprint, stored_payload_fingerprint = inventory_payload_fingerprints(payload)
+        source_record_id = _required_mapping_string(source_properties, "source_record_id")
+        base = RepairInventoryItem(
+            source_system="bitrix_chat",
+            source_record_id=source_record_id,
+            source_record_pk=source_record_pk,
+            deal_id=_deal_id(source_record_id),
+            partition="negative_control",
+            graph_fingerprint=graph_fingerprint,
+            stored_payload_fingerprint=stored_payload_fingerprint,
+            payload=payload,
+        )
+        return _partitioned_item(base)
+    return None
 
 
 def _stale_run_evidence(record: Record) -> dict[str, JsonValue]:

@@ -91,6 +91,7 @@ class CrmDealRepairIntegrationRepository:
             "eligible_unit_count": run.eligible_unit_count,
             "negative_control_count": run.negative_control_count,
             "request_digest": request.request_digest,
+            "allocation_revision": request.control.expected_revision,
         }
 
         def work(tx: ManagedTransaction) -> RepairIntegrationAuthority:

@@ -309,7 +309,28 @@ def test_acceptance_lock_requires_every_allocated_unit(neo4j_driver: Driver) -> 
     assert locked is None
 
 
-def test_admission_requires_verified_status_for_every_prior_sequence(neo4j_driver: Driver) -> None:
+def _seed_two_unit_run(session: Session, values: dict[str, object]) -> None:
+    """Seed a zero-unit run and add two allocated units with a two-unit completion."""
+    session.run(
+        """
+        MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
+        SET completion.unit_count = 2, completion.unit_ids = ['unit-a', 'unit-b']
+        CREATE (:CrmDealRepairUnit {run_id: $run_id, unit_id: 'unit-a', generation: 1,
+          sequence: 0, attempt: 1, boundary_digest: $boundary_digest,
+          inventory_fingerprint: $inventory_digest, inventory_binding_digest: $inventory_digest,
+          state: 'allocated'})
+        CREATE (:CrmDealRepairUnit {run_id: $run_id, unit_id: 'unit-b', generation: 1,
+          sequence: 1, attempt: 1, boundary_digest: $boundary_digest,
+          inventory_fingerprint: $inventory_digest, inventory_binding_digest: $inventory_digest,
+          state: 'allocated'})
+        """,
+        **values,
+    ).consume()
+
+
+def test_admission_requires_checkpoint_and_rejects_blocked_or_tampered(
+    neo4j_driver: Driver,
+) -> None:
     _seed_zero_unit_run(neo4j_driver)
     values: dict[str, object] = _params() | {
         "unit_id": "unit-b",
@@ -322,19 +343,17 @@ def test_admission_requires_verified_status_for_every_prior_sequence(neo4j_drive
         "fence_fingerprint": _DIGEST,
     }
     with neo4j_driver.session() as session:
+        _seed_two_unit_run(session, values)
+        # Without the checkpoint advanced to 1, sequence-1 admission is rejected.
+        assert (
+            session.execute_write(
+                lambda tx: tx.run(queries.CLAIM_ADMITTED_FENCE, **values).single()
+            )
+            is None
+        )
         session.run(
-            """
-            MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
-            SET completion.unit_count = 2, completion.unit_ids = ['unit-a', 'unit-b']
-            CREATE (:CrmDealRepairUnit {run_id: $run_id, unit_id: 'unit-a', generation: 1,
-              sequence: 0, attempt: 1, boundary_digest: $boundary_digest,
-              inventory_fingerprint: $inventory_digest, inventory_binding_digest: $inventory_digest,
-              state: 'allocated'})
-            CREATE (:CrmDealRepairUnit {run_id: $run_id, unit_id: 'unit-b', generation: 1,
-              sequence: 1, attempt: 1, boundary_digest: $boundary_digest,
-              inventory_fingerprint: $inventory_digest, inventory_binding_digest: $inventory_digest,
-              state: 'allocated'})
-            """,
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "SET completion.admission_checkpoint_blocked = true",
             **values,
         ).consume()
         assert (
@@ -344,8 +363,9 @@ def test_admission_requires_verified_status_for_every_prior_sequence(neo4j_drive
             is None
         )
         session.run(
-            "MATCH (unit:CrmDealRepairUnit {run_id: $run_id, unit_id: 'unit-a'}) "
-            "SET unit.state = 'applied'",
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "REMOVE completion.admission_checkpoint_blocked "
+            "SET completion.settled_sequence = 0",
             **values,
         ).consume()
         assert (
@@ -355,78 +375,106 @@ def test_admission_requires_verified_status_for_every_prior_sequence(neo4j_drive
             is None
         )
         session.run(
-            """
-            CREATE (:CrmDealRepairVerification {run_id: $run_id, unit_id: 'unit-a', generation: 1,
-              sequence: 0, attempt: 1, owner_id: $owner_id, fence_token: $token_digest,
-              boundary_digest: $boundary_digest, outcome: 'verified'})
-            """,
-            **values,
-        ).consume()
-        assert (
-            session.execute_write(
-                lambda tx: tx.run(queries.CLAIM_ADMITTED_FENCE, **values).single()
-            )
-            is None
-        )
-        session.run(
-            """
-            CREATE (:CrmDealRepairFence {run_id: $run_id, unit_id: 'unit-a', fence_id: 'fence-a',
-              generation: 1, sequence: 0, attempt: 1, owner_id: $owner_id,
-              token: $token_digest, boundary_digest: $boundary_digest,
-              fence_fingerprint: $inventory_digest, state: 'claimed'})
-            CREATE (:CrmDealRepairMutationResult {run_id: $run_id, unit_id: 'unit-a',
-              mutation_id: 'mutation-a', rollback_image_id: 'image-a',
-              rollback_image_digest: $inventory_digest, checkpoint_id: 'checkpoint-a',
-              outbox_event_id: 'outbox-a', generation: 1, sequence: 0, attempt: 1,
-              owner_id: $owner_id, fence_token: $token_digest, boundary_digest: $boundary_digest,
-              unit_fingerprint: $inventory_digest, evidence_digest: $inventory_digest,
-              payload_digest: $inventory_digest})
-            CREATE (:CrmDealRepairRollbackImage {run_id: $run_id, unit_id: 'unit-a',
-              rollback_image_id: 'image-a', image_digest: $inventory_digest, generation: 1,
-              sequence: 0, attempt: 1, owner_id: $owner_id, fence_token: $token_digest,
-              boundary_digest: $boundary_digest, state: 'available',
-              evidence_digest: $inventory_digest, payload_digest: $inventory_digest})
-            CREATE (:CrmDealRepairRollbackAuthorization {run_id: $run_id, unit_id: 'unit-a',
-              authorization_transition_id: 'authorization-a',
-              authorization_digest: $inventory_digest, mutation_id: 'mutation-a',
-              rollback_image_id: 'image-a', image_digest: $inventory_digest, generation: 1,
-              sequence: 0, attempt: 1, owner_id: $owner_id, fence_token: $token_digest,
-              boundary_digest: $boundary_digest, fence_id: 'fence-a',
-              predecessor_transition_id: 'mutation-a:applied:image-a', state: 'approved',
-              consumable: true})
-            CREATE (:CrmDealRepairRollbackReceipt {run_id: $run_id, receipt_id: 'receipt-foreign',
-              unit_id: 'unit-a', fence_id: 'foreign-fence', mutation_id: 'mutation-a',
-              image_digest: $inventory_digest, authorization_transition_id: 'authorization-a',
-              authorization_digest: $inventory_digest, generation: 1, sequence: 0, attempt: 1,
-              control_revision: $revision, allocation_revision: $allocation_revision,
-              completion_id: $completion_id, status_digest: $inventory_digest, state: 'available'})
-            """,
-            **values,
-        ).consume()
-        assert (
-            session.execute_write(
-                lambda tx: tx.run(queries.CLAIM_ADMITTED_FENCE, **values).single()
-            )
-            is None
-        )
-        session.run(
-            "MATCH (receipt:CrmDealRepairRollbackReceipt {run_id: $run_id, "
-            "receipt_id: 'receipt-foreign'}) DELETE receipt",
-            **values,
-        ).consume()
-        session.run(
-            """
-            CREATE (:CrmDealRepairRollbackReceipt {run_id: $run_id, receipt_id: 'receipt-a',
-              unit_id: 'unit-a', fence_id: 'fence-a', mutation_id: 'mutation-a',
-              image_digest: $inventory_digest, authorization_transition_id: 'authorization-a',
-              authorization_digest: $inventory_digest, generation: 1, sequence: 0, attempt: 1,
-              control_revision: $revision, allocation_revision: $allocation_revision,
-              completion_id: $completion_id, status_digest: $inventory_digest, state: 'available'})
-            """,
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "SET completion.settled_sequence = 1",
             **values,
         ).consume()
         admitted = session.execute_write(
             lambda tx: tx.run(queries.CLAIM_ADMITTED_FENCE, **values).single(strict=True)
+        )
+    assert admitted["fence"]["unit_id"] == "unit-b"
+
+
+def _seed_unit_a_settle_chain(session: Session, values: dict[str, object]) -> None:
+    """Create the exact ledger chain for unit-a so STORE_ROLLBACK_RECEIPT can settle it."""
+    session.run(
+        """
+        MATCH (unit:CrmDealRepairUnit {run_id: $run_id, unit_id: 'unit-a'})
+        SET unit.state = 'applied'
+        CREATE (:CrmDealRepairFence {run_id: $run_id, unit_id: 'unit-a', fence_id: 'fence-a',
+          generation: 1, sequence: 0, attempt: 1, owner_id: $owner_id,
+          token: $token_digest, boundary_digest: $boundary_digest,
+          fence_fingerprint: $inventory_digest, state: 'claimed'})
+        CREATE (:CrmDealRepairMutationResult {run_id: $run_id, unit_id: 'unit-a',
+          mutation_id: 'mutation-a', rollback_image_id: 'image-a',
+          rollback_image_digest: $inventory_digest, checkpoint_id: 'checkpoint-a',
+          outbox_event_id: 'outbox-a', generation: 1, sequence: 0, attempt: 1,
+          owner_id: $owner_id, fence_token: $token_digest, boundary_digest: $boundary_digest,
+          unit_fingerprint: $inventory_digest, evidence_digest: $inventory_digest,
+          payload_digest: $inventory_digest})
+        CREATE (:CrmDealRepairRollbackImage {run_id: $run_id, unit_id: 'unit-a',
+          rollback_image_id: 'image-a', image_digest: $inventory_digest, generation: 1,
+          sequence: 0, attempt: 1, owner_id: $owner_id, fence_token: $token_digest,
+          boundary_digest: $boundary_digest, state: 'available',
+          evidence_digest: $inventory_digest, payload_digest: $inventory_digest})
+        CREATE (:CrmDealRepairVerification {run_id: $run_id, unit_id: 'unit-a', generation: 1,
+          sequence: 0, attempt: 1, owner_id: $owner_id, fence_token: $token_digest,
+          boundary_digest: $boundary_digest, outcome: 'verified'})
+        CREATE (:CrmDealRepairRollbackAuthorization {run_id: $run_id, unit_id: 'unit-a',
+          authorization_transition_id: 'authorization-a',
+          mutation_id: 'mutation-a', rollback_image_id: 'image-a',
+          image_digest: $inventory_digest, generation: 1, sequence: 0, attempt: 1,
+          owner_id: $owner_id, fence_token: $token_digest, boundary_digest: $boundary_digest,
+          fence_id: 'fence-a', predecessor_transition_id: 'mutation-a:applied:image-a',
+          state: 'approved', consumable: true})
+        """,
+        **values,
+    ).consume()
+
+
+def test_sequential_multi_unit_settle_then_admit_advances_checkpoint(
+    neo4j_driver: Driver,
+) -> None:
+    _seed_zero_unit_run(neo4j_driver)
+    admission_params: dict[str, object] = _params() | {
+        "unit_id": "unit-b",
+        "generation": 1,
+        "sequence": 1,
+        "attempt": 1,
+        "inventory_fingerprint": _DIGEST,
+        "inventory_binding_digest": _DIGEST,
+        "fence_id": "fence-b",
+        "fence_fingerprint": _DIGEST,
+    }
+    receipt_params: dict[str, object] = _params() | {
+        "unit_id": "unit-a",
+        "generation": 1,
+        "sequence": 0,
+        "attempt": 1,
+        "inventory_fingerprint": _DIGEST,
+        "inventory_binding_digest": _DIGEST,
+        "fence_id": "fence-a",
+        "image_digest": _DIGEST,
+        "mutation_id": "mutation-a",
+        "authorization_transition_id": "authorization-a",
+        "authorization_digest": _DIGEST,
+        "receipt_id": "receipt-a",
+        "receipt_digest": _DIGEST,
+        "request_digest": _DIGEST,
+        "status_digest": _DIGEST,
+    }
+    with neo4j_driver.session() as session:
+        _seed_two_unit_run(session, receipt_params)
+        _seed_unit_a_settle_chain(session, receipt_params)
+        # Sequence-1 admission is rejected before unit-a is settled.
+        assert (
+            session.execute_write(
+                lambda tx: tx.run(queries.CLAIM_ADMITTED_FENCE, **admission_params).single()
+            )
+            is None
+        )
+        stored = session.execute_write(
+            lambda tx: tx.run(queries.STORE_ROLLBACK_RECEIPT, **receipt_params).single(strict=True)
+        )
+        assert stored["receipt_digest"] == _DIGEST
+        checkpoint = session.run(
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "RETURN completion.settled_sequence AS settled_sequence",
+            **receipt_params,
+        ).single(strict=True)
+        assert checkpoint["settled_sequence"] == 1
+        admitted = session.execute_write(
+            lambda tx: tx.run(queries.CLAIM_ADMITTED_FENCE, **admission_params).single(strict=True)
         )
     assert admitted["fence"]["unit_id"] == "unit-b"
 
@@ -962,7 +1010,8 @@ def test_rollback_first_blocks_next_unit_admission_then_prevents_new_fence(
         session.run(
             """
             MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
-            SET completion.unit_count = 2, completion.unit_ids = ['unit-a', 'unit-b']
+            SET completion.unit_count = 2, completion.unit_ids = ['unit-a', 'unit-b'],
+              completion.settled_sequence = 1
             CREATE (:CrmDealRepairUnit {run_id: $run_id, unit_id: 'unit-b', generation: 1,
               sequence: 1, attempt: 1, boundary_digest: $boundary_digest,
               inventory_fingerprint: $inventory_digest, inventory_binding_digest: $inventory_digest,
@@ -1024,12 +1073,18 @@ def test_rollback_first_blocks_next_unit_admission_then_prevents_new_fence(
             MATCH (unit:CrmDealRepairUnit {run_id: $run_id, unit_id: 'unit-a'})
             OPTIONAL MATCH (next_fence:CrmDealRepairFence {run_id: $run_id, unit_id: 'unit-b'})
             OPTIONAL MATCH (acceptance:CrmDealRepairAcceptance {run_id: $run_id})
+            MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
             RETURN unit.state AS unit_state, count(next_fence) AS next_fences,
-              count(acceptance) AS acceptances
+              count(acceptance) AS acceptances, completion.admission_checkpoint_blocked AS blocked
             """,
             **admission_params,
         ).single(strict=True)
-    assert dict(row) == {"unit_state": "rolled_back", "next_fences": 0, "acceptances": 0}
+    assert dict(row) == {
+        "unit_state": "rolled_back",
+        "next_fences": 0,
+        "acceptances": 0,
+        "blocked": True,
+    }
 
 
 def test_admission_then_rollback_remains_available_before_acceptance(
@@ -1050,7 +1105,8 @@ def test_admission_then_rollback_remains_available_before_acceptance(
         session.run(
             """
             MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
-            SET completion.unit_count = 2, completion.unit_ids = ['unit-a', 'unit-b']
+            SET completion.unit_count = 2, completion.unit_ids = ['unit-a', 'unit-b'],
+              completion.settled_sequence = 1
             CREATE (:CrmDealRepairUnit {run_id: $run_id, unit_id: 'unit-b', generation: 1,
               sequence: 1, attempt: 1, boundary_digest: $boundary_digest,
               inventory_fingerprint: $inventory_digest, inventory_binding_digest: $inventory_digest,
@@ -1083,8 +1139,9 @@ def test_admission_then_rollback_remains_available_before_acceptance(
             MATCH (prior:CrmDealRepairUnit {run_id: $run_id, unit_id: 'unit-a'})
             MATCH (next_fence:CrmDealRepairFence {run_id: $run_id, unit_id: 'unit-b'})
             OPTIONAL MATCH (acceptance:CrmDealRepairAcceptance {run_id: $run_id})
+            MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
             RETURN prior.state AS prior_state, next_fence.state AS next_fence_state,
-              count(acceptance) AS acceptances
+              count(acceptance) AS acceptances, completion.admission_checkpoint_blocked AS blocked
             """,
             **admission_params,
         ).single(strict=True)
@@ -1093,6 +1150,7 @@ def test_admission_then_rollback_remains_available_before_acceptance(
         "prior_state": "rolled_back",
         "next_fence_state": "claimed",
         "acceptances": 0,
+        "blocked": True,
     }
 
 

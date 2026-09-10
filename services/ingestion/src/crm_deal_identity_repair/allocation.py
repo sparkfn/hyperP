@@ -10,7 +10,7 @@ from dataclasses import dataclass
 from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json_bytes
 from src.crm_deal_identity_repair.approval_overlay import ApprovalOverlay
 from src.crm_deal_identity_repair.control_models import RepairAllocationCompletion
-from src.crm_deal_identity_repair.digests import object_digest
+from src.crm_deal_identity_repair.digests import inventory_binding_digest, object_digest
 from src.crm_deal_identity_repair.execution_records import RepairUnit
 from src.crm_deal_identity_repair.models import RepairInventoryItem
 from src.models import JsonValue
@@ -125,15 +125,7 @@ def plan_allocation(
 def _unit(
     run_id: str, boundary_digest: str, item: RepairInventoryItem, sequence: int
 ) -> RepairUnit:
-    binding = object_digest(
-        _ALLOCATION_DOMAIN,
-        {
-            "inventory_key": item.inventory_key,
-            "source_record_pk": item.source_record_pk,
-            "graph_fingerprint": item.graph_fingerprint,
-            "stored_payload_fingerprint": item.stored_payload_fingerprint,
-        },
-    )
+    binding = inventory_binding_digest(item)
     unit_id = str(uuid.uuid5(uuid.NAMESPACE_URL, f"{run_id}:{binding}"))
     return RepairUnit(
         run_id,

@@ -32,6 +32,24 @@ VERIFICATION_OUTBOX_CLAIM_DIGEST_DOMAIN = b"crm-deal-identity-repair-outbox-clai
 INVENTORY_DIGEST_DOMAIN = b"crm-deal-identity-repair-inventory-v1\x00"
 INVENTORY_PART_MAX_BYTES = 256 * 1024 * 1024
 
+# Allocation and mutation/verification must agree on the exact inventory row binding.
+# This domain is intentionally the same bytes used by the original allocation side so
+# existing allocated units and their derived unit_ids remain valid.
+INVENTORY_BINDING_DOMAIN = b"crm-deal-identity-repair-allocation-v1\x00"
+
+
+def inventory_binding_digest(item: RepairInventoryItem) -> str:
+    """Digest the exact immutable inventory row bound to one repair unit."""
+    return object_digest(
+        INVENTORY_BINDING_DOMAIN,
+        {
+            "inventory_key": item.inventory_key,
+            "source_record_pk": item.source_record_pk,
+            "graph_fingerprint": item.graph_fingerprint,
+            "stored_payload_fingerprint": item.stored_payload_fingerprint,
+        },
+    )
+
 
 def canonical_jsonl(rows: tuple[dict[str, JsonValue], ...]) -> bytes:
     """Encode pre-sorted repair rows as canonical newline-delimited JSON."""

@@ -9,9 +9,9 @@ from uuid import NAMESPACE_URL, uuid5
 
 from src.crm_deal_identity_repair.digests import (
     authority_evidence_digest,
+    inventory_binding_digest,
     mutation_request_digest,
     mutation_result_digest,
-    object_digest,
     outbox_event_digest,
     repaired_state_digest,
     rollback_image_digest,
@@ -88,15 +88,7 @@ class RepairAuthorityEvidence:
 
 def build_inventory_binding_digest(inventory: RepairInventoryItem) -> str:
     """Digest the exact immutable inventory row allocated to one repair unit."""
-    return object_digest(
-        b"crm-deal-identity-repair-unit-row-v1\x00",
-        {
-            "inventory_key": inventory.inventory_key,
-            "source_record_pk": inventory.source_record_pk,
-            "graph_fingerprint": inventory.graph_fingerprint,
-            "stored_payload_fingerprint": inventory.stored_payload_fingerprint,
-        },
-    )
+    return inventory_binding_digest(inventory)
 
 
 @dataclass(frozen=True)

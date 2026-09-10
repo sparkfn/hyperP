@@ -709,11 +709,17 @@ CALL (control) {
   RETURN count(allocated) AS stored_count
 }
 WITH control, dispatch, completion, stored_count
-OPTIONAL MATCH (stored:CrmDealRepairUnit {run_id: $run_id})
-WITH control, dispatch, completion, stored_count, collect(stored) AS stored_units
 WHERE stored_count = $unit_count
-  AND size(stored_units) = $unit_count
-  AND all(stored IN stored_units WHERE stored.unit_id IN $unit_ids)
+CALL {
+  WITH completion
+  RETURN COUNT { MATCH (stored:CrmDealRepairUnit {run_id: $run_id})
+    WHERE stored.unit_id IN $unit_ids } AS stored_count_check
+}
+WITH control, dispatch, completion, stored_count, stored_count_check
+WHERE stored_count_check = $unit_count
+  AND all(unit_id IN $unit_ids WHERE EXISTS {
+    MATCH (:CrmDealRepairUnit {run_id: $run_id, unit_id: unit_id})
+  })
 SET control.state = 'allocated',
     control.revision = CASE WHEN control.state = 'quiesced' THEN control.revision + 1 ELSE control.revision END,
     control.updated_at = datetime(),

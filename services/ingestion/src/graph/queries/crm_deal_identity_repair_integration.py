@@ -132,124 +132,11 @@ SET control.integration_admission_updated_at = datetime()
 WITH control, completion, unit
 OPTIONAL MATCH (accepted:CrmDealRepairAcceptance {run_id: $run_id})
 OPTIONAL MATCH (all_fences:CrmDealRepairFence {run_id: $run_id, unit_id: $unit_id})
-CALL {
-  WITH completion
-  OPTIONAL MATCH (prior:CrmDealRepairUnit {run_id: completion.run_id})
-  WHERE prior.sequence < $sequence
-  OPTIONAL MATCH (prior_fence:CrmDealRepairFence {run_id: completion.run_id, unit_id: prior.unit_id})
-  OPTIONAL MATCH (prior_result:CrmDealRepairMutationResult {run_id: completion.run_id,
-    unit_id: prior.unit_id})
-  OPTIONAL MATCH (prior_image:CrmDealRepairRollbackImage {run_id: completion.run_id,
-    unit_id: prior.unit_id})
-  OPTIONAL MATCH (prior_authorization:CrmDealRepairRollbackAuthorization {run_id: completion.run_id,
-    unit_id: prior.unit_id})
-  WITH prior, prior_fence, prior_result, prior_image, prior_authorization
-  ORDER BY prior.sequence, prior.unit_id, prior_authorization.authorization_transition_id,
-    prior_fence.fence_id, prior_result.mutation_id, prior_image.rollback_image_id
-  FOREACH (_ IN CASE WHEN prior IS NULL THEN [] ELSE [1] END | SET prior.unit_id = prior.unit_id)
-  FOREACH (_ IN CASE WHEN prior_fence IS NULL THEN [] ELSE [1] END |
-    SET prior_fence.fence_id = prior_fence.fence_id)
-  FOREACH (_ IN CASE WHEN prior_result IS NULL THEN [] ELSE [1] END |
-    SET prior_result.mutation_id = prior_result.mutation_id)
-  FOREACH (_ IN CASE WHEN prior_image IS NULL THEN [] ELSE [1] END |
-    SET prior_image.rollback_image_id = prior_image.rollback_image_id)
-  FOREACH (_ IN CASE WHEN prior_authorization IS NULL THEN [] ELSE [1] END |
-    SET prior_authorization.authorization_transition_id = prior_authorization.authorization_transition_id)
-  RETURN count(DISTINCT prior) AS locked_prior_count
-}
-WITH unit, completion, accepted, all_fences
-CALL {
-  WITH completion
-  OPTIONAL MATCH (prior:CrmDealRepairUnit {run_id: completion.run_id})
-  WHERE prior.sequence < $sequence
-  WITH completion, collect(prior) AS prior_units
-  UNWIND CASE WHEN size(prior_units) = 0 THEN [NULL] ELSE prior_units END AS prior
-  CALL {
-    WITH completion, prior
-    MATCH (prior_fence:CrmDealRepairFence {run_id: completion.run_id,
-      unit_id: prior.unit_id})
-    RETURN count(prior_fence) AS fence_count
-  }
-  CALL {
-    WITH completion, prior
-    MATCH (mutation:CrmDealRepairMutationResult {run_id: completion.run_id,
-      unit_id: prior.unit_id, generation: prior.generation, sequence: prior.sequence,
-      attempt: prior.attempt, owner_id: $owner_id, fence_token: $token_digest,
-      boundary_digest: $boundary_digest})
-    RETURN count(mutation) AS mutation_count
-  }
-  CALL {
-    WITH completion, prior
-    MATCH (verification:CrmDealRepairVerification {run_id: completion.run_id,
-      unit_id: prior.unit_id, generation: prior.generation, sequence: prior.sequence,
-      attempt: prior.attempt, owner_id: $owner_id, fence_token: $token_digest,
-      boundary_digest: $boundary_digest, outcome: 'verified'})
-    RETURN count(verification) AS verification_count
-  }
-  CALL {
-    WITH completion, prior
-    MATCH (receipt:CrmDealRepairRollbackReceipt {run_id: completion.run_id,
-      unit_id: prior.unit_id, generation: prior.generation, sequence: prior.sequence,
-      attempt: prior.attempt, control_revision: $revision,
-      allocation_revision: $allocation_revision, completion_id: $completion_id,
-      state: 'available'})
-    RETURN count(receipt) AS receipt_count
-  }
-  CALL {
-    WITH completion, prior
-    MATCH (prior_fence:CrmDealRepairFence {run_id: completion.run_id,
-      unit_id: prior.unit_id, generation: prior.generation, sequence: prior.sequence,
-      attempt: prior.attempt, owner_id: $owner_id, token: $token_digest,
-      boundary_digest: $boundary_digest, state: 'claimed'})
-    MATCH (mutation:CrmDealRepairMutationResult {run_id: completion.run_id,
-      unit_id: prior.unit_id, generation: prior.generation, sequence: prior.sequence,
-      attempt: prior.attempt, owner_id: $owner_id, fence_token: $token_digest,
-      boundary_digest: $boundary_digest})
-    MATCH (image:CrmDealRepairRollbackImage {run_id: completion.run_id,
-      unit_id: prior.unit_id, rollback_image_id: mutation.rollback_image_id,
-      image_digest: mutation.rollback_image_digest, generation: prior.generation,
-      sequence: prior.sequence, attempt: prior.attempt, owner_id: $owner_id,
-      fence_token: $token_digest, boundary_digest: $boundary_digest, state: 'available'})
-    MATCH (authorization:CrmDealRepairRollbackAuthorization {run_id: completion.run_id,
-      unit_id: prior.unit_id, fence_id: prior_fence.fence_id, mutation_id: mutation.mutation_id,
-      rollback_image_id: image.rollback_image_id, image_digest: image.image_digest,
-      generation: prior.generation, sequence: prior.sequence, attempt: prior.attempt,
-      owner_id: $owner_id, fence_token: $token_digest, boundary_digest: $boundary_digest,
-      state: 'approved', consumable: true})
-    MATCH (receipt:CrmDealRepairRollbackReceipt {run_id: completion.run_id,
-      unit_id: prior.unit_id, fence_id: prior_fence.fence_id, mutation_id: mutation.mutation_id,
-      image_digest: image.image_digest,
-      authorization_transition_id: authorization.authorization_transition_id,
-      authorization_digest: authorization.authorization_digest, generation: prior.generation,
-      sequence: prior.sequence, attempt: prior.attempt, control_revision: $revision,
-      allocation_revision: $allocation_revision, completion_id: $completion_id,
-      state: 'available'})
-    MATCH (verification:CrmDealRepairVerification {run_id: completion.run_id,
-      unit_id: prior.unit_id, generation: prior.generation, sequence: prior.sequence,
-      attempt: prior.attempt, owner_id: $owner_id, fence_token: $token_digest,
-      boundary_digest: $boundary_digest, outcome: 'verified'})
-    WHERE receipt.status_digest STARTS WITH 'sha256:' AND size(receipt.status_digest) = 71
-      AND authorization.authorization_digest STARTS WITH 'sha256:'
-      AND size(authorization.authorization_digest) = 71
-      AND mutation.rollback_image_digest = image.image_digest
-      AND authorization.predecessor_transition_id =
-        mutation.mutation_id + ':applied:' + image.rollback_image_id
-    RETURN count(*) AS exact_chain_count
-  }
-  WITH prior_units, prior, fence_count, mutation_count, verification_count, receipt_count,
-    exact_chain_count
-  RETURN prior_units, collect(CASE WHEN prior IS NOT NULL
-      AND prior.state IN ['applied', 'review_required']
-      AND fence_count = 1 AND mutation_count = 1 AND verification_count = 1
-      AND receipt_count = 1 AND exact_chain_count = 1
-    THEN prior.unit_id END) AS settled_prior_unit_ids
-}
-WITH unit, completion, accepted, collect(all_fences) AS stored, prior_units,
-  settled_prior_unit_ids
+WITH unit, completion, accepted, collect(all_fences) AS stored
 WHERE accepted IS NULL
   AND ((unit.state = 'allocated' AND size(stored) = 0
-      AND size(prior_units) = $sequence
-      AND size(settled_prior_unit_ids) = size(prior_units))
+      AND completion.admission_checkpoint_blocked IS NULL
+      AND coalesce(completion.settled_sequence, 0) = $sequence)
     OR (size(stored) = 1 AND stored[0].fence_id = $fence_id
       AND stored[0].generation = $generation AND stored[0].sequence = $sequence
       AND stored[0].attempt = $attempt AND stored[0].owner_id = $owner_id
@@ -422,7 +309,7 @@ ON CREATE SET receipt.unit_id = $unit_id, receipt.fence_id = $fence_id,
   receipt.sequence = $sequence, receipt.attempt = $attempt,
   receipt.control_revision = $revision, receipt.allocation_revision = $allocation_revision,
   receipt.completion_id = $completion_id, receipt.state = 'available', receipt.created_at = datetime()
-WITH receipt
+WITH receipt, completion, unit, fence, result, image, authorization
 WHERE receipt.unit_id = $unit_id AND receipt.fence_id = $fence_id
   AND receipt.request_digest = $request_digest AND receipt.status_digest = $status_digest
   AND receipt.image_digest = $image_digest AND receipt.mutation_id = $mutation_id
@@ -432,6 +319,25 @@ WHERE receipt.unit_id = $unit_id AND receipt.fence_id = $fence_id
   AND receipt.sequence = $sequence AND receipt.attempt = $attempt
   AND receipt.control_revision = $revision AND receipt.allocation_revision = $allocation_revision
   AND receipt.completion_id = $completion_id AND receipt.state = 'available'
+CALL {
+  WITH completion, unit, fence, result, image, authorization, receipt
+  OPTIONAL MATCH (verification:CrmDealRepairVerification {run_id: $run_id,
+    unit_id: $unit_id, generation: $generation, sequence: $sequence, attempt: $attempt,
+    owner_id: $owner_id, fence_token: $token_digest, boundary_digest: $boundary_digest,
+    outcome: 'verified'})
+  WHERE unit.state IN ['applied', 'review_required']
+    AND result.mutation_id = $mutation_id
+    AND result.rollback_image_digest = image.image_digest
+    AND authorization.state = 'approved' AND authorization.consumable = true
+    AND receipt.state = 'available'
+  RETURN count(verification) AS verified_count
+}
+WITH receipt, completion, verified_count
+SET completion.settled_sequence = CASE
+  WHEN verified_count = 1 AND coalesce(completion.settled_sequence, 0) = $sequence
+    THEN $sequence + 1
+  ELSE completion.settled_sequence
+END
 RETURN receipt.receipt_id AS receipt_id, receipt.receipt_digest AS receipt_digest
 """
 )

@@ -226,6 +226,7 @@ PERSIST_ROLLBACK_TERMINAL = """
 MATCH (unit:CrmDealRepairUnit {run_id: $run_id, unit_id: $unit_id, generation: $generation,
   sequence: $sequence, attempt: $attempt, boundary_digest: $boundary_digest,
   rollback_lock_id: $rollback_request_digest})
+MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
 MATCH (image:CrmDealRepairRollbackImage {run_id: $run_id, rollback_image_id: $rollback_image_id,
   image_digest: $image_digest, state: 'available'})
 MATCH (result:CrmDealRepairMutationResult {run_id: $run_id, unit_id: $unit_id,
@@ -262,7 +263,8 @@ SET image.state = $image_state, image.rollback_disposition_id = $disposition_id,
   authorization.consumed_request_digest = $rollback_request_digest,
   authorization.consumed_result_digest = $result_digest,
   authorization.consumed_at = datetime()
-SET unit.state = $unit_state, unit.rollback_disposition_id = $disposition_id
+SET unit.state = $unit_state, unit.rollback_disposition_id = $disposition_id,
+  completion.admission_checkpoint_blocked = true
 RETURN properties(disposition) AS disposition, properties(authorization) AS authorization
 """
 

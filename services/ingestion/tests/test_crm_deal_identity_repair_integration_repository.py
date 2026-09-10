@@ -404,28 +404,17 @@ def test_terminal_rollback_replay_reconstructs_only_exact_released_authority() -
         )
 
 
-def test_admission_query_requires_exact_verified_status_for_every_prior_unit() -> None:
+def test_admission_query_uses_durable_checkpoint_for_prior_unit_settlement() -> None:
     query = queries.CLAIM_ADMITTED_FENCE
-    assert "size(prior_units) = $sequence" in query
-    assert "CrmDealRepairVerification" in query
-    assert "outcome: 'verified'" in query
-    assert "CrmDealRepairRollbackReceipt" in query
-    assert "fence_id: prior_fence.fence_id" in query
-    assert "mutation_id: mutation.mutation_id" in query
-    assert "rollback_image_id: image.rollback_image_id" in query
-    assert "authorization_transition_id: authorization.authorization_transition_id" in query
-    assert "authorization_digest: authorization.authorization_digest" in query
-    assert "state: 'approved', consumable: true" in query
-    assert "RETURN count(prior_fence) AS fence_count" in query
-    assert "RETURN count(mutation) AS mutation_count" in query
-    assert "RETURN count(verification) AS verification_count" in query
-    assert "RETURN count(receipt) AS receipt_count" in query
-    assert "exact_chain_count = 1" in query
-    assert "size(settled_prior_unit_ids) = size(prior_units)" in query
-    assert "size([(prior_fence" not in query
-    assert "SET prior.unit_id = prior.unit_id" in query
-    assert "SET prior_authorization.authorization_transition_id" in query
-    assert "WITH control, completion, unit" in query
+    assert "prior.sequence < $sequence" not in query
+    assert "completion.admission_checkpoint_blocked IS NULL" in query
+    assert "coalesce(completion.settled_sequence, 0) = $sequence" in query
+    assert "unit.state = 'allocated' AND size(stored) = 0" in query
+    assert "CrmDealRepairVerification" not in query
+    assert "CrmDealRepairRollbackReceipt" not in query
+    assert "CrmDealRepairRollbackAuthorization" not in query
+    assert "CrmDealRepairMutationResult" not in query
+    assert "SET control.integration_admission_updated_at = datetime()" in query
 
 
 def test_acceptance_query_locks_common_records_and_rejects_unallocated_records() -> None:
@@ -508,6 +497,36 @@ def test_release_query_locks_stable_dispatch_identity_before_ownership_cas() -> 
     assert "integration_release_lock_id" not in query
     assert "prior IS NOT NULL OR (dispatch.blocked = true" in query
     assert "dispatch.repair_revision = $revision" in query
+
+
+def test_apply_authority_binds_allocation_revision_for_exact_pre_mutation_authority(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    context = _context()
+    request = _request("apply")
+    completion = {
+        "completion_id": context.authority.completion_id,
+        "overlay_digest": context.authority.overlay_digest,
+        "allocation_digest": context.authority.allocation_digest,
+        "unit_set_digest": context.authority.allocation_unit_set_digest,
+        "request_digest": context.authority.allocation_request_digest,
+        "allocation_origin_key_id": context.authority.allocation_origin_key_id,
+        "allocation_origin_hmac": context.authority.allocation_origin_hmac,
+        "receipt_digest": context.authority.allocation_receipt_digest,
+        "allocation_revision": context.authority.allocation_revision,
+        "unit_count": 1,
+    }
+    transaction = _Transaction(
+        {queries.READ_AUTHORITY: [{"completion": completion, "sealed_boundary_digest": _DIGEST}]}
+    )
+    repository = _repository(transaction)
+    import src.graph.crm_deal_identity_repair_integration as module
+
+    monkeypatch.setattr(module, "allocation_origin_hmac", lambda **_: "b" * 64)
+    loaded = repository.load_authority(request, context.run, _DIGEST, "key", b"secret")
+
+    assert loaded == context.authority
+    assert transaction.calls[0][1]["allocation_revision"] == request.control.expected_revision
 
 
 def test_release_authority_binds_request_digest_for_exact_post_release_replay(

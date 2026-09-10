@@ -12,7 +12,7 @@ from neo4j import ManagedTransaction
 
 from src.crm_deal_identity_repair.inventory import (
     RepairInventoryReadClient,
-    collect_repair_inventory,
+    current_inventory_item,
 )
 from src.crm_deal_identity_repair.models import RepairInventoryItem
 from src.crm_deal_identity_repair.mutation_models import (
@@ -302,15 +302,25 @@ def _current_inventory_item(
     tx: ManagedTransaction,
     request: RepairMutationCommand,
 ) -> RepairInventoryItem:
-    inventory = collect_repair_inventory(_TransactionReader(tx))
-    matches = [
-        item
-        for item in inventory.items
-        if item.source_record_pk == request.inventory.source_record_pk
-    ]
-    if len(matches) != 1:
+    descendants = request.inventory.payload.get("descendants")
+    if not isinstance(descendants, list):
+        raise RepairMutationDriftError("frozen descendant closure is malformed")
+    closure: set[str] = {request.inventory.source_record_pk}
+    for descendant in descendants:
+        if not isinstance(descendant, dict):
+            raise RepairMutationDriftError("frozen descendant identity is malformed")
+        source_record_pk = descendant.get("source_record_pk")
+        if not isinstance(source_record_pk, str) or not source_record_pk:
+            raise RepairMutationDriftError("frozen descendant identity is malformed")
+        closure.add(source_record_pk)
+    current = current_inventory_item(
+        tx,
+        request.inventory.source_record_pk,
+        tuple(sorted(closure)),
+    )
+    if current is None:
         raise RepairMutationDriftError("qualified source record is absent from current inventory")
-    return matches[0]
+    return current
 
 
 def _assert_frozen_inventory(expected: RepairInventoryItem, observed: RepairInventoryItem) -> None:
