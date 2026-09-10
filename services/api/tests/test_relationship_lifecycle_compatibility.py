@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import pytest
+
 from src.graph.queries import entities, graph, persons, persons_list, reports, survivorship
 
 
@@ -47,7 +49,6 @@ def test_rollout_compatibility_excludes_only_explicitly_retired_relationships() 
 
 
 def test_graph_traversal_excludes_retired_repairable_relationships() -> None:
-    query = graph.get_graph_query(2)
     repairable_types = (
         "LINKED_TO",
         "IDENTIFIED_BY",
@@ -60,9 +61,18 @@ def test_graph_traversal_excludes_retired_repairable_relationships() -> None:
         "MENTIONS_VEHICLE",
     )
 
-    assert query.count("type(r) NOT IN") == 2
-    assert query.count("coalesce(r.is_active, true) = true") == 2
-    assert all(repr(relationship_type) in query for relationship_type in repairable_types)
+    for query_builder in (graph.get_graph_query, graph.get_node_graph_query):
+        for max_hops in range(graph.MIN_HOPS, graph.MAX_HOPS + 1):
+            query = query_builder(max_hops)
+            assert "type(r) NOT IN" not in query
+            assert query.count("NOT (type(r) IN") == 2
+            assert query.count("coalesce(r.is_active, true) = true") == 2
+            assert all(repr(relationship_type) in query for relationship_type in repairable_types)
+
+    for invalid_hops in (graph.MIN_HOPS - 1, graph.MAX_HOPS + 1):
+        for query_builder in (graph.get_graph_query, graph.get_node_graph_query):
+            with pytest.raises(ValueError):
+                query_builder(invalid_hops)
 
     def visible(relationship_type: str, is_active: bool | None) -> bool:
         return relationship_type not in repairable_types or (

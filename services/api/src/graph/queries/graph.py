@@ -72,7 +72,7 @@ CALL {{
   MATCH path = (start)-[*1..{max_hops}]-(n)
   WHERE {label_filter}
     AND ALL(r IN relationships(path) WHERE {rel_filter}
-      AND (type(r) NOT IN {repairable_rel_types} OR coalesce(r.is_active, true) = true))
+      AND (NOT (type(r) IN {repairable_rel_types}) OR coalesce(r.is_active, true) = true))
     AND {dead_end_filter}
   WITH DISTINCT start, n
   LIMIT {node_cap}
@@ -86,7 +86,7 @@ UNWIND unique_nodes AS a
 OPTIONAL MATCH (a)-[r]-(b)
 WHERE b IN unique_nodes
   AND elementId(a) < elementId(b)
-  AND (type(r) NOT IN {repairable_rel_types} OR coalesce(r.is_active, true) = true)
+  AND (NOT (type(r) IN {repairable_rel_types}) OR coalesce(r.is_active, true) = true)
 WITH unique_nodes, collect(DISTINCT r) AS unique_rels
 UNWIND unique_nodes AS node
 WITH collect(DISTINCT {{

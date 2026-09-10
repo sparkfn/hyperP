@@ -63,6 +63,7 @@ _NEO4J_SUITE_MANIFEST = frozenset(
         ("services/api/tests/test_persons_list_possible_match_neo4j.py", ""),
         ("services/api/tests/test_persons_list_plan_neo4j.py", ""),
         ("services/api/tests/test_identity_link_revisions_neo4j.py", ""),
+        ("services/api/tests/test_person_graph_neo4j.py", ""),
         ("services/ingestion/tests/test_person_completeness_migration_neo4j.py", ""),
         ("services/ingestion/tests/test_loyalty_points_migration_neo4j.py", ""),
         ("services/ingestion/tests/test_crm_deal_count_migration_neo4j.py", ""),
@@ -284,4 +285,4 @@ def test_woodpecker_neo4j_shards_are_complete_isolated_and_parity_checked() -> N
     assert manifests["pr.yaml"] == _NEO4J_SUITE_MANIFEST
     assert manifests["main.yaml"] == _NEO4J_SUITE_MANIFEST
     assert manifests["pr.yaml"] == manifests["main.yaml"]
-    assert len({path for path, _selector in manifests["pr.yaml"]}) == 25
+    assert len({path for path, _selector in manifests["pr.yaml"]}) == 26
