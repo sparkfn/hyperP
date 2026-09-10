@@ -285,6 +285,8 @@ RETURN properties(unit) AS unit, properties(fence) AS fence, properties(result) 
 STORE_ROLLBACK_RECEIPT = (
     _AUTHORITY
     + """
+MATCH (unit:CrmDealRepairUnit {run_id: $run_id, unit_id: $unit_id,
+  generation: $generation, sequence: $sequence, attempt: $attempt})
 MATCH (fence:CrmDealRepairFence {run_id: $run_id, unit_id: $unit_id, fence_id: $fence_id,
   owner_id: $owner_id, token: $token_digest, state: 'claimed'})
 MATCH (image:CrmDealRepairRollbackImage {run_id: $run_id, unit_id: $unit_id,
