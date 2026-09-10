@@ -7,7 +7,7 @@ from pathlib import Path
 
 from intelligence.datasets.artifact_io import ndjson
 from intelligence.datasets.bounds import ReadBudget
-from intelligence.datasets.catalog import find
+from intelligence.datasets.catalog import find, find_metadata
 from intelligence.datasets.models import parse_config
 from intelligence.model_workflows.contracts import ACTIVITY_PROVENANCE, TrainRequest, digest
 
@@ -59,6 +59,8 @@ class AdmittedDataset:
 
 def admit_dataset(workspace: Path, request: TrainRequest) -> AdmittedDataset:
     """Require exact State acceptance, schema, coverage, and content checksums before recipes."""
+    # Full admission occurs only in the supervised child. It intentionally uses
+    # the complete verifier so materialized rows remain bound to State checksums.
     entry = find(workspace, request.dataset_id, request.accepted_run_id)
     # Dataset producer code fingerprints are immutable provenance, not a consumer
     # compatibility gate: #357 must consume accepted merged #356 datasets.
@@ -102,7 +104,7 @@ class DatasetPin:
 
 def admit_dataset_metadata(workspace: Path, request: TrainRequest) -> DatasetPin:
     """Read bounded descriptor/manifest metadata without materializing dataset rows."""
-    entry = find(workspace, request.dataset_id, request.accepted_run_id)
+    entry = find_metadata(workspace, request.dataset_id, request.accepted_run_id)
     parse_config(entry.descriptor.inputs)
     manifest = entry.manifest
     if manifest.get("provenance") != {"activity": ACTIVITY_PROVENANCE}:

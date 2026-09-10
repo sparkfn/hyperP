@@ -17,6 +17,18 @@ def membership_hash(row: dict[str, object]) -> str:
     return digest({"domain": "intelligence-model-membership-v1", "source": source})
 
 
+def eligible_row(row: dict[str, object]) -> bool:
+    """Return whether one dataset row is safe for model training or evaluation."""
+    return (
+        row.get("disposition") == "labeled"
+        and row.get("label") in LABELS
+        and isinstance(row.get("person_id"), str)
+        and bool(row.get("person_id"))
+        and isinstance(row.get("feature_source_record_pk"), str)
+        and bool(row.get("feature_source_record_pk"))
+    )
+
+
 def split(
     rows: tuple[dict[str, object], ...], seed: int
 ) -> tuple[tuple[dict[str, object], ...], tuple[dict[str, object], ...], dict[str, int]]:
@@ -24,12 +36,8 @@ def split(
     groups: dict[str, list[dict[str, object]]] = {}
     exclusions: dict[str, int] = {}
     for row in rows:
-        label, person = row.get("label"), row.get("person_id")
-        if (
-            row.get("disposition") != "labeled"
-            or label not in LABELS
-            or not isinstance(person, str)
-        ):
+        person = row.get("person_id")
+        if not eligible_row(row) or not isinstance(person, str):
             exclusions["not_eligible_labeled_person"] = (
                 exclusions.get("not_eligible_labeled_person", 0) + 1
             )

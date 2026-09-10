@@ -140,7 +140,7 @@ parent starts each handler in a private process session, suppresses raw child st
 monitors aggregate staged bytes and entry count while it runs, and terminates the whole
 process group on timeout or durable cancellation.
 
-Manifest writers emit schema v2 while readers retain safe schema-v1 compatibility for legacy
+Manifest writers emit schema v3 while readers retain safe schema-v1 compatibility for legacy
 empty or three-key limit objects, normalizing the missing entry limit to its documented default.
 Effective limits are persisted at run admission and reused for stale recovery and backup
 verification. Any handler-created or corrupt manifest is quarantined under

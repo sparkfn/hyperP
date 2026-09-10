@@ -30,8 +30,7 @@ checkpoint/accepted-run/logical-snapshot/boundary/descriptor/inventory/manifest.
 artifact-only admission before publication and rejects drift.
 
 The initial recipe explicitly tolerates this partial coverage. It uses only point-in-time categorical
-fields (`category_id`, `stage_id`, `stage_semantic_id`, activity missingness reason, and join
-corroboration). It does **not** use activity-count magnitudes, never treats null as zero, and never
+fields (`category_id`, `stage_id`, `stage_semantic_id`, and activity missingness reason). It does **not** use activity-count magnitudes, never treats null as zero, and never
 interprets archived lower bounds as complete counts. Recipes with incompatible coverage or missingness
 contracts fail before execution.
 

@@ -194,6 +194,9 @@ def _bundle(
             "inventory": _inventory(root, model_paths),
             "model_id": model_id,
             "model_logical_digest": model_digest,
+            "missingness_digest": digest(
+                {**missingness_unsigned, "digest": digest(missingness_unsigned)}
+            ),
             "recipe": "categorical_frequency_v1",
             "recipe_version": "1",
             "request_digest": digest(
@@ -425,5 +428,64 @@ def test_f11_missingness_summary_tamper_is_rejected(tmp_path: Path) -> None:
     unsigned.pop("digest")
     value["digest"] = digest(unsigned)
     path.write_text(canonical_json(value), encoding="utf-8")
+    with pytest.raises(ValueError, match="missingness summaries"):
+        verify_train_bundle(tmp_path, "train-run")
+
+
+def test_n3_self_consistent_unbalanced_missingness_summary_is_rejected(tmp_path: Path) -> None:
+    model_id, _ = _bundle(tmp_path)
+    missingness_path = tmp_path / "models" / model_id / "missingness.json"
+    missingness = json.loads(missingness_path.read_text(encoding="utf-8"))
+    missingness["summaries"]["training"]["reasons"] = {"none": 999}
+    unsigned = dict(missingness)
+    unsigned.pop("digest")
+    missingness["digest"] = digest(unsigned)
+    _write(missingness_path, missingness)
+    descriptor_path = tmp_path / "acceptance-descriptors" / "models" / f"{model_id}.json"
+    descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    descriptor["missingness_digest"] = digest(missingness)
+    descriptor["inventory"] = _inventory(
+        tmp_path, tuple(item["relative_path"] for item in descriptor["inventory"])
+    )
+    fields = dict(descriptor)
+    fields.pop("descriptor_digest")
+    schema = fields.pop("schema_version")
+    _write(descriptor_path, descriptor_value(schema, fields))
+    with pytest.raises(ValueError, match="missingness reason balance"):
+        verify_train_bundle(tmp_path, "train-run")
+
+
+def test_n3_model_descriptor_requires_missingness_digest(tmp_path: Path) -> None:
+    model_id, _ = _bundle(tmp_path)
+    descriptor_path = tmp_path / "acceptance-descriptors" / "models" / f"{model_id}.json"
+    descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    descriptor.pop("missingness_digest")
+    fields = dict(descriptor)
+    fields.pop("descriptor_digest")
+    schema = fields.pop("schema_version")
+    _write(descriptor_path, descriptor_value(schema, fields))
+    with pytest.raises(ValueError, match="acceptance descriptor schema"):
+        verify_train_bundle(tmp_path, "train-run")
+
+
+def test_n3_unexpected_missingness_summary_field_reaches_strict_shape_guard(tmp_path: Path) -> None:
+    model_id, _ = _bundle(tmp_path)
+    missingness_path = tmp_path / "models" / model_id / "missingness.json"
+    missingness = json.loads(missingness_path.read_text(encoding="utf-8"))
+    missingness["summaries"]["held_out"]["unexpected"] = {"payload": "ignored-before-n3"}
+    unsigned = dict(missingness)
+    unsigned.pop("digest")
+    missingness["digest"] = digest(unsigned)
+    _write(missingness_path, missingness)
+    descriptor_path = tmp_path / "acceptance-descriptors" / "models" / f"{model_id}.json"
+    descriptor = json.loads(descriptor_path.read_text(encoding="utf-8"))
+    descriptor["missingness_digest"] = digest(missingness)
+    descriptor["inventory"] = _inventory(
+        tmp_path, tuple(item["relative_path"] for item in descriptor["inventory"])
+    )
+    fields = dict(descriptor)
+    fields.pop("descriptor_digest")
+    schema = fields.pop("schema_version")
+    _write(descriptor_path, descriptor_value(schema, fields))
     with pytest.raises(ValueError, match="missingness summaries"):
         verify_train_bundle(tmp_path, "train-run")

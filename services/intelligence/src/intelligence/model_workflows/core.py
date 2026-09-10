@@ -29,6 +29,7 @@ from intelligence.model_workflows.contracts import (
     digest,
 )
 from intelligence.model_workflows.dataset_admission import AdmittedDataset, admit_dataset
+from intelligence.model_workflows.population import eligible_row as _eligible_row
 from intelligence.model_workflows.population import membership_hash as _membership_hash
 from intelligence.model_workflows.population import split as _split_population
 from intelligence.model_workflows.publication_io import inventory as _inventory
@@ -180,9 +181,10 @@ def write_train(staging: Path, dataset: AdmittedDataset) -> tuple[str, str]:
         members,
     )
     training_rows, held_out_rows, _exclusions = population(dataset)
+    missingness = _missingness(training_rows, held_out_rows)
     _write(
         staging / "models" / model_id / "missingness.json",
-        _missingness(training_rows, held_out_rows),
+        missingness,
     )
     evaluation_descriptor = descriptor_value(
         EVALUATION_DESCRIPTOR_SCHEMA,
@@ -226,6 +228,7 @@ def write_train(staging: Path, dataset: AdmittedDataset) -> tuple[str, str]:
             "evaluation_logical_digest": digest(evaluation["logical"]),
             "model_id": model_id,
             "model_logical_digest": digest(model["logical"]),
+            "missingness_digest": digest(missingness),
             "inventory": [
                 _inventory(model_path, f"models/{model_id}/candidate.json"),
                 _inventory(
@@ -296,6 +299,7 @@ def write_evaluation(staging: Path, request: EvaluationRequest, model: Mapping[s
         not rows
         or len(rows) != len(held_members)
         or any(_membership_hash(row) in training for row in rows)
+        or any(not _eligible_row(row) for row in rows)
     ):
         raise ValueError("evaluation population is incompatible")
     evaluation = evaluate_model(model, rows, dataset.pin(), "independent_held_out_replay")

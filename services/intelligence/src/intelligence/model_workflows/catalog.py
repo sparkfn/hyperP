@@ -2,11 +2,20 @@
 
 from __future__ import annotations
 
+import stat
 from dataclasses import dataclass
 from pathlib import Path
 
 from intelligence.artifacts_manifest import validate_manifest
-from intelligence.datasets.bounds import MAX_DESCRIPTOR_BYTES, ReadBudget, digest_file
+from intelligence.datasets.bounds import (
+    MAX_ARTIFACT_BYTES,
+    MAX_ARTIFACT_ENTRIES,
+    MAX_ARTIFACT_FILE_BYTES,
+    MAX_ARTIFACT_ROWS,
+    MAX_DESCRIPTOR_BYTES,
+    ReadBudget,
+    digest_file,
+)
 from intelligence.model_workflows.artifacts import (
     ComparisonAcceptanceDescriptor,
     EvaluationAcceptanceDescriptor,
@@ -22,6 +31,7 @@ from intelligence.model_workflows.contracts import safe_id
 from intelligence.model_workflows.path_safety import (
     output_run_root,
     regular_file,
+    safe_directory,
     terminal_log_root,
     terminal_manifest_root,
 )
@@ -116,7 +126,7 @@ def find_comparison(workspace: Path, comparison_id: str, run_id: str) -> Compari
 def entries(workspace: Path, budget: ReadBudget | None = None) -> tuple[ModelEntry, ...]:
     """Enumerate all bounded, complete train candidates; overflow fails closed."""
     run_ids = _completed_ids(workspace, "train_run")
-    read_budget = budget or artifact_budget()
+    read_budget = budget or _catalog_budget()
     return tuple(_model_entry(workspace, run_id, read_budget) for run_id in run_ids)
 
 
@@ -124,7 +134,7 @@ def evaluation_entries(
     workspace: Path, budget: ReadBudget | None = None
 ) -> tuple[EvaluationEntry, ...]:
     """Enumerate all bounded train and independent evaluation publications."""
-    read_budget = budget or artifact_budget()
+    read_budget = budget or _catalog_budget()
     train = tuple(
         _evaluation_entry(workspace, run_id, read_budget)
         for run_id in _completed_ids(workspace, "train_run")
@@ -140,7 +150,7 @@ def comparison_entries(
     workspace: Path, budget: ReadBudget | None = None
 ) -> tuple[ComparisonEntry, ...]:
     """Enumerate all bounded, complete comparison publications."""
-    read_budget = budget or artifact_budget()
+    read_budget = budget or _catalog_budget()
     return tuple(
         _comparison_entry(workspace, run_id, read_budget)
         for run_id in _completed_ids(workspace, "evaluate_compare")
@@ -173,6 +183,7 @@ def check_model_replay_conflict(workspace: Path, bundle: TrainBundle) -> None:
         if (
             prior.model_id != bundle.model_descriptor.model_id
             or prior.descriptor.model_logical_digest != bundle.model_descriptor.model_logical_digest
+            or prior.descriptor.missingness_digest != bundle.model_descriptor.missingness_digest
             or prior.candidate != bundle.model
             or prior.evaluation != bundle.evaluation
         ):
@@ -351,18 +362,63 @@ def _accepted_run_any(
         raise ValueError("model workflow run is not accepted")
     root = output_run_root(workspace, run_id)
     budget = artifact_budget()
+    _preflight_accepted_tree(root, run_id, accepted, budget)
     for item in accepted:
         prefix = f"outputs/{run_id}/"
         if not item.relative_path.startswith(prefix):
             raise ValueError("State output path is invalid")
         path = root / item.relative_path.removeprefix(prefix)
         metadata = regular_file(path, "State registered model output")
+        maximum = (
+            MAX_DESCRIPTOR_BYTES
+            if "/acceptance-descriptors/" in item.relative_path
+            else MAX_ARTIFACT_FILE_BYTES
+        )
         if (
             metadata.st_size != item.byte_count
-            or digest_file(path, budget, maximum_file_bytes=MAX_DESCRIPTOR_BYTES) != item.sha256
+            or digest_file(path, budget, maximum_file_bytes=maximum) != item.sha256
         ):
             raise ValueError("State registered model output checksum is invalid")
     return run, accepted
+
+
+def _preflight_accepted_tree(
+    root: Path, run_id: str, accepted: tuple[OutputInventory, ...], budget: ReadBudget
+) -> None:
+    """Reject unsafe ancestors/links/extra entries before opening any accepted output bytes."""
+    expected: dict[str, OutputInventory] = {}
+    prefix = f"outputs/{run_id}/"
+    for item in accepted:
+        if not item.relative_path.startswith(prefix):
+            raise ValueError("State output path is invalid")
+        relative = item.relative_path.removeprefix(prefix)
+        if relative in expected:
+            raise ValueError("State output paths are duplicated")
+        expected[relative] = item
+    actual: set[str] = set()
+    pending = [root]
+    while pending:
+        directory = pending.pop()
+        safe_directory(directory, "State registered model output directory")
+        try:
+            children = tuple(directory.iterdir())
+        except OSError as error:
+            raise ValueError("State output directory cannot be read") from error
+        for child in children:
+            budget.entry()
+            relative = child.relative_to(root).as_posix()
+            metadata = child.lstat()
+            if stat.S_ISDIR(metadata.st_mode):
+                safe_directory(child, "State registered model output directory")
+                pending.append(child)
+                continue
+            regular = regular_file(child, "State registered model output")
+            registered = expected.get(relative)
+            if registered is None or regular.st_size != registered.byte_count:
+                raise ValueError("State-registered output tree is missing, extra, or size-invalid")
+            actual.add(relative)
+    if actual != set(expected):
+        raise ValueError("State-registered output tree is missing or incomplete")
 
 
 def _terminal_manifest(
@@ -426,3 +482,12 @@ def _terminal_run_log(
 def _limit(limit: int) -> None:
     if not isinstance(limit, int) or isinstance(limit, bool) or not 1 <= limit <= MAX_LIST_LIMIT:
         raise ValueError("model catalog limit is invalid")
+
+
+def _catalog_budget() -> ReadBudget:
+    """Bound complete catalog traversal independently from a single-run bundle budget."""
+    return ReadBudget(
+        MAX_ARTIFACT_BYTES * 3 * MAX_CATALOG_RUNS,
+        MAX_ARTIFACT_ENTRIES * 3 * MAX_CATALOG_RUNS,
+        MAX_ARTIFACT_ROWS * 3 * MAX_CATALOG_RUNS,
+    )

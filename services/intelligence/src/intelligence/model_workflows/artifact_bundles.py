@@ -100,6 +100,8 @@ def verify_train_bundle(
     _verify_evaluation(evaluation_descriptor, evaluation, model_id, run_id)
     _verify_population(candidate, population)
     _verify_missingness(candidate, missingness)
+    if digest(missingness) != model_descriptor.missingness_digest:
+        raise ValueError("model descriptor missingness digest is invalid")
     _verify_train_descriptor_files(
         model_descriptor,
         root,
