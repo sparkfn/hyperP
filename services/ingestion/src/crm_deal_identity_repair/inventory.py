@@ -296,6 +296,9 @@ def current_inventory_item(
     for record in tx.run(READ_NEGATIVE_CONTROL_FULL_STATE, items=items):
         if _required_string(record, "source_record_pk") != source_record_pk:
             continue
+        source_system_matches = _non_negative_int(record, "source_system_matches")
+        if source_system_matches != 1:
+            return None
         source_properties = _json_value(record.get("source_properties"))
         if not isinstance(source_properties, dict):
             return None
