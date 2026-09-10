@@ -142,6 +142,7 @@ def _full_state_row(row: dict[str, object]) -> dict[str, object]:
         "descendants": row.get("descendants", []),
         "decisions_and_reviews": row.get("decisions_and_reviews", []),
         "owner_impacts": row.get("owner_impacts", []),
+        "source_system_matches": 1,
         "link_row_count": len(cast(list[dict[str, object]], row.get("linked_people", []))),
         "projection_row_count": len(cast(list[dict[str, object]], row.get("projections", []))),
         "graph_stamp_count": 0,
@@ -471,17 +472,30 @@ def test_current_inventory_item_is_equivalent_to_collect_repair_inventory() -> N
 
 
 def test_current_inventory_item_returns_none_when_source_record_is_absent() -> None:
+    # A row with source_system_matches == 0 models a record detached from bitrix_chat;
+    # the production reader treats this as absent and the caller raises drift.
     client = _FullStateClient(
         (
             {
                 "source_record_pk": "deal-pk",
-                "source_properties": None,
+                "source_properties": {
+                    "source_record_pk": "deal-pk",
+                    "source_record_id": "bitrix-crm-deal-10",
+                    "source_record_version": "1",
+                    "lifecycle_status": "active",
+                    "is_latest": True,
+                    "record_hash": "record-hash",
+                    "observed_at": "2026-08-25T00:00:00Z",
+                    "raw_payload": {"crm_deal_identity_policy_version": "legacy"},
+                    "normalized_payload": {},
+                },
                 "linked_people": [],
                 "projections": [],
                 "logical_versions": [],
                 "descendants": [],
                 "decisions_and_reviews": [],
                 "owner_impacts": [],
+                "source_system_matches": 0,
                 "link_row_count": 0,
                 "projection_row_count": 0,
                 "graph_stamp_count": 0,
