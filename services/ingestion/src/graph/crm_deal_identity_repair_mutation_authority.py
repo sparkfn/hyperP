@@ -3,17 +3,11 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
-from dataclasses import dataclass
 from datetime import datetime, timedelta
-from typing import TypeVar
 
 from neo4j import ManagedTransaction
 
-from src.crm_deal_identity_repair.inventory import (
-    RepairInventoryReadClient,
-    current_inventory_item,
-)
+from src.crm_deal_identity_repair.inventory import current_inventory_item
 from src.crm_deal_identity_repair.models import RepairInventoryItem
 from src.crm_deal_identity_repair.mutation_models import (
     ProvenanceClass,
@@ -42,16 +36,6 @@ from src.identifier_scopes import identifier_scope
 from src.models import EngineType, JsonValue, MatchDecision, MatchResult, SourceRecordEnvelope
 from src.pipeline_crm_identity import projected_identifiers
 from src.pipeline_normalization import normalize_envelope_attributes, normalize_envelope_identifiers
-
-T = TypeVar("T")
-
-
-@dataclass(frozen=True)
-class _TransactionReader(RepairInventoryReadClient):
-    transaction: ManagedTransaction
-
-    def execute_read(self, work: Callable[[ManagedTransaction], T]) -> T:
-        return work(self.transaction)
 
 
 def _stage_active(

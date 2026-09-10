@@ -329,6 +329,12 @@ CALL {
     AND result.mutation_id = $mutation_id
     AND result.rollback_image_digest = image.image_digest
     AND authorization.state = 'approved' AND authorization.consumable = true
+    AND authorization.fence_id = fence.fence_id
+    AND authorization.predecessor_transition_id = result.mutation_id + ':applied:' + image.rollback_image_id
+    AND authorization.authorization_digest STARTS WITH 'sha256:'
+    AND size(authorization.authorization_digest) = 71
+    AND receipt.status_digest STARTS WITH 'sha256:'
+    AND size(receipt.status_digest) = 71
     AND receipt.state = 'available'
   RETURN count(verification) AS verified_count
 }

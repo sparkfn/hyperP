@@ -91,10 +91,13 @@ fields:
   has a claimed fence, a mutation result, a verified verification, an
   approved/consumable authorization, the matching rollback image, and the just-
   stored available receipt.  Re-issuing a receipt on an already-settled unit
-  does not rewind the checkpoint.
+  does not rewind the checkpoint.  A receipt stored out of order is a no-op;
+  the checkpoint stalls at the gap until that unit's idempotent receipt
+  re-store runs (unreachable in the strictly-sequential runtime; recoverable
+  via replay).
 
 - `admission_checkpoint_blocked` — set to `true` by
-  `PERSIST_ROLLBACK_TERMINAL` when a previously settled unit is rolled back.
+  `PERSIST_ROLLBACK_TERMINAL` on every terminal rollback.
   While this flag is present, `CLAIM_ADMITTED_FENCE` rejects every fresh
   admission regardless of `settled_sequence`.
 

@@ -479,6 +479,56 @@ def test_sequential_multi_unit_settle_then_admit_advances_checkpoint(
     assert admitted["fence"]["unit_id"] == "unit-b"
 
 
+def test_reissued_receipt_on_settled_unit_is_idempotent_no_rewind(
+    neo4j_driver: Driver,
+) -> None:
+    """A re-issued rollback receipt on an already-settled unit must not
+    rewind or double-advance the admission checkpoint.
+    """
+    _seed_zero_unit_run(neo4j_driver)
+    receipt_params: dict[str, object] = _params() | {
+        "unit_id": "unit-a",
+        "generation": 1,
+        "sequence": 0,
+        "attempt": 1,
+        "inventory_fingerprint": _DIGEST,
+        "inventory_binding_digest": _DIGEST,
+        "fence_id": "fence-a",
+        "image_digest": _DIGEST,
+        "mutation_id": "mutation-a",
+        "authorization_transition_id": "authorization-a",
+        "authorization_digest": _DIGEST,
+        "receipt_id": "receipt-a",
+        "receipt_digest": _DIGEST,
+        "request_digest": _DIGEST,
+        "status_digest": _DIGEST,
+    }
+    with neo4j_driver.session() as session:
+        _seed_two_unit_run(session, receipt_params)
+        _seed_unit_a_settle_chain(session, receipt_params)
+        first = session.execute_write(
+            lambda tx: tx.run(queries.STORE_ROLLBACK_RECEIPT, **receipt_params).single(strict=True)
+        )
+        assert first["receipt_digest"] == _DIGEST
+        checkpoint_after_first = session.run(
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "RETURN completion.settled_sequence AS settled_sequence",
+            **receipt_params,
+        ).single(strict=True)
+        assert checkpoint_after_first["settled_sequence"] == 1
+        # Re-issue the same receipt idempotently.
+        second = session.execute_write(
+            lambda tx: tx.run(queries.STORE_ROLLBACK_RECEIPT, **receipt_params).single(strict=True)
+        )
+        assert second["receipt_digest"] == _DIGEST
+        checkpoint_after_second = session.run(
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "RETURN completion.settled_sequence AS settled_sequence",
+            **receipt_params,
+        ).single(strict=True)
+        assert checkpoint_after_second["settled_sequence"] == 1
+
+
 def test_dispatch_release_replay_does_not_clear_a_replaced_block(neo4j_driver: Driver) -> None:
     _seed_zero_unit_run(neo4j_driver)
     values = _params()
