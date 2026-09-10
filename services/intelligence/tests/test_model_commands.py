@@ -293,3 +293,76 @@ def test_r10_compare_classifies_incompatible_target_and_drift(
             tmp_path,
             lambda: False,
         )
+
+
+def _assert_malformed_terminal(runtime: IntelligenceRuntime, command: str, forbidden: str) -> None:
+    manifest, log = _terminal_reason(runtime, command)
+    manifest_value = json.loads(manifest)
+    assert manifest_value["reason"] == "malformed_artifact"
+    provenance = manifest_value["command_provenance"]
+    assert provenance["failure_metrics_status"] == "unavailable"
+    assert '"metrics_status":"unavailable"' in log
+    assert '"reason":"malformed_artifact"' in log
+    assert forbidden not in manifest
+    assert forbidden not in log
+
+
+def test_r10_supervised_train_replay_invalid_catalog_evidence_is_malformed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(commands, "CHILD_LIMITS", None)
+    dataset_run, dataset_id = _publish_eligible_dataset(tmp_path)
+    request = TrainRequest(dataset_id, dataset_run, RECIPE, 7)
+    dataset_pin = admit_dataset_metadata(tmp_path, request)
+    runtime = IntelligenceRuntime(
+        RuntimeConfig(tmp_path, mutations_enabled=True), train_registry(dataset_pin)
+    )
+    try:
+        first_run_id = runtime.run("train_run")
+    finally:
+        runtime.close()
+    model_id = next((tmp_path / "outputs" / first_run_id / "models").iterdir()).name
+    descriptor_path = (
+        tmp_path
+        / "outputs"
+        / first_run_id
+        / "acceptance-descriptors"
+        / "models"
+        / f"{model_id}.json"
+    )
+    descriptor_path.write_text(
+        descriptor_path.read_text(encoding="utf-8").replace('"active":false', '"active":true', 1),
+        encoding="utf-8",
+    )
+    runtime = IntelligenceRuntime(
+        RuntimeConfig(tmp_path, mutations_enabled=True), train_registry(dataset_pin)
+    )
+    try:
+        with pytest.raises(RuntimeError, match="process failed"):
+            runtime.run("train_run")
+        _assert_malformed_terminal(
+            runtime,
+            "train_run",
+            "State registered model output checksum is invalid",
+        )
+    finally:
+        runtime.close()
+
+
+def test_r10_supervised_train_missing_dataset_terminal_evidence_is_malformed(
+    monkeypatch: pytest.MonkeyPatch, tmp_path: Path
+) -> None:
+    monkeypatch.setattr(commands, "CHILD_LIMITS", None)
+    dataset_run, dataset_id = _publish_eligible_dataset(tmp_path)
+    request = TrainRequest(dataset_id, dataset_run, RECIPE, 7)
+    dataset_pin = admit_dataset_metadata(tmp_path, request)
+    (tmp_path / "runs" / "manifests" / f"{dataset_run}.json").unlink()
+    runtime = IntelligenceRuntime(
+        RuntimeConfig(tmp_path, mutations_enabled=True), train_registry(dataset_pin)
+    )
+    try:
+        with pytest.raises(RuntimeError, match="process failed"):
+            runtime.run("train_run")
+        _assert_malformed_terminal(runtime, "train_run", "FileNotFoundError")
+    finally:
+        runtime.close()

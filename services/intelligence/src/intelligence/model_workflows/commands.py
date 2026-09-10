@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass
 from functools import partial
 from pathlib import Path
@@ -22,7 +23,11 @@ from intelligence.model_workflows.contracts import (
     digest,
 )
 from intelligence.model_workflows.core import load_model, write_evaluation, write_train
-from intelligence.model_workflows.dataset_admission import DatasetPin, admit_dataset
+from intelligence.model_workflows.dataset_admission import (
+    AdmittedDataset,
+    DatasetPin,
+    admit_dataset,
+)
 from intelligence.registry import Cancelled, RegisteredCommand, Registry, SafeRejectionError
 
 
@@ -154,10 +159,7 @@ def _model_metadata(
 def _train(dataset: DatasetPin, staging: Path, cancelled: Cancelled) -> None:
     if cancelled():
         raise SafeRejectionError("cancelled_before_work")
-    try:
-        admitted = admit_dataset(staging.parent.parent, dataset.request)
-    except (ValueError, RuntimeError) as error:
-        raise SafeRejectionError("malformed_artifact") from error
+    admitted = _admit_dataset_or_reject(staging.parent.parent, dataset)
     if admitted.pin() != dataset.pin():
         raise SafeRejectionError("dataset_drift")
     try:
@@ -179,16 +181,10 @@ def _evaluate(
 ) -> None:
     if cancelled():
         raise SafeRejectionError("cancelled_before_work")
-    try:
-        candidate = load_model(staging.parent.parent, model.model_id, model.run_id)
-    except (ValueError, RuntimeError) as error:
-        raise SafeRejectionError("malformed_artifact") from error
+    candidate = _load_model_or_reject(staging.parent.parent, model)
     if digest(candidate.get("logical")) != model.logical_digest:
         raise SafeRejectionError("model_drift")
-    try:
-        admitted = admit_dataset(staging.parent.parent, dataset.request)
-    except (ValueError, RuntimeError) as error:
-        raise SafeRejectionError("malformed_artifact") from error
+    admitted = _admit_dataset_or_reject(staging.parent.parent, dataset)
     if admitted.pin() != dataset.pin():
         raise SafeRejectionError("dataset_drift")
     try:
@@ -207,10 +203,7 @@ def _evaluate(
 def _verify(request: VerifyRequest, model: ModelPin, staging: Path, cancelled: Cancelled) -> None:
     if cancelled():
         raise SafeRejectionError("cancelled_before_work")
-    try:
-        candidate = load_model(staging.parent.parent, request.model_id, request.model_run_id)
-    except (ValueError, RuntimeError) as error:
-        raise SafeRejectionError("malformed_artifact") from error
+    candidate = _load_model_or_reject(staging.parent.parent, model)
     if digest(candidate.get("logical")) != model.logical_digest:
         raise SafeRejectionError("model_drift")
     target = staging / "verifications" / "models" / f"{request.model_id}.json"
@@ -234,8 +227,10 @@ def _compare(
 
     try:
         recomputed = compare(staging.parent.parent, left_run_id, right_run_id)
-    except ValueError as error:
-        if str(error).startswith("incompatible_evaluation_contract:"):
+    except (ValueError, OSError) as error:
+        if isinstance(error, ValueError) and str(error).startswith(
+            "incompatible_evaluation_contract:"
+        ):
             raise SafeRejectionError("incompatible_target") from error
         raise SafeRejectionError("malformed_artifact") from error
     except RuntimeError as error:
@@ -251,42 +246,64 @@ def _compare(
 
 def _require_dataset_pin(workspace: Path, dataset: DatasetPin) -> None:
     """Re-admit before publication and reject either drift or malformed evidence."""
-    try:
-        admitted = admit_dataset(workspace, dataset.request)
-    except (ValueError, RuntimeError) as error:
-        raise SafeRejectionError("malformed_artifact") from error
+    admitted = _admit_dataset_or_reject(workspace, dataset)
     if admitted.pin() != dataset.pin():
         raise SafeRejectionError("dataset_drift")
 
 
-def _check_train_replay(staging: Path) -> None:
-    """Map only the known immutable replay conflict from staged train verification."""
+def _admit_dataset_or_reject(workspace: Path, dataset: DatasetPin) -> AdmittedDataset:
+    """Translate bounded accepted-dataset evidence failures without catching defects broadly."""
     try:
-        check_staged_train_replay(staging.parent.parent, staging.name)
-    except RuntimeError as error:
-        if str(error) == "model replay conflicts with immutable accepted content":
-            raise SafeRejectionError("replay_conflict") from error
-        raise
+        return admit_dataset(workspace, dataset.request)
+    except (ValueError, OSError, RuntimeError) as error:
+        raise SafeRejectionError("malformed_artifact") from error
+
+
+def _load_model_or_reject(workspace: Path, model: ModelPin) -> dict[str, object]:
+    """Translate bounded State-backed candidate evidence failures before consumption."""
+    try:
+        return load_model(workspace, model.model_id, model.run_id)
+    except (ValueError, OSError, RuntimeError) as error:
+        raise SafeRejectionError("malformed_artifact") from error
+
+
+def _check_train_replay(staging: Path) -> None:
+    """Classify exact replay conflicts and malformed prior catalog evidence."""
+    _check_replay(
+        staging,
+        check_staged_train_replay,
+        "model replay conflicts with immutable accepted content",
+    )
 
 
 def _check_evaluation_replay(staging: Path) -> None:
-    """Map only the known immutable replay conflict from staged evaluation verification."""
-    try:
-        check_staged_evaluation_replay(staging.parent.parent, staging.name)
-    except RuntimeError as error:
-        if str(error) == "evaluation replay conflicts with immutable accepted content":
-            raise SafeRejectionError("replay_conflict") from error
-        raise
+    """Classify exact evaluation replay conflicts and malformed catalog evidence."""
+    _check_replay(
+        staging,
+        check_staged_evaluation_replay,
+        "evaluation replay conflicts with immutable accepted content",
+    )
 
 
 def _check_comparison_replay(staging: Path) -> None:
-    """Map only the known immutable replay conflict from staged comparison verification."""
+    """Classify exact comparison replay conflicts and malformed catalog evidence."""
+    _check_replay(
+        staging,
+        check_staged_comparison_replay,
+        "comparison replay conflicts with immutable accepted content",
+    )
+
+
+def _check_replay(staging: Path, check: Callable[[Path, str], object], conflict: str) -> None:
+    """Map only the expected bounded artifact/replay evidence exceptions."""
     try:
-        check_staged_comparison_replay(staging.parent.parent, staging.name)
+        check(staging.parent.parent, staging.name)
     except RuntimeError as error:
-        if str(error) == "comparison replay conflicts with immutable accepted content":
+        if str(error) == conflict:
             raise SafeRejectionError("replay_conflict") from error
-        raise
+        raise SafeRejectionError("malformed_artifact") from error
+    except (ValueError, OSError) as error:
+        raise SafeRejectionError("malformed_artifact") from error
 
 
 def _text(value: object) -> str:
