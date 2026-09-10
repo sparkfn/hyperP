@@ -6,13 +6,18 @@ from collections.abc import Callable
 from typing import TypeVar, cast
 
 from neo4j import ManagedTransaction
-from src.crm_deal_identity_repair.inventory import RepairInventory, collect_repair_inventory
+from src.crm_deal_identity_repair.inventory import (
+    RepairInventory,
+    collect_repair_inventory,
+    current_inventory_item,
+)
 from src.graph.queries.crm_deal_identity_repair import (
     INVENTORY_ACTIVE_CRM_DEALS,
     INVENTORY_CRM_DEAL_PROJECTIONS,
     INVENTORY_INVALID_CRM_DEAL_SOURCE_RECORD_PKS,
     INVENTORY_STALE_RUN_CONTROL_PLANE,
 )
+from src.graph.queries.crm_deal_identity_repair_verification import READ_NEGATIVE_CONTROL_FULL_STATE
 
 _T = TypeVar("_T")
 
@@ -85,6 +90,63 @@ class _Client:
     @property
     def active_deal_parameters(self) -> list[dict[str, object]]:
         return self._transaction.active_deal_parameters
+
+
+class _FullStateTransaction:
+    """Fake only READ_NEGATIVE_CONTROL_FULL_STATE for targeted current-item tests."""
+
+    def __init__(self, rows: tuple[dict[str, object], ...]) -> None:
+        self._rows = rows
+        self.calls: list[tuple[str, dict[str, object]]] = []
+
+    def run(self, query: str, **parameters: object) -> _Rows:
+        self.calls.append((query, dict(parameters)))
+        if query == READ_NEGATIVE_CONTROL_FULL_STATE:
+            items = parameters.get("items")
+            assert isinstance(items, list) and len(items) == 1
+            return _Rows(self._rows)
+        raise AssertionError(f"unexpected query: {query}")
+
+
+class _FullStateClient:
+    def __init__(self, rows: tuple[dict[str, object], ...]) -> None:
+        self._transaction = _FullStateTransaction(rows)
+
+    def execute_read(self, work: Callable[[ManagedTransaction], _T]) -> _T:
+        return work(cast(ManagedTransaction, self._transaction))
+
+    @property
+    def calls(self) -> list[tuple[str, dict[str, object]]]:
+        return self._transaction.calls
+
+
+def _full_state_row(row: dict[str, object]) -> dict[str, object]:
+    """Translate an INVENTORY_ACTIVE_CRM_DEALS-style fake row into full-state shape."""
+    source_record_pk = str(row["source_record_pk"])
+    return {
+        "source_record_pk": source_record_pk,
+        "source_properties": {
+            "source_record_pk": source_record_pk,
+            "source_record_id": str(row["source_record_id"]),
+            "source_record_version": row["source_record_version"],
+            "lifecycle_status": row.get("lifecycle_status"),
+            "is_latest": row.get("is_latest"),
+            "record_hash": row["record_hash"],
+            "observed_at": row.get("observed_at"),
+            "raw_payload": row["raw_payload"],
+            "normalized_payload": row["normalized_payload"],
+        },
+        "linked_people": row.get("linked_people", []),
+        "projections": row.get("projections", []),
+        "logical_versions": row.get("logical_versions", []),
+        "descendants": row.get("descendants", []),
+        "decisions_and_reviews": row.get("decisions_and_reviews", []),
+        "owner_impacts": row.get("owner_impacts", []),
+        "link_row_count": len(cast(list[dict[str, object]], row.get("linked_people", []))),
+        "projection_row_count": len(cast(list[dict[str, object]], row.get("projections", []))),
+        "graph_stamp_count": 0,
+        "ledger_stamp_count": 0,
+    }
 
 
 def _row(
@@ -364,3 +426,71 @@ def test_shared_payload_fingerprint_helper_matches_inventory_item() -> None:
     graph_fingerprint, stored_payload_fingerprint = inventory_payload_fingerprints(item.payload)
     assert graph_fingerprint == item.graph_fingerprint
     assert stored_payload_fingerprint == item.stored_payload_fingerprint
+
+
+def test_current_inventory_item_issues_one_targeted_full_state_query() -> None:
+    client = _FullStateClient((_full_state_row(_row(source_record_pk="deal-pk")),))
+
+    def work(tx: ManagedTransaction) -> object:
+        return current_inventory_item(tx, "deal-pk", ("deal-pk",))
+
+    item = client.execute_read(work)
+    assert item is not None
+    assert item.source_record_pk == "deal-pk"
+    assert len(client.calls) == 1
+    query, parameters = client.calls[0]
+    assert query == READ_NEGATIVE_CONTROL_FULL_STATE
+    items = parameters["items"]
+    assert isinstance(items, list) and len(items) == 1
+    assert items[0]["source_record_pk"] == "deal-pk"
+    assert items[0]["closure_source_record_pks"] == ["deal-pk"]
+
+
+def test_current_inventory_item_is_equivalent_to_collect_repair_inventory() -> None:
+    row = _row(
+        source_record_pk="deal-pk",
+        source_record_id="bitrix-crm-deal-10",
+        raw_payload={"crm_deal_identity_policy_version": "legacy"},
+        lifecycle_status="active",
+        links=[_link("person-a")],
+    )
+    full = _inventory(row).items[0]
+    targeted = _FullStateClient((_full_state_row(row),))
+
+    def work(tx: ManagedTransaction) -> object:
+        return current_inventory_item(tx, "deal-pk", ("deal-pk",))
+
+    current = targeted.execute_read(work)
+    assert current is not None
+    assert current.source_record_pk == full.source_record_pk
+    assert current.partition == full.partition
+    assert current.repair_conditions == full.repair_conditions
+    assert current.graph_fingerprint == full.graph_fingerprint
+    assert current.stored_payload_fingerprint == full.stored_payload_fingerprint
+    assert current.payload == full.payload
+
+
+def test_current_inventory_item_returns_none_when_source_record_is_absent() -> None:
+    client = _FullStateClient(
+        (
+            {
+                "source_record_pk": "deal-pk",
+                "source_properties": None,
+                "linked_people": [],
+                "projections": [],
+                "logical_versions": [],
+                "descendants": [],
+                "decisions_and_reviews": [],
+                "owner_impacts": [],
+                "link_row_count": 0,
+                "projection_row_count": 0,
+                "graph_stamp_count": 0,
+                "ledger_stamp_count": 0,
+            },
+        )
+    )
+
+    def work(tx: ManagedTransaction) -> object:
+        return current_inventory_item(tx, "deal-pk", ("deal-pk",))
+
+    assert client.execute_read(work) is None

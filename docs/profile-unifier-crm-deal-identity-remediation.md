@@ -55,3 +55,63 @@ The restricted graph-discovery artifact contains only non-executable documents:
 
 Every emitted row and plan sets `execution_allowed: false`; no artifact contains
 runnable Cypher or an approval/execution state.
+
+## Large-run allocation and admission checkpoint protocol
+
+### Allocation stored-set verification (issue #409)
+
+The `ALLOCATE_REPAIR_UNITS` query no longer materializes every stored
+`CrmDealRepairUnit` node in transaction memory.  It instead verifies the stored
+set with a bounded `COUNT` over the run's allocated `unit_id`s plus an
+existence probe for each expected `unit_id`.  This preserves the same
+fail-closed semantics (exactly `unit_count` stored units, every allocated
+`unit_id` present) while avoiding the O(N) memory growth that caused the
+original 178k-unit staging allocation to exhaust Neo4j's transaction-total
+cap.
+
+### Staging transaction/memory sizing
+
+The first staging allocation of 178,322 units exceeded the default Neo4j
+transaction-total memory cap of 716.8 MiB after several hours.  The staging
+environment was provisioned with larger Neo4j memory settings to complete the
+single allocation transaction.  Production defaults and the root
+`docker-compose.yml` are intentionally unchanged; large allocations require
+operational memory sizing in the target environment.
+
+### Admission checkpoint protocol
+
+To avoid an O(N²) predecessor scan on every unit admission, the run's
+`CrmDealRepairAllocationCompletion` node carries two durable checkpoint
+fields:
+
+- `settled_sequence` — the next sequence whose prior units are fully settled.
+  It starts unset (treated as `0`).  It advances monotonically to
+  `sequence + 1` inside `STORE_ROLLBACK_RECEIPT`, but only after a bounded
+  single-unit verification confirms the unit is in `applied`/`review_required`,
+  has a claimed fence, a mutation result, a verified verification, an
+  approved/consumable authorization, the matching rollback image, and the just-
+  stored available receipt.  Re-issuing a receipt on an already-settled unit
+  does not rewind the checkpoint.
+
+- `admission_checkpoint_blocked` — set to `true` by
+  `PERSIST_ROLLBACK_TERMINAL` when a previously settled unit is rolled back.
+  While this flag is present, `CLAIM_ADMITTED_FENCE` rejects every fresh
+  admission regardless of `settled_sequence`.
+
+A fresh admission (`unit.state = 'allocated'`, no existing fence) now
+requires only:
+
+```text
+completion.admission_checkpoint_blocked IS NULL
+AND coalesce(completion.settled_sequence, 0) = $sequence
+```
+
+The replay branch (one exact existing fence) is unchanged.
+
+### Checkpoint residual
+
+The checkpoint protocol replaces the previous per-admission exact-chain walk
+over every prior unit.  The residual difference is that a post-settle *manual*
+deletion of an older unit's ledger nodes is no longer detected at admission.
+No production or repair code path deletes those nodes, so the residual is
+acceptable and documented here.

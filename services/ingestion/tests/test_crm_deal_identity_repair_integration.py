@@ -6,6 +6,7 @@ import pytest
 from src.crm_deal_identity_repair.cli import parse_arguments
 from src.crm_deal_identity_repair.control_models import RepairControlRequest
 from src.crm_deal_identity_repair.integration_models import RepairIntegrationRequest
+from src.graph.queries import crm_deal_identity_repair_control as control_queries
 from src.graph.queries import crm_deal_identity_repair_integration as integration_queries
 
 
@@ -158,3 +159,19 @@ def test_rollback_authorization_identity_is_operation_independent() -> None:
     )
     assert "rollback-authorization-v1" in source
     assert '"authorization_transition_id": request.request_digest' not in source
+
+
+def test_admission_and_allocation_use_bounded_checkpoints_not_full_scans() -> None:
+    admission = integration_queries.CLAIM_ADMITTED_FENCE
+    assert "prior.sequence < $sequence" not in admission
+    assert "OPTIONAL MATCH (prior:CrmDealRepairUnit" not in admission
+    assert "completion.admission_checkpoint_blocked IS NULL" in admission
+    assert "coalesce(completion.settled_sequence, 0) = $sequence" in admission
+
+    allocate = control_queries.ALLOCATE_REPAIR_UNITS
+    assert "OPTIONAL MATCH (stored:CrmDealRepairUnit {run_id: $run_id})" not in allocate
+    assert "collect(stored) AS stored_units" not in allocate
+    assert "COUNT { MATCH (stored:CrmDealRepairUnit {run_id: $run_id})" in allocate
+    assert "WHERE stored.unit_id IN $unit_ids" in allocate
+    assert "all(unit_id IN $unit_ids WHERE EXISTS {" in allocate
+    assert "MATCH (:CrmDealRepairUnit {run_id: $run_id, unit_id: unit_id})" in allocate

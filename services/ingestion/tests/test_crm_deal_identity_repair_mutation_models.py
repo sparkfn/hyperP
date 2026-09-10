@@ -6,6 +6,8 @@ from typing import cast
 
 import pytest
 from neo4j import ManagedTransaction
+from src.crm_deal_identity_repair.allocation import plan_allocation
+from src.crm_deal_identity_repair.approval_overlay import ApprovalOverlay, ApprovalRow
 from src.crm_deal_identity_repair.execution_models import RepairFence, RepairUnit
 from src.crm_deal_identity_repair.models import RepairInventoryItem, RepairPartition
 from src.crm_deal_identity_repair.mutation_models import (
@@ -88,6 +90,62 @@ def test_negative_controls_and_lost_fences_are_rejected_before_transaction_work(
             "source-instance",
             "control-instance",
         )
+
+
+def test_allocated_unit_consumes_the_same_inventory_row_in_mutation_and_verification() -> None:
+    """Allocation and mutation/verification must share one canonical binding digest."""
+    inventory = _inventory()
+    overlay = ApprovalOverlay(
+        approval_id="approval",
+        repair_id="repair",
+        run_id="run",
+        qualification_identity="identity",
+        artifact_id="a" * 32,
+        artifact_manifest_hmac="b" * 64,
+        inventory_digest=DIGEST,
+        inventory_row_count=1,
+        boundary_digest=DIGEST,
+        repository_sha="c" * 40,
+        image_digest=DIGEST,
+        configuration_digest=DIGEST,
+        source_contract_uuid="12345678-1234-5678-9234-567812345678",
+        approval_reference="approval",
+        unit_ceiling=1,
+        rows=(
+            ApprovalRow(
+                inventory.inventory_key,
+                inventory.source_record_pk,
+                inventory.graph_fingerprint,
+                inventory.stored_payload_fingerprint,
+                "executable",
+            ),
+        ),
+        key_id="key",
+        overlay_digest=DIGEST,
+    )
+    plan = plan_allocation(
+        run_id="run",
+        boundary_digest=DIGEST,
+        inventory=(inventory,),
+        overlay=overlay,
+    )
+    unit = plan.units[0]
+    fence = RepairFence(
+        unit.run_id,
+        unit.unit_id,
+        "fence",
+        unit.generation,
+        unit.sequence,
+        unit.attempt,
+        "owner",
+        "token",
+        unit.boundary_digest,
+        DIGEST,
+        "claimed",
+    )
+    command = RepairMutationCommand(unit, fence, inventory, "source-instance", "control-instance")
+    assert command.inventory_binding_digest == unit.inventory_binding_digest
+    assert build_inventory_binding_digest(inventory) == unit.inventory_binding_digest
 
 
 def test_external_authority_digest_excludes_repair_owned_review_rows_only() -> None:
