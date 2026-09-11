@@ -107,6 +107,7 @@ RETURN migration.after_link_key AS after_link_key
 COMPLETE_IDENTITY_LINK_BASELINE = """
 MATCH (migration:DataMigration {migration_key: $migration_key, lease_owner: $owner_id})
 MERGE (counter:IdentityLinkRevisionCounter {stream_key: 'identity_link_revision_stream_v1'})
+WITH migration, counter
 WHERE migration.completed_at IS NULL AND migration.lease_until >= datetime()
 SET migration.completed_at = datetime(), migration.updated_at = datetime(),
     counter.baseline_completed_at = datetime(), counter.updated_at = datetime()

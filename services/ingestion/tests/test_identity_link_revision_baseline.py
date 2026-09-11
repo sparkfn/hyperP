@@ -6,6 +6,7 @@ from src.graph.migrations import _baseline_status
 from src.graph.queries.identity_link_revision_migrations import (
     ADVANCE_IDENTITY_LINK_BASELINE,
     ADVANCE_IDENTITY_LINK_PROVENANCE_BACKFILL,
+    COMPLETE_IDENTITY_LINK_BASELINE,
     COMPLETE_IDENTITY_LINK_PROVENANCE_BACKFILL,
     LIST_IDENTITY_LINK_BASELINE_BATCH,
     LIST_IDENTITY_LINK_PROVENANCE_BACKFILL_BATCH,
@@ -55,6 +56,20 @@ def test_historical_legacy_deal_remains_unresolved_after_safe_backfill() -> None
         "person_ids": ["legacy-person"],
     }
     assert _baseline_status(legacy_deal) == ("unresolved", None)
+
+
+def test_completion_query_projects_merge_bindings_before_lease_cas_guard() -> None:
+    query = COMPLETE_IDENTITY_LINK_BASELINE
+    boundary = (
+        "MERGE (counter:IdentityLinkRevisionCounter "
+        "{stream_key: 'identity_link_revision_stream_v1'})\n"
+        "WITH migration, counter\n"
+        "WHERE migration.completed_at IS NULL AND migration.lease_until >= datetime()"
+    )
+    assert boundary in query
+    assert "{migration_key: $migration_key, lease_owner: $owner_id}" in query
+    assert "migration.completed_at IS NULL" in query
+    assert "migration.lease_until >= datetime()" in query
 
 
 class _Transaction:
