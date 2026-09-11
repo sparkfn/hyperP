@@ -45,6 +45,13 @@ def test_retired_global_incremental_checkpoint_constraint_is_not_recreated() -> 
     assert "ingestion_checkpoint_key_unique" not in schema
 
 
+def test_canonical_schema_does_not_recreate_the_legacy_identifier_scope_index() -> None:
+    schema = _find_init_cypher().read_text(encoding="utf-8")
+
+    assert "CREATE INDEX idx_identifier_type_scope_norm" not in schema
+    assert "deferred uniqueness transition" in schema
+
+
 def test_control_binding_schema_is_available_in_runtime_and_canonical_initialization() -> None:
     canonical_schema = _find_init_cypher().read_text(encoding="utf-8")
     runtime_schema = "\n".join(BASE_LIFECYCLE_CONSTRAINTS)
