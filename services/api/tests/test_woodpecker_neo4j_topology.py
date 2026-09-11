@@ -139,6 +139,22 @@ def _assert_readiness_precedes_pytest(step: dict[str, object], family: str) -> N
     assert 1 < min(pytest_indexes)
 
 
+def _identifier_scope_schema_command() -> str:
+    return (
+        "uv run --package profile-unifier-ingestion pytest "
+        "services/ingestion/tests/test_identifier_scope_schema_neo4j.py -q"
+    )
+
+
+def _assert_identifier_scope_schema_suite_is_first(step: dict[str, object]) -> None:
+    commands = step.get("commands")
+    assert isinstance(commands, list)
+    rendered_commands = [command for command in commands if isinstance(command, str)]
+    assert len(rendered_commands) == len(commands)
+    assert rendered_commands[2] == _identifier_scope_schema_command()
+    assert rendered_commands.count(_identifier_scope_schema_command()) == 1
+
+
 def _neo4j_manifest(steps: dict[str, dict[str, object]]) -> frozenset[tuple[str, str]]:
     manifest: set[tuple[str, str]] = set()
     for shard in _NEO4J_SHARDS:
@@ -229,6 +245,8 @@ def test_woodpecker_neo4j_shards_are_complete_isolated_and_parity_checked() -> N
             readiness_family = contract["readiness_family"]
             assert isinstance(readiness_family, str)
             _assert_readiness_precedes_pytest(step, readiness_family)
+            if shard == "census-migration-api":
+                _assert_identifier_scope_schema_suite_is_first(step)
             assert isinstance(step_environment, dict)
             shard_environment = cast(dict[str, object], step_environment)
             environments.append(shard_environment)

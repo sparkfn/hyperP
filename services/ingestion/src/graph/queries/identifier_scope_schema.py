@@ -9,7 +9,6 @@ RETURN name, type, entityType, labelsOrTypes, properties, ownedIndex
 
 SHOW_IDENTIFIER_SCOPE_INDEXES = """
 SHOW INDEXES YIELD name, type, entityType, labelsOrTypes, properties, state, owningConstraint
-WHERE labelsOrTypes IS NOT NULL AND properties IS NOT NULL
 RETURN name, type, entityType, labelsOrTypes, properties, state, owningConstraint
 """
 

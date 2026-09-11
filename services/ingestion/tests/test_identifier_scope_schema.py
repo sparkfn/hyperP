@@ -43,7 +43,7 @@ class _Transaction:
     def run(self, query: str) -> _Result:
         if query.lstrip().startswith("SHOW INDEXES"):
             assert query == SHOW_IDENTIFIER_SCOPE_INDEXES
-            assert "WHERE labelsOrTypes IS NOT NULL AND properties IS NOT NULL" in query
+            assert "WHERE labelsOrTypes IS NOT NULL" not in query
             return _Result(list(self._client.indexes.values()))
         if query.lstrip().startswith("SHOW CONSTRAINTS"):
             return _Result(list(self._client.constraints.values()))
@@ -126,10 +126,9 @@ def _constraint(name: str, owned_index: str) -> dict[str, object]:
     }
 
 
-def test_index_inventory_excludes_default_lookup_rows_with_null_schema_fields() -> None:
-    assert "WHERE labelsOrTypes IS NOT NULL AND properties IS NOT NULL" in (
-        SHOW_IDENTIFIER_SCOPE_INDEXES
-    )
+def test_index_inventory_keeps_reserved_lookup_name_collisions_visible() -> None:
+    assert "SHOW INDEXES YIELD" in SHOW_IDENTIFIER_SCOPE_INDEXES
+    assert "WHERE labelsOrTypes IS NOT NULL" not in SHOW_IDENTIFIER_SCOPE_INDEXES
     assert "owningConstraint" in SHOW_IDENTIFIER_SCOPE_INDEXES
 
 
@@ -164,6 +163,59 @@ def test_legacy_transition_keeps_bridge_until_constraint_is_ready() -> None:
     assert LEGACY_INDEX_NAME not in client.indexes
     assert BRIDGE_INDEX_NAME not in client.indexes
     assert IDENTIFIER_SCOPE_CONSTRAINT_NAME in client.constraints
+
+
+def test_default_lookup_rows_are_tolerated_without_hiding_schema_inventory() -> None:
+    client = _Client()
+    client.constraints[IDENTIFIER_SCOPE_CONSTRAINT_NAME] = _constraint(
+        IDENTIFIER_SCOPE_CONSTRAINT_NAME,
+        IDENTIFIER_SCOPE_CONSTRAINT_NAME,
+    )
+    client.indexes[IDENTIFIER_SCOPE_CONSTRAINT_NAME] = _index(
+        IDENTIFIER_SCOPE_CONSTRAINT_NAME,
+        IDENTIFIER_SCOPE_PROPERTIES,
+        owning_constraint=IDENTIFIER_SCOPE_CONSTRAINT_NAME,
+    )
+    client.indexes["node_label_lookup_index"] = {
+        "name": "node_label_lookup_index",
+        "type": "LOOKUP",
+        "entityType": "NODE",
+        "labelsOrTypes": None,
+        "properties": None,
+        "state": "ONLINE",
+        "owningConstraint": None,
+    }
+
+    assert apply_identifier_scope_schema_transition(cast(Neo4jClient, client)) == 1
+    assert client.ddl == []
+
+
+def test_reserved_legacy_index_name_cannot_be_occupied_by_a_constraint() -> None:
+    client = _Client()
+    client.constraints[LEGACY_INDEX_NAME] = _constraint(LEGACY_INDEX_NAME, "other_index")
+
+    with pytest.raises(RuntimeError, match="reserved scoped Identifier index name"):
+        apply_identifier_scope_schema_transition(cast(Neo4jClient, client))
+
+    assert client.ddl == []
+
+
+def test_reserved_constraint_name_cannot_be_occupied_by_a_lookup_index() -> None:
+    client = _Client()
+    client.indexes[IDENTIFIER_SCOPE_CONSTRAINT_NAME] = {
+        "name": IDENTIFIER_SCOPE_CONSTRAINT_NAME,
+        "type": "LOOKUP",
+        "entityType": "NODE",
+        "labelsOrTypes": None,
+        "properties": None,
+        "state": "ONLINE",
+        "owningConstraint": None,
+    }
+
+    with pytest.raises(RuntimeError, match="reserved scoped Identifier constraint name"):
+        apply_identifier_scope_schema_transition(cast(Neo4jClient, client))
+
+    assert client.ddl == []
 
 
 def test_wrong_named_legacy_definition_fails_before_schema_mutation() -> None:
