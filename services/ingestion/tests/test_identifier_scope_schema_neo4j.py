@@ -4,14 +4,14 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Iterator
+from collections.abc import Iterator, Mapping
 from dataclasses import dataclass
-from typing import Protocol, cast
+from typing import cast
 from urllib.parse import urlparse
 
 import pytest
 from neo4j import Driver, GraphDatabase, Session
-from neo4j.exceptions import ClientError
+from neo4j.exceptions import ClientError, DatabaseError
 from src import main
 from src.config import Settings
 from src.graph.client import Neo4jClient
@@ -21,15 +21,10 @@ from src.graph.identifier_scope_schema import (
     LEGACY_INDEX_NAME,
     apply_identifier_scope_schema_transition,
 )
+from src.graph.migrations import migrate_identifier_scopes
 
 _ENV_PREFIX = "HYPERP_NEO4J_CONTROL_MIGRATION_TEST"
 _SCHEMA_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
-
-
-class _PlanLike(Protocol):
-    operator_type: str
-    arguments: dict[str, object]
-    children: list[_PlanLike]
 
 
 @dataclass(frozen=True)
@@ -82,37 +77,21 @@ def _require_neo4j_526(driver: Driver) -> None:
         pytest.fail("identifier schema tests require Neo4j 5.26")
 
 
-def _prepare_empty_owned_schema(driver: Driver) -> None:
-    """Claim only a validated target with no graph data, then reset its schema.
-
-    Earlier suites in the shared CI shard deliberately leave schema behind.
-    A zero-node guard runs before any mutation so this fixture cannot erase
-    data from an accidentally shared target. Default LOOKUP indexes remain.
-    """
-    _assert_no_nodes(driver)
-    _clear_non_lookup_schema(driver)
-    _assert_schema_clean(driver)
-
-
-def _assert_no_nodes(driver: Driver) -> None:
+def _assert_pristine_database(driver: Driver) -> None:
+    """Require exclusive ownership before tests create or delete any schema."""
     with driver.session() as session:
         node_count = session.run("MATCH (node) RETURN count(node) AS count").single(strict=True)[
             "count"
         ]
-    if node_count != 0:
-        pytest.fail("identifier schema tests require a zero-node disposable Neo4j database")
-
-
-def _assert_schema_clean(driver: Driver) -> None:
-    with driver.session() as session:
-        constraint_count = session.run(
-            "SHOW CONSTRAINTS YIELD name RETURN count(name) AS count"
-        ).single(strict=True)["count"]
-        index_count = session.run(
-            "SHOW INDEXES YIELD type WHERE type <> 'LOOKUP' RETURN count(*) AS count"
-        ).single(strict=True)["count"]
-    if constraint_count != 0 or index_count != 0:
-        pytest.fail("identifier schema tests could not establish clean schema ownership")
+        constraints = [dict(row) for row in session.run("SHOW CONSTRAINTS YIELD *")]
+        indexes = [
+            dict(row) for row in session.run("SHOW INDEXES YIELD *") if row["type"] != "LOOKUP"
+        ]
+    if node_count != 0 or constraints or indexes:
+        pytest.fail(
+            "identifier schema tests require a pristine disposable Neo4j database; "
+            f"nodes={node_count}, constraints={constraints!r}, indexes={indexes!r}"
+        )
 
 
 @pytest.fixture
@@ -128,7 +107,7 @@ def neo4j_driver() -> Iterator[Driver]:
     try:
         driver.verify_connectivity()
         _require_neo4j_526(driver)
-        _prepare_empty_owned_schema(driver)
+        _assert_pristine_database(driver)
         cleanup_owned = True
         yield driver
     finally:
@@ -142,11 +121,6 @@ def neo4j_driver() -> Iterator[Driver]:
 def _cleanup(driver: Driver) -> None:
     with driver.session() as session:
         session.run("MATCH (node) DETACH DELETE node").consume()
-    _clear_non_lookup_schema(driver)
-
-
-def _clear_non_lookup_schema(driver: Driver) -> None:
-    with driver.session() as session:
         constraint_names = [
             row["name"] for row in session.run("SHOW CONSTRAINTS YIELD name RETURN name")
         ]
@@ -209,6 +183,26 @@ def _schema_rows(
     return indexes, constraints
 
 
+def _seed_completed_initialization_prerequisites(driver: Driver) -> None:
+    """Seed staging prerequisites that precede this transition.
+
+    The completed Fundbox marker avoids its pre-existing incompatible Cypher;
+    the completed lifecycle marker and installed uniqueness constraint model
+    the existing staging SourceRecord migration boundary. The real canonical
+    initialization path, identifier data migration, and #416 transition still run.
+    """
+    with driver.session() as session:
+        session.run(
+            "UNWIND $migration_keys AS migration_key "
+            "CREATE (:DataMigration {migration_key: migration_key, completed_at: datetime()})",
+            migration_keys=("fundbox_source_keys_v1", "source_record_lifecycle_v1"),
+        ).consume()
+        session.run(
+            "CREATE CONSTRAINT source_record_version_key_unique IF NOT EXISTS "
+            "FOR (record:SourceRecord) REQUIRE record.source_version_key IS UNIQUE"
+        ).consume()
+
+
 def _seed_identifier(driver: Driver, *, scope: str = "portal-a", value: str = "42") -> None:
     with driver.session() as session:
         session.run(
@@ -222,28 +216,54 @@ def _seed_identifier(driver: Driver, *, scope: str = "portal-a", value: str = "4
         ).consume()
 
 
-def _plan_text(driver: Driver) -> str:
+def _identifier_tuple_seek_details(driver: Driver) -> list[str]:
     with driver.session() as session:
-        summary = session.run(
-            "EXPLAIN MATCH (identifier:Identifier) "
-            "WHERE identifier.identifier_type = $identifier_type "
-            "AND identifier.identifier_scope = $identifier_scope "
-            "AND identifier.normalized_value = $normalized_value RETURN identifier",
-            identifier_type="crm_contact_id",
-            identifier_scope="portal-a",
-            normalized_value="42",
-        ).consume()
-    return _render_plan(cast(_PlanLike, summary.plan))
+        raw_plan = (
+            session.run(
+                "EXPLAIN MATCH (identifier:Identifier) "
+                "WHERE identifier.identifier_type = $identifier_type "
+                "AND identifier.identifier_scope = $identifier_scope "
+                "AND identifier.normalized_value = $normalized_value RETURN identifier",
+                identifier_type="crm_contact_id",
+                identifier_scope="portal-a",
+                normalized_value="42",
+            )
+            .consume()
+            .plan
+        )
+    return _index_seek_details(raw_plan)
 
 
-def _render_plan(plan: _PlanLike) -> str:
-    return " ".join(
-        [
-            plan.operator_type,
-            str(plan.arguments),
-            *[_render_plan(child) for child in plan.children],
-        ]
-    )
+def _index_seek_details(raw_plan: object) -> list[str]:
+    if not isinstance(raw_plan, Mapping):
+        raise ValueError("Neo4j execution plan must be a mapping")
+    pending: list[Mapping[object, object]] = [raw_plan]
+    details: list[str] = []
+    while pending:
+        node = pending.pop()
+        operator = node.get("operatorType")
+        arguments = node.get("args")
+        children = node.get("children", ())
+        if not isinstance(operator, str) or not isinstance(arguments, Mapping):
+            raise ValueError("Neo4j execution plan node is malformed")
+        if not isinstance(children, (list, tuple)):
+            raise ValueError("Neo4j execution plan children must be a sequence")
+        detail = arguments.get("Details", arguments.get("details", ""))
+        if not isinstance(detail, str):
+            raise ValueError("Neo4j execution plan details must be a string")
+        if operator.partition("@")[0] == "NodeIndexSeek":
+            details.append(detail)
+        for child in children:
+            if not isinstance(child, Mapping):
+                raise ValueError("Neo4j execution plan child must be a mapping")
+            pending.append(child)
+    return details
+
+
+def _assert_identifier_tuple_lookup_uses_bridge(driver: Driver) -> None:
+    expected = "identifier:Identifier(identifier_scope,normalized_value,identifier_type)"
+    details = _identifier_tuple_seek_details(driver)
+    assert any(expected in detail.replace("`", "").replace(" ", "") for detail in details)
 
 
 def _transition(driver: Driver) -> int:
@@ -262,6 +282,37 @@ class _DriverClient:
         return self._driver.session()
 
 
+def test_index_seek_parser_reads_nested_plan_dictionary() -> None:
+    details = _index_seek_details(
+        {
+            "operatorType": "ProduceResults@neo4j",
+            "args": {"Details": "identifier"},
+            "children": [
+                {
+                    "operatorType": "NodeIndexSeek@neo4j",
+                    "args": {
+                        "Details": (
+                            "RANGE INDEX identifier:Identifier("
+                            "identifier_scope, normalized_value, identifier_type)"
+                        )
+                    },
+                    "children": [],
+                }
+            ],
+        }
+    )
+
+    assert details == [
+        "RANGE INDEX identifier:Identifier(identifier_scope, normalized_value, identifier_type)"
+    ]
+
+
+@pytest.mark.parametrize("raw_plan", ({}, {"operatorType": "Scan", "args": []}))
+def test_index_seek_parser_rejects_malformed_plan_dictionary(raw_plan: object) -> None:
+    with pytest.raises(ValueError):
+        _index_seek_details(raw_plan)
+
+
 def test_neo4j_526_bridge_feasibility_gate_proves_safe_ddl_and_lookup(
     neo4j_driver: Driver,
 ) -> None:
@@ -276,11 +327,7 @@ def test_neo4j_526_bridge_feasibility_gate_proves_safe_ddl_and_lookup(
 
     with neo4j_driver.session() as session:
         session.run("DROP INDEX idx_identifier_type_scope_norm IF EXISTS").consume()
-    bridge_plan = _plan_text(neo4j_driver)
-    assert "NodeIndexSeek" in bridge_plan
-    assert "identifier_scope" in bridge_plan
-    assert "normalized_value" in bridge_plan
-    assert "identifier_type" in bridge_plan
+    _assert_identifier_tuple_lookup_uses_bridge(neo4j_driver)
 
     with neo4j_driver.session() as session:
         session.run(
@@ -301,6 +348,7 @@ def test_complete_initialization_transitions_legacy_schema_and_full_rerun_is_ide
 ) -> None:
     configuration = _configuration()
     assert configuration is not None
+    _seed_completed_initialization_prerequisites(neo4j_driver)
     _seed_identifier(neo4j_driver)
     _create_legacy_index(neo4j_driver)
     settings = Settings(
@@ -321,6 +369,7 @@ def test_complete_initialization_transitions_legacy_schema_and_full_rerun_is_ide
     backing_index = first_constraints[IDENTIFIER_SCOPE_CONSTRAINT_NAME]["ownedIndex"]
     assert isinstance(backing_index, str)
     assert first_indexes[backing_index]["state"] == "ONLINE"
+    assert "source_record_version_key_unique" in first_constraints
     assert (
         second_constraints[IDENTIFIER_SCOPE_CONSTRAINT_NAME]
         == first_constraints[IDENTIFIER_SCOPE_CONSTRAINT_NAME]
@@ -335,24 +384,44 @@ def test_complete_initialization_transitions_legacy_schema_and_full_rerun_is_ide
     assert row["count"] == 1
 
 
-def test_duplicate_tuple_rejection_preserves_bridge_lookup_coverage(neo4j_driver: Driver) -> None:
+def test_residual_nonconsolidatable_duplicate_keeps_bridge_after_migration(
+    neo4j_driver: Driver,
+) -> None:
     _seed_identifier(neo4j_driver)
     with neo4j_driver.session() as session:
         session.run(
-            "CREATE (:Identifier {identifier_id: 'identifier-2', "
-            "identifier_type: 'crm_contact_id', "
-            "identifier_scope: 'portal-a', normalized_value: '42'})"
+            "CREATE (duplicate:Identifier {identifier_id: 'identifier-2', "
+            "identifier_type: 'crm_contact_id', identifier_scope: 'portal-a', "
+            "normalized_value: '42'}), "
+            "(:ResidualIdentifierReference)-[:PRESERVES]->(duplicate)"
         ).consume()
     _create_legacy_index(neo4j_driver)
 
-    with pytest.raises(ClientError):
+    assert migrate_identifier_scopes(cast(Neo4jClient, _DriverClient(neo4j_driver))) == 0
+    with pytest.raises(DatabaseError) as raised:
         _transition(neo4j_driver)
 
+    assert raised.value.code == "Neo.DatabaseError.Schema.ConstraintCreationFailed"
     indexes, constraints = _schema_rows(neo4j_driver)
     assert LEGACY_INDEX_NAME not in indexes
-    assert BRIDGE_INDEX_NAME in indexes
+    assert indexes[BRIDGE_INDEX_NAME]["state"] == "ONLINE"
     assert IDENTIFIER_SCOPE_CONSTRAINT_NAME not in constraints
-    assert "NodeIndexSeek" in _plan_text(neo4j_driver)
+    _assert_identifier_tuple_lookup_uses_bridge(neo4j_driver)
+    with neo4j_driver.session() as session:
+        row = session.run(
+            "MATCH (identifier:Identifier {identifier_type: 'crm_contact_id', "
+            "identifier_scope: 'portal-a', normalized_value: '42'}) "
+            "OPTIONAL MATCH (person:Person)-[identified:IDENTIFIED_BY]->(identifier) "
+            "OPTIONAL MATCH (reference:ResidualIdentifierReference)-[:PRESERVES]->(identifier) "
+            "RETURN count(DISTINCT identifier) AS identifier_count, "
+            "count(DISTINCT person) AS person_count, "
+            "collect(DISTINCT identified.source_record_pk) AS provenance, "
+            "count(DISTINCT reference) AS reference_count"
+        ).single(strict=True)
+    assert row["identifier_count"] == 2
+    assert row["person_count"] == 1
+    assert row["provenance"] == ["provenance-1"]
+    assert row["reference_count"] == 1
 
 
 def test_scoped_constraint_keeps_distinct_scopes_and_rejects_duplicates(

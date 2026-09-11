@@ -35,8 +35,8 @@ class IdentifierScopeIndex:
     name: str
     index_type: str
     entity_type: str
-    labels_or_types: tuple[str, ...]
-    properties: tuple[str, ...]
+    labels_or_types: tuple[str, ...] | None
+    properties: tuple[str, ...] | None
     state: str
     owning_constraint: str | None
 
@@ -170,19 +170,14 @@ def _assert_final_state(inventory: IdentifierScopeSchemaInventory) -> None:
 
 
 def _assert_transition_inventory(inventory: IdentifierScopeSchemaInventory) -> None:
-    legacy = inventory.indexes.get(LEGACY_INDEX_NAME)
-    if legacy is not None and not _is_legacy_index(legacy):
-        raise RuntimeError("legacy scoped Identifier index has an unexpected definition")
-
-    bridge = inventory.indexes.get(BRIDGE_INDEX_NAME)
-    if bridge is not None and not _is_bridge_index(bridge):
-        raise RuntimeError("scoped Identifier bridge index has an unexpected definition")
-
     constraint = inventory.constraints.get(IDENTIFIER_SCOPE_CONSTRAINT_NAME)
     if constraint is not None and not _is_identifier_scope_constraint(constraint):
         raise RuntimeError("scoped Identifier uniqueness constraint has an unexpected definition")
+    _assert_reserved_index_names(inventory.indexes, constraint)
 
     for definition in inventory.constraints.values():
+        if definition.name in {LEGACY_INDEX_NAME, BRIDGE_INDEX_NAME}:
+            raise RuntimeError("reserved scoped Identifier index name is occupied by a constraint")
         is_canonical = _is_identifier_scope_identity(
             definition.labels_or_types,
             definition.properties,
@@ -214,6 +209,38 @@ def _assert_transition_inventory(inventory: IdentifierScopeSchemaInventory) -> N
         if _is_bridge_identity(index_definition.labels_or_types, index_definition.properties):
             if index_definition.name != BRIDGE_INDEX_NAME:
                 raise RuntimeError("unrecognized index owns the scoped Identifier bridge identity")
+
+
+def _assert_reserved_index_names(
+    indexes: dict[str, IdentifierScopeIndex],
+    expected_constraint: IdentifierScopeConstraint | None,
+) -> None:
+    legacy = indexes.get(LEGACY_INDEX_NAME)
+    if legacy is not None and not _is_legacy_index(legacy):
+        raise RuntimeError("legacy scoped Identifier index has an unexpected definition")
+
+    bridge = indexes.get(BRIDGE_INDEX_NAME)
+    if bridge is not None and not _is_bridge_index(bridge):
+        raise RuntimeError("scoped Identifier bridge index has an unexpected definition")
+
+    constraint_index = indexes.get(IDENTIFIER_SCOPE_CONSTRAINT_NAME)
+    if constraint_index is None:
+        return
+    if (
+        expected_constraint is None
+        or expected_constraint.owned_index != constraint_index.name
+        or not _is_constraint_backing_index(constraint_index)
+    ):
+        raise RuntimeError("reserved scoped Identifier constraint name is occupied by an index")
+
+
+def _is_constraint_backing_index(definition: IdentifierScopeIndex) -> bool:
+    return (
+        definition.index_type == "RANGE"
+        and definition.entity_type == "NODE"
+        and _is_identifier_scope_identity(definition.labels_or_types, definition.properties)
+        and definition.owning_constraint == IDENTIFIER_SCOPE_CONSTRAINT_NAME
+    )
 
 
 def _assert_constraint_ready(
@@ -288,12 +315,14 @@ def _is_identifier_scope_constraint(definition: IdentifierScopeConstraint) -> bo
 
 
 def _is_identifier_scope_identity(
-    labels_or_types: tuple[str, ...], properties: tuple[str, ...]
+    labels_or_types: tuple[str, ...] | None, properties: tuple[str, ...] | None
 ) -> bool:
     return labels_or_types == (IDENTIFIER_LABEL,) and properties == IDENTIFIER_SCOPE_PROPERTIES
 
 
-def _is_bridge_identity(labels_or_types: tuple[str, ...], properties: tuple[str, ...]) -> bool:
+def _is_bridge_identity(
+    labels_or_types: tuple[str, ...] | None, properties: tuple[str, ...] | None
+) -> bool:
     return labels_or_types == (IDENTIFIER_LABEL,) and properties == BRIDGE_PROPERTIES
 
 
@@ -302,8 +331,8 @@ def _index_definition(record: Record) -> IdentifierScopeIndex:
         name=_required_text(record, "name"),
         index_type=_required_text(record, "type"),
         entity_type=_required_text(record, "entityType"),
-        labels_or_types=_required_text_list(record, "labelsOrTypes"),
-        properties=_required_text_list(record, "properties"),
+        labels_or_types=_optional_text_list(record, "labelsOrTypes"),
+        properties=_optional_text_list(record, "properties"),
         state=_required_text(record, "state"),
         owning_constraint=_optional_text(record, "owningConstraint"),
     )
@@ -336,6 +365,15 @@ def _optional_text(record: Record, key: str) -> str | None:
 
 def _required_text_list(record: Record, key: str) -> tuple[str, ...]:
     value = record[key]
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise RuntimeError(f"scoped Identifier schema inventory returned invalid {key}")
+    return tuple(value)
+
+
+def _optional_text_list(record: Record, key: str) -> tuple[str, ...] | None:
+    value = record[key]
+    if value is None:
+        return None
     if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
         raise RuntimeError(f"scoped Identifier schema inventory returned invalid {key}")
     return tuple(value)
