@@ -58,7 +58,10 @@ services:
       NEO4J_server_memory_pagecache_size: 128m
 
 steps:
-  # Serialize general validation to reduce shared runner contention; Neo4j shards remain root-parallel.
+  # Bounded two-wave DAG: python plus four isolated Neo4j shards are the only roots.
+  # Intelligence and frontend run together after Python and every present shard complete.
+  # Full-coverage PRs are 5 then 2 steps; docs/frontend-only PRs are 1 then 2.
+  # A PR with k surviving path-filtered shards has max(1 + k, 2) <= 5 active validations.
   # Python: lint + format check + strict typecheck + unit tests, all against the
   # uv workspace venv (dev group includes ruff, mypy, pytest). One install, sequential.
   - name: python-checks
@@ -88,7 +91,18 @@ steps:
 
   - name: intelligence-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
-    depends_on: [python-checks]
+    # Shards are optional because their PR path filter removes them before DAG compilation.
+    # Each present shard remains a blocking dependency.
+    depends_on:
+      - python-checks
+      - name: neo4j-projection-checks
+        optional: true
+      - name: neo4j-ledger-310-checks
+        optional: true
+      - name: neo4j-census-migration-api-checks
+        optional: true
+      - name: neo4j-repair-mapping-checks
+        optional: true
     environment:
       UV_PROJECT_ENVIRONMENT: .venv-intelligence-checks
       PYTHONDONTWRITEBYTECODE: "1"
@@ -245,7 +259,16 @@ steps:
   # `npm run lint` budget is a separate, known follow-up (see CLAUDE.md).
   - name: frontend-checks
     image: node:22-bookworm
-    depends_on: [intelligence-checks]
+    depends_on:
+      - python-checks
+      - name: neo4j-projection-checks
+        optional: true
+      - name: neo4j-ledger-310-checks
+        optional: true
+      - name: neo4j-census-migration-api-checks
+        optional: true
+      - name: neo4j-repair-mapping-checks
+        optional: true
     commands:
       - cd services/frontend2
       - npm install --legacy-peer-deps
