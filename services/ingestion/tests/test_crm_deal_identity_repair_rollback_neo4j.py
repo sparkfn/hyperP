@@ -674,6 +674,7 @@ def test_duplicate_multiset_and_digest_located_endpoints_restore_exactly(
         item,
         run_id=str(uuid5(NAMESPACE_URL, manifest.qualification_identity)),
     )
+    _seed_rollback_control(neo4j_driver, mutation_command.unit.run_id)
     committed = mutation._repository(neo4j_driver).commit_atomic_mutation(mutation_command)
     assert committed.mutation is not None and committed.rollback_image is not None
     _seed_canonical_qualification_manifest(neo4j_driver, mutation_command, manifest)

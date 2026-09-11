@@ -3125,26 +3125,54 @@ def test_310_zero_allocation_rejects_unexpected_extra_unit(neo4j_driver: Driver)
 
 
 @pytest.mark.parametrize(
-    ("label", "index_name"),
+    "label",
     (
-        ("CrmDealRepairFence", "crm_deal_repair_fence_unit"),
-        ("CrmDealRepairMutationResult", "crm_deal_repair_mutation_unit"),
-        ("CrmDealRepairRollbackImage", "crm_deal_repair_rollback_image_unit"),
-        ("CrmDealRepairRollbackAuthorization", "crm_deal_repair_rollback_authorization_unit"),
-        ("CrmDealRepairVerification", "crm_deal_repair_verification_unit"),
-        ("CrmDealRepairRollbackReceipt", "crm_deal_repair_rollback_receipt_unit"),
+        "CrmDealRepairFence",
+        "CrmDealRepairMutationResult",
+        "CrmDealRepairRollbackImage",
+        "CrmDealRepairRollbackAuthorization",
+        "CrmDealRepairVerification",
+        "CrmDealRepairRollbackReceipt",
     ),
 )
-def test_409_singleton_count_lookups_use_unit_indexes(
-    neo4j_driver: Driver, label: str, index_name: str
-) -> None:
+def test_409_singleton_count_lookups_use_unit_indexes(neo4j_driver: Driver, label: str) -> None:
     with neo4j_driver.session() as session:
-        result = session.run(
-            f"EXPLAIN MATCH (candidate:{label} {{run_id: $run_id, unit_id: $unit_id}}) "
-            "RETURN count(candidate) AS count",
-            run_id="plan-run",
-            unit_id="plan-unit",
+        raw_plan = (
+            session.run(
+                f"EXPLAIN MATCH (candidate:{label} {{run_id: $run_id, unit_id: $unit_id}}) "
+                "RETURN count(candidate) AS count",
+                run_id="plan-run",
+                unit_id="plan-unit",
+            )
+            .consume()
+            .plan
         )
-        plan = str(result.consume().plan)
-    assert "NodeIndexSeek" in plan
-    assert index_name in plan
+    seeks = _singleton_unit_index_seek_details(raw_plan)
+    expected = f"candidate:{label}(run_id,unit_id)"
+    assert any(expected in detail.replace("`", "").replace(" ", "") for detail in seeks)
+
+
+def _singleton_unit_index_seek_details(raw_plan: object) -> list[str]:
+    if not isinstance(raw_plan, Mapping):
+        raise ValueError("Neo4j execution plan must be a mapping")
+    pending: list[Mapping[object, object]] = [raw_plan]
+    details: list[str] = []
+    while pending:
+        node = pending.pop()
+        operator = node.get("operatorType")
+        arguments = node.get("args")
+        children = node.get("children", ())
+        if not isinstance(operator, str) or not isinstance(arguments, Mapping):
+            raise ValueError("Neo4j execution plan node is malformed")
+        if not isinstance(children, (list, tuple)):
+            raise ValueError("Neo4j execution plan children must be a sequence")
+        detail = arguments.get("Details", arguments.get("details", ""))
+        if not isinstance(detail, str):
+            raise ValueError("Neo4j execution plan details must be a string")
+        if operator.partition("@")[0] == "NodeIndexSeek":
+            details.append(detail)
+        for child in children:
+            if not isinstance(child, Mapping):
+                raise ValueError("Neo4j execution plan child must be a mapping")
+            pending.append(child)
+    return details
