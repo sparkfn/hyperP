@@ -76,6 +76,38 @@ _NEO4J_SUITE_MANIFEST = frozenset(
         ("services/ingestion/tests/test_crm_deal_identity_repair_ledger_neo4j.py", "not test_310_"),
     }
 )
+_PYTHON_COMMANDS = (
+    "uv sync --frozen",
+    "uv run --package profile-unifier-api ruff check services/api/src",
+    "uv run --package profile-unifier-api ruff format --check services/api/src",
+    "uv run --package profile-unifier-ingestion ruff check services/ingestion/src",
+    "uv run --package profile-unifier-ingestion ruff format --check services/ingestion/src",
+    "uv run --package profile-unifier-api mypy --strict services/api/src",
+    "uv run --package profile-unifier-ingestion mypy --strict services/ingestion/src",
+    "uv run --package profile-unifier-api pytest "
+    "services/api/tests/test_persons_list_queries.py::"
+    "test_person_list_preferred_address_hydration_does_not_expand_provenance_edges",
+    "uv run --package profile-unifier-api pytest services/api/tests",
+    "uv sync --frozen --group training",
+    "uv run --package profile-unifier-ingestion pytest services/ingestion/tests",
+)
+_INTELLIGENCE_COMMANDS = (
+    "uv sync --frozen --group dev",
+    "uv run --package hyperp-intelligence ruff format --check "
+    "services/intelligence/src services/intelligence/tests",
+    "uv run --package hyperp-intelligence ruff check "
+    "services/intelligence/src services/intelligence/tests",
+    "uv run --package hyperp-intelligence mypy --strict services/intelligence/src",
+    "uv run --package hyperp-intelligence pytest services/intelligence/tests -q",
+)
+_IDENTIFIER_SCOPE_SCHEMA_COMMAND = (
+    "uv run --package profile-unifier-ingestion pytest "
+    "services/ingestion/tests/test_identifier_scope_schema_neo4j.py -q"
+)
+_PROJECTION_INTELLIGENCE_COMMAND = (
+    "uv run --package hyperp-intelligence pytest services/intelligence/tests "
+    "-k crm_activities_neo4j -q"
+)
 
 
 def _workflow_document(workflow_name: str) -> dict[str, object]:
@@ -126,7 +158,6 @@ def _commands(step: dict[str, object]) -> list[str]:
 def _assert_acyclic_dependencies(steps: dict[str, dict[str, object]]) -> None:
     visiting: set[str] = set()
     visited: set[str] = set()
-
     def visit(step_name: str) -> None:
         assert step_name not in visiting
         if step_name in visited:
@@ -278,20 +309,17 @@ def test_woodpecker_bounded_validation_dag_has_exact_two_wave_schedule() -> None
 def test_woodpecker_validation_commands_preserve_pr_main_differences() -> None:
     pr_steps = _workflow_steps(_workflow_document("pr.yaml"))
     main_steps = _workflow_steps(_workflow_document("main.yaml"))
-    pr_python = _commands(pr_steps["python-checks"])
-    main_python = _commands(main_steps["python-checks"])
-    assert pr_python == main_python[:-2] and len(pr_python) == 11
-    assert main_python[-2:] == [
-        f"uv sync --frozen --no-dev --package profile-unifier-{package}"
-        for package in ("api", "ingestion")
+    assert _commands(pr_steps["python-checks"]) == list(_PYTHON_COMMANDS)
+    assert _commands(main_steps["python-checks"]) == [
+        *_PYTHON_COMMANDS,
+        "uv sync --frozen --no-dev --package profile-unifier-api",
+        "uv sync --frozen --no-dev --package profile-unifier-ingestion",
     ]
-    rendered_python = "\n".join(pr_python)
-    assert all(token in rendered_python for token in ("ruff", "mypy --strict", "pytest"))
-    pr_intelligence = _commands(pr_steps["intelligence-checks"])
-    assert pr_intelligence == _commands(main_steps["intelligence-checks"])[:-1] and len(
-        pr_intelligence
-    ) == 5
-    assert _commands(main_steps["intelligence-checks"])[-1].endswith("hyperp-intelligence")
+    assert _commands(pr_steps["intelligence-checks"]) == list(_INTELLIGENCE_COMMANDS)
+    assert _commands(main_steps["intelligence-checks"]) == [
+        *_INTELLIGENCE_COMMANDS,
+        "uv sync --frozen --no-dev --package hyperp-intelligence",
+    ]
     assert _commands(pr_steps["frontend-checks"]) == (
         "cd services/frontend2|npm install --legacy-peer-deps|npm run typecheck|"
         "npx eslint src|npm test"
@@ -302,9 +330,7 @@ def test_woodpecker_validation_commands_preserve_pr_main_differences() -> None:
     assert all(
         _commands(pr_steps[name]) == _commands(main_steps[name]) for name in _SHARD_STEP_NAMES
     )
-    assert "-k crm_activities_neo4j -q" in "\n".join(
-        _commands(pr_steps["neo4j-projection-checks"])
-    )
+    assert _PROJECTION_INTELLIGENCE_COMMAND in _commands(pr_steps["neo4j-projection-checks"])
 
 
 def test_woodpecker_neo4j_shards_are_complete_isolated_and_parity_checked() -> None:
@@ -321,7 +347,6 @@ def test_woodpecker_neo4j_shards_are_complete_isolated_and_parity_checked() -> N
             name = service.get("name")
             assert isinstance(name, str)
             service_by_name[name] = service
-
         steps = _workflow_steps(workflow)
         assert len(service_by_name) == len(_NEO4J_SHARDS)
         python_step_names = (*_ROOT_STEP_NAMES, "intelligence-checks")
@@ -359,14 +384,15 @@ def test_woodpecker_neo4j_shards_are_complete_isolated_and_parity_checked() -> N
             password = auth.removeprefix("neo4j/")
             assert password and password not in passwords
             passwords.add(password)
-
             step = steps[f"neo4j-{shard}-checks"]
             step_environment = step.get("environment")
             assert step.get("depends_on") == []
             readiness_family = families[readiness_index]
             _assert_readiness_precedes_pytest(step, readiness_family)
             if shard == "census-migration-api":
-                assert _commands(step)[2].endswith("test_identifier_scope_schema_neo4j.py -q")
+                commands = _commands(step)
+                assert commands[2] == _IDENTIFIER_SCOPE_SCHEMA_COMMAND
+                assert commands.count(_IDENTIFIER_SCOPE_SCHEMA_COMMAND) == 1
             assert isinstance(step_environment, dict)
             shard_environment = cast(dict[str, object], step_environment)
             assert shard_environment.get("UV_PROJECT_ENVIRONMENT") == f".venv-neo4j-{shard}-checks"
@@ -393,7 +419,6 @@ def test_woodpecker_neo4j_shards_are_complete_isolated_and_parity_checked() -> N
                 assert shard_environment.get(f"{family}_USER") == "neo4j"
                 assert shard_environment.get(f"{family}_PASSWORD") == password
                 assert shard_environment.get(f"{family}_SERVICE_HOST") == service_name
-
             assert {
                 key.removesuffix("_SERVICE_HOST")
                 for key in shard_environment
