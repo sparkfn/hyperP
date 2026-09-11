@@ -13,6 +13,7 @@ import logging
 from pathlib import Path
 
 from src.graph.client import Neo4jClient
+from src.graph.identifier_scope_schema import apply_identifier_scope_schema_transition
 from src.graph.queries.bitrix_backfill import CREATE_BITRIX_BACKFILL_CONSTRAINTS
 from src.graph.queries.bitrix_deal_scope import CREATE_BITRIX_DEAL_SCOPE_CONSTRAINTS
 from src.graph.queries.bitrix_source_instances import CREATE_BITRIX_SOURCE_INSTANCE_CONSTRAINTS
@@ -27,6 +28,7 @@ from src.graph.queries.crm_deal_identity_repair_ledger import (
 )
 from src.graph.queries.crm_history_authority import CREATE_CRM_HISTORY_AUTHORITY_CONSTRAINTS
 from src.graph.queries.crm_stage_backfill import CREATE_CRM_STAGE_BACKFILL_CONSTRAINTS
+from src.graph.queries.identifier_scope_schema import CREATE_IDENTIFIER_IDENTITY_SCOPE_UNIQUE
 from src.graph.queries.identity_link_revisions import CREATE_IDENTITY_LINK_SCHEMA
 from src.graph.queries.stage_history_ingestion import (
     CREATE_STAGE_HISTORY_INGESTION_CONSTRAINTS,
@@ -78,11 +80,7 @@ FOR (sr:SourceRecord)
 REQUIRE sr.source_version_key IS UNIQUE""",
 )
 
-DEFERRED_IDENTIFIER_SCOPE_CONSTRAINTS: tuple[str, ...] = (
-    """CREATE CONSTRAINT identifier_identity_scope_unique IF NOT EXISTS
-FOR (id:Identifier)
-REQUIRE (id.identifier_type, id.identifier_scope, id.normalized_value) IS UNIQUE""",
-)
+DEFERRED_IDENTIFIER_SCOPE_CONSTRAINTS: tuple[str, ...] = (CREATE_IDENTIFIER_IDENTITY_SCOPE_UNIQUE,)
 
 LIFECYCLE_CONSTRAINTS = BASE_LIFECYCLE_CONSTRAINTS + DEFERRED_SOURCE_RECORD_CONSTRAINTS
 
@@ -165,8 +163,5 @@ def apply_deferred_source_record_constraints(client: Neo4jClient) -> int:
 
 
 def apply_deferred_identifier_scope_constraints(client: Neo4jClient) -> int:
-    """Install scoped identifier uniqueness after the data migration completes."""
-    with client.session() as session:
-        for statement in DEFERRED_IDENTIFIER_SCOPE_CONSTRAINTS:
-            session.run(statement).consume()
-    return len(DEFERRED_IDENTIFIER_SCOPE_CONSTRAINTS)
+    """Install scoped Identifier uniqueness after its data migration completes."""
+    return apply_identifier_scope_schema_transition(client)
