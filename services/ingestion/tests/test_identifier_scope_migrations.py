@@ -18,6 +18,9 @@ from src.graph.schema_init import DEFERRED_IDENTIFIER_SCOPE_CONSTRAINTS
 
 def test_crm_identifier_migration_rewires_provenance_to_instance_scoped_nodes() -> None:
     query = MIGRATE_CRM_IDENTIFIER_RELATIONSHIPS_BATCH
+    query_lines = query.splitlines()
+    outer_call_index = query_lines.index("CALL (person, legacy_rel, scoped) {")
+    assert query_lines[outer_call_index - 1] == "WITH person, legacy_rel, scoped"
 
     assert "legacy.identifier_scope IS NULL" in query
     assert "legacy.identifier_scope = $legacy_source_instance_id" in query
