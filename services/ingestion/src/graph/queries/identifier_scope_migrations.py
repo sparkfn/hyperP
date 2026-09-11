@@ -87,6 +87,7 @@ ON CREATE SET
   scoped.identifier_id = randomUUID(),
   scoped.source_instance_id = identifier_scope,
   scoped.created_at = coalesce(legacy.created_at, datetime())
+WITH person, legacy_rel, scoped
 CALL (person, legacy_rel, scoped) {{
   WITH person, legacy_rel, scoped
   WHERE legacy_rel.source_system_key IS NOT NULL
