@@ -17,6 +17,7 @@ from src.graph.queries.identity_link_revision_migrations import (
     BASELINE_MIGRATION_KEY,
     COMPLETE_IDENTITY_LINK_BASELINE,
 )
+from src.identity_link_revisions import identity_link_key
 
 T = TypeVar("T")
 _ENV_PREFIX = "HYPERP_NEO4J_CONTROL_MIGRATION_TEST"
@@ -162,6 +163,13 @@ def _readiness_state(driver: Driver) -> _ReadinessState:
 
 
 def _seed_baseline_record(driver: Driver) -> None:
+    key = identity_link_key(
+        "bitrix_chat",
+        "legacy-default",
+        "contact",
+        "42",
+        "crm_contact_identity_v1",
+    )
     with driver.session() as session:
         session.run(
             "CREATE (source:SourceSystem {source_key: 'bitrix_chat'}), "
@@ -169,9 +177,10 @@ def _seed_baseline_record(driver: Driver) -> None:
             "source_record_id: 'bitrix-crm-contact-42', source_record_version: '1', "
             "source_instance_id: 'legacy-default', source_entity_type: 'contact', "
             "source_entity_id: '42', identity_policy_version: 'crm_contact_identity_v1', "
-            "identity_link_key: 'ilk1:baseline-record-1', record_type: 'identity', "
+            "identity_link_key: $identity_link_key, record_type: 'identity', "
             "lifecycle_status: 'active', link_status: 'unresolved', ingested_at: datetime()}) "
-            "CREATE (record)-[:FROM_SOURCE]->(source)"
+            "CREATE (record)-[:FROM_SOURCE]->(source)",
+            identity_link_key=key,
         ).consume()
 
 
