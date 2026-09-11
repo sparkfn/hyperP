@@ -58,6 +58,7 @@ services:
       NEO4J_server_memory_pagecache_size: 128m
 
 steps:
+  # Serialize general validation to reduce shared runner contention; Neo4j shards remain root-parallel.
   # Python: lint + format check + strict typecheck + unit tests, all against the
   # uv workspace venv (dev group includes ruff, mypy, pytest). One install, sequential.
   - name: python-checks
@@ -87,7 +88,7 @@ steps:
 
   - name: intelligence-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
-    depends_on: []
+    depends_on: [python-checks]
     environment:
       UV_PROJECT_ENVIRONMENT: .venv-intelligence-checks
       PYTHONDONTWRITEBYTECODE: "1"
@@ -244,7 +245,7 @@ steps:
   # `npm run lint` budget is a separate, known follow-up (see CLAUDE.md).
   - name: frontend-checks
     image: node:22-bookworm
-    depends_on: []
+    depends_on: [intelligence-checks]
     commands:
       - cd services/frontend2
       - npm install --legacy-peer-deps

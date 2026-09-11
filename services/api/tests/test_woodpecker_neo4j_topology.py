@@ -55,6 +55,18 @@ _NEO4J_SHARDS = {
         "readiness_family": "HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST",
     },
 }
+_GENERAL_VALIDATION_DEPENDENCIES = {
+    "pr.yaml": {
+        "python-checks": [],
+        "intelligence-checks": ["python-checks"],
+        "frontend-checks": ["intelligence-checks"],
+    },
+    "main.yaml": {
+        "python-checks": [],
+        "intelligence-checks": ["python-checks"],
+        "frontend-build": ["intelligence-checks"],
+    },
+}
 _NEO4J_SUITE_MANIFEST = frozenset(
     {
         ("services/api/tests/test_person_identifiers_neo4j.py", ""),
@@ -220,6 +232,9 @@ def test_woodpecker_neo4j_shards_are_complete_isolated_and_parity_checked() -> N
         }
         assert actual_shard_step_names == shard_step_names
         assert len(service_by_name) == len(_NEO4J_SHARDS)
+        expected_general_dependencies = _GENERAL_VALIDATION_DEPENDENCIES[workflow_name]
+        for step_name, expected_dependencies in expected_general_dependencies.items():
+            assert steps[step_name].get("depends_on") == expected_dependencies
         passwords: set[str] = set()
         environments: list[dict[str, object]] = []
 

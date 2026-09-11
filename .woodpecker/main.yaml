@@ -66,6 +66,7 @@ services:
       NEO4J_server_memory_pagecache_size: 128m
 
 steps:
+  # Serialize general validation to reduce shared runner contention; Neo4j shards remain root-parallel.
   # Re-run the PR python suite on the merged main commit to catch merge breakage,
   # then add the production-install signal (mirrors the Dockerfile runtime install).
   - name: python-checks
@@ -96,7 +97,7 @@ steps:
 
   - name: intelligence-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
-    depends_on: []
+    depends_on: [python-checks]
     environment:
       UV_PROJECT_ENVIRONMENT: .venv-intelligence-checks
       PYTHONDONTWRITEBYTECODE: "1"
@@ -229,7 +230,7 @@ steps:
   # so this is strictly stronger than the PR `npm run typecheck` step.
   - name: frontend-build
     image: node:22-bookworm
-    depends_on: []
+    depends_on: [intelligence-checks]
     commands:
       - cd services/frontend2
       - npm install --legacy-peer-deps
