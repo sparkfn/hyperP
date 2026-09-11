@@ -391,6 +391,8 @@ FOR (quiescence:CrmDealRepairQuiescence)
 ON (quiescence.run_id, quiescence.state, quiescence.generation, quiescence.sequence);
 CREATE INDEX crm_deal_repair_fence_state IF NOT EXISTS
 FOR (fence:CrmDealRepairFence) ON (fence.run_id, fence.state, fence.generation);
+CREATE INDEX crm_deal_repair_fence_unit IF NOT EXISTS
+FOR (fence:CrmDealRepairFence) ON (fence.run_id, fence.unit_id);
 CREATE INDEX crm_deal_repair_checkpoint_sequence IF NOT EXISTS
 FOR (checkpoint:CrmDealRepairCheckpoint)
 ON (checkpoint.run_id, checkpoint.unit_id, checkpoint.generation, checkpoint.sequence, checkpoint.attempt);
@@ -422,6 +424,16 @@ FOR (control:CrmDealRepairControl) ON (control.state, control.control_instance_i
 // CRM-deal repair integration schema (#313).
 CREATE CONSTRAINT crm_deal_repair_rollback_receipt_unique IF NOT EXISTS
 FOR (receipt:CrmDealRepairRollbackReceipt) REQUIRE (receipt.run_id, receipt.receipt_id) IS UNIQUE;
+CREATE INDEX crm_deal_repair_mutation_unit IF NOT EXISTS
+FOR (result:CrmDealRepairMutationResult) ON (result.run_id, result.unit_id);
+CREATE INDEX crm_deal_repair_rollback_image_unit IF NOT EXISTS
+FOR (image:CrmDealRepairRollbackImage) ON (image.run_id, image.unit_id);
+CREATE INDEX crm_deal_repair_rollback_authorization_unit IF NOT EXISTS
+FOR (authorization:CrmDealRepairRollbackAuthorization) ON (authorization.run_id, authorization.unit_id);
+CREATE INDEX crm_deal_repair_verification_unit IF NOT EXISTS
+FOR (verification:CrmDealRepairVerification) ON (verification.run_id, verification.unit_id);
+CREATE INDEX crm_deal_repair_rollback_receipt_unit IF NOT EXISTS
+FOR (receipt:CrmDealRepairRollbackReceipt) ON (receipt.run_id, receipt.unit_id);
 CREATE CONSTRAINT crm_deal_repair_acceptance_unique IF NOT EXISTS
 FOR (acceptance:CrmDealRepairAcceptance) REQUIRE acceptance.run_id IS UNIQUE;
 CREATE CONSTRAINT crm_deal_repair_release_unique IF NOT EXISTS

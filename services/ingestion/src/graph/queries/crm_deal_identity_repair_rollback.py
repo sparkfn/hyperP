@@ -3,6 +3,9 @@
 from __future__ import annotations
 
 LOCK_AND_READ_ROLLBACK_BUNDLE = """
+MATCH (control:CrmDealRepairControl {run_id: $run_id})
+SET control.integration_admission_updated_at = datetime()
+WITH control
 MATCH (unit:CrmDealRepairUnit {run_id: $run_id, unit_id: $unit_id, generation: $generation,
   sequence: $sequence, attempt: $attempt, boundary_digest: $boundary_digest,
   inventory_fingerprint: $unit_fingerprint})

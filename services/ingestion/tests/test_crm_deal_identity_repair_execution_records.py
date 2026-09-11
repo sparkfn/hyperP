@@ -236,6 +236,21 @@ def test_protocols_are_granular_and_schema_matches_record_identities() -> None:
         "quiescence_id",
     )
     assert REQUIRED_INDEXES["crm_deal_repair_verification_outcome"][1][-1] == "outcome"
+    assert REQUIRED_INDEXES["crm_deal_repair_fence_unit"] == (
+        "CrmDealRepairFence",
+        ("run_id", "unit_id"),
+    )
+    for name in (
+        "crm_deal_repair_mutation_unit",
+        "crm_deal_repair_rollback_image_unit",
+        "crm_deal_repair_rollback_authorization_unit",
+        "crm_deal_repair_verification_unit",
+    ):
+        assert REQUIRED_INDEXES[name][1] == ("run_id", "unit_id")
+    assert REQUIRED_INDEXES["crm_deal_repair_rollback_receipt_unit"] == (
+        "CrmDealRepairRollbackReceipt",
+        ("run_id", "unit_id"),
+    )
 
     dynamic_names = {statement.split()[2] for statement in CREATE_CRM_DEAL_REPAIR_LEDGER_SCHEMA}
     canonical_schema = "\n".join(_split_statements(_find_init_cypher().read_text(encoding="utf-8")))

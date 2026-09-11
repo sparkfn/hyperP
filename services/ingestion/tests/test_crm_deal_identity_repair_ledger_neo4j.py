@@ -1506,13 +1506,16 @@ def test_310_historical_attempts_do_not_invalidate_active_capture(
         stale_run_id="e5deb1d6-7333-4660-be4f-c44fcf5af686",
     )
     assert lease.state == "quiescing"
-    assert len(
-        control.captured_task_identities(
-            run_id=run.run_id,
-            control_instance_id=run.control_instance_id,
-            topology_digest=topology,
+    assert (
+        len(
+            control.captured_task_identities(
+                run_id=run.run_id,
+                control_instance_id=run.control_instance_id,
+                topology_digest=topology,
+            )
         )
-    ) == 1
+        == 1
+    )
 
 
 def test_310_ambiguous_current_attempts_fail_closed(neo4j_driver: Driver) -> None:
@@ -3053,3 +3056,95 @@ def test_310_allocation_concurrent_replay_persists_one_complete_unit_set(
             run_id=run.run_id,
         ).single(strict=True)
     assert dict(row) == {"units": 2, "completions": 1}
+
+
+def test_310_allocation_rejects_unexpected_extra_unit_in_stored_set(neo4j_driver: Driver) -> None:
+    _, control, run = _qualified_control_repository(neo4j_driver, repair_id="repair-409-extra-unit")
+    _seed_quiesced_allocation_control(neo4j_driver, run)
+    plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 1)
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE (:CrmDealRepairUnit {run_id: $run_id, unit_id: 'unexpected-unit', "
+            "generation: 1, sequence: 99, attempt: 1, boundary_digest: $boundary_digest, "
+            "inventory_fingerprint: $digest, inventory_binding_digest: $digest, "
+            "state: 'allocated'})",
+            run_id=run.run_id,
+            boundary_digest=run.boundary_digest,
+            digest="sha256:" + "a" * 64,
+        ).consume()
+    with pytest.raises(RuntimeError):
+        _allocate(
+            control,
+            RepairControlRequest("repair-409-extra-unit", run.run_id, "owner", "token", 1),
+            boundary_digest=run.boundary_digest,
+            proof_digest="proof",
+            plan=plan,
+        )
+    with neo4j_driver.session() as session:
+        row = session.run(
+            "MATCH (unit:CrmDealRepairUnit {run_id: $run_id}) WITH count(unit) AS units "
+            "OPTIONAL MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "RETURN units, count(completion) AS completions",
+            run_id=run.run_id,
+        ).single(strict=True)
+    assert dict(row) == {"units": 1, "completions": 0}
+
+
+def test_310_zero_allocation_rejects_unexpected_extra_unit(neo4j_driver: Driver) -> None:
+    _, control, run = _qualified_control_repository(
+        neo4j_driver, repair_id="repair-409-zero-extra-unit"
+    )
+    _seed_quiesced_allocation_control(neo4j_driver, run)
+    plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 0)
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE (:CrmDealRepairUnit {run_id: $run_id, unit_id: 'unexpected-unit', "
+            "generation: 1, sequence: 99, attempt: 1, boundary_digest: $boundary_digest, "
+            "inventory_fingerprint: $digest, inventory_binding_digest: $digest, "
+            "state: 'allocated'})",
+            run_id=run.run_id,
+            boundary_digest=run.boundary_digest,
+            digest="sha256:" + "a" * 64,
+        ).consume()
+    with pytest.raises(RuntimeError):
+        _allocate(
+            control,
+            RepairControlRequest("repair-409-zero-extra-unit", run.run_id, "owner", "token", 1),
+            boundary_digest=run.boundary_digest,
+            proof_digest="proof",
+            plan=plan,
+        )
+    with neo4j_driver.session() as session:
+        row = session.run(
+            "MATCH (unit:CrmDealRepairUnit {run_id: $run_id}) WITH count(unit) AS units "
+            "OPTIONAL MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "RETURN units, count(completion) AS completions",
+            run_id=run.run_id,
+        ).single(strict=True)
+    assert dict(row) == {"units": 1, "completions": 0}
+
+
+@pytest.mark.parametrize(
+    ("label", "index_name"),
+    (
+        ("CrmDealRepairFence", "crm_deal_repair_fence_unit"),
+        ("CrmDealRepairMutationResult", "crm_deal_repair_mutation_unit"),
+        ("CrmDealRepairRollbackImage", "crm_deal_repair_rollback_image_unit"),
+        ("CrmDealRepairRollbackAuthorization", "crm_deal_repair_rollback_authorization_unit"),
+        ("CrmDealRepairVerification", "crm_deal_repair_verification_unit"),
+        ("CrmDealRepairRollbackReceipt", "crm_deal_repair_rollback_receipt_unit"),
+    ),
+)
+def test_409_singleton_count_lookups_use_unit_indexes(
+    neo4j_driver: Driver, label: str, index_name: str
+) -> None:
+    with neo4j_driver.session() as session:
+        result = session.run(
+            f"EXPLAIN MATCH (candidate:{label} {{run_id: $run_id, unit_id: $unit_id}}) "
+            "RETURN count(candidate) AS count",
+            run_id="plan-run",
+            unit_id="plan-unit",
+        )
+        plan = str(result.consume().plan)
+    assert "NodeIndexSeek" in plan
+    assert index_name in plan

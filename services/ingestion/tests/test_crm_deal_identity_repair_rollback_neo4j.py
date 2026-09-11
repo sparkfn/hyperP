@@ -109,6 +109,7 @@ def _rollback_command(driver: Driver) -> RepairRollbackCommand:
         item,
         run_id=str(uuid5(NAMESPACE_URL, manifest.qualification_identity)),
     )
+    _seed_rollback_control(driver, mutation_command.unit.run_id)
     committed = mutation._repository(driver).commit_atomic_mutation(mutation_command)
     assert committed.mutation is not None
     assert committed.rollback_image is not None
@@ -127,6 +128,12 @@ def _rollback_command(driver: Driver) -> RepairRollbackCommand:
     command = RepairRollbackCommand(authorization)
     _seed_persisted_authorization(driver, command)
     return command
+
+
+def _seed_rollback_control(driver: Driver, run_id: str) -> None:
+    """Seed the common rollback/admission serialization target for this fixture."""
+    with driver.session() as session:
+        session.run("CREATE (:CrmDealRepairControl {run_id: $run_id})", run_id=run_id).consume()
 
 
 def _canonical_qualification_manifest(
@@ -791,6 +798,23 @@ def test_missing_changed_and_new_generation_authorization_boundaries_reject_with
     )
     with pytest.raises(RepairRollbackAuthorityError):
         _repository(neo4j_driver).commit_atomic_rollback(RepairRollbackCommand(generation_two))
+    assert _terminal_counts(neo4j_driver, command.authorization.unit.run_id) == {
+        "images": 1,
+        "dispositions": 0,
+    }
+
+
+def test_missing_common_rollback_control_rejects_without_terminal_write(
+    neo4j_driver: Driver,
+) -> None:
+    command = _rollback_command(neo4j_driver)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (control:CrmDealRepairControl {run_id: $run_id}) DELETE control",
+            run_id=command.authorization.unit.run_id,
+        ).consume()
+    with pytest.raises(RepairRollbackAuthorityError):
+        _repository(neo4j_driver).commit_atomic_rollback(command)
     assert _terminal_counts(neo4j_driver, command.authorization.unit.run_id) == {
         "images": 1,
         "dispositions": 0,

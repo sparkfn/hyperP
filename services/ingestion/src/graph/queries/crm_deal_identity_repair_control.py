@@ -712,8 +712,7 @@ WITH control, dispatch, completion, stored_count
 WHERE stored_count = $unit_count
 CALL {
   WITH completion
-  RETURN COUNT { MATCH (stored:CrmDealRepairUnit {run_id: $run_id})
-    WHERE stored.unit_id IN $unit_ids } AS stored_count_check
+  RETURN COUNT { MATCH (:CrmDealRepairUnit {run_id: $run_id}) } AS stored_count_check
 }
 WITH control, dispatch, completion, stored_count, stored_count_check
 WHERE stored_count_check = $unit_count

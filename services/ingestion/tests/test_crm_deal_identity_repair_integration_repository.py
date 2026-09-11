@@ -407,6 +407,7 @@ def test_terminal_rollback_replay_reconstructs_only_exact_released_authority() -
 def test_admission_query_uses_durable_checkpoint_for_prior_unit_settlement() -> None:
     query = queries.CLAIM_ADMITTED_FENCE
     assert "prior.sequence < $sequence" not in query
+    assert "predecessor_unit_id" not in query
     assert "completion.admission_checkpoint_blocked IS NULL" in query
     assert "coalesce(completion.settled_sequence, 0) = $sequence" in query
     assert "unit.state = 'allocated' AND size(stored) = 0" in query
@@ -414,7 +415,22 @@ def test_admission_query_uses_durable_checkpoint_for_prior_unit_settlement() -> 
     assert "CrmDealRepairRollbackReceipt" not in query
     assert "CrmDealRepairRollbackAuthorization" not in query
     assert "CrmDealRepairMutationResult" not in query
-    assert "SET control.integration_admission_updated_at = datetime()" in query
+    lock = "SET control.integration_admission_updated_at = datetime()"
+    membership = "WHERE unit.unit_id IN completion.unit_ids"
+    assert lock in query
+    assert membership in query
+    assert query.index(lock) < query.index(membership)
+
+
+def test_rollback_and_admission_share_the_run_control_serialization_lock() -> None:
+    from src.graph.queries import crm_deal_identity_repair_rollback as rollback_queries
+
+    admission = queries.CLAIM_ADMITTED_FENCE
+    rollback = rollback_queries.LOCK_AND_READ_ROLLBACK_BUNDLE
+    lock = "SET control.integration_admission_updated_at = datetime()"
+    assert lock in admission
+    assert lock in rollback
+    assert rollback.index(lock) < rollback.index("MATCH (unit:CrmDealRepairUnit")
 
 
 def test_acceptance_query_locks_common_records_and_rejects_unallocated_records() -> None:
@@ -1072,3 +1088,21 @@ def test_acceptance_query_binds_exact_checkpoint_and_acknowledged_outbox_per_mut
     assert "verification_result_digest = verification.verification_digest" in query
     assert "count(DISTINCT checkpoint) AS checkpoints" in query
     assert "count(DISTINCT acknowledged_outbox) AS outboxes" in query
+
+
+def test_receipt_checkpoint_query_requires_singletons_and_exact_chain() -> None:
+    query = queries.STORE_ROLLBACK_RECEIPT
+    for predicate in (
+        "fence_count = 1",
+        "mutation_count = 1",
+        "image_count = 1",
+        "authorization_count = 1",
+        "verification_count = 1",
+        "receipt_count = 1",
+        "exact_chain_count = 1",
+    ):
+        assert predicate in query
+    assert "rollback_image_id: image.rollback_image_id" in query
+    assert "receipt.control_revision = $revision" in query
+    assert "receipt.allocation_revision = $allocation_revision" in query
+    assert "receipt.completion_id = $completion_id" in query

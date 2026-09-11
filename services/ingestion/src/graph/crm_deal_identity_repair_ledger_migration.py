@@ -83,6 +83,18 @@ REQUIRED_INDEXES = {
         ("run_id", "state", "generation", "sequence"),
     ),
     "crm_deal_repair_fence_state": ("CrmDealRepairFence", ("run_id", "state", "generation")),
+    "crm_deal_repair_fence_unit": ("CrmDealRepairFence", ("run_id", "unit_id")),
+    "crm_deal_repair_mutation_unit": ("CrmDealRepairMutationResult", ("run_id", "unit_id")),
+    "crm_deal_repair_rollback_image_unit": ("CrmDealRepairRollbackImage", ("run_id", "unit_id")),
+    "crm_deal_repair_rollback_authorization_unit": (
+        "CrmDealRepairRollbackAuthorization",
+        ("run_id", "unit_id"),
+    ),
+    "crm_deal_repair_verification_unit": ("CrmDealRepairVerification", ("run_id", "unit_id")),
+    "crm_deal_repair_rollback_receipt_unit": (
+        "CrmDealRepairRollbackReceipt",
+        ("run_id", "unit_id"),
+    ),
     "crm_deal_repair_checkpoint_sequence": (
         "CrmDealRepairCheckpoint",
         ("run_id", "unit_id", "generation", "sequence", "attempt"),

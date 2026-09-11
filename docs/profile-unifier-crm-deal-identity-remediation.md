@@ -62,21 +62,23 @@ runnable Cypher or an approval/execution state.
 
 The `ALLOCATE_REPAIR_UNITS` query no longer materializes every stored
 `CrmDealRepairUnit` node in transaction memory.  It instead verifies the stored
-set with a bounded `COUNT` over the run's allocated `unit_id`s plus an
-existence probe for each expected `unit_id`.  This preserves the same
-fail-closed semantics (exactly `unit_count` stored units, every allocated
-`unit_id` present) while avoiding the O(N) memory growth that caused the
+set with a bounded `COUNT` over all units for the run plus an existence probe
+for each expected `unit_id`. This preserves fail-closed semantics: exactly
+`unit_count` stored units and every allocated `unit_id` present, so an
+unexpected unit cannot be ignored. This avoids the O(N) memory growth that caused the
 original 178k-unit staging allocation to exhaust Neo4j's transaction-total
 cap.
 
 ### Staging transaction/memory sizing
 
 The first staging allocation of 178,322 units exceeded the default Neo4j
-transaction-total memory cap of 716.8 MiB after several hours.  The staging
-environment was provisioned with larger Neo4j memory settings to complete the
-single allocation transaction.  Production defaults and the root
-`docker-compose.yml` are intentionally unchanged; large allocations require
-operational memory sizing in the target environment.
+transaction-total memory cap of 716.8 MiB after several hours. Repository and
+issue evidence confirms that a later staging allocation completed after larger
+settings were applied, but does not record the exact successful values.
+Production defaults and the root `docker-compose.yml` remain unchanged. Before
+the post-deploy 178k run, operators must measure and record the target Neo4j
+transaction-memory settings and observed headroom; this bounded stored-set
+reduction is not evidence of a specific safe memory value.
 
 ### Admission checkpoint protocol
 
@@ -108,6 +110,14 @@ requires only:
 completion.admission_checkpoint_blocked IS NULL
 AND coalesce(completion.settled_sequence, 0) = $sequence
 ```
+
+`CLAIM_ADMITTED_FENCE` and `LOCK_AND_READ_ROLLBACK_BUNDLE` first take the same
+serialization write lock on the unique per-run `CrmDealRepairControl` node
+(`integration_admission_updated_at`). This serializes every admission against
+every rollback before either query locks a unit or evaluates the checkpoint.
+If rollback reaches terminal persistence, it sets `admission_checkpoint_blocked`
+before releasing the common lock; if it aborts, its writes roll back and the
+waiting admission can proceed.
 
 The replay branch (one exact existing fence) is unchanged.
 

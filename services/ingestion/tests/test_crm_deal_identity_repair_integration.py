@@ -165,13 +165,19 @@ def test_admission_and_allocation_use_bounded_checkpoints_not_full_scans() -> No
     admission = integration_queries.CLAIM_ADMITTED_FENCE
     assert "prior.sequence < $sequence" not in admission
     assert "OPTIONAL MATCH (prior:CrmDealRepairUnit" not in admission
+    assert "predecessor_unit_id" not in admission
+    lock = "SET control.integration_admission_updated_at = datetime()"
+    membership = "WHERE unit.unit_id IN completion.unit_ids"
+    assert lock in admission
+    assert membership in admission
+    assert admission.index(lock) < admission.index(membership)
     assert "completion.admission_checkpoint_blocked IS NULL" in admission
     assert "coalesce(completion.settled_sequence, 0) = $sequence" in admission
 
     allocate = control_queries.ALLOCATE_REPAIR_UNITS
     assert "OPTIONAL MATCH (stored:CrmDealRepairUnit {run_id: $run_id})" not in allocate
     assert "collect(stored) AS stored_units" not in allocate
-    assert "COUNT { MATCH (stored:CrmDealRepairUnit {run_id: $run_id})" in allocate
-    assert "WHERE stored.unit_id IN $unit_ids" in allocate
+    assert "COUNT { MATCH (:CrmDealRepairUnit {run_id: $run_id}) }" in allocate
+    assert "WHERE stored.unit_id IN $unit_ids" not in allocate
     assert "all(unit_id IN $unit_ids WHERE EXISTS {" in allocate
     assert "MATCH (:CrmDealRepairUnit {run_id: $run_id, unit_id: unit_id})" in allocate

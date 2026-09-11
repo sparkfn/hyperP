@@ -1735,3 +1735,229 @@ def test_dispatch_replacement_wins_against_waiting_release(neo4j_driver: Driver)
         "lock_marker": None,
         "releases": 0,
     }
+
+
+def _seed_admission_unit(
+    session: Session, values: dict[str, object], unit_id: str, sequence: int
+) -> None:
+    session.run(
+        "CREATE (:CrmDealRepairUnit {run_id: $run_id, unit_id: $unit_id, generation: 1, "
+        "sequence: $sequence, attempt: 1, boundary_digest: $boundary_digest, "
+        "inventory_fingerprint: $inventory_digest, inventory_binding_digest: $inventory_digest, "
+        "state: 'allocated'})",
+        **(values | {"unit_id": unit_id, "sequence": sequence}),
+    ).consume()
+
+
+def test_rollback_a_blocks_third_unit_admission_until_terminal_block(
+    neo4j_driver: Driver,
+) -> None:
+    values = _seed_one_unit_acceptance(neo4j_driver)
+    admission = values | {
+        "unit_id": "unit-c",
+        "generation": 1,
+        "sequence": 2,
+        "attempt": 1,
+        "inventory_fingerprint": _DIGEST,
+        "inventory_binding_digest": _DIGEST,
+        "fence_id": "fence-c",
+        "fence_fingerprint": _DIGEST,
+    }
+    locked = Event()
+    started = Event()
+    errors: list[BaseException] = []
+    rows: list[bool] = []
+    marker = "rollback-a-admission-c"
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "SET completion.unit_count = 3, completion.unit_ids = ['unit-a','unit-b','unit-c'], "
+            "completion.settled_sequence = 2",
+            **values,
+        ).consume()
+        _seed_admission_unit(session, values, "unit-b", 1)
+        _seed_admission_unit(session, values, "unit-c", 2)
+
+    def rollback() -> None:
+        transaction = None
+        try:
+            with neo4j_driver.session() as session:
+                transaction = session.begin_transaction()
+                transaction.run(
+                    rollback_queries.LOCK_AND_READ_ROLLBACK_BUNDLE,
+                    **_rollback_bundle_params(values),
+                ).single(strict=True)
+                locked.set()
+                assert started.wait(timeout=10)
+                _wait_for_marked_lock_wait(neo4j_driver, marker, "integration_admission_updated_at")
+                transaction.run(
+                    rollback_queries.PERSIST_ROLLBACK_TERMINAL, **_terminal_rollback_params(values)
+                ).single(strict=True)
+                transaction.commit()
+        except BaseException as exc:  # noqa: BLE001
+            _rollback_if_open(transaction)
+            errors.append(exc)
+
+    def admit() -> None:
+        transaction = None
+        try:
+            assert locked.wait(timeout=10)
+            started.set()
+            with neo4j_driver.session() as session:
+                transaction = session.begin_transaction(metadata={"crm_repair_test_marker": marker})
+                record = transaction.run(queries.CLAIM_ADMITTED_FENCE, **admission).single()
+                transaction.commit()
+                rows.append(record is None)
+        except BaseException as exc:  # noqa: BLE001
+            _rollback_if_open(transaction)
+            errors.append(exc)
+
+    threads = (Thread(target=rollback), Thread(target=admit))
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert all(not thread.is_alive() for thread in threads)
+    assert not errors
+    assert rows == [True]
+    with neo4j_driver.session() as session:
+        row = session.run(
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "OPTIONAL MATCH (fence:CrmDealRepairFence {run_id: $run_id, unit_id: 'unit-c'}) "
+            "RETURN completion.admission_checkpoint_blocked AS blocked, count(fence) AS fences",
+            **values,
+        ).single(strict=True)
+    assert dict(row) == {"blocked": True, "fences": 0}
+
+
+def test_aborted_rollback_releases_common_lock_for_waiting_admission(neo4j_driver: Driver) -> None:
+    values = _seed_one_unit_acceptance(neo4j_driver)
+    admission = values | {
+        "unit_id": "unit-c",
+        "generation": 1,
+        "sequence": 2,
+        "attempt": 1,
+        "inventory_fingerprint": _DIGEST,
+        "inventory_binding_digest": _DIGEST,
+        "fence_id": "fence-c",
+        "fence_fingerprint": _DIGEST,
+    }
+    locked = Event()
+    started = Event()
+    errors: list[BaseException] = []
+    rows: list[bool] = []
+    marker = "aborted-rollback-admission-c"
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "SET completion.unit_count = 3, completion.unit_ids = ['unit-a','unit-b','unit-c'], "
+            "completion.settled_sequence = 2",
+            **values,
+        ).consume()
+        _seed_admission_unit(session, values, "unit-b", 1)
+        _seed_admission_unit(session, values, "unit-c", 2)
+
+    def rollback() -> None:
+        transaction = None
+        try:
+            with neo4j_driver.session() as session:
+                transaction = session.begin_transaction()
+                transaction.run(
+                    rollback_queries.LOCK_AND_READ_ROLLBACK_BUNDLE,
+                    **_rollback_bundle_params(values),
+                ).single(strict=True)
+                locked.set()
+                assert started.wait(timeout=10)
+                _wait_for_marked_lock_wait(neo4j_driver, marker, "integration_admission_updated_at")
+                transaction.rollback()
+        except BaseException as exc:  # noqa: BLE001
+            _rollback_if_open(transaction)
+            errors.append(exc)
+
+    def admit() -> None:
+        transaction = None
+        try:
+            assert locked.wait(timeout=10)
+            started.set()
+            with neo4j_driver.session() as session:
+                transaction = session.begin_transaction(metadata={"crm_repair_test_marker": marker})
+                record = transaction.run(queries.CLAIM_ADMITTED_FENCE, **admission).single(
+                    strict=True
+                )
+                transaction.commit()
+                rows.append(record["fence"]["unit_id"] == "unit-c")
+        except BaseException as exc:  # noqa: BLE001
+            _rollback_if_open(transaction)
+            errors.append(exc)
+
+    threads = (Thread(target=rollback), Thread(target=admit))
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert all(not thread.is_alive() for thread in threads)
+    assert not errors
+    assert rows == [True]
+    with neo4j_driver.session() as session:
+        row = session.run(
+            "MATCH (unit:CrmDealRepairUnit {run_id: $run_id, unit_id: 'unit-a'}) "
+            "MATCH (image:CrmDealRepairRollbackImage {run_id: $run_id, unit_id: 'unit-a'}) "
+            "MATCH (authorization:CrmDealRepairRollbackAuthorization {run_id: $run_id, "
+            "unit_id: 'unit-a'}) "
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "RETURN unit.state AS unit_state, image.state AS image_state, "
+            "authorization.state AS authorization_state, "
+            "completion.admission_checkpoint_blocked AS blocked",
+            **values,
+        ).single(strict=True)
+    assert dict(row) == {
+        "unit_state": "applied",
+        "image_state": "available",
+        "authorization_state": "approved",
+        "blocked": None,
+    }
+
+
+@pytest.mark.parametrize(
+    "injection",
+    (
+        "CREATE (:CrmDealRepairFence {run_id: $run_id, unit_id: 'unit-a', "
+        "fence_id: 'fence-extra'})",
+        "CREATE (:CrmDealRepairRollbackReceipt {run_id: $run_id, unit_id: 'unit-a', "
+        "receipt_id: 'receipt-extra'})",
+        "MATCH (result:CrmDealRepairMutationResult {run_id: $run_id, "
+        "unit_id: 'unit-a'}) SET result.rollback_image_id = 'wrong-image'",
+    ),
+)
+def test_settlement_corruption_never_advances_checkpoint(
+    neo4j_driver: Driver, injection: str
+) -> None:
+    _seed_zero_unit_run(neo4j_driver)
+    params: dict[str, object] = _params() | {
+        "unit_id": "unit-a",
+        "generation": 1,
+        "sequence": 0,
+        "attempt": 1,
+        "inventory_fingerprint": _DIGEST,
+        "inventory_binding_digest": _DIGEST,
+        "fence_id": "fence-a",
+        "image_digest": _DIGEST,
+        "mutation_id": "mutation-a",
+        "authorization_transition_id": "authorization-a",
+        "authorization_digest": _DIGEST,
+        "receipt_id": "receipt-a",
+        "receipt_digest": _DIGEST,
+        "request_digest": _DIGEST,
+        "status_digest": _DIGEST,
+    }
+    with neo4j_driver.session() as session:
+        _seed_two_unit_run(session, params)
+        _seed_unit_a_settle_chain(session, params)
+        session.run(injection, **params).consume()
+        session.execute_write(lambda tx: tx.run(queries.STORE_ROLLBACK_RECEIPT, **params).single())
+        checkpoint = session.run(
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "RETURN completion.settled_sequence AS settled_sequence",
+            **params,
+        ).single(strict=True)
+    assert checkpoint["settled_sequence"] is None
