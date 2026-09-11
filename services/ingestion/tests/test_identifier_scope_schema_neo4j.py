@@ -4,13 +4,13 @@ from __future__ import annotations
 
 import os
 import re
-from collections.abc import Iterator, Mapping
+from collections.abc import Callable, Iterator, Mapping
 from dataclasses import dataclass
-from typing import cast
+from typing import TypeVar, cast
 from urllib.parse import urlparse
 
 import pytest
-from neo4j import Driver, GraphDatabase, Session
+from neo4j import Driver, GraphDatabase, ManagedTransaction, Session
 from neo4j.exceptions import ClientError, DatabaseError
 from src import main
 from src.config import Settings
@@ -25,6 +25,7 @@ from src.graph.migrations import migrate_identifier_scopes
 
 _ENV_PREFIX = "HYPERP_NEO4J_CONTROL_MIGRATION_TEST"
 _SCHEMA_NAME = re.compile(r"[A-Za-z_][A-Za-z0-9_]*\Z")
+T = TypeVar("T")
 
 
 @dataclass(frozen=True)
@@ -274,11 +275,15 @@ class _DriverClient:
     def __init__(self, driver: Driver) -> None:
         self._driver = driver
 
-    def execute_read(self, work: object) -> object:
+    def execute_read(self, work: Callable[[ManagedTransaction], T]) -> T:
         with self._driver.session() as session:
-            return cast(object, work)(session)  # type: ignore[operator]
+            return session.execute_read(work)
 
-    def session(self) -> object:
+    def execute_write(self, work: Callable[[ManagedTransaction], T]) -> T:
+        with self._driver.session() as session:
+            return session.execute_write(work)
+
+    def session(self) -> Session:
         return self._driver.session()
 
 
@@ -390,9 +395,11 @@ def test_residual_nonconsolidatable_duplicate_keeps_bridge_after_migration(
     _seed_identifier(neo4j_driver)
     with neo4j_driver.session() as session:
         session.run(
+            "MATCH (existing:Identifier {identifier_id: 'identifier-1'}) "
             "CREATE (duplicate:Identifier {identifier_id: 'identifier-2', "
             "identifier_type: 'crm_contact_id', identifier_scope: 'portal-a', "
             "normalized_value: '42'}), "
+            "(:ResidualIdentifierReference)-[:PRESERVES]->(existing), "
             "(:ResidualIdentifierReference)-[:PRESERVES]->(duplicate)"
         ).consume()
     _create_legacy_index(neo4j_driver)
@@ -421,7 +428,7 @@ def test_residual_nonconsolidatable_duplicate_keeps_bridge_after_migration(
     assert row["identifier_count"] == 2
     assert row["person_count"] == 1
     assert row["provenance"] == ["provenance-1"]
-    assert row["reference_count"] == 1
+    assert row["reference_count"] == 2
 
 
 def test_scoped_constraint_keeps_distinct_scopes_and_rejects_duplicates(
