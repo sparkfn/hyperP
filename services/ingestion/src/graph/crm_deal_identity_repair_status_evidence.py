@@ -81,11 +81,20 @@ def spool_evidence(
     stack: ExitStack,
     tx: ManagedTransaction,
     query: str,
-    **parameters: str,
+    *,
+    stale_run_id: str | None = None,
+    control_instance_id: str | None = None,
 ) -> tuple[CanonicalByteSorter, int]:
     """Fully consume, canonicalize, and disk-sort one unordered evidence family."""
+    if (stale_run_id is None) == (control_instance_id is None):
+        raise ValueError("status evidence requires exactly one supported query parameter")
     sorter = stack.enter_context(CanonicalByteSorter())
-    result = tx.run(query, **parameters)
+    if stale_run_id is not None:
+        result = tx.run(query, stale_run_id=stale_run_id)
+    else:
+        if control_instance_id is None:
+            raise RuntimeError("status evidence control parameter is missing")
+        result = tx.run(query, control_instance_id=control_instance_id)
     count = 0
     for record in result:
         value = canonical_boundary_evidence(record_json_dict(record))

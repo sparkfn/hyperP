@@ -17,7 +17,12 @@ import pytest
 
 from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json_bytes
 from src.crm_deal_identity_repair import bounded
-from src.crm_deal_identity_repair.digests import object_digest
+from src.crm_deal_identity_repair.digests import (
+    inventory_digest,
+    inventory_digest_from_parts,
+    object_digest,
+)
+from src.crm_deal_identity_repair.models import RepairInventoryItem
 from src.graph import crm_deal_identity_repair_status_snapshot as status_snapshot
 from src.graph.crm_deal_identity_repair_boundary_evidence import (
     canonical_boundary_evidence,
@@ -77,6 +82,18 @@ class _GuardedResult:
 
     def data(self) -> list[dict[str, JsonValue]]:
         raise AssertionError("status must not materialize result.data()")
+
+
+class _SmallResult:
+    def __init__(self, rows: tuple[dict[str, JsonValue], ...]) -> None:
+        self._rows = rows
+        self.consumed = False
+
+    def __iter__(self) -> Iterator[dict[str, JsonValue]]:
+        return iter(self._rows)
+
+    def consume(self) -> None:
+        self.consumed = True
 
 
 class _GuardedStatusTransaction:
@@ -384,12 +401,12 @@ def test_source_record_digest_pages_exact_legacy_object_bytes() -> None:
         def __init__(self) -> None:
             self.page_sizes: list[int] = []
 
-        def run(self, query: str, **parameters: object) -> _Result:
+        def run(self, query: str, **parameters: object) -> _SmallResult:
             assert query == READ_SOURCE_RECORD_BOUNDARY
             requested = parameters["source_record_pks"]
             assert isinstance(requested, list)
             self.page_sizes.append(len(requested))
-            return _Result(tuple(rows[pk] for pk in requested if isinstance(pk, str)))
+            return _SmallResult(tuple(rows[pk] for pk in requested if isinstance(pk, str)))
 
     transaction = _SourceTransaction()
     digest = status_snapshot._source_records_digest(
@@ -404,6 +421,55 @@ def test_source_record_digest_pages_exact_legacy_object_bytes() -> None:
         {"rows": expected_rows},
     )
     assert transaction.page_sizes == [3]
+
+
+def test_incremental_inventory_digest_matches_legacy_inventory_key_order() -> None:
+    payload: dict[str, JsonValue] = {
+        "linked_people": [],
+        "projections": [],
+        "logical_version_evidence": {"anomaly_codes": []},
+        "lifecycle_policy_evidence": {"disposition": "preserve"},
+        "descendants": [],
+        "decisions_and_reviews": [],
+        "owner_impacts": [],
+    }
+    items = (
+        RepairInventoryItem(
+            source_system="bitrix_chat",
+            source_record_id="bitrix-crm-deal-zeta",
+            source_record_pk="pk-a",
+            deal_id="zeta",
+            partition="negative_control",
+            graph_fingerprint="sha256:" + "a" * 64,
+            stored_payload_fingerprint="sha256:" + "b" * 64,
+            payload=payload,
+        ),
+        RepairInventoryItem(
+            source_system="bitrix_chat",
+            source_record_id="bitrix-crm-deal-äther",
+            source_record_pk="pk-z",
+            deal_id="äther",
+            partition="negative_control",
+            graph_fingerprint="sha256:" + "c" * 64,
+            stored_payload_fingerprint="sha256:" + "d" * 64,
+            payload=payload,
+        ),
+        RepairInventoryItem(
+            source_system="bitrix_chat",
+            source_record_id="bitrix-crm-deal-alpha",
+            source_record_pk="pk-b",
+            deal_id="alpha",
+            partition="negative_control",
+            graph_fingerprint="sha256:" + "e" * 64,
+            stored_payload_fingerprint="sha256:" + "f" * 64,
+            payload=payload,
+        ),
+    )
+    with bounded.CanonicalByteSorter(unique_keys=True) as sorter:
+        for item in items:
+            sorter.add(item.inventory_key.encode("utf-8"), canonical_json_bytes(item.to_dict()))
+        disk_sorted_digest = inventory_digest_from_parts(sorter.values())
+    assert disk_sorted_digest == inventory_digest(items)
 
 
 def test_incremental_stale_and_control_digests_match_legacy_canonical_objects() -> None:
@@ -449,19 +515,19 @@ def test_incremental_stale_and_control_digests_match_legacy_canonical_objects() 
     }
 
     class _EvidenceTransaction:
-        def run(self, query: str, **_parameters: object) -> _Result:
+        def run(self, query: str, **_parameters: object) -> _SmallResult:
             if query == READ_STALE_RUN_CONTROL_EVIDENCE:
-                return _Result((duplicate_row, duplicate_row))
+                return _SmallResult((duplicate_row, duplicate_row))
             if query == READ_STALE_RUN_ASSOCIATIONS:
-                return _Result((association, association))
+                return _SmallResult((association, association))
             if query == READ_INSTANCE_CONTROL_BOUNDARY:
-                return _Result((control_row,))
+                return _SmallResult((control_row,))
             if query == READ_CONTROL_DISPATCH_EVIDENCE:
-                return _Result((duplicate_row,))
+                return _SmallResult((duplicate_row,))
             if query == READ_CONTROL_NODES:
-                return _Result((duplicate_row, duplicate_row))
+                return _SmallResult((duplicate_row, duplicate_row))
             if query == READ_CONTROL_RELATIONSHIPS:
-                return _Result((association, association))
+                return _SmallResult((association, association))
             raise AssertionError("unexpected evidence query")
 
     transaction = _EvidenceTransaction()
