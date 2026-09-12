@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import subprocess
 import sys
@@ -222,7 +223,7 @@ def test_status_is_read_only_when_repair_is_disabled_and_reports_separate_contro
             calls.append("source_record_pks")
             return ("pk-1",)
 
-        def snapshot(
+        def status_snapshot(
             self,
             *,
             source_instance_id: str,
@@ -234,7 +235,10 @@ def test_status_is_read_only_when_repair_is_disabled_and_reports_separate_contro
                 "legacy-default",
                 ("pk-1",),
             )
-            calls.append("snapshot")
+            notifications = logging.getLogger("neo4j.notifications")
+            notifications.warning("synthetic deprecation notification")
+            notifications.error("synthetic database error")
+            calls.append("status_snapshot")
             return "current-boundary"
 
         def get_status(self, repair_id: str, snapshot: object, reason: object) -> object:
@@ -282,14 +286,36 @@ def test_status_is_read_only_when_repair_is_disabled_and_reports_separate_contro
         migration_module, "assert_crm_deal_repair_ledger_ready", lambda _client: None
     )
 
-    assert main(_status_arguments()) == 0
-    payload = json.loads(capsys.readouterr().out)
+    notifications = logging.getLogger("neo4j.notifications")
+    previous_level = notifications.level
+    observed_notifications: list[logging.LogRecord] = []
+
+    class Handler(logging.Handler):
+        def emit(self, record: logging.LogRecord) -> None:
+            observed_notifications.append(record)
+
+    handler = Handler()
+    notifications.addHandler(handler)
+    notifications.setLevel(logging.WARNING)
+    try:
+        assert main(_status_arguments()) == 0
+        assert notifications.level == logging.WARNING
+    finally:
+        notifications.removeHandler(handler)
+        notifications.setLevel(previous_level)
+    stdout = capsys.readouterr().out
+    assert stdout.count("\n") == 1
+    payload = json.loads(stdout)
+
+    assert [record.getMessage() for record in observed_notifications] == [
+        "synthetic database error"
+    ]
 
     assert calls == [
         "ledger",
         "get_qualification",
         "source_record_pks",
-        "snapshot",
+        "status_snapshot",
         "get_status",
         "control",
         "status",
@@ -316,6 +342,33 @@ def test_status_is_read_only_when_repair_is_disabled_and_reports_separate_contro
         "allocated_unit_count": 3,
         "execution_allowed": False,
     }
+
+
+def test_status_restores_notification_logger_when_client_construction_fails(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.config as config_module
+    import src.graph.client as client_module
+
+    settings = SimpleNamespace(
+        deployment_environment="staging",
+        crm_deal_identity_repair_enabled=False,
+    )
+
+    def fail_client(_settings: object) -> object:
+        raise RuntimeError("injected client failure")
+
+    monkeypatch.setattr(config_module, "get_settings", lambda: settings)
+    monkeypatch.setattr(client_module, "Neo4jClient", fail_client)
+    notifications = logging.getLogger("neo4j.notifications")
+    previous_level = notifications.level
+    notifications.setLevel(logging.WARNING)
+    try:
+        with pytest.raises(RuntimeError, match="injected client failure"):
+            main(_status_arguments())
+        assert notifications.level == logging.WARNING
+    finally:
+        notifications.setLevel(previous_level)
 
 
 def _install_allocate_seams(

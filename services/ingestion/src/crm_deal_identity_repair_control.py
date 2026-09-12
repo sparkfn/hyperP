@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 from argparse import Namespace
 from collections.abc import Mapping, Sequence
@@ -31,7 +32,13 @@ if TYPE_CHECKING:
 
 
 class _RepairStatusRepository(RepairQualificationRepository, RepairBoundaryReader, Protocol):
-    pass
+    def status_snapshot(
+        self,
+        *,
+        source_instance_id: str,
+        control_instance_id: str,
+        source_record_pks: tuple[str, ...],
+    ) -> RepairBoundarySnapshot: ...
 
 
 class _RepairRuntimeSettings(Protocol):
@@ -420,8 +427,12 @@ def _status(arguments: Namespace) -> int:
 
     settings = get_settings()
     _validate_runtime_gate(settings, require_enabled=False)
-    client = Neo4jClient(settings)
+    notifications_logger = logging.getLogger("neo4j.notifications")
+    previous_notification_level = notifications_logger.level
+    notifications_logger.setLevel(logging.ERROR)
+    client: Neo4jClient | None = None
     try:
+        client = Neo4jClient(settings)
         assert_crm_deal_repair_ledger_ready(client)
         repository = CrmDealRepairLedgerRepository(client)
         run = repository.get_qualification(arguments.repair_id)
@@ -429,7 +440,11 @@ def _status(arguments: Namespace) -> int:
         status = repository.get_status(arguments.repair_id, snapshot, drift_reason)
         control_status = CrmDealRepairControlRepository(client).status(arguments.repair_id)
     finally:
-        client.close()
+        try:
+            if client is not None:
+                client.close()
+        finally:
+            notifications_logger.setLevel(previous_notification_level)
     print(
         json.dumps(
             {
@@ -470,7 +485,7 @@ def _status_snapshot(
     from src.graph.crm_deal_identity_repair_ledger import ExpectedRepairBoundaryDriftError
 
     try:
-        snapshot = repository.snapshot(
+        snapshot = repository.status_snapshot(
             source_instance_id=run.source_instance_id,
             control_instance_id=run.control_instance_id,
             source_record_pks=repository.source_record_pks(run.repair_id),

@@ -40,6 +40,10 @@ from src.graph.crm_deal_identity_repair_ledger_records import (
 from src.graph.crm_deal_identity_repair_ledger_records import (
     stored_qualification_from_record as _stored_qualification_from_record,
 )
+from src.graph.crm_deal_identity_repair_status_snapshot import (
+    ExpectedRepairBoundaryDriftError,
+    status_snapshot_from_transaction,
+)
 from src.graph.queries.crm_deal_identity_repair_ledger import (
     GET_REPAIR_RUN,
     QUALIFY_REPAIR_RUN,
@@ -58,14 +62,6 @@ _INSTANCE_DOMAIN = b"crm-deal-identity-repair-source-instance-boundary-v1\x00"
 _STALE_RUN_DOMAIN = b"crm-deal-identity-repair-stale-run-boundary-v1\x00"
 _CONTROL_DOMAIN = b"crm-deal-identity-repair-control-boundary-v1\x00"
 T = TypeVar("T")
-
-
-class ExpectedRepairBoundaryDriftError(Exception):
-    """Expected persisted graph evidence drift, safe only for read-only status."""
-
-    def __init__(self, reason: RepairBoundaryDriftReason) -> None:
-        self.reason = reason
-        super().__init__(reason)
 
 
 @dataclass(frozen=True)
@@ -122,6 +118,23 @@ class CrmDealRepairLedgerRepository:
         return self._client.execute_read(
             lambda tx: _snapshot_from_transaction(
                 tx, source_instance_id, control_instance_id, source_record_pks
+            )
+        )
+
+    def status_snapshot(
+        self,
+        *,
+        source_instance_id: str,
+        control_instance_id: str,
+        source_record_pks: tuple[str, ...],
+    ) -> RepairBoundarySnapshot:
+        """Build status evidence without retaining the full payload boundary."""
+        return self._client.execute_read(
+            lambda tx: status_snapshot_from_transaction(
+                tx,
+                source_instance_id,
+                control_instance_id,
+                source_record_pks,
             )
         )
 

@@ -58,6 +58,47 @@ runnable Cypher or an approval/execution state.
 
 ## Large-run allocation and admission checkpoint protocol
 
+### Read-only status boundary sizing (issue #422)
+
+`python -m src.crm_deal_identity_repair_control status` is the canonical
+staging-only, read-only admission check. It is intentionally separate from
+`apply`, canary execution, dispatch release, and every #314 repair mutation.
+The status path must remain able to check the qualified 178,328-row boundary
+(178,322 eligible units and six negative controls) within the existing 2 GiB
+`ingestion-worker` memory limit; no Compose memory increase is part of this
+contract.
+
+Status discovers every active CRM-deal source record with 100-row keyset pages,
+validates the global invalid-PK guard, and reads only the matching projection
+branches for each page. It consumes a result before issuing the next query,
+classifies and serializes each row immediately, and compares observed PKs to
+the immutable qualified PK sequence incrementally. It never restricts graph
+discovery to that stored sequence, so additions, deletions, duplicates, and
+non-advancing cursors remain boundary drift.
+
+Canonical inventory JSONL and unordered control/stale evidence are sorted in a
+private process-temporary SQLite scratch directory with an 8 MiB SQLite page
+cache. The scratch holds only derived canonical bytes and byte sort keys; it is
+not an artifact, is never logged, is not shared or persistent, and is removed
+on success, error, and managed-transaction retry. Source-record digest slices
+are also bounded to 100 PKs and stream the exact legacy `{\"rows\":[...]}`
+canonical bytes. The retained qualified scalar PK tuple is the intentional
+O(N) compatibility boundary; status retains no O(total payload/evidence)
+representation.
+
+The CI regression benchmark uses a lazy 178,328-row transaction fixture and
+eager-retention traps. It enforces a tight Python-allocation guard and, where
+`resource` is available, an absolute process maximum-RSS ceiling below 2 GiB.
+Runtime remains visible through the ordinary CI step duration; the test does
+not emit a separate metric.
+The benchmark also verifies notification suppression is scoped to `status`,
+restores the prior `neo4j.notifications` level, keeps ERROR notifications
+visible, and leaves stdout as one complete JSON document.
+
+After merge and staging deployment, #314 still requires its own canonical
+status rerun to record valid JSON and confirm 178,322 allocated / 0 mutations.
+That operational gate does not authorize apply or canary execution.
+
 ### Allocation stored-set verification (issue #409)
 
 The `ALLOCATE_REPAIR_UNITS` query no longer materializes every stored

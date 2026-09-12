@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from collections.abc import Callable
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from typing import Protocol, TypeVar, cast, runtime_checkable
 
@@ -19,6 +19,7 @@ from src.crm_deal_identity_repair.qualification_inventory import inventory_paylo
 from src.graph.queries.crm_deal_identity_repair import (
     INVENTORY_ACTIVE_CRM_DEALS,
     INVENTORY_CRM_DEAL_PROJECTIONS,
+    INVENTORY_CRM_DEAL_PROJECTIONS_PAGE,
     INVENTORY_INVALID_CRM_DEAL_SOURCE_RECORD_PKS,
     INVENTORY_STALE_RUN_CONTROL_PLANE,
 )
@@ -29,11 +30,89 @@ from src.models import JsonValue
 
 T = TypeVar("T")
 
-_ACTIVE_DEAL_PAGE_SIZE = 100
+REPAIR_INVENTORY_PAGE_SIZE = 100
+_ACTIVE_DEAL_PAGE_SIZE = REPAIR_INVENTORY_PAGE_SIZE
 
 
 class RepairInventoryReadClient(Protocol):
     def execute_read(self, work: Callable[[ManagedTransaction], T]) -> T: ...
+
+
+def validate_repair_inventory_keys(tx: ManagedTransaction, source_system: str) -> None:
+    """Fail closed before any paged status inventory discovery begins."""
+    result = tx.run(
+        INVENTORY_INVALID_CRM_DEAL_SOURCE_RECORD_PKS,
+        source_system=source_system,
+    )
+    records = tuple(result)
+    result.consume()
+    if len(records) != 1:
+        raise ValueError("repair inventory key validation is unavailable")
+    invalid_key_record = records[0]
+    invalid_key_count = _value(invalid_key_record, "invalid_source_record_pk_count")
+    if type(invalid_key_count) is not int or invalid_key_count != 0:
+        raise ValueError("repair inventory contains an invalid source_record_pk")
+
+
+def iter_repair_inventory_pages(
+    tx: ManagedTransaction,
+    *,
+    source_system: str,
+) -> Iterator[tuple[Record, ...]]:
+    """Yield fully-consumed, keyset-paged active CRM-deal rows."""
+    after_source_record_pk = ""
+    while True:
+        result = tx.run(
+            INVENTORY_ACTIVE_CRM_DEALS,
+            source_system=source_system,
+            after_source_record_pk=after_source_record_pk,
+            limit=REPAIR_INVENTORY_PAGE_SIZE,
+        )
+        page = tuple(result)
+        result.consume()
+        page_source_record_pks = tuple(
+            _required_string(record, "source_record_pk") for record in page
+        )
+        if any(
+            source_record_pk <= after_source_record_pk
+            for source_record_pk in page_source_record_pks
+        ) or page_source_record_pks != tuple(sorted(page_source_record_pks)):
+            raise RuntimeError("active CRM-deal inventory keyset cursor did not advance")
+        if page:
+            yield page
+        if len(page) < REPAIR_INVENTORY_PAGE_SIZE:
+            return
+        after_source_record_pk = page_source_record_pks[-1]
+
+
+def page_projection_rows(
+    tx: ManagedTransaction,
+    *,
+    source_system: str,
+    source_record_pks: tuple[str, ...],
+) -> dict[str, list[JsonValue]]:
+    """Read one bounded page's projection multiplicity before mapping its rows."""
+    if not source_record_pks:
+        return {}
+    result = tx.run(
+        INVENTORY_CRM_DEAL_PROJECTIONS_PAGE,
+        source_system=source_system,
+        source_record_pks=list(source_record_pks),
+    )
+    projections_by_pk: dict[str, list[JsonValue]] = {}
+    for projection_record in result:
+        source_record_pk = _required_string(projection_record, "source_record_pk")
+        if source_record_pk not in source_record_pks:
+            raise RuntimeError("repair inventory projection escaped its active-deal page")
+        projection = _json_value(_value(projection_record, "projection"))
+        projections_by_pk.setdefault(source_record_pk, []).append(projection)
+    result.consume()
+    return projections_by_pk
+
+
+def page_inventory_item(record: Record, projection_rows: list[JsonValue]) -> RepairInventoryItem:
+    """Map and classify one page row through the shared inventory contract."""
+    return _partitioned_item(_item_from_record(record, projection_rows))
 
 
 @dataclass(frozen=True)
@@ -152,7 +231,7 @@ def collect_repair_inventory(
         ).single(strict=True)
         if stale_record is None:
             raise ValueError("repair stale-run graph evidence is unavailable")
-        return tuple(items), _stale_run_evidence(stale_record)
+        return tuple(items), stale_run_evidence_from_record(stale_record)
 
     observed, stale_run_evidence = client.execute_read(_work)
     ownership: list[RepairInventoryItem] = []
@@ -327,7 +406,7 @@ def current_inventory_item(
     return None
 
 
-def _stale_run_evidence(record: Record) -> dict[str, JsonValue]:
+def stale_run_evidence_from_record(record: Record) -> dict[str, JsonValue]:
     state = _required_string(record, "stale_run_state")
     if state != "unknown":
         raise ValueError("repair stale-run state is invalid")

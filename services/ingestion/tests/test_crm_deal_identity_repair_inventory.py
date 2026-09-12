@@ -14,6 +14,7 @@ from src.crm_deal_identity_repair.inventory import (
 from src.graph.queries.crm_deal_identity_repair import (
     INVENTORY_ACTIVE_CRM_DEALS,
     INVENTORY_CRM_DEAL_PROJECTIONS,
+    INVENTORY_CRM_DEAL_PROJECTIONS_PAGE,
     INVENTORY_INVALID_CRM_DEAL_SOURCE_RECORD_PKS,
     INVENTORY_STALE_RUN_CONTROL_PLANE,
 )
@@ -205,6 +206,7 @@ def test_inventory_query_is_read_only_and_captures_closure_families() -> None:
     catalog = (
         INVENTORY_ACTIVE_CRM_DEALS,
         INVENTORY_CRM_DEAL_PROJECTIONS,
+        INVENTORY_CRM_DEAL_PROJECTIONS_PAGE,
         INVENTORY_INVALID_CRM_DEAL_SOURCE_RECORD_PKS,
         INVENTORY_STALE_RUN_CONTROL_PLANE,
     )
@@ -239,12 +241,16 @@ def test_inventory_query_is_read_only_and_captures_closure_families() -> None:
     assert INVENTORY_ACTIVE_CRM_DEALS.rindex("LIMIT $limit") < first_evidence_call
     assert "SKIP" not in INVENTORY_ACTIVE_CRM_DEALS
     assert "invalid_source_record_pk_count" in INVENTORY_INVALID_CRM_DEAL_SOURCE_RECORD_PKS
-    assert "ORDER BY deal.source_record_id, deal.source_record_pk" in INVENTORY_ACTIVE_CRM_DEALS
+    assert "ORDER BY deal.source_record_pk" in INVENTORY_ACTIVE_CRM_DEALS
     assert "DESCRIBES_ADDRESS" in INVENTORY_CRM_DEAL_PROJECTIONS
     assert "-[projection]->" not in INVENTORY_CRM_DEAL_PROJECTIONS
     assert "UNION ALL" in INVENTORY_CRM_DEAL_PROJECTIONS
     assert "projection:DESCRIBES_ADDRESS]->" in INVENTORY_CRM_DEAL_PROJECTIONS
     assert "projection.source_record_pk IS NULL" in INVENTORY_CRM_DEAL_PROJECTIONS
+    assert "UNWIND $source_record_pks AS source_record_pk" in INVENTORY_CRM_DEAL_PROJECTIONS_PAGE
+    assert "USING INDEX deal:SourceRecord(source_record_pk)" in INVENTORY_CRM_DEAL_PROJECTIONS_PAGE
+    assert "UNION ALL" in INVENTORY_CRM_DEAL_PROJECTIONS_PAGE
+    assert "projection.source_record_pk IS NULL" in INVENTORY_CRM_DEAL_PROJECTIONS_PAGE
     for relationship_type in (
         "BOUGHT_VEHICLE",
         "HAS_BANKRUPTCY_CASE",
