@@ -2,12 +2,10 @@
 
 from __future__ import annotations
 
-import inspect
 import shutil
 import time
 import tracemalloc
 from collections.abc import Iterator
-from dataclasses import dataclass
 from pathlib import Path
 
 try:
@@ -19,14 +17,19 @@ import pytest
 
 from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json_bytes
 from src.crm_deal_identity_repair import bounded
-from src.crm_deal_identity_repair.digests import inventory_digest_from_parts, object_digest
+from src.crm_deal_identity_repair.digests import object_digest
 from src.graph import crm_deal_identity_repair_status_snapshot as status_snapshot
 from src.graph.crm_deal_identity_repair_boundary_evidence import (
     canonical_boundary_evidence,
     canonical_evidence_rows,
 )
 from src.graph.crm_deal_identity_repair_ledger import _control_digest_value
-from src.graph.queries.crm_deal_identity_repair import INVENTORY_STALE_RUN_CONTROL_PLANE
+from src.graph.queries.crm_deal_identity_repair import (
+    INVENTORY_ACTIVE_CRM_DEALS,
+    INVENTORY_CRM_DEAL_PROJECTIONS_PAGE,
+    INVENTORY_INVALID_CRM_DEAL_SOURCE_RECORD_PKS,
+    INVENTORY_STALE_RUN_CONTROL_PLANE,
+)
 from src.graph.queries.crm_deal_identity_repair_ledger import (
     READ_CONTROL_DISPATCH_EVIDENCE,
     READ_CONTROL_NODES,
@@ -42,132 +45,280 @@ from src.models import JsonValue
 _STALE_RUN_ID = "e5deb1d6-7333-4660-be4f-c44fcf5af686"
 
 
-class _Result:
-    def __init__(self, rows: tuple[dict[str, JsonValue], ...]) -> None:
+class _GuardedResult:
+    def __init__(
+        self,
+        transaction: _GuardedStatusTransaction,
+        rows: Iterator[dict[str, JsonValue]],
+    ) -> None:
+        self._transaction = transaction
         self._rows = rows
-        self.consumed = False
+        self._exhausted = False
+        self._consumed = False
+        self._row_count = 0
 
     def __iter__(self) -> Iterator[dict[str, JsonValue]]:
-        return iter(self._rows)
+        if self._consumed:
+            raise AssertionError("status attempted to iterate an already-consumed result")
+        for row in self._rows:
+            self._row_count += 1
+            self._transaction.max_rows_per_result = max(
+                self._transaction.max_rows_per_result,
+                self._row_count,
+            )
+            yield row
+        self._exhausted = True
 
     def consume(self) -> None:
-        self.consumed = True
+        if not self._exhausted:
+            raise AssertionError("status must exhaust every result before consume")
+        self._consumed = True
+        self._transaction.live_result = None
+
+    def data(self) -> list[dict[str, JsonValue]]:
+        raise AssertionError("status must not materialize result.data()")
 
 
-class _InventoryTransaction:
-    def __init__(self) -> None:
-        self.calls: list[tuple[str, dict[str, object]]] = []
+class _GuardedStatusTransaction:
+    def __init__(self, total: int, negative_control_indices: frozenset[int]) -> None:
+        self.total = total
+        self.negative_control_indices = negative_control_indices
+        self.live_result: _GuardedResult | None = None
+        self.max_live_results = 0
+        self.max_active_page_size = 0
+        self.max_projection_param_size = 0
+        self.max_source_param_size = 0
+        self.max_rows_per_result = 0
+        self._payload_blob = "x" * 512
 
-    def run(self, query: str, **parameters: object) -> _Result:
-        self.calls.append((query, parameters))
+    def run(self, query: str, **parameters: object) -> _GuardedResult:
+        if self.live_result is not None:
+            raise AssertionError("status opened a nested query before consuming the prior result")
+        rows = self._rows(query, parameters)
+        result = _GuardedResult(self, rows)
+        self.live_result = result
+        self.max_live_results = max(self.max_live_results, 1)
+        return result
+
+    def _rows(
+        self,
+        query: str,
+        parameters: dict[str, object],
+    ) -> Iterator[dict[str, JsonValue]]:
+        if query == INVENTORY_INVALID_CRM_DEAL_SOURCE_RECORD_PKS:
+            yield {"invalid_source_record_pk_count": 0}
+            return
+        if query == INVENTORY_ACTIVE_CRM_DEALS:
+            yield from self._active_page(parameters)
+            return
+        if query == INVENTORY_CRM_DEAL_PROJECTIONS_PAGE:
+            yield from self._projection_page(parameters)
+            return
         if query == INVENTORY_STALE_RUN_CONTROL_PLANE:
-            return _Result(
-                (
-                    {
-                        "stale_run_id": _STALE_RUN_ID,
-                        "stale_run_state": "unknown",
-                        "run_status": None,
-                        "associated_source_system": None,
-                        "logical_run_association_count": 0,
-                        "checkpoint_association_count": 0,
-                    },
-                )
-            )
+            yield {
+                "stale_run_id": _STALE_RUN_ID,
+                "stale_run_state": "unknown",
+                "run_status": None,
+                "associated_source_system": None,
+                "logical_run_association_count": 0,
+                "checkpoint_association_count": 0,
+            }
+            return
+        if query == READ_SOURCE_RECORD_BOUNDARY:
+            yield from self._source_page(parameters)
+            return
         if query == READ_STALE_RUN_CONTROL_EVIDENCE:
-            return _Result(
-                (
-                    {
-                        "stale_run_state": "absent",
-                        "left_labels": [],
-                        "left_properties": None,
-                        "relationship_type": None,
-                        "relationship_properties": None,
-                        "right_labels": [],
-                        "right_properties": None,
-                    },
-                )
-            )
+            yield self._stale_evidence_row()
+            return
         if query == READ_STALE_RUN_ASSOCIATIONS:
-            return _Result(())
-        raise AssertionError("unexpected query")
+            return
+        if query == READ_INSTANCE_CONTROL_BOUNDARY:
+            yield self._control_row()
+            return
+        if query == READ_CONTROL_DISPATCH_EVIDENCE:
+            yield {"labels": ["BitrixDispatchControl"], "properties": {"blocked": False}}
+            return
+        if query == READ_CONTROL_NODES:
+            yield {"labels": ["IngestionLogicalRun"], "properties": {"ordered": ["a", "b"]}}
+            yield {"labels": ["IngestionLogicalRun"], "properties": {"ordered": ["a", "b"]}}
+            return
+        if query == READ_CONTROL_RELATIONSHIPS:
+            yield self._relationship_evidence_row()
+            return
+        raise AssertionError("unexpected status query")
 
+    def _active_page(self, parameters: dict[str, object]) -> Iterator[dict[str, JsonValue]]:
+        after = parameters.get("after_source_record_pk")
+        limit = parameters.get("limit")
+        if not isinstance(after, str) or limit != 100:
+            raise AssertionError("status active inventory page parameters are invalid")
+        start = 0 if after == "" else int(after.removeprefix("pk-")) + 1
+        stop = min(start + 100, self.total)
+        self.max_active_page_size = max(self.max_active_page_size, stop - start)
+        for index in range(start, stop):
+            yield self._inventory_record(index)
 
-@dataclass(frozen=True)
-class _InventoryItem:
-    source_record_id: str
-    source_record_pk: str
-    negative_control: bool
+    def _projection_page(self, parameters: dict[str, object]) -> Iterator[dict[str, JsonValue]]:
+        raw_pks = parameters.get("source_record_pks")
+        if not isinstance(raw_pks, list) or len(raw_pks) > 100:
+            raise AssertionError("status projection query received an unbounded PK parameter")
+        if not all(isinstance(pk, str) for pk in raw_pks):
+            raise AssertionError("status projection PK parameter is malformed")
+        self.max_projection_param_size = max(self.max_projection_param_size, len(raw_pks))
+        for source_record_pk in raw_pks:
+            index = int(source_record_pk.removeprefix("pk-"))
+            if index not in self.negative_control_indices:
+                continue
+            yield {
+                "source_record_pk": source_record_pk,
+                "projection": {
+                    "relationship_type": "IDENTIFIED_BY",
+                    "is_active": True,
+                    "relationship_properties": {"provenance": "fixture"},
+                    "owner_person_id": f"person-{index}",
+                    "identifier_type": "crm_contact_id",
+                    "identifier_value": f"contact-{index}",
+                    "address_id": None,
+                    "target_source_record_pk": None,
+                    "source_record_pk": source_record_pk,
+                },
+            }
 
-    @property
-    def inventory_key(self) -> str:
-        return "|".join(("bitrix_chat", self.source_record_id, self.source_record_pk))
+    def _source_page(self, parameters: dict[str, object]) -> Iterator[dict[str, JsonValue]]:
+        raw_pks = parameters.get("source_record_pks")
+        if not isinstance(raw_pks, list) or len(raw_pks) > 100:
+            raise AssertionError("status source query received an unbounded PK parameter")
+        if not all(isinstance(pk, str) for pk in raw_pks):
+            raise AssertionError("status source PK parameter is malformed")
+        self.max_source_param_size = max(self.max_source_param_size, len(raw_pks))
+        for source_record_pk in raw_pks:
+            index = int(source_record_pk.removeprefix("pk-"))
+            yield {
+                "source_record_pk": source_record_pk,
+                "source_record_id": f"bitrix-crm-deal-{index:06d}",
+                "source_record_version": "1",
+                "source_version_key": f"{source_record_pk}:1",
+                "record_hash": f"hash-{index}",
+                "lifecycle_status": "active",
+                "is_latest": True,
+                "source_instance_id": "portal-a",
+            }
 
-    @property
-    def partition(self) -> str:
-        return "negative_control" if self.negative_control else "ownership_repair"
-
-    def to_dict(self) -> dict[str, JsonValue]:
+    def _inventory_record(self, index: int) -> dict[str, JsonValue]:
+        source_record_pk = f"pk-{index:06d}"
+        current_version = "2" if index == 71_332 else "1"
+        owner_ids: list[JsonValue]
+        if index in self.negative_control_indices:
+            owner_ids = [{"person_id": f"person-{index}", "is_active": True}]
+        else:
+            owner_ids = [
+                {"person_id": f"person-{index}-a", "is_active": True},
+                {"person_id": f"person-{index}-b", "is_active": True},
+            ]
+        logical_versions: list[JsonValue] = [
+            {
+                "source_record_pk": source_record_pk,
+                "source_record_version": current_version,
+                "lifecycle_status": "active",
+                "is_latest": True,
+                "raw_payload": self._payload("Ångström"),
+                "normalized_payload": "{}",
+            }
+        ]
+        if index == 71_332:
+            logical_versions.insert(
+                0,
+                {
+                    "source_record_pk": f"history-{index}",
+                    "source_record_version": "1",
+                    "lifecycle_status": "superseded",
+                    "is_latest": False,
+                    "raw_payload": self._payload("historical"),
+                    "normalized_payload": "{}",
+                },
+            )
         return {
-            "source_system": "bitrix_chat",
-            "source_record_id": self.source_record_id,
-            "source_record_pk": self.source_record_pk,
-            "partition": self.partition,
-            "payload": {"unicode": "Ångström", "payload": "x" * 512},
-            "execution_allowed": False,
+            "source_record_pk": source_record_pk,
+            "source_record_id": f"bitrix-crm-deal-{index:06d}",
+            "source_record_version": current_version,
+            "lifecycle_status": "active",
+            "is_latest": True,
+            "record_hash": f"hash-{index}",
+            "observed_at": "2026-09-12T00:00:00Z",
+            "raw_payload": self._payload("Ångström"),
+            "normalized_payload": "{}",
+            "linked_people": owner_ids,
+            "logical_versions": logical_versions,
+            "descendants": [],
+            "decisions_and_reviews": [],
+            "owner_impacts": [],
+        }
+
+    def _stale_evidence_row(self) -> dict[str, JsonValue]:
+        return {
+            "stale_run_state": "absent",
+            "left_labels": [],
+            "left_properties": None,
+            "relationship_type": None,
+            "relationship_properties": None,
+            "right_labels": [],
+            "right_properties": None,
+        }
+
+    def _payload(self, marker: str) -> str:
+        return (
+            '{"crm_deal_identity_policy_version":"legacy","marker":"'
+            + marker
+            + '","blob":"'
+            + self._payload_blob
+            + '"}'
+        )
+
+    def _control_row(self) -> dict[str, JsonValue]:
+        return {
+            "source_registration_count": 1,
+            "source_instance_of_count": 1,
+            "source_active_instance_of_count": 1,
+            "source_statuses": ["active"],
+            "control_registration_count": 1,
+            "control_instance_of_count": 1,
+            "control_active_instance_of_count": 1,
+            "control_statuses": ["active"],
+            "binding_count": 1,
+            "binding_ownership_count": 1,
+            "requested_binding_count": 1,
+            "requested_ownership_count": 1,
+            "binding_source_instance_ids": ["portal-a"],
+            "binding_owner_instance_ids": ["portal-a"],
+            "owned_binding_source_instance_ids": ["portal-a"],
+        }
+
+    def _relationship_evidence_row(self) -> dict[str, JsonValue]:
+        return {
+            "left_labels": ["IngestionLogicalRun"],
+            "left_properties": {"ordered": ["a", "b"]},
+            "relationship_type": "HAS_ATTEMPT",
+            "relationship_properties": {"ordered": ["first", "second"]},
+            "right_labels": ["IngestRun"],
+            "right_properties": {"status": "failed"},
         }
 
 
-def test_status_inventory_streams_large_boundary_without_global_projection_retention(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
+def test_status_snapshot_streams_full_high_cardinality_boundary() -> None:
     total = 178_328
     expected_pks = tuple(f"pk-{index:06d}" for index in range(total))
     negative_control_indices = frozenset({0, 35_665, 71_331, 106_997, 142_663, 178_327})
-    transaction = _InventoryTransaction()
-    observed_page_sizes: list[int] = []
-
-    def pages(*_args: object, **_kwargs: object) -> Iterator[tuple[dict[str, JsonValue], ...]]:
-        for start in range(0, total, 100):
-            stop = min(start + 100, total)
-            yield tuple(
-                {
-                    "source_record_pk": f"pk-{index:06d}",
-                    "source_record_id": f"deal-{index:06d}",
-                }
-                for index in range(start, stop)
-            )
-
-    def projections(
-        _tx: object,
-        *,
-        source_system: str,
-        source_record_pks: tuple[str, ...],
-    ) -> dict[str, list[JsonValue]]:
-        assert source_system == "bitrix_chat"
-        assert len(source_record_pks) <= 100
-        observed_page_sizes.append(len(source_record_pks))
-        return {}
-
-    def item(record: dict[str, JsonValue], _rows: list[JsonValue]) -> _InventoryItem:
-        source_record_id = record["source_record_id"]
-        source_record_pk = record["source_record_pk"]
-        assert isinstance(source_record_id, str)
-        assert isinstance(source_record_pk, str)
-        return _InventoryItem(
-            source_record_id,
-            source_record_pk,
-            int(source_record_pk.removeprefix("pk-")) in negative_control_indices,
-        )
-
-    monkeypatch.setattr(status_snapshot, "validate_repair_inventory_keys", lambda *_args: None)
-    monkeypatch.setattr(status_snapshot, "iter_repair_inventory_pages", pages)
-    monkeypatch.setattr(status_snapshot, "page_projection_rows", projections)
-    monkeypatch.setattr(status_snapshot, "page_inventory_item", item)
+    transaction = _GuardedStatusTransaction(total, negative_control_indices)
 
     started = time.perf_counter()
     tracemalloc.start()
     try:
-        boundary = status_snapshot._current_inventory_boundary(transaction, expected_pks)
+        boundary = status_snapshot.status_snapshot_from_transaction(
+            transaction,
+            "portal-a",
+            "portal-a",
+            expected_pks,
+        )
         _, peak_bytes = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
@@ -177,14 +328,21 @@ def test_status_inventory_streams_large_boundary_without_global_projection_reten
     assert boundary.inventory_row_count == total
     assert boundary.negative_control_count == 6
     assert boundary.eligible_unit_count == 178_322
-    assert observed_page_sizes and max(observed_page_sizes) == 100
-    assert len(observed_page_sizes) == 1_784
+    assert boundary.inventory_digest.startswith("sha256:")
+    assert boundary.source_records_digest.startswith("sha256:")
+    assert boundary.stale_run_evidence_digest.startswith("sha256:")
+    assert boundary.control_digest.startswith("sha256:")
+    assert boundary.boundary_digest.startswith("sha256:")
+    assert transaction.live_result is None
+    assert transaction.max_live_results == 1
+    assert transaction.max_active_page_size == 100
+    assert transaction.max_projection_param_size == 100
+    assert transaction.max_source_param_size == 100
+    assert transaction.max_rows_per_result == 100
     assert peak_bytes < 48 * 1024 * 1024
     assert elapsed_seconds > 0
     if resource is not None:
         assert rss_after < 2 * 1024 * 1024 * 1024
-    assert "items.extend" not in inspect.getsource(status_snapshot)
-    assert "projections_by_pk" not in inspect.getsource(status_snapshot)
 
 
 def test_source_record_digest_pages_exact_legacy_object_bytes() -> None:
@@ -246,23 +404,6 @@ def test_source_record_digest_pages_exact_legacy_object_bytes() -> None:
         {"rows": expected_rows},
     )
     assert transaction.page_sizes == [3]
-
-
-def test_incremental_inventory_digest_matches_legacy_inventory_key_order() -> None:
-    rows = (
-        _InventoryItem("z-record", "pk-a", False),
-        _InventoryItem("ä-record", "pk-z", True),
-        _InventoryItem("a-record", "pk-b", False),
-    )
-    with status_snapshot.CanonicalByteSorter(unique_keys=True) as sorter:
-        for row in rows:
-            sorter.add(row.inventory_key.encode("utf-8"), canonical_json_bytes(row.to_dict()))
-        observed = inventory_digest_from_parts(sorter.values())
-    expected = inventory_digest_from_parts(
-        canonical_json_bytes(row.to_dict())
-        for row in sorted(rows, key=lambda item: item.inventory_key)
-    )
-    assert observed == expected
 
 
 def test_incremental_stale_and_control_digests_match_legacy_canonical_objects() -> None:
@@ -342,18 +483,20 @@ def test_incremental_stale_and_control_digests_match_legacy_canonical_objects() 
     normalized_control = canonical_boundary_evidence(control_row)
     assert isinstance(normalized_control, dict)
     normalized_control["dispatch_count"] = 1
+    normalized_control["dispatch_evidence"] = canonical_evidence_rows((duplicate_row,))
+    normalized_control["control_nodes"] = canonical_evidence_rows(
+        (duplicate_row, duplicate_row)
+    )
+    normalized_control["control_relationships"] = canonical_evidence_rows(
+        (association, association)
+    )
     instance_expected = object_digest(
         b"crm-deal-identity-repair-source-instance-boundary-v1\x00",
         status_snapshot._instance_digest_value(normalized_control),
     )
     control_expected = object_digest(
         b"crm-deal-identity-repair-control-boundary-v1\x00",
-        {
-            **_control_digest_value(normalized_control),
-            "dispatch_evidence": canonical_evidence_rows((duplicate_row,)),
-            "control_nodes": canonical_evidence_rows((duplicate_row, duplicate_row)),
-            "control_relationships": canonical_evidence_rows((association, association)),
-        },
+        _control_digest_value(normalized_control),
     )
     assert instance_observed == instance_expected
     assert control_observed == control_expected

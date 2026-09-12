@@ -236,7 +236,8 @@ def test_status_is_read_only_when_repair_is_disabled_and_reports_separate_contro
                 ("pk-1",),
             )
             notifications = logging.getLogger("neo4j.notifications")
-            notifications.warning("synthetic deprecation notification")
+            for index in range(10_000):
+                notifications.warning("synthetic deprecation notification %d", index)
             notifications.error("synthetic database error")
             calls.append("status_snapshot")
             return "current-boundary"

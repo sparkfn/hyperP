@@ -565,65 +565,86 @@ def test_bounded_status_snapshot_matches_legacy_across_pages_and_detects_invento
     repository = _repository(neo4j_driver)
     _persist_evidence(neo4j_driver)
     additional_pks = tuple(f"status-page-{index:03d}" for index in range(250))
-    with neo4j_driver.session() as session:
-        session.run(
-            "MATCH (source:SourceSystem {source_key: 'bitrix_chat'}) "
-            "UNWIND $source_record_pks AS source_record_pk "
-            "CREATE (record:SourceRecord {source_record_pk: source_record_pk, "
-            "source_record_id: 'bitrix-crm-deal-' + source_record_pk, "
-            "source_record_version: '1', source_version_key: source_record_pk + ':1', "
-            "record_hash: 'sha256:source-hash', lifecycle_status: 'active', "
-            "is_latest: true, record_type: 'crm_deal', source_instance_id: $source_instance_id, "
-            "raw_payload: '{\"crm_deal_identity_policy_version\":\"legacy\"}', "
-            "normalized_payload: '{}'})-[:FROM_SOURCE]->(source)",
-            source_record_pks=list(additional_pks),
+    extra_pk = "status-page-extra"
+    owned_pks = (*additional_pks, extra_pk)
+    try:
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (source:SourceSystem {source_key: 'bitrix_chat'}) "
+                "UNWIND $source_record_pks AS source_record_pk "
+                "CREATE (record:SourceRecord {source_record_pk: source_record_pk, "
+                "source_record_id: 'bitrix-crm-deal-' + source_record_pk, "
+                "source_record_version: '1', source_version_key: source_record_pk + ':1', "
+                "record_hash: 'sha256:source-hash', lifecycle_status: 'active', "
+                "is_latest: true, record_type: 'crm_deal', "
+                "source_instance_id: $source_instance_id, "
+                'raw_payload: \'{"crm_deal_identity_policy_version":"legacy"}\', '
+                "normalized_payload: '{}'})-[:FROM_SOURCE]->(source)",
+                source_record_pks=list(additional_pks),
+                source_instance_id=_TEST_SOURCE_INSTANCE_ID,
+            ).consume()
+        source_record_pks = tuple(sorted((*additional_pks, _TEST_SOURCE_RECORD_PK)))
+        before = _domain_state(
+            neo4j_driver,
             source_instance_id=_TEST_SOURCE_INSTANCE_ID,
-        ).consume()
-    source_record_pks = tuple(sorted((*additional_pks, _TEST_SOURCE_RECORD_PK)))
-    before = _domain_state(
-        neo4j_driver,
-        source_instance_id=_TEST_SOURCE_INSTANCE_ID,
-        control_instance_id=_TEST_CONTROL_INSTANCE_ID,
-    )
-    legacy = repository.snapshot(
-        source_instance_id=_TEST_SOURCE_INSTANCE_ID,
-        control_instance_id=_TEST_CONTROL_INSTANCE_ID,
-        source_record_pks=source_record_pks,
-    )
-    bounded = repository.status_snapshot(
-        source_instance_id=_TEST_SOURCE_INSTANCE_ID,
-        control_instance_id=_TEST_CONTROL_INSTANCE_ID,
-        source_record_pks=source_record_pks,
-    )
-    assert bounded == legacy
-    assert _domain_state(
-        neo4j_driver,
-        source_instance_id=_TEST_SOURCE_INSTANCE_ID,
-        control_instance_id=_TEST_CONTROL_INSTANCE_ID,
-    ) == before
-    _persist_evidence(neo4j_driver, source_record_pk="status-page-extra")
-    with pytest.raises(ExpectedRepairBoundaryDriftError, match="persisted_boundary_change"):
-        repository.status_snapshot(
+            control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        )
+        legacy = repository.snapshot(
             source_instance_id=_TEST_SOURCE_INSTANCE_ID,
             control_instance_id=_TEST_CONTROL_INSTANCE_ID,
             source_record_pks=source_record_pks,
         )
-    with neo4j_driver.session() as session:
-        session.run(
-            "MATCH (record:SourceRecord {source_record_pk: 'status-page-extra'}) "
-            "DETACH DELETE record"
-        ).consume()
-        session.run(
-            "MATCH (record:SourceRecord {source_record_pk: $source_record_pk}) "
-            "DETACH DELETE record",
-            source_record_pk=additional_pks[-1],
-        ).consume()
-    with pytest.raises(ExpectedRepairBoundaryDriftError, match="persisted_boundary_change"):
-        repository.status_snapshot(
+        bounded = repository.status_snapshot(
             source_instance_id=_TEST_SOURCE_INSTANCE_ID,
             control_instance_id=_TEST_CONTROL_INSTANCE_ID,
             source_record_pks=source_record_pks,
         )
+        assert bounded == legacy
+        assert (
+            _domain_state(
+                neo4j_driver,
+                source_instance_id=_TEST_SOURCE_INSTANCE_ID,
+                control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+            )
+            == before
+        )
+        _persist_evidence(neo4j_driver, source_record_pk=extra_pk)
+        with pytest.raises(ExpectedRepairBoundaryDriftError, match="persisted_boundary_change"):
+            repository.status_snapshot(
+                source_instance_id=_TEST_SOURCE_INSTANCE_ID,
+                control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+                source_record_pks=source_record_pks,
+            )
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (record:SourceRecord {source_record_pk: $source_record_pk}) "
+                "DETACH DELETE record",
+                source_record_pk=extra_pk,
+            ).consume()
+            session.run(
+                "MATCH (record:SourceRecord {source_record_pk: $source_record_pk}) "
+                "DETACH DELETE record",
+                source_record_pk=additional_pks[-1],
+            ).consume()
+        with pytest.raises(ExpectedRepairBoundaryDriftError, match="persisted_boundary_change"):
+            repository.status_snapshot(
+                source_instance_id=_TEST_SOURCE_INSTANCE_ID,
+                control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+                source_record_pks=source_record_pks,
+            )
+    finally:
+        with neo4j_driver.session() as session:
+            session.run(
+                "MATCH (record:SourceRecord) WHERE record.source_record_pk IN $source_record_pks "
+                "DETACH DELETE record",
+                source_record_pks=list(owned_pks),
+            ).consume()
+            remaining = session.run(
+                "MATCH (record:SourceRecord) WHERE record.source_record_pk IN $source_record_pks "
+                "RETURN count(record) AS count",
+                source_record_pks=list(owned_pks),
+            ).single(strict=True)
+        assert remaining["count"] == 0
 
 
 def test_same_count_control_state_transition_is_persisted_boundary_drift(

@@ -41,7 +41,9 @@ from src.graph.crm_deal_identity_repair_ledger_records import (
     stored_qualification_from_record as _stored_qualification_from_record,
 )
 from src.graph.crm_deal_identity_repair_status_snapshot import (
-    ExpectedRepairBoundaryDriftError,
+    ExpectedRepairBoundaryDriftError as ExpectedRepairBoundaryDriftError,
+)
+from src.graph.crm_deal_identity_repair_status_snapshot import (
     status_snapshot_from_transaction,
 )
 from src.graph.queries.crm_deal_identity_repair_ledger import (
