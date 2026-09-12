@@ -23,14 +23,10 @@ from src.crm_deal_identity_repair.inventory import (
     stale_run_evidence_from_record,
     validate_repair_inventory_keys,
 )
+from src.graph import crm_deal_identity_repair_status_evidence as _status_evidence
 from src.graph.crm_deal_identity_repair_boundary_evidence import (
     canonical_boundary_evidence,
     record_json_dict,
-)
-from src.graph.crm_deal_identity_repair_status_evidence import (
-    CanonicalObjectDigest as _CanonicalObjectDigest,
-    canonical_json_line as _canonical_line,
-    spool_evidence as _spool_evidence,
 )
 from src.graph.queries.crm_deal_identity_repair import INVENTORY_STALE_RUN_CONTROL_PLANE
 from src.graph.queries.crm_deal_identity_repair_ledger import (
@@ -168,7 +164,7 @@ def _stale_run_evidence_digest(
     if not isinstance(stale_run_id, str):
         raise RuntimeError("repair stale-run inventory evidence is malformed")
     with ExitStack() as stack:
-        persisted_run, persisted_run_count = _spool_evidence(
+        persisted_run, persisted_run_count = _status_evidence.spool_evidence(
             stack,
             tx,
             READ_STALE_RUN_CONTROL_EVIDENCE,
@@ -176,13 +172,13 @@ def _stale_run_evidence_digest(
         )
         if persisted_run_count == 0:
             raise RuntimeError("repair stale-run control evidence readback is missing")
-        associations, _ = _spool_evidence(
+        associations, _ = _status_evidence.spool_evidence(
             stack,
             tx,
             READ_STALE_RUN_ASSOCIATIONS,
             stale_run_id=stale_run_id,
         )
-        digest = _CanonicalObjectDigest(_STALE_RUN_DOMAIN)
+        digest = _status_evidence.CanonicalObjectDigest(_STALE_RUN_DOMAIN)
         normalized = canonical_boundary_evidence(inventory_evidence)
         if not isinstance(normalized, dict):
             raise RuntimeError("repair stale-run inventory evidence is malformed")
@@ -197,7 +193,7 @@ def _source_records_digest(
     source_record_pks: tuple[str, ...],
     source_instance_id: str,
 ) -> str:
-    digest = _CanonicalObjectDigest(_SOURCE_ROWS_DOMAIN)
+    digest = _status_evidence.CanonicalObjectDigest(_SOURCE_ROWS_DOMAIN)
     missing_source_record = False
     source_instance_mismatch = False
     digest.begin_array("rows")
@@ -215,7 +211,7 @@ def _source_records_digest(
                 missing_source_record = True
             if row.get("source_instance_id") != source_instance_id:
                 source_instance_mismatch = True
-            digest.array_value(_canonical_line(row))
+            digest.array_value(_status_evidence.canonical_json_line(row))
     if missing_source_record:
         raise ExpectedRepairBoundaryDriftError("missing_source_record")
     if source_instance_mismatch:
@@ -242,19 +238,19 @@ def _control_digests(
     if not isinstance(control_value, dict):
         raise RuntimeError("repair control boundary must be a JSON object")
     with ExitStack() as stack:
-        dispatch, dispatch_count = _spool_evidence(
+        dispatch, dispatch_count = _status_evidence.spool_evidence(
             stack,
             tx,
             READ_CONTROL_DISPATCH_EVIDENCE,
             control_instance_id=control_instance_id,
         )
-        control_nodes, _ = _spool_evidence(
+        control_nodes, _ = _status_evidence.spool_evidence(
             stack,
             tx,
             READ_CONTROL_NODES,
             control_instance_id=control_instance_id,
         )
-        relationships, _ = _spool_evidence(
+        relationships, _ = _status_evidence.spool_evidence(
             stack,
             tx,
             READ_CONTROL_RELATIONSHIPS,
@@ -263,7 +259,7 @@ def _control_digests(
         control_value["dispatch_count"] = dispatch_count
         _validate_control_boundary(control_value, source_instance_id, control_instance_id)
         instance_digest = object_digest(_INSTANCE_DOMAIN, _instance_digest_value(control_value))
-        digest = _CanonicalObjectDigest(_CONTROL_DOMAIN)
+        digest = _status_evidence.CanonicalObjectDigest(_CONTROL_DOMAIN)
         _write_control_digest(
             digest,
             control_value,
@@ -275,7 +271,7 @@ def _control_digests(
 
 
 def _write_control_digest(
-    digest: _CanonicalObjectDigest,
+    digest: _status_evidence.CanonicalObjectDigest,
     control: dict[str, JsonValue],
     dispatch: Iterable[bytes],
     control_nodes: Iterable[bytes],
