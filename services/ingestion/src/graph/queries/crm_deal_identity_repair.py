@@ -166,7 +166,7 @@ RETURN deal.source_record_pk AS source_record_pk,
        linked_people, logical_versions, descendants,
        record_decisions_and_reviews + pair_decisions_and_reviews AS decisions_and_reviews,
        owner_profiles + owner_locks + outgoing_owner_merges + incoming_owner_merges AS owner_impacts
-ORDER BY deal.source_record_id, deal.source_record_pk
+ORDER BY deal.source_record_pk
 """
 
 INVENTORY_INVALID_CRM_DEAL_SOURCE_RECORD_PKS = """
@@ -179,6 +179,13 @@ RETURN count(deal) AS invalid_source_record_pk_count
 _CRM_DEAL_PREFIX = """
 MATCH (deal:SourceRecord {record_type: 'crm_deal'})-[:FROM_SOURCE]->
       (:SourceSystem {source_key: $source_system})
+"""
+
+_CRM_DEAL_PAGE_PREFIX = """
+UNWIND $source_record_pks AS source_record_pk
+MATCH (deal:SourceRecord {source_record_pk: source_record_pk, record_type: 'crm_deal'})
+USING INDEX deal:SourceRecord(source_record_pk)
+MATCH (deal)-[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})
 """
 
 _CRM_DEAL_PROJECTION_RETURN = """
@@ -215,6 +222,7 @@ def _crm_deal_projection_branch(
     relationship_type: str,
     *,
     deal_owned_address: bool = False,
+    page: bool = False,
 ) -> str:
     """Build one indexed branch of the CRM-deal projection inventory query."""
     if deal_owned_address:
@@ -226,7 +234,7 @@ def _crm_deal_projection_branch(
     owner_person = "null" if deal_owned_address else "start.person_id"
     return "\n".join(
         (
-            _CRM_DEAL_PREFIX.strip(),
+            (_CRM_DEAL_PAGE_PREFIX if page else _CRM_DEAL_PREFIX).strip(),
             pattern,
             condition,
             _CRM_DEAL_PROJECTION_RETURN.replace("__OWNER_PERSON__", owner_person).strip(),
@@ -249,7 +257,23 @@ def _crm_deal_projection_query() -> str:
     return "\nUNION ALL\n".join(branches)
 
 
+def _crm_deal_projection_page_query() -> str:
+    """Return the same branches as inventory, scoped to one bounded deal page."""
+    branches = [
+        _crm_deal_projection_branch(relationship_type, page=True)
+        for relationship_type in _CRM_DEAL_PROJECTION_RELATIONSHIP_TYPES
+    ]
+    branches.extend(
+        (
+            _crm_deal_projection_branch("DESCRIBES_ADDRESS", page=True),
+            _crm_deal_projection_branch("DESCRIBES_ADDRESS", deal_owned_address=True, page=True),
+        )
+    )
+    return "\nUNION ALL\n".join(branches)
+
+
 INVENTORY_CRM_DEAL_PROJECTIONS = _crm_deal_projection_query()
+INVENTORY_CRM_DEAL_PROJECTIONS_PAGE = _crm_deal_projection_page_query()
 
 INVENTORY_STALE_RUN_CONTROL_PLANE = """
 OPTIONAL MATCH (run:IngestRun {ingest_run_id: $stale_run_id})
