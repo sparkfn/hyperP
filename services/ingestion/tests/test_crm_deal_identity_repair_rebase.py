@@ -23,7 +23,11 @@ from src.crm_deal_identity_repair.control_models import (
     RepairControlRequest,
     RepairDispatchLease,
 )
-from src.crm_deal_identity_repair.digests import object_digest
+from src.crm_deal_identity_repair.digests import (
+    CanonicalObjectDigest,
+    canonical_json_line,
+    object_digest,
+)
 from src.crm_deal_identity_repair.models import inventory_item_from_json
 from src.crm_deal_identity_repair.rebase import (
     RepairBoundaryRebaseRequest,
@@ -46,6 +50,22 @@ def _request() -> RepairBoundaryRebaseRequest:
         "approval-424",
         "fresh-artifact-424",
         _DIGEST,
+    )
+
+
+def test_canonical_incremental_array_digest_matches_legacy_object_digest() -> None:
+    domain = b"crm-deal-identity-repair-status-parity-v1\x00"
+    values = [
+        {"kind": "first", "sequence": 1},
+        {"kind": "second", "sequence": 2},
+    ]
+    digest = CanonicalObjectDigest(domain)
+    digest.value("control", {"state": "allocated"})
+    digest.array("rows", (canonical_json_line(value) for value in values))
+
+    assert digest.finish() == object_digest(
+        domain,
+        {"control": {"state": "allocated"}, "rows": values},
     )
 
 
@@ -177,6 +197,8 @@ def test_rebase_query_is_guarded_and_never_creates_units_or_dispatches() -> None
     assert "CrmDealRepairSecondaryDisposition" in queries.READ_REBASE_GUARDS
     assert "CrmDealRepairFence {run_id: $run_id, state: 'claimed'}" in queries.READ_REBASE_GUARDS
     assert "stored_unit_count = completion.unit_count" in queries.READ_REBASE_GUARDS
+    assert "completion_count = 1" in queries.READ_REBASE_REPLAY
+    assert "completion_count = 1" in queries.READ_REBASE_REPLAY_INTEGRITY
     assert "stored_count = completion.unit_count" in queries.READ_REBASE_REPLAY_INTEGRITY
     assert "CrmDealRepairMutationResult" in queries.READ_REBASE_REPLAY_INTEGRITY
     assert "CrmDealRepairVerification" in queries.READ_REBASE_REPLAY_INTEGRITY

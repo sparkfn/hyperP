@@ -237,6 +237,7 @@ def _seed_zero_unit_run(driver: Driver) -> None:
               execution_allowed: false})
             CREATE (run)-[:QUALIFIED_WITH]->(boundary)
             CREATE (:CrmDealRepairControl {repair_id: $repair_id, run_id: $run_id,
+              control_instance_id: $control_instance_id,
               owner_id: $owner_id, token_digest: $token_digest, revision: $revision,
               boundary_digest: $boundary_digest, state: 'allocated', sealed_revision: $revision,
               sealed_boundary_digest: $sealed_boundary_digest,
@@ -546,11 +547,10 @@ def test_rebased_terminal_acceptance_and_release_replay_preserve_foreign_block(
             """,
             **values,
         ).consume()
-        live = session.run(
-            rebase_queries.READ_EFFECTIVE_REBASE_BOUNDARY, run_id=values["run_id"]
-        ).single()
+        live = session.run(rebase_queries.READ_EFFECTIVE_REBASE_BOUNDARY, **values).single()
         terminal = session.run(
-            rebase_queries.READ_EFFECTIVE_REBASE_BOUNDARY_TERMINAL, run_id=values["run_id"]
+            rebase_queries.READ_EFFECTIVE_REBASE_BOUNDARY_TERMINAL,
+            **values,
         ).single(strict=True)
         acceptance_replay = session.execute_write(
             lambda tx: tx.run(queries.ACCEPT_AND_RELEASE, **values).single(strict=True)

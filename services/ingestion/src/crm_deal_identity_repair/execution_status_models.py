@@ -137,7 +137,8 @@ class RepairRunStatus:
         cls,
         run: RepairQualificationRun,
         observed_boundary_digest: str,
-        *, effective_boundary_digest: str | None = None,
+        *,
+        effective_boundary_digest: str | None = None,
     ) -> RepairRunStatus:
         return cls(
             run.repair_id,
@@ -231,10 +232,7 @@ def _validate_qualified_status(status: RepairRunStatus) -> None:
 
 
 def _validate_admissible_status(status: RepairRunStatus) -> None:
-    if (
-        status.reason_code != "exact_boundary_match"
-        or status.observed_boundary_digest != (
-            status.effective_boundary_digest or status.expected_boundary_digest
-        )
+    if status.reason_code != "exact_boundary_match" or status.observed_boundary_digest != (
+        status.effective_boundary_digest or status.expected_boundary_digest
     ):
         raise ValueError("admissible repair status is inconsistent")

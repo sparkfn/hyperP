@@ -12,19 +12,34 @@ MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat',
   repair_owner_id: $owner_id, repair_token_digest: $token_digest,
   repair_revision: control.revision})
 MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id,
-  rebase_request_digest: $rebase_request_digest,
+  rebase_request_digest: $rebase_request_digest, rebase_approval_id: $approval_id,
   rebase_fresh_artifact_id: $fresh_artifact_id,
   rebase_expected_observed_boundary_digest: $expected_observed_boundary_digest})
 WHERE control.control_instance_id = run.control_instance_id
-  AND control.revision = completion.rebase_revision
+  AND control.boundary_digest = run.boundary_digest
   AND control.sealed_revision = control.revision
+  AND control.revision = completion.rebase_revision
   AND control.sealed_boundary_digest = completion.rebase_replacement_boundary_digest
+  AND completion.boundary_digest = run.boundary_digest
+  AND completion.allocation_control_instance_id = control.control_instance_id
   AND completion.allocation_revision = control.revision
-  AND completion.allocation_state = 'allocated'
+  AND completion.allocation_state = control.state
   AND completion.allocation_sealed_boundary_digest = control.sealed_boundary_digest
+  AND completion.receipt_control_instance_id = control.control_instance_id
+  AND completion.receipt_run_id = control.run_id
+  AND completion.receipt_owner_id = control.owner_id
+  AND completion.receipt_token_digest = control.token_digest
   AND completion.receipt_revision = control.revision
-  AND completion.receipt_state = 'allocated'
+  AND completion.receipt_state = control.state
+  AND completion.receipt_boundary_digest = run.boundary_digest
   AND completion.receipt_sealed_boundary_digest = control.sealed_boundary_digest
+CALL {
+  WITH run
+  MATCH (candidate:CrmDealRepairAllocationCompletion {run_id: run.run_id})
+  RETURN count(candidate) AS completion_count
+}
+WITH control, completion, completion_count
+WHERE completion_count = 1
 RETURN properties(control) AS control, properties(completion) AS completion
 """
 
@@ -39,6 +54,13 @@ MATCH (control:CrmDealRepairControl {run_id: $run_id, repair_id: $repair_id})
 SET control.integration_rebase_lock = $rebase_request_digest
 WITH run, dispatch, control
 MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
+CALL {
+  WITH run
+  MATCH (candidate:CrmDealRepairAllocationCompletion {run_id: run.run_id})
+  RETURN count(candidate) AS completion_count
+}
+WITH control, dispatch, completion, completion_count
+WHERE completion_count = 1
 SET completion.rebase_lock = $rebase_request_digest
 RETURN properties(control) AS control, properties(dispatch) AS dispatch,
        properties(completion) AS completion
@@ -185,32 +207,38 @@ RETURN properties(control) AS control, properties(completion) AS completion
 """
 
 READ_EFFECTIVE_REBASE_BOUNDARY = """
-MATCH (control:CrmDealRepairControl {run_id: $run_id})
+MATCH (run:CrmDealRepairRun {repair_id: $repair_id, run_id: $run_id,
+  status: 'qualified', execution_allowed: false})
+MATCH (control:CrmDealRepairControl {repair_id: $repair_id, run_id: $run_id,
+  state: 'allocated'})
 MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat',
   control_instance_id: control.control_instance_id})
-WHERE control.state = 'allocated' AND control.sealed_revision = control.revision
-  AND dispatch.blocked = true AND dispatch.block_reason = 'crm_deal_identity_repair_quiesce'
-  AND dispatch.repair_run_id = control.run_id AND dispatch.repair_owner_id = control.owner_id
-  AND dispatch.repair_token_digest = control.token_digest AND dispatch.repair_revision = control.revision
-OPTIONAL MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
+MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
+WHERE control.control_instance_id = run.control_instance_id
+  AND control.boundary_digest = run.boundary_digest
+  AND control.sealed_revision = control.revision
+  AND dispatch.blocked = true
+  AND dispatch.block_reason = 'crm_deal_identity_repair_quiesce'
+  AND dispatch.repair_run_id = control.run_id
+  AND dispatch.repair_owner_id = control.owner_id
+  AND dispatch.repair_token_digest = control.token_digest
+  AND dispatch.repair_revision = control.revision
 RETURN properties(control) AS control, properties(dispatch) AS dispatch,
        collect(properties(completion)) AS completions
 """
 
-
 READ_EFFECTIVE_REBASE_BOUNDARY_TERMINAL = """
-MATCH (control:CrmDealRepairControl {run_id: $run_id, state: 'allocated'})
+MATCH (run:CrmDealRepairRun {repair_id: $repair_id, run_id: $run_id,
+  status: 'qualified', execution_allowed: false})
+MATCH (control:CrmDealRepairControl {repair_id: $repair_id, run_id: $run_id,
+  state: 'allocated'})
 MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
-WHERE control.sealed_revision = control.revision
-  AND completion.rebase_request_digest IS NOT NULL
-  AND completion.rebase_revision = control.revision
-  AND completion.allocation_revision = control.revision
-  AND completion.receipt_revision = control.revision
-  AND completion.allocation_sealed_boundary_digest = control.sealed_boundary_digest
-  AND completion.receipt_sealed_boundary_digest = control.sealed_boundary_digest
-RETURN properties(control) AS control, {} AS dispatch, [properties(completion)] AS completions
+WHERE control.control_instance_id = run.control_instance_id
+  AND control.boundary_digest = run.boundary_digest
+  AND control.sealed_revision = control.revision
+RETURN properties(control) AS control, {} AS dispatch,
+       collect(properties(completion)) AS completions
 """
-
 
 READ_REBASE_REPLAY_INTEGRITY = """
 MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id,
@@ -222,14 +250,18 @@ WHERE NOT EXISTS { MATCH (:CrmDealRepairMutationResult {run_id: $run_id}) }
   AND NOT EXISTS { MATCH (:CrmDealRepairFence {run_id: $run_id, state: 'claimed'}) }
 CALL {
   WITH completion
+  MATCH (candidate:CrmDealRepairAllocationCompletion {run_id: completion.run_id})
+  RETURN count(candidate) AS completion_count
+}
+CALL {
+  WITH completion
   OPTIONAL MATCH (unit:CrmDealRepairUnit {run_id: completion.run_id})
   RETURN count(unit) AS stored_count
 }
-WITH completion, stored_count
-WHERE stored_count = completion.unit_count
+WITH completion, completion_count, stored_count
+WHERE completion_count = 1 AND stored_count = completion.unit_count
 RETURN completion.completion_id AS completion_id
 """
-
 
 READ_REBASE_UNIT_BATCH = """
 UNWIND $units AS expected

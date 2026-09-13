@@ -38,6 +38,8 @@ from src.crm_deal_identity_repair.execution_models import (
     RepairExecutionBoundaryManifest,
     RepairQualificationRun,
 )
+from src.crm_deal_identity_repair.integration_models import RepairIntegrationRequest
+from src.crm_deal_identity_repair.integration_service import RepairIntegrationContext
 from src.crm_deal_identity_repair.rebase import (
     RepairBoundaryRebaseRequest,
     RepairBoundaryRebaseResult,
@@ -49,6 +51,7 @@ from src.graph.bitrix_source_instances import BitrixSourceInstanceRepository
 from src.graph.bootstrap import bootstrap_legacy_bitrix_source_instance
 from src.graph.client import Neo4jClient
 from src.graph.crm_deal_identity_repair_control import CrmDealRepairControlRepository
+from src.graph.crm_deal_identity_repair_integration import CrmDealRepairIntegrationRepository
 from src.graph.crm_deal_identity_repair_ledger import (
     CrmDealRepairLedgerRepository,
     ExpectedRepairBoundaryDriftError,
@@ -62,6 +65,7 @@ from src.graph.crm_deal_identity_repair_ledger_migration import (
 )
 from src.graph.crm_deal_identity_repair_rebase import CrmDealRepairRebaseRepository
 from src.graph.ingestion_control_instance_migration import migrate_ingestion_control_instances
+from src.graph.queries import crm_deal_identity_repair_rebase as rebase_queries
 from src.graph.queries.crm_deal_identity_repair_mutation import STAGE_REPAIR_IDENTIFIERS
 from src.models import JsonValue
 
@@ -172,7 +176,7 @@ def _clear_repair_metadata(driver: Driver) -> None:
         ).consume()
         session.run(
             "MATCH (record:SourceRecord) WHERE record.source_record_pk STARTS WITH 'repair-test-' "
-            "DETACH DELETE record"
+            "OR record.source_record_pk STARTS WITH 'repair-rebase-negative-' DETACH DELETE record"
         ).consume()
         session.run(
             "MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', "
@@ -2459,6 +2463,7 @@ def _seed_quiesced_allocation_control(
     *,
     owner: str = "owner",
     token_digest: str = "token",
+    source_record_pks: tuple[str, ...] | None = None,
 ) -> None:
     durable_token_digest = control_token_digest(token_digest)
     with driver.session() as session:
@@ -2483,7 +2488,13 @@ def _seed_quiesced_allocation_control(
             token_digest=durable_token_digest,
             boundary_digest=run.boundary_digest,
         ).consume()
-    sealed = _snapshot(_repository(driver))
+    ledger = _repository(driver)
+    qualified_source_record_pks = source_record_pks or ledger.source_record_pks(run.repair_id)
+    sealed = ledger.status_snapshot(
+        source_instance_id=run.source_instance_id,
+        control_instance_id=run.control_instance_id,
+        source_record_pks=qualified_source_record_pks,
+    )
     with driver.session() as session:
         session.run(
             "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
@@ -3368,10 +3379,11 @@ def _rebase(
     run: RepairQualificationRun,
     plan: AllocationPlan,
     boundary_digest: str,
+    request: RepairBoundaryRebaseRequest | None = None,
 ) -> RepairBoundaryRebaseResult:
     repository = CrmDealRepairRebaseRepository(cast(Neo4jClient, _client(driver)))
     return repository.rebase_boundary(
-        _rebase_request(run, boundary_digest),
+        request or _rebase_request(run, boundary_digest),
         evidence=_rebase_evidence(plan),
         fresh_artifact_manifest_hmac="c" * 64,
         fresh_inventory_digest=run.inventory_digest,
@@ -3382,13 +3394,130 @@ def _rebase(
     )
 
 
+class _InjectedRebaseWriteFailureError(RuntimeError):
+    """Test-only marker for a transaction that must roll back its prior writes."""
+
+
+class _FailAfterRebaseWriteClient(_Client):
+    def __init__(self, driver: Driver, failure_query: str) -> None:
+        super().__init__(driver)
+        self._failure_query = failure_query
+
+    def execute_write(self, work: Callable[[ManagedTransaction], T]) -> T:
+        with self._driver.session() as session:
+            transaction = session.begin_transaction()
+            failure_query = self._failure_query
+
+            class _TransactionProxy:
+                def run(self, query: str, **parameters: object) -> object:
+                    result = transaction.run(query, **parameters)
+                    if query == failure_query:
+                        raise _InjectedRebaseWriteFailureError("injected rebase write failure")
+                    return result
+
+            try:
+                result = work(cast(ManagedTransaction, _TransactionProxy()))
+            except BaseException:
+                transaction.rollback()
+                raise
+            transaction.commit()
+            return result
+
+
+def _allocated_rebase_fixture(
+    driver: Driver,
+    *,
+    repair_id: str,
+) -> tuple[
+    CrmDealRepairLedgerRepository,
+    CrmDealRepairControlRepository,
+    RepairQualificationRun,
+    AllocationPlan,
+    str,
+]:
+    ledger, control, run = _qualified_rebase_control_repository(driver, repair_id=repair_id)
+    _seed_quiesced_allocation_control(
+        driver,
+        run,
+        source_record_pks=ledger.source_record_pks(run.repair_id),
+    )
+    plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 1)
+    _allocate(
+        control,
+        RepairControlRequest(run.repair_id, run.run_id, "owner", "token", 1),
+        boundary_digest=run.boundary_digest,
+        proof_digest="proof",
+        plan=plan,
+    )
+    with driver.session() as session:
+        session.run(
+            "MATCH (dispatch:BitrixDispatchControl {control_instance_id: $control_instance_id}) "
+            "SET dispatch.rebase_test_drift = $repair_id",
+            control_instance_id=run.control_instance_id,
+            repair_id=repair_id,
+        ).consume()
+    observed = ledger.status_snapshot(
+        source_instance_id=run.source_instance_id,
+        control_instance_id=run.control_instance_id,
+        source_record_pks=ledger.source_record_pks(run.repair_id),
+    )
+    return ledger, control, run, plan, observed.boundary_digest
+
+
+def _rebased_allocation(
+    driver: Driver,
+    *,
+    repair_id: str,
+) -> tuple[
+    CrmDealRepairLedgerRepository,
+    RepairQualificationRun,
+    AllocationPlan,
+    RepairBoundaryRebaseResult,
+]:
+    ledger, _, run, plan, observed_boundary_digest = _allocated_rebase_fixture(
+        driver,
+        repair_id=repair_id,
+    )
+    return ledger, run, plan, _rebase(driver, run, plan, observed_boundary_digest)
+
+
+def _initial_rebased_admission(
+    driver: Driver,
+    run: RepairQualificationRun,
+    plan: AllocationPlan,
+) -> tuple[
+    CrmDealRepairIntegrationRepository,
+    RepairIntegrationRequest,
+    RepairIntegrationContext,
+]:
+    request = RepairIntegrationRequest(
+        "apply",
+        RepairControlRequest(run.repair_id, run.run_id, "owner", "token", 3),
+        "approval-rebase",
+        plan.units[0].unit_id,
+    )
+    repository = CrmDealRepairIntegrationRepository(cast(Neo4jClient, _client(driver)))
+    authority = repository.load_authority(
+        request,
+        run,
+        plan.completion.overlay_digest,
+        _TEST_ALLOCATION_ORIGIN_KEY_ID,
+        _TEST_ALLOCATION_ORIGIN_SECRET,
+    )
+    return repository, request, RepairIntegrationContext(run, (), authority)
+
+
 def test_424_rebase_rotates_only_effective_authority_and_replays(
     neo4j_driver: Driver,
 ) -> None:
     ledger, control, run = _qualified_rebase_control_repository(
         neo4j_driver, repair_id="repair-424-ok"
     )
-    _seed_quiesced_allocation_control(neo4j_driver, run)
+    _seed_quiesced_allocation_control(
+        neo4j_driver,
+        run,
+        source_record_pks=ledger.source_record_pks(run.repair_id),
+    )
     plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 1)
     _allocate(
         control,
@@ -3420,6 +3549,7 @@ def test_424_rebase_rotates_only_effective_authority_and_replays(
     replay = _rebase(neo4j_driver, run, plan, observed.boundary_digest)
     assert result.replayed is False
     assert replay.replayed is True
+    assert result.previous_boundary_digest != run.boundary_digest
     assert replay.lease == result.lease
     assert replay.previous_boundary_digest == result.previous_boundary_digest
     assert replay.replacement_boundary_digest == result.replacement_boundary_digest
@@ -3471,13 +3601,211 @@ def test_424_rebase_rotates_only_effective_authority_and_replays(
     assert status.admissibility == "admissible"
 
 
+def test_424_signed_rebase_allows_only_authenticated_initial_apply_admission(
+    neo4j_driver: Driver,
+) -> None:
+    _, run, plan, result = _rebased_allocation(
+        neo4j_driver,
+        repair_id="repair-424-initial-apply",
+    )
+    repository, request, context = _initial_rebased_admission(neo4j_driver, run, plan)
+
+    unit, fence = repository.admit_and_claim_fence(request, context)
+
+    assert context.authority.sealed_boundary_digest == result.replacement_boundary_digest
+    assert context.authority.allocation_revision == result.lease.revision == 3
+    assert (unit.unit_id, fence.unit_id, fence.state) == (
+        plan.units[0].unit_id,
+        unit.unit_id,
+        "claimed",
+    )
+
+
+@pytest.mark.parametrize("require_live_dispatch", (True, False))
+@pytest.mark.parametrize(
+    ("property_name", "statement"),
+    (
+        ("allocation_revision", "SET completion.allocation_revision = 99"),
+        ("allocation_state", "SET completion.allocation_state = 'quiesced'"),
+        (
+            "allocation_control_instance_id",
+            "SET completion.allocation_control_instance_id = 'foreign-control'",
+        ),
+        (
+            "allocation_sealed_boundary_digest",
+            "SET completion.allocation_sealed_boundary_digest = 'sha256:' + 'f'",
+        ),
+    ),
+)
+def test_424_effective_status_and_initial_apply_reject_tampered_allocation_authority(
+    neo4j_driver: Driver,
+    property_name: str,
+    statement: str,
+    require_live_dispatch: bool,
+) -> None:
+    _, run, plan, _ = _rebased_allocation(
+        neo4j_driver,
+        repair_id="repair-424-allocation-" + property_name,
+    )
+    integration, request, context = _initial_rebased_admission(neo4j_driver, run, plan)
+    rebase = CrmDealRepairRebaseRepository(cast(Neo4jClient, _client(neo4j_driver)))
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) " + statement,
+            run_id=run.run_id,
+        ).consume()
+
+    with pytest.raises(RuntimeError, match="allocation authority differs"):
+        rebase.effective_boundary_digest(
+            run,
+            approval_key_id=_TEST_ALLOCATION_ORIGIN_KEY_ID,
+            approval_secret=_TEST_ALLOCATION_ORIGIN_SECRET,
+            require_live_dispatch=require_live_dispatch,
+        )
+    with pytest.raises(RuntimeError, match="admission"):
+        integration.admit_and_claim_fence(request, context)
+    with neo4j_driver.session() as session:
+        fences = session.run(
+            "MATCH (fence:CrmDealRepairFence {run_id: $run_id}) RETURN count(fence) AS count",
+            run_id=run.run_id,
+        ).single(strict=True)["count"]
+    assert fences == 0
+
+
+def test_424_replay_and_effective_status_reject_an_extra_completion(
+    neo4j_driver: Driver,
+) -> None:
+    _, run, plan, _ = _rebased_allocation(
+        neo4j_driver,
+        repair_id="repair-424-extra-completion",
+    )
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "CREATE (extra:CrmDealRepairAllocationCompletion) SET extra = properties(completion), "
+            "extra.completion_id = 'extra-completion'",
+            run_id=run.run_id,
+        ).consume()
+
+    with pytest.raises(RuntimeError, match="rebase lock authority rejected"):
+        _rebase(neo4j_driver, run, plan, "sha256:" + "0" * 64)
+    with pytest.raises(RuntimeError, match="ambiguous"):
+        CrmDealRepairRebaseRepository(
+            cast(Neo4jClient, _client(neo4j_driver))
+        ).effective_boundary_digest(
+            run,
+            approval_key_id=_TEST_ALLOCATION_ORIGIN_KEY_ID,
+            approval_secret=_TEST_ALLOCATION_ORIGIN_SECRET,
+        )
+
+
+def test_424_concurrent_exact_replay_converges_and_conflicting_request_rejects(
+    neo4j_driver: Driver,
+) -> None:
+    _, _, run, plan, observed_boundary_digest = _allocated_rebase_fixture(
+        neo4j_driver,
+        repair_id="repair-424-concurrent",
+    )
+
+    def rebase_once() -> RepairBoundaryRebaseResult:
+        return _rebase(neo4j_driver, run, plan, observed_boundary_digest)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: rebase_once(), range(2)))
+    assert sorted(result.replayed for result in results) == [False, True]
+    assert results[0].replacement_boundary_digest == results[1].replacement_boundary_digest
+    assert results[0].lease.revision == results[1].lease.revision == 3
+
+    conflicting = RepairBoundaryRebaseRequest(
+        RepairControlRequest(run.repair_id, run.run_id, "owner", "token", 2),
+        "approval-conflict",
+        "fresh-artifact-conflict",
+        observed_boundary_digest,
+    )
+    with pytest.raises(RuntimeError):
+        _rebase(
+            neo4j_driver,
+            run,
+            plan,
+            observed_boundary_digest,
+            request=conflicting,
+        )
+    with neo4j_driver.session() as session:
+        row = session.run(
+            "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "RETURN control.revision AS revision, count(completion) AS completions",
+            run_id=run.run_id,
+        ).single(strict=True)
+    assert dict(row) == {"revision": 3, "completions": 1}
+
+
+@pytest.mark.parametrize(
+    ("stage", "failure_query"),
+    (
+        ("lock", rebase_queries.LOCK_REBASE_AUTHORITY),
+        ("advance", rebase_queries.ADVANCE_REBASE_CONTROL),
+        ("commit", rebase_queries.COMMIT_REBASE_BOUNDARY),
+    ),
+    ids=("after-lock", "after-control-advance", "after-seal-commit"),
+)
+def test_424_rebase_write_failure_rolls_back_each_mutation_stage(
+    neo4j_driver: Driver,
+    stage: str,
+    failure_query: str,
+) -> None:
+    _, _, run, plan, observed_boundary_digest = _allocated_rebase_fixture(
+        neo4j_driver,
+        repair_id="repair-424-rollback-" + stage,
+    )
+    before: dict[str, object]
+    with neo4j_driver.session() as session:
+        before = dict(
+            session.run(
+                "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+                "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+                "RETURN properties(control) AS control, properties(completion) AS completion",
+                run_id=run.run_id,
+            ).single(strict=True)
+        )
+    repository = CrmDealRepairRebaseRepository(
+        cast(Neo4jClient, _FailAfterRebaseWriteClient(neo4j_driver, failure_query))
+    )
+
+    with pytest.raises(_InjectedRebaseWriteFailureError):
+        repository.rebase_boundary(
+            _rebase_request(run, observed_boundary_digest),
+            evidence=_rebase_evidence(plan),
+            fresh_artifact_manifest_hmac="c" * 64,
+            fresh_inventory_digest=run.inventory_digest,
+            fresh_producer_repository_sha="d" * 40,
+            fresh_producer_image_digest="sha256:" + "e" * 64,
+            approval_key_id=_TEST_ALLOCATION_ORIGIN_KEY_ID,
+            approval_secret=_TEST_ALLOCATION_ORIGIN_SECRET,
+        )
+    with neo4j_driver.session() as session:
+        after = dict(
+            session.run(
+                "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+                "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+                "RETURN properties(control) AS control, properties(completion) AS completion",
+                run_id=run.run_id,
+            ).single(strict=True)
+        )
+    assert after == before
+
+
 def test_424_rebase_mutation_guard_leaves_authority_unchanged(
     neo4j_driver: Driver,
 ) -> None:
     ledger, control, run = _qualified_rebase_control_repository(
         neo4j_driver, repair_id="repair-424-guard"
     )
-    _seed_quiesced_allocation_control(neo4j_driver, run)
+    _seed_quiesced_allocation_control(
+        neo4j_driver,
+        run,
+        source_record_pks=ledger.source_record_pks(run.repair_id),
+    )
     plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 1)
     _allocate(
         control,
@@ -3514,13 +3842,143 @@ def test_424_rebase_mutation_guard_leaves_authority_unchanged(
     assert dict(after) == dict(before)
 
 
+@pytest.mark.parametrize(
+    "guard",
+    (
+        "stale_owner",
+        "stale_token",
+        "stale_revision",
+        "source_instance_drift",
+        "negative_control_drift",
+        "mutation_result",
+        "verification",
+        "secondary_disposition",
+        "active_fence",
+        "missing_unit",
+        "extra_unit",
+        "corrupt_unit",
+    ),
+)
+def test_424_rebase_guard_matrix_rejects_without_authority_mutation(
+    neo4j_driver: Driver,
+    guard: str,
+) -> None:
+    ledger, _, run, plan, observed_boundary_digest = _allocated_rebase_fixture(
+        neo4j_driver,
+        repair_id="repair-424-guard-" + guard,
+    )
+    request = _rebase_request(run, observed_boundary_digest)
+    if guard == "stale_owner":
+        request = RepairBoundaryRebaseRequest(
+            RepairControlRequest(run.repair_id, run.run_id, "other-owner", "token", 2),
+            request.approval_id,
+            request.fresh_artifact_id,
+            request.expected_observed_boundary_digest,
+        )
+    elif guard == "stale_token":
+        request = RepairBoundaryRebaseRequest(
+            RepairControlRequest(run.repair_id, run.run_id, "owner", "other-token", 2),
+            request.approval_id,
+            request.fresh_artifact_id,
+            request.expected_observed_boundary_digest,
+        )
+    elif guard == "stale_revision":
+        request = RepairBoundaryRebaseRequest(
+            RepairControlRequest(run.repair_id, run.run_id, "owner", "token", 1),
+            request.approval_id,
+            request.fresh_artifact_id,
+            request.expected_observed_boundary_digest,
+        )
+    with neo4j_driver.session() as session:
+        if guard == "source_instance_drift":
+            session.run(
+                "MATCH (record:SourceRecord {source_record_pk: $source_record_pk}) "
+                "SET record.source_instance_id = 'foreign-instance'",
+                source_record_pk=_TEST_SOURCE_RECORD_PK,
+            ).consume()
+        elif guard == "negative_control_drift":
+            session.run(
+                "MATCH (record:SourceRecord {source_record_pk: 'repair-rebase-negative-0'}) "
+                "SET record.lifecycle_status = 'inactive'"
+            ).consume()
+        elif guard == "mutation_result":
+            session.run(
+                "CREATE (:CrmDealRepairMutationResult {run_id: $run_id, mutation_id: 'blocked'})",
+                run_id=run.run_id,
+            ).consume()
+        elif guard == "verification":
+            session.run(
+                "CREATE (:CrmDealRepairVerification {run_id: $run_id, verification_id: 'blocked'})",
+                run_id=run.run_id,
+            ).consume()
+        elif guard == "secondary_disposition":
+            session.run(
+                "CREATE (:CrmDealRepairSecondaryDisposition {run_id: $run_id, "
+                "disposition_id: 'blocked'})",
+                run_id=run.run_id,
+            ).consume()
+        elif guard == "active_fence":
+            session.run(
+                "CREATE (:CrmDealRepairFence {run_id: $run_id, fence_id: 'blocked', "
+                "state: 'claimed'})",
+                run_id=run.run_id,
+            ).consume()
+        elif guard == "missing_unit":
+            session.run(
+                "MATCH (unit:CrmDealRepairUnit {run_id: $run_id}) DETACH DELETE unit",
+                run_id=run.run_id,
+            ).consume()
+        elif guard == "extra_unit":
+            session.run(
+                "CREATE (:CrmDealRepairUnit {run_id: $run_id, unit_id: 'extra-unit', "
+                "state: 'allocated'})",
+                run_id=run.run_id,
+            ).consume()
+        elif guard == "corrupt_unit":
+            session.run(
+                "MATCH (unit:CrmDealRepairUnit {run_id: $run_id}) "
+                "SET unit.inventory_key = 'corrupt'",
+                run_id=run.run_id,
+            ).consume()
+        before = session.run(
+            "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "RETURN control.revision AS revision, control.sealed_boundary_digest AS seal, "
+            "completion.rebase_request_digest AS rebase_request_digest",
+            run_id=run.run_id,
+        ).single(strict=True)
+
+    with pytest.raises((ExpectedRepairBoundaryDriftError, RuntimeError)):
+        _rebase(
+            neo4j_driver,
+            run,
+            plan,
+            observed_boundary_digest,
+            request=request,
+        )
+    with neo4j_driver.session() as session:
+        after = session.run(
+            "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "RETURN control.revision AS revision, control.sealed_boundary_digest AS seal, "
+            "completion.rebase_request_digest AS rebase_request_digest",
+            run_id=run.run_id,
+        ).single(strict=True)
+    assert dict(after) == dict(before)
+    assert ledger.get_qualification(run.repair_id) == run
+
+
 def test_424_rebase_tampered_effective_evidence_and_later_drift_fail_closed(
     neo4j_driver: Driver,
 ) -> None:
     ledger, control, run = _qualified_rebase_control_repository(
         neo4j_driver, repair_id="repair-424-tamper"
     )
-    _seed_quiesced_allocation_control(neo4j_driver, run)
+    _seed_quiesced_allocation_control(
+        neo4j_driver,
+        run,
+        source_record_pks=ledger.source_record_pks(run.repair_id),
+    )
     plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 1)
     _allocate(
         control,

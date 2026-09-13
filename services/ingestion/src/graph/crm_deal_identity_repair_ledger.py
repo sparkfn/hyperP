@@ -178,7 +178,8 @@ class CrmDealRepairLedgerRepository:
             )
         if snapshot is None:
             return RepairRunStatus.drifted(
-                stored.run, "persisted_boundary_change",
+                stored.run,
+                "persisted_boundary_change",
                 effective_boundary_digest=effective_boundary_digest,
             )
         expected_boundary = effective_boundary_digest or stored.run.boundary_digest
@@ -190,7 +191,8 @@ class CrmDealRepairLedgerRepository:
                 effective_boundary_digest=effective_boundary_digest,
             )
         return RepairRunStatus.admissible(
-            stored.run, snapshot.boundary_digest,
+            stored.run,
+            snapshot.boundary_digest,
             effective_boundary_digest=effective_boundary_digest,
         )
 

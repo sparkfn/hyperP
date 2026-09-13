@@ -96,6 +96,52 @@ def _completion_receipt(
     return normalized
 
 
+def _validate_effective_rebase_authority(
+    control: Mapping[str, object],
+    completion: Mapping[str, object],
+) -> None:
+    """Require one coherent control, allocation, receipt, and replacement authority."""
+    receipt = _completion_receipt(completion, control)
+    control_instance_id = required_rebase_string(control, "control_instance_id")
+    control_run_id = required_rebase_string(control, "run_id")
+    control_owner_id = required_rebase_string(control, "owner_id")
+    control_token_digest = required_rebase_string(control, "token_digest")
+    control_state = required_rebase_string(control, "state")
+    control_revision = required_rebase_int(control, "revision")
+    sealed_revision = required_rebase_int(control, "sealed_revision")
+    original_boundary_digest = required_rebase_string(control, "boundary_digest")
+    sealed_boundary_digest = required_rebase_string(control, "sealed_boundary_digest")
+    if sealed_revision != control_revision or control_state != "allocated":
+        raise RuntimeError("repair rebase control authority differs")
+    if (
+        required_rebase_string(completion, "allocation_control_instance_id") != control_instance_id
+        or required_rebase_int(completion, "allocation_revision") != control_revision
+        or required_rebase_string(completion, "allocation_state") != control_state
+        or required_rebase_string(completion, "allocation_sealed_boundary_digest")
+        != sealed_boundary_digest
+    ):
+        raise RuntimeError("repair rebase allocation authority differs")
+    if (
+        receipt["control_instance_id"] != control_instance_id
+        or receipt["run_id"] != control_run_id
+        or receipt["owner_id"] != control_owner_id
+        or receipt["token_digest"] != control_token_digest
+        or receipt["revision"] != control_revision
+        or receipt["state"] != control_state
+        or receipt["boundary_digest"] != original_boundary_digest
+        or receipt["sealed_boundary_digest"] != sealed_boundary_digest
+    ):
+        raise RuntimeError("repair rebase receipt authority differs")
+    if (
+        required_rebase_string(completion, "boundary_digest") != original_boundary_digest
+        or required_rebase_string(completion, "rebase_replacement_boundary_digest")
+        != sealed_boundary_digest
+        or required_rebase_int(completion, "rebase_revision") != control_revision
+        or required_rebase_int(completion, "rebase_previous_revision") != control_revision - 1
+    ):
+        raise RuntimeError("repair rebase boundary authority differs")
+
+
 def _snapshot_components(snapshot: RepairBoundarySnapshot) -> dict[str, JsonValue]:
     return {
         "source_records_digest": snapshot.source_records_digest,
@@ -554,6 +600,7 @@ class CrmDealRepairRebaseRepository:
         )
         if receipt != required_rebase_string(completion, "rebase_receipt_digest"):
             raise RuntimeError("repair rebase receipt digest is invalid")
+        _validate_effective_rebase_authority(control, completion)
         _validate_allocation_receipt(
             _completion_receipt(completion, control),
             origin_key_id=approval_key_id,
@@ -609,6 +656,7 @@ class CrmDealRepairRebaseRepository:
             READ_EFFECTIVE_REBASE_BOUNDARY
             if require_live_dispatch
             else READ_EFFECTIVE_REBASE_BOUNDARY_TERMINAL,
+            repair_id=repair_id,
             run_id=run_id,
         ).single()
         if record is None:
