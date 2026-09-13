@@ -14,6 +14,7 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
 from threading import Event
@@ -22,12 +23,16 @@ from urllib.parse import urlparse
 
 import pytest
 from neo4j import Driver, GraphDatabase, ManagedTransaction, Record, Session
-from src.crm_deal_identity_repair.allocation import AllocationPlan
+from src.crm_deal_identity_repair.allocation import (
+    AllocationPlan,
+    RebaseAllocationEvidence,
+)
 from src.crm_deal_identity_repair.control_models import (
     RepairControlRequest,
     RepairDispatchLease,
     control_token_digest,
 )
+from src.crm_deal_identity_repair.digests import object_digest
 from src.crm_deal_identity_repair.execution_models import (
     RepairBoundarySnapshot,
     RepairExecutionBoundaryManifest,
@@ -44,7 +49,6 @@ from src.graph.bitrix_source_instances import BitrixSourceInstanceRepository
 from src.graph.bootstrap import bootstrap_legacy_bitrix_source_instance
 from src.graph.client import Neo4jClient
 from src.graph.crm_deal_identity_repair_control import CrmDealRepairControlRepository
-from src.graph.crm_deal_identity_repair_rebase import CrmDealRepairRebaseRepository
 from src.graph.crm_deal_identity_repair_ledger import (
     CrmDealRepairLedgerRepository,
     ExpectedRepairBoundaryDriftError,
@@ -56,8 +60,10 @@ from src.graph.crm_deal_identity_repair_ledger_migration import (
     assert_crm_deal_repair_ledger_ready,
     ensure_crm_deal_repair_ledger_ready,
 )
+from src.graph.crm_deal_identity_repair_rebase import CrmDealRepairRebaseRepository
 from src.graph.ingestion_control_instance_migration import migrate_ingestion_control_instances
 from src.graph.queries.crm_deal_identity_repair_mutation import STAGE_REPAIR_IDENTIFIERS
+from src.models import JsonValue
 
 T = TypeVar("T")
 
@@ -194,6 +200,15 @@ def _clear_repair_metadata(driver: Driver) -> None:
         ).consume()
         session.run(
             "MATCH (node) WHERE node.control_instance_id = 'other-control' DETACH DELETE node"
+        ).consume()
+        session.run(
+            "MATCH (person:Person) WHERE person.person_id STARTS WITH 'rebase-owner-' "
+            "DETACH DELETE person"
+        ).consume()
+        session.run(
+            "MATCH (identifier:Identifier) "
+            "WHERE identifier.normalized_value STARTS WITH 'contact-repair-rebase-negative-' "
+            "DETACH DELETE identifier"
         ).consume()
 
 
@@ -1143,6 +1158,52 @@ def _qualified_control_repository(
     ledger = _repository(driver)
     _persist_evidence(driver)
     snapshot = _snapshot(ledger)
+    run = ledger.qualify(_manifest(snapshot, repair_id=repair_id), snapshot)
+    return ledger, CrmDealRepairControlRepository(cast(Neo4jClient, _client(driver))), run
+
+
+def _qualified_rebase_control_repository(
+    driver: Driver, *, repair_id: str
+) -> tuple[CrmDealRepairLedgerRepository, CrmDealRepairControlRepository, RepairQualificationRun]:
+    """Create one executable row plus the six exact negative controls required by #424."""
+    ledger = _repository(driver)
+    _persist_evidence(driver)
+    negative_pks = tuple(f"repair-rebase-negative-{index}" for index in range(6))
+    with driver.session() as session:
+        session.run(
+            """
+            MATCH (source:SourceSystem {source_key: 'bitrix_chat'})
+            UNWIND $pks AS source_record_pk
+            CREATE (record:SourceRecord {source_record_pk: source_record_pk,
+              source_record_id: 'bitrix-crm-deal-' + source_record_pk,
+              source_record_version: '1', source_version_key: source_record_pk + ':1',
+              record_hash: 'sha256:negative-control', lifecycle_status: 'active',
+              is_latest: true, record_type: 'crm_deal',
+              source_instance_id: $source_instance_id,
+              raw_payload: '{"crm_deal_identity_policy_version":"legacy"}',
+              normalized_payload: '{}'})
+              -[:FROM_SOURCE]->(source)
+            CREATE (owner:Person {person_id: 'rebase-owner-' + source_record_pk})
+            CREATE (record)-[:LINKED_TO {is_active: true}]->(owner)
+            CREATE (identifier:Identifier {identifier_type: 'crm_contact_id',
+              normalized_value: 'contact-' + source_record_pk})
+            CREATE (owner)-[:IDENTIFIED_BY {is_active: true,
+              source_record_pk: source_record_pk}]->(identifier)
+            """,
+            pks=list(negative_pks),
+            source_instance_id=_TEST_SOURCE_INSTANCE_ID,
+        ).consume()
+    source_record_pks = tuple(sorted((_TEST_SOURCE_RECORD_PK, *negative_pks)))
+    snapshot = ledger.snapshot(
+        source_instance_id=_TEST_SOURCE_INSTANCE_ID,
+        control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        source_record_pks=source_record_pks,
+    )
+    assert (
+        snapshot.inventory_row_count,
+        snapshot.eligible_unit_count,
+        snapshot.negative_control_count,
+    ) == (7, 1, 6)
     run = ledger.qualify(_manifest(snapshot, repair_id=repair_id), snapshot)
     return ledger, CrmDealRepairControlRepository(cast(Neo4jClient, _client(driver))), run
 
@@ -2410,7 +2471,9 @@ def _seed_quiesced_allocation_control(
             "WITH 1 AS ignored "
             "MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', "
             "control_instance_id: $control_instance_id}) "
-            "SET dispatch.blocked = true, dispatch.repair_run_id = $run_id, "
+            "SET dispatch.blocked = true, "
+            "dispatch.block_reason = 'crm_deal_identity_repair_quiesce', "
+            "dispatch.repair_run_id = $run_id, "
             "dispatch.repair_owner_id = $owner, dispatch.repair_token_digest = $token_digest, "
             "dispatch.repair_revision = 1",
             repair_id=run.repair_id,
@@ -3282,6 +3345,24 @@ def _rebase_request(
     )
 
 
+def _rebase_evidence(plan: AllocationPlan) -> RebaseAllocationEvidence:
+    units = tuple(asdict(unit) for unit in plan.units)
+    unit_set_digest = object_digest(
+        b"crm-deal-identity-repair-allocation-unit-set-v1\x00",
+        {"units": list(units)},
+    )
+
+    def batches() -> Iterator[list[dict[str, JsonValue]]]:
+        yield [cast(dict[str, JsonValue], unit) for unit in units]
+
+    return RebaseAllocationEvidence(
+        plan.completion,
+        unit_set_digest,
+        tuple(unit.unit_id for unit in plan.units),
+        batches,
+    )
+
+
 def _rebase(
     driver: Driver,
     run: RepairQualificationRun,
@@ -3291,7 +3372,7 @@ def _rebase(
     repository = CrmDealRepairRebaseRepository(cast(Neo4jClient, _client(driver)))
     return repository.rebase_boundary(
         _rebase_request(run, boundary_digest),
-        plan=plan,
+        evidence=_rebase_evidence(plan),
         fresh_artifact_manifest_hmac="c" * 64,
         fresh_inventory_digest=run.inventory_digest,
         fresh_producer_repository_sha="d" * 40,
@@ -3304,7 +3385,9 @@ def _rebase(
 def test_424_rebase_rotates_only_effective_authority_and_replays(
     neo4j_driver: Driver,
 ) -> None:
-    ledger, control, run = _qualified_control_repository(neo4j_driver, repair_id="repair-424-ok")
+    ledger, control, run = _qualified_rebase_control_repository(
+        neo4j_driver, repair_id="repair-424-ok"
+    )
     _seed_quiesced_allocation_control(neo4j_driver, run)
     plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 1)
     _allocate(
@@ -3369,9 +3452,7 @@ def test_424_rebase_rotates_only_effective_authority_and_replays(
     assert after["allocation_revision"] == after["receipt_revision"] == 3
     assert isinstance(after["origin"], str) and isinstance(after["audit"], str)
     assert isinstance(after["hmac"], str)
-    rebase_repository = CrmDealRepairRebaseRepository(
-        cast(Neo4jClient, _client(neo4j_driver))
-    )
+    rebase_repository = CrmDealRepairRebaseRepository(cast(Neo4jClient, _client(neo4j_driver)))
     effective = rebase_repository.effective_boundary_digest(
         run,
         approval_key_id=_TEST_ALLOCATION_ORIGIN_KEY_ID,
@@ -3393,7 +3474,7 @@ def test_424_rebase_rotates_only_effective_authority_and_replays(
 def test_424_rebase_mutation_guard_leaves_authority_unchanged(
     neo4j_driver: Driver,
 ) -> None:
-    ledger, control, run = _qualified_control_repository(
+    ledger, control, run = _qualified_rebase_control_repository(
         neo4j_driver, repair_id="repair-424-guard"
     )
     _seed_quiesced_allocation_control(neo4j_driver, run)
@@ -3436,7 +3517,7 @@ def test_424_rebase_mutation_guard_leaves_authority_unchanged(
 def test_424_rebase_tampered_effective_evidence_and_later_drift_fail_closed(
     neo4j_driver: Driver,
 ) -> None:
-    ledger, control, run = _qualified_control_repository(
+    ledger, control, run = _qualified_rebase_control_repository(
         neo4j_driver, repair_id="repair-424-tamper"
     )
     _seed_quiesced_allocation_control(neo4j_driver, run)

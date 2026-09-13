@@ -12,7 +12,7 @@ from itertools import zip_longest
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
-from src.crm_deal_identity_repair.allocation import AllocationPlan
+from src.crm_deal_identity_repair.allocation import RebaseAllocationEvidence
 from src.crm_deal_identity_repair.cli import parse_arguments
 from src.crm_deal_identity_repair.control_models import RepairControlRequest
 from src.crm_deal_identity_repair.execution_models import (
@@ -53,7 +53,7 @@ class _RebaseRepository(Protocol):
         self,
         request: RepairBoundaryRebaseRequest,
         *,
-        plan: AllocationPlan,
+        evidence: RebaseAllocationEvidence,
         fresh_artifact_manifest_hmac: str,
         fresh_inventory_digest: str,
         fresh_producer_repository_sha: str,
@@ -270,7 +270,7 @@ def _rebase_boundary(
     control: RepairControlRequest,
 ) -> RepairBoundaryRebaseResult:
     """Authenticate original/fresh artifacts before the one repository CAS."""
-    from src.crm_deal_identity_repair.allocation import plan_allocation
+    from src.crm_deal_identity_repair.allocation import stream_rebase_allocation_evidence
     from src.crm_deal_identity_repair.approval_overlay import (
         assert_overlay_binds_qualification,
         verify_approval_overlay,
@@ -279,10 +279,14 @@ def _rebase_boundary(
         repair_artifact_store_from_settings,
         repair_inventory_configuration_digest,
     )
+    from src.crm_deal_identity_repair.integration_runtime import _approval_overlay_path
     from src.crm_deal_identity_repair.qualification import (
         iter_verified_inventory_lines,
         verify_qualified_repair_artifact,
         verify_rebase_artifact,
+    )
+    from src.crm_deal_identity_repair.qualification_inventory import (
+        recompute_population_counts_from_lines,
     )
 
     secret = settings.crm_deal_identity_repair_approval_key_secret.get_secret_value().encode()
@@ -300,19 +304,32 @@ def _rebase_boundary(
             configuration_digest=configuration_digest,
         )
     _assert_fresh_rebase_inventory(original, fresh, run)
+    original_population = recompute_population_counts_from_lines(
+        iter_verified_inventory_lines(original)
+    )
+    fresh_population = recompute_population_counts_from_lines(iter_verified_inventory_lines(fresh))
+    if (
+        original_population != original.population_counts
+        or fresh_population != fresh.population_counts
+    ):
+        raise RuntimeError("repair rebase population counts are not recomputable")
+    if original_population != fresh_population:
+        raise RuntimeError("repair rebase fresh population counts differ")
     overlay = verify_approval_overlay(
-        Path(settings.crm_deal_identity_repair_approval_root) / f"{arguments.approval_id}.json",
+        _approval_overlay_path(
+            settings.crm_deal_identity_repair_approval_root,
+            arguments.approval_id,
+        ),
         secret=secret,
     )
+    if overlay.approval_id != arguments.approval_id:
+        raise RuntimeError("repair approval overlay ID does not match the request")
     assert_overlay_binds_qualification(overlay, run=run, expected_key_id=key_id)
-    inventory = tuple(
-        _inventory_item(json.loads(line)) for line in iter_verified_inventory_lines(original)
-    )
-    plan = plan_allocation(
+    evidence = stream_rebase_allocation_evidence(
         run_id=run.run_id,
         boundary_digest=run.boundary_digest,
-        inventory=inventory,
         overlay=overlay,
+        inventory_lines=lambda: iter_verified_inventory_lines(original),
     )
     request = RepairBoundaryRebaseRequest(
         control,
@@ -320,9 +337,9 @@ def _rebase_boundary(
         arguments.fresh_artifact_id,
         arguments.expected_observed_boundary_digest,
     )
-    result = repository.rebase_boundary(
+    return repository.rebase_boundary(
         request,
-        plan=plan,
+        evidence=evidence,
         fresh_artifact_manifest_hmac=fresh.manifest.manifest_hmac,
         fresh_inventory_digest=fresh.inventory_digest,
         fresh_producer_repository_sha=fresh.manifest.provenance.repository_sha,
@@ -330,7 +347,6 @@ def _rebase_boundary(
         approval_key_id=key_id,
         approval_secret=secret,
     )
-    return result
 
 
 def _assert_fresh_rebase_inventory(
@@ -347,12 +363,14 @@ def _assert_fresh_rebase_inventory(
         fresh.eligible_unit_count,
         fresh.negative_control_count,
         fresh.inventory_source_record_pks,
+        fresh.population_counts,
     ) != (
         run.inventory_digest,
         run.inventory_row_count,
         run.eligible_unit_count,
         run.negative_control_count,
         original.inventory_source_record_pks,
+        original.population_counts,
     ):
         raise RuntimeError("repair rebase fresh artifact does not preserve allocated inventory")
     if fresh.negative_control_count != 6:

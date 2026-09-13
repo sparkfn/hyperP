@@ -420,6 +420,10 @@ def test_admission_query_uses_durable_checkpoint_for_prior_unit_settlement() -> 
     assert lock in query
     assert membership in query
     assert query.index(lock) < query.index(membership)
+    assert "MATCH (control:CrmDealRepairControl {run_id: $run_id, repair_id: $repair_id})" in query
+    authority = "MATCH (run:CrmDealRepairRun {repair_id: $repair_id, run_id: $run_id,"
+    assert authority in query
+    assert query.index(lock) < query.index(authority) < query.index(membership)
 
 
 def test_rollback_and_admission_share_the_run_control_serialization_lock() -> None:
@@ -577,6 +581,71 @@ def test_release_authority_binds_request_digest_for_exact_post_release_replay(
 
     assert loaded == context.authority
     assert transaction.calls[0][1]["request_digest"] == request.request_digest
+
+
+@pytest.mark.parametrize(
+    ("operation", "authority_query", "require_live_dispatch"),
+    (
+        ("apply", queries.READ_AUTHORITY, True),
+        ("accept", queries.READ_RELEASE_AUTHORITY, False),
+        ("release-dispatch", queries.READ_RELEASE_AUTHORITY, False),
+    ),
+)
+def test_rebased_authority_uses_terminal_authentication_only_for_terminal_replays(
+    monkeypatch: pytest.MonkeyPatch,
+    operation: IntegrationOperation,
+    authority_query: str,
+    require_live_dispatch: bool,
+) -> None:
+    """Accept/release replays authenticate the signed seal without reopening live admission."""
+    context = _context()
+    request = _request(operation, unit_id=None if operation != "apply" else "unit")
+    completion = {
+        "completion_id": context.authority.completion_id,
+        "overlay_digest": context.authority.overlay_digest,
+        "allocation_digest": context.authority.allocation_digest,
+        "unit_set_digest": context.authority.allocation_unit_set_digest,
+        "request_digest": context.authority.allocation_request_digest,
+        "allocation_origin_key_id": context.authority.allocation_origin_key_id,
+        "allocation_origin_hmac": context.authority.allocation_origin_hmac,
+        "receipt_digest": context.authority.allocation_receipt_digest,
+        "allocation_revision": context.authority.allocation_revision,
+        "unit_count": 0,
+        "rebase_request_digest": "rebase-request",
+    }
+    transaction = _Transaction(
+        {authority_query: [{"completion": completion, "sealed_boundary_digest": _DIGEST}]}
+    )
+    repository = _repository(transaction)
+    import src.graph.crm_deal_identity_repair_integration as integration_module
+    from src.graph.crm_deal_identity_repair_rebase import CrmDealRepairRebaseRepository
+
+    observed: list[bool] = []
+
+    def effective_boundary(
+        _self: object,
+        _tx: ManagedTransaction,
+        _run: RepairQualificationRun,
+        *,
+        approval_key_id: str | None,
+        approval_secret: bytes | None,
+        require_live_dispatch: bool = True,
+    ) -> str:
+        assert approval_key_id == "key"
+        assert approval_secret == b"secret"
+        observed.append(require_live_dispatch)
+        return _DIGEST
+
+    monkeypatch.setattr(integration_module, "allocation_origin_hmac", lambda **_: "b" * 64)
+    monkeypatch.setattr(
+        CrmDealRepairRebaseRepository,
+        "effective_boundary_digest_from_transaction",
+        effective_boundary,
+    )
+
+    loaded = repository.load_authority(request, context.run, _DIGEST, "key", b"secret")
+    assert loaded == context.authority
+    assert observed == [require_live_dispatch]
 
 
 def test_set_digests_are_independent_of_database_collection_order() -> None:

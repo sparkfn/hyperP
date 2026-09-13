@@ -119,15 +119,21 @@ MATCH (unit:CrmDealRepairUnit {run_id: $run_id, unit_id: $unit_id})
 RETURN properties(unit) AS unit
 """
 
+_ADMISSION_SERIALIZE = """
+MATCH (control:CrmDealRepairControl {run_id: $run_id, repair_id: $repair_id})
+SET control.integration_admission_updated_at = datetime()
+WITH control
+"""
+
+
 CLAIM_ADMITTED_FENCE = (
-    _AUTHORITY
+    _ADMISSION_SERIALIZE
+    + _AUTHORITY
     + """
 MATCH (unit:CrmDealRepairUnit {run_id: $run_id, unit_id: $unit_id,
   generation: $generation, sequence: $sequence, attempt: $attempt,
   boundary_digest: $boundary_digest, inventory_fingerprint: $inventory_fingerprint,
   inventory_binding_digest: $inventory_binding_digest})
-// Serialize competing admissions on the run control in this same transaction.
-SET control.integration_admission_updated_at = datetime()
 WITH control, completion, unit
 WHERE unit.unit_id IN completion.unit_ids
 OPTIONAL MATCH (accepted:CrmDealRepairAcceptance {run_id: $run_id})

@@ -5,7 +5,6 @@ from __future__ import annotations
 import hmac
 from collections.abc import Mapping
 from dataclasses import dataclass
-from typing import cast
 
 from src.crm_deal_identity_repair.control_models import RepairControlRequest, RepairDispatchLease
 from src.crm_deal_identity_repair.digests import object_digest
@@ -166,9 +165,3 @@ def required_rebase_int(values: Mapping[str, object], key: str) -> int:
     if not isinstance(value, int) or isinstance(value, bool) or value < 0:
         raise RuntimeError("repair rebase durable evidence is malformed")
     return value
-
-
-def mapping_from_record(value: object) -> Mapping[str, object]:
-    if not isinstance(value, Mapping):
-        raise RuntimeError("repair rebase durable evidence is malformed")
-    return cast(Mapping[str, object], value)

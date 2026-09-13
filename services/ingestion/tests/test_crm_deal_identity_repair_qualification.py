@@ -24,6 +24,9 @@ from src.crm_deal_identity_repair.qualification import (
     verify_rebase_artifact,
     verify_repair_artifact,
 )
+from src.crm_deal_identity_repair.qualification_inventory import (
+    recompute_population_counts_from_lines,
+)
 from src.models import JsonValue
 
 
@@ -169,10 +172,12 @@ def _manifest(
                 "inventory_mode": "graph_only_read_only",
                 "source_system": "bitrix_chat",
             }
-        ).decode().removesuffix("\n"),
-        counts_json=canonical_json_bytes(
-            {"inventory_rows": 2, **_POPULATION_COUNTS}
-        ).decode().removesuffix("\n"),
+        )
+        .decode()
+        .removesuffix("\n"),
+        counts_json=canonical_json_bytes({"inventory_rows": 2, **_POPULATION_COUNTS})
+        .decode()
+        .removesuffix("\n"),
         total_bytes=sum(len(content) for content in documents.values()),
     )
     return ArtifactManifest(
@@ -268,9 +273,7 @@ def test_qualification_accepts_serialized_manifest_provenance(tmp_path: Path) ->
 
 
 @pytest.mark.parametrize("field", ("restricted_boundaries_json", "counts_json"))
-def test_qualification_rejects_noncanonical_provenance_text(
-    tmp_path: Path, field: str
-) -> None:
+def test_qualification_rejects_noncanonical_provenance_text(tmp_path: Path, field: str) -> None:
     manifest = parse_manifest_bytes(canonical_json_bytes(_manifest(tmp_path).to_dict()))
     provenance = manifest.provenance
     invalid_provenance = replace(
@@ -613,3 +616,22 @@ def test_rebase_artifact_accepts_authenticated_prior_producer_but_qualify_stays_
             image_digest="sha256:" + "f" * 64,
             configuration_digest="sha256:" + "c" * 64,
         )
+
+
+def test_population_recomputation_uses_authenticated_inventory_row_semantics() -> None:
+    rows = (
+        _row(deal_id="1", source_record_pk="pk-1", partition="ownership_repair"),
+        _row(deal_id="2", source_record_pk="pk-2", partition="negative_control"),
+    )
+    counts = recompute_population_counts_from_lines(_inventory(rows).splitlines(keepends=True))
+    assert counts == {
+        "active_deal_count": 2,
+        "authoritative_version_count": 2,
+        "active_link_count": 0,
+        "active_distinct_owner_count": 0,
+        "multi_linked_deal_count": 0,
+        "maximum_links_per_deal": 0,
+        "maximum_distinct_owners_per_deal": 0,
+        "projection_cleanup_deal_count": 0,
+        "clean_deal_count": 1,
+    }

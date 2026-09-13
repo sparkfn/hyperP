@@ -19,6 +19,7 @@ from src.crm_deal_identity_repair.qualification_inventory import (
     canonical_json_object,
     canonical_json_text_object,
     inventory_source_record_pks_from_lines,
+    population_counts_from_manifest,
     validate_artifact_count_boundary,
 )
 
@@ -56,6 +57,7 @@ class VerifiedRepairArtifact:
     inventory_row_count: int
     eligible_unit_count: int
     negative_control_count: int
+    population_counts: dict[str, int]
 
 
 def read_qualified_stale_run_id(artifact: VerifiedRepairArtifact) -> str:
@@ -153,8 +155,8 @@ def verify_repair_artifact(
         len(pks),
         eligible_count,
         negative_count,
+        population_counts_from_manifest(manifest),
     )
-
 
 
 def verify_rebase_artifact(
@@ -197,7 +199,14 @@ def verify_rebase_artifact(
         manifest, documents, digest, len(pks), eligible_count, negative_count
     )
     return VerifiedRepairArtifact(
-        manifest, inventory_file_names, pks, digest, len(pks), eligible_count, negative_count
+        manifest,
+        inventory_file_names,
+        pks,
+        digest,
+        len(pks),
+        eligible_count,
+        negative_count,
+        population_counts_from_manifest(manifest),
     )
 
 
@@ -223,10 +232,7 @@ def _validate_rebase_authenticated_manifest(
         "stale_run_state",
     }:
         raise RuntimeError("repair artifact metadata fields are invalid")
-    if (
-        metadata.get("repair_id") != repair_id
-        or metadata.get("execution_allowed") is not False
-    ):
+    if metadata.get("repair_id") != repair_id or metadata.get("execution_allowed") is not False:
         raise RuntimeError("repair artifact identity is not eligible for rebase")
     if (
         metadata.get("environment") != "staging"
@@ -246,6 +252,7 @@ def _validate_rebase_authenticated_manifest(
     )
     if restricted != _RESTRICTED_BOUNDARY:
         raise RuntimeError("repair artifact restricted-boundaries provenance is invalid")
+
 
 def _validate_authenticated_manifest(
     manifest: ArtifactManifest,

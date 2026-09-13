@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import asdict
+from collections.abc import Mapping
 from typing import cast
 
 from neo4j import ManagedTransaction
 
-from src.crm_deal_identity_repair.allocation import AllocationPlan, allocation_origin_hmac
-from src.crm_deal_identity_repair.digests import object_digest
+from src.crm_deal_identity_repair.allocation import (
+    RebaseAllocationEvidence,
+    allocation_origin_hmac,
+)
 from src.crm_deal_identity_repair.execution_boundary_models import RepairBoundarySnapshot
 from src.crm_deal_identity_repair.execution_status_models import RepairQualificationRun
 from src.crm_deal_identity_repair.rebase import (
@@ -25,7 +27,6 @@ from src.graph.client import Neo4jClient
 from src.graph.crm_deal_identity_repair_control import (
     _allocation_receipt_digest,
     _lease,
-    _mapping,
     _required_int,
     _validate_allocation_receipt,
 )
@@ -37,10 +38,63 @@ from src.graph.queries.crm_deal_identity_repair_rebase import (
     COMMIT_REBASE_BOUNDARY,
     LOCK_REBASE_AUTHORITY,
     READ_EFFECTIVE_REBASE_BOUNDARY,
+    READ_EFFECTIVE_REBASE_BOUNDARY_TERMINAL,
     READ_REBASE_GUARDS,
     READ_REBASE_REPLAY,
+    READ_REBASE_REPLAY_INTEGRITY,
+    READ_REBASE_UNIT_BATCH,
 )
 from src.models import JsonValue
+
+
+def _mapping(value: object, label: str) -> Mapping[str, object]:
+    """Decode a Neo4j property map without importing an unrelated repository helper."""
+    if not isinstance(value, Mapping):
+        raise RuntimeError("repair rebase " + label + " is malformed")
+    return cast(Mapping[str, object], value)
+
+
+def _completion_receipt(
+    completion: Mapping[str, object], control: Mapping[str, object]
+) -> dict[str, object]:
+    """Normalize completion receipt fields for legacy allocation receipt validation."""
+    fields = {
+        "control_instance_id": "receipt_control_instance_id",
+        "run_id": "receipt_run_id",
+        "owner_id": "receipt_owner_id",
+        "token_digest": "receipt_token_digest",
+        "revision": "receipt_revision",
+        "state": "receipt_state",
+        "boundary_digest": "receipt_boundary_digest",
+        "sealed_boundary_digest": "receipt_sealed_boundary_digest",
+        "receipt_digest": "receipt_digest",
+        "completion_id": "completion_id",
+        "overlay_digest": "overlay_digest",
+        "allocation_digest": "allocation_digest",
+        "unit_count": "unit_count",
+        "unit_set_digest": "unit_set_digest",
+        "request_digest": "request_digest",
+        "allocation_origin_key_id": "allocation_origin_key_id",
+        "allocation_origin_hmac": "allocation_origin_hmac",
+    }
+    normalized: dict[str, object] = {}
+    for target, source in fields.items():
+        value = completion.get(source)
+        if value is None:
+            raise RuntimeError("repair rebase completion receipt is malformed")
+        normalized[target] = value
+    if (
+        normalized["control_instance_id"] != control.get("control_instance_id")
+        or normalized["run_id"] != control.get("run_id")
+        or normalized["owner_id"] != control.get("owner_id")
+        or normalized["token_digest"] != control.get("token_digest")
+        or normalized["revision"] != control.get("revision")
+        or normalized["state"] != control.get("state")
+        or normalized["sealed_boundary_digest"] != control.get("sealed_boundary_digest")
+    ):
+        raise RuntimeError("repair rebase completion receipt authority differs")
+    return normalized
+
 
 def _snapshot_components(snapshot: RepairBoundarySnapshot) -> dict[str, JsonValue]:
     return {
@@ -58,12 +112,8 @@ def _snapshot_components(snapshot: RepairBoundarySnapshot) -> dict[str, JsonValu
 def _control_components(control: object) -> dict[str, JsonValue]:
     values = _mapping(control, "effective rebase control")
     return {
-        "source_records_digest": required_rebase_string(
-            values, "sealed_source_records_digest"
-        ),
-        "source_instance_digest": required_rebase_string(
-            values, "sealed_source_instance_digest"
-        ),
+        "source_records_digest": required_rebase_string(values, "sealed_source_records_digest"),
+        "source_instance_digest": required_rebase_string(values, "sealed_source_instance_digest"),
         "stale_run_evidence_digest": required_rebase_string(
             values, "sealed_stale_run_evidence_digest"
         ),
@@ -97,7 +147,7 @@ class CrmDealRepairRebaseRepository:
         self,
         request: RepairBoundaryRebaseRequest,
         *,
-        plan: AllocationPlan,
+        evidence: RebaseAllocationEvidence,
         fresh_artifact_manifest_hmac: str,
         fresh_inventory_digest: str,
         fresh_producer_repository_sha: str,
@@ -108,19 +158,15 @@ class CrmDealRepairRebaseRepository:
         """Atomically rotate only an intact allocated run's effective boundary."""
         if not approval_key_id or not approval_secret:
             raise ValueError("rebase signing configuration is missing")
-        units: list[JsonValue] = [cast(JsonValue, asdict(unit)) for unit in plan.units]
-        unit_ids = [unit.unit_id for unit in plan.units]
-        unit_set_digest = object_digest(
-            b"crm-deal-identity-repair-allocation-unit-set-v1\x00", {"units": units}
-        )
-        if len(unit_ids) != len(set(unit_ids)):
-            raise RuntimeError("rebase expected allocation has duplicate unit IDs")
+        unit_set_digest = evidence.unit_set_digest
+        expected_completion = evidence.completion
         replay = self._read_rebase_replay(
             request,
             fresh_artifact_manifest_hmac=fresh_artifact_manifest_hmac,
             fresh_inventory_digest=fresh_inventory_digest,
             fresh_producer_repository_sha=fresh_producer_repository_sha,
             fresh_producer_image_digest=fresh_producer_image_digest,
+            evidence=evidence,
             approval_key_id=approval_key_id,
             approval_secret=approval_secret,
         )
@@ -132,7 +178,7 @@ class CrmDealRepairRebaseRepository:
                 LOCK_REBASE_AUTHORITY,
                 repair_id=request.control.repair_id,
                 run_id=request.control.run_id,
-                boundary_digest=plan.completion.boundary_digest,
+                boundary_digest=expected_completion.boundary_digest,
                 rebase_request_digest=request.request_digest,
             ).single()
             if locked is None:
@@ -159,21 +205,21 @@ class CrmDealRepairRebaseRepository:
                 token_digest=request.control.token_digest,
                 expected_revision=request.control.expected_revision,
                 boundary_digest=stored.run.boundary_digest,
-                completion_id=plan.completion.completion_id,
-                overlay_digest=plan.completion.overlay_digest,
-                allocation_digest=plan.completion.allocation_digest,
-                unit_count=plan.completion.unit_count,
-                unit_ids=unit_ids,
+                completion_id=expected_completion.completion_id,
+                overlay_digest=expected_completion.overlay_digest,
+                allocation_digest=expected_completion.allocation_digest,
+                unit_count=expected_completion.unit_count,
+                unit_ids=list(evidence.unit_ids),
                 unit_set_digest=unit_set_digest,
-                units=units,
                 approval_key_id=approval_key_id,
             ).single()
             if guard is None:
                 raise RuntimeError("repair rebase allocation or zero-execution guard rejected")
+            self._validate_unit_batches(tx, request.control.run_id, evidence)
             control = _mapping(guard["control"], "rebase control")
-            completion = _mapping(guard["completion"], "rebase completion")
+            completion_properties = _mapping(guard["completion"], "rebase completion")
             _validate_allocation_receipt(
-                completion,
+                _completion_receipt(completion_properties, control),
                 origin_key_id=approval_key_id,
                 origin_secret=approval_secret,
             )
@@ -202,7 +248,7 @@ class CrmDealRepairRebaseRepository:
                 owner_id=request.control.owner_id,
                 token_digest=request.control.token_digest,
                 expected_revision=request.control.expected_revision,
-                completion_id=plan.completion.completion_id,
+                completion_id=expected_completion.completion_id,
             ).single()
             if advanced is None:
                 raise RuntimeError("repair rebase lifecycle compare-and-set was rejected")
@@ -214,11 +260,13 @@ class CrmDealRepairRebaseRepository:
                 stored.source_record_pks,
             )
             previous_boundary = required_rebase_string(control, "sealed_boundary_digest")
-            previous_receipt = required_rebase_string(completion, "receipt_digest")
-            previous_origin = required_rebase_string(completion, "allocation_origin_hmac")
-            completion_id = required_rebase_string(completion, "completion_id")
-            allocation_digest = required_rebase_string(completion, "allocation_digest")
-            request_digest = required_rebase_string(completion, "request_digest")
+            previous_receipt = required_rebase_string(completion_properties, "receipt_digest")
+            previous_origin = required_rebase_string(
+                completion_properties, "allocation_origin_hmac"
+            )
+            completion_id = required_rebase_string(completion_properties, "completion_id")
+            allocation_digest = required_rebase_string(completion_properties, "allocation_digest")
+            request_digest = required_rebase_string(completion_properties, "request_digest")
             rebase_receipt = rebase_receipt_digest(
                 request_digest=request.request_digest,
                 run_id=stored.run.run_id,
@@ -247,9 +295,9 @@ class CrmDealRepairRebaseRepository:
                 boundary_digest=stored.run.boundary_digest,
                 sealed_boundary_digest=after.boundary_digest,
                 completion_id=completion_id,
-                overlay_digest=plan.completion.overlay_digest,
+                overlay_digest=expected_completion.overlay_digest,
                 allocation_digest=allocation_digest,
-                unit_count=plan.completion.unit_count,
+                unit_count=expected_completion.unit_count,
                 unit_set_digest=unit_set_digest,
                 request_digest=request_digest,
             )
@@ -325,6 +373,7 @@ class CrmDealRepairRebaseRepository:
                 fresh_inventory_digest=fresh_inventory_digest,
                 fresh_producer_repository_sha=fresh_producer_repository_sha,
                 fresh_producer_image_digest=fresh_producer_image_digest,
+                evidence=evidence,
                 approval_key_id=approval_key_id,
                 approval_secret=approval_secret,
             )
@@ -337,12 +386,30 @@ class CrmDealRepairRebaseRepository:
             fresh_inventory_digest=fresh_inventory_digest,
             fresh_producer_repository_sha=fresh_producer_repository_sha,
             fresh_producer_image_digest=fresh_producer_image_digest,
+            evidence=evidence,
             approval_key_id=approval_key_id,
             approval_secret=approval_secret,
         )
         if durable is None or not _same_rebase_authority(committed, durable):
             raise RuntimeError("repair rebase durable readback differs")
         return committed
+
+    @staticmethod
+    def _validate_unit_batches(
+        tx: ManagedTransaction,
+        run_id: str,
+        evidence: RebaseAllocationEvidence,
+    ) -> None:
+        expected_total = 0
+        for batch in evidence.unit_batches():
+            record = tx.run(READ_REBASE_UNIT_BATCH, run_id=run_id, units=batch).single()
+            if record is None or _required_int(record["matched_count"], "batch count") != len(
+                batch
+            ):
+                raise RuntimeError("repair rebase stored unit batch differs")
+            expected_total += len(batch)
+        if expected_total != evidence.completion.unit_count:
+            raise RuntimeError("repair rebase expected unit count differs")
 
     def _read_rebase_replay(
         self,
@@ -352,6 +419,7 @@ class CrmDealRepairRebaseRepository:
         fresh_inventory_digest: str,
         fresh_producer_repository_sha: str,
         fresh_producer_image_digest: str,
+        evidence: RebaseAllocationEvidence,
         approval_key_id: str,
         approval_secret: bytes,
     ) -> RepairBoundaryRebaseResult | None:
@@ -381,6 +449,33 @@ class CrmDealRepairRebaseRepository:
                 != fresh_producer_image_digest
             ):
                 raise RuntimeError("repair rebase replay fresh artifact evidence differs")
+            qualification = tx.run(GET_REPAIR_RUN, repair_id=request.control.repair_id).single()
+            if qualification is None:
+                raise RuntimeError("repair rebase replay qualification is missing")
+            stored = stored_qualification_from_record(request.control.repair_id, qualification)
+            snapshot = status_snapshot_from_transaction(
+                tx,
+                stored.run.source_instance_id,
+                stored.run.control_instance_id,
+                stored.source_record_pks,
+            )
+            control = _mapping(record["control"], "rebase replay control")
+            if snapshot.boundary_digest != required_rebase_string(
+                control, "sealed_boundary_digest"
+            ):
+                raise RuntimeError("repair rebase replay boundary drift detected")
+            integrity = tx.run(
+                READ_REBASE_REPLAY_INTEGRITY,
+                run_id=request.control.run_id,
+                completion_id=evidence.completion.completion_id,
+                unit_count=evidence.completion.unit_count,
+                unit_ids=list(evidence.unit_ids),
+                unit_set_digest=evidence.unit_set_digest,
+                rebase_request_digest=request.request_digest,
+            ).single()
+            if integrity is None:
+                raise RuntimeError("repair rebase replay allocation integrity rejected")
+            self._validate_unit_batches(tx, request.control.run_id, evidence)
             return self._rebase_result(
                 record,
                 request=request,
@@ -440,9 +535,7 @@ class CrmDealRepairRebaseRepository:
             previous_receipt_digest=required_rebase_string(
                 completion, "rebase_previous_receipt_digest"
             ),
-            previous_origin_hmac=required_rebase_string(
-                completion, "rebase_previous_origin_hmac"
-            ),
+            previous_origin_hmac=required_rebase_string(completion, "rebase_previous_origin_hmac"),
             revision=revision,
         )
         if audit != expected_audit:
@@ -462,7 +555,7 @@ class CrmDealRepairRebaseRepository:
         if receipt != required_rebase_string(completion, "rebase_receipt_digest"):
             raise RuntimeError("repair rebase receipt digest is invalid")
         _validate_allocation_receipt(
-            completion,
+            _completion_receipt(completion, control),
             origin_key_id=approval_key_id,
             origin_secret=approval_secret,
         )
@@ -487,6 +580,7 @@ class CrmDealRepairRebaseRepository:
         *,
         approval_key_id: str | None,
         approval_secret: bytes | None,
+        require_live_dispatch: bool = True,
     ) -> str | None:
         """Read the effective seal in its own transaction for status callers."""
         return self._client.execute_read(
@@ -495,6 +589,7 @@ class CrmDealRepairRebaseRepository:
                 run,
                 approval_key_id=approval_key_id,
                 approval_secret=approval_secret,
+                require_live_dispatch=require_live_dispatch,
             )
         )
 
@@ -505,11 +600,17 @@ class CrmDealRepairRebaseRepository:
         *,
         approval_key_id: str | None,
         approval_secret: bytes | None,
+        require_live_dispatch: bool = True,
     ) -> str | None:
         """Authenticate a replacement seal without opening a nested transaction."""
         repair_id = run.repair_id
         run_id = run.run_id
-        record = tx.run(READ_EFFECTIVE_REBASE_BOUNDARY, run_id=run_id).single()
+        record = tx.run(
+            READ_EFFECTIVE_REBASE_BOUNDARY
+            if require_live_dispatch
+            else READ_EFFECTIVE_REBASE_BOUNDARY_TERMINAL,
+            run_id=run_id,
+        ).single()
         if record is None:
             return None
         control = _mapping(record["control"], "effective rebase control")

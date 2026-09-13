@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterable
+from typing import cast
 
 from src.connectors.bitrix_stage_history.artifact_manifest import (
     ArtifactManifest,
@@ -151,6 +152,65 @@ def _validate_count_documents(
         raise RuntimeError("repair artifact document inventory digest is inconsistent")
     if impact.get("population_counts") != population_counts:
         raise RuntimeError("repair artifact impact population counts are inconsistent")
+
+
+def recompute_population_counts_from_lines(lines: Iterable[bytes]) -> dict[str, int]:
+    """Recompute #254 population equations from authenticated canonical rows."""
+    authoritative_versions = 0
+    active_links = 0
+    active_owners = 0
+    maximum_links = 0
+    maximum_owners = 0
+    active_deals: set[str] = set()
+    multi_linked_deals: set[str] = set()
+    cleanup_deals: set[str] = set()
+    clean_deals: set[str] = set()
+    for line in lines:
+        item = _inventory_item(canonical_json_object(line, "repair inventory JSONL"))
+        payload = item.payload
+        lifecycle = payload.get("lifecycle_status")
+        if lifecycle != "active" and not (lifecycle is None and payload.get("is_latest") is True):
+            continue
+        authoritative_versions += 1
+        active_deals.add(item.source_record_id)
+        links = payload.get("linked_people")
+        if not isinstance(links, list):
+            raise RuntimeError("repair inventory linked_people is invalid")
+        active = [
+            link for link in links if isinstance(link, dict) and link.get("is_active") is not False
+        ]
+        owner_ids = {
+            person_id
+            for link in active
+            if isinstance((person_id := link.get("person_id")), str) and person_id
+        }
+        active_links += len(active)
+        active_owners += len(owner_ids)
+        maximum_links = max(maximum_links, len(active))
+        maximum_owners = max(maximum_owners, len(owner_ids))
+        if len(owner_ids) > 1:
+            multi_linked_deals.add(item.source_record_id)
+        if "projection_cleanup" in item.repair_conditions:
+            cleanup_deals.add(item.source_record_id)
+        if item.repair_conditions == ("negative_control",):
+            clean_deals.add(item.source_record_id)
+    counts = {
+        "active_deal_count": len(active_deals),
+        "authoritative_version_count": authoritative_versions,
+        "active_link_count": active_links,
+        "active_distinct_owner_count": active_owners,
+        "multi_linked_deal_count": len(multi_linked_deals),
+        "maximum_links_per_deal": maximum_links,
+        "maximum_distinct_owners_per_deal": maximum_owners,
+        "projection_cleanup_deal_count": len(cleanup_deals),
+        "clean_deal_count": len(clean_deals),
+    }
+    return _population_counts(cast(JsonValue, counts))
+
+
+def population_counts_from_manifest(manifest: ArtifactManifest) -> dict[str, int]:
+    """Decode the authenticated population-count projection for rebase comparison."""
+    return _population_counts(manifest.metadata["population_counts"])
 
 
 def _population_counts(value: JsonValue) -> dict[str, int]:

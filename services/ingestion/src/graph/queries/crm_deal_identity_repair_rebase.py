@@ -84,8 +84,6 @@ WHERE control.control_instance_id = run.control_instance_id
   AND NOT EXISTS { MATCH (:CrmDealRepairVerification {run_id: $run_id}) }
   AND NOT EXISTS { MATCH (:CrmDealRepairSecondaryDisposition {run_id: $run_id}) }
   AND NOT EXISTS { MATCH (:CrmDealRepairFence {run_id: $run_id, state: 'claimed'}) }
-  AND size($units) = $unit_count
-  AND size($unit_ids) = $unit_count
 CALL {
   WITH completion
   MATCH (candidate:CrmDealRepairAllocationCompletion {run_id: completion.run_id})
@@ -98,20 +96,6 @@ CALL {
 }
 WITH run, control, dispatch, completion, completion_count, stored_unit_count
 WHERE completion_count = 1 AND stored_unit_count = completion.unit_count
-  AND all(unit_id IN completion.unit_ids WHERE EXISTS {
-    MATCH (:CrmDealRepairUnit {run_id: $run_id, unit_id: unit_id})
-  })
-  AND all(expected IN $units WHERE EXISTS {
-    MATCH (stored:CrmDealRepairUnit {run_id: $run_id, unit_id: expected.unit_id})
-    WHERE stored.generation = expected.generation AND stored.sequence = expected.sequence
-      AND stored.attempt = expected.attempt AND stored.boundary_digest = expected.boundary_digest
-      AND stored.inventory_fingerprint = expected.inventory_fingerprint
-      AND stored.state = expected.state AND stored.inventory_key = expected.inventory_key
-      AND stored.source_record_pk = expected.source_record_pk
-      AND stored.inventory_graph_fingerprint = expected.inventory_graph_fingerprint
-      AND stored.inventory_stored_payload_fingerprint = expected.inventory_stored_payload_fingerprint
-      AND stored.inventory_binding_digest = expected.inventory_binding_digest
-  })
 RETURN properties(control) AS control, properties(dispatch) AS dispatch,
        properties(completion) AS completion
 """
@@ -211,4 +195,52 @@ WHERE control.state = 'allocated' AND control.sealed_revision = control.revision
 OPTIONAL MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
 RETURN properties(control) AS control, properties(dispatch) AS dispatch,
        collect(properties(completion)) AS completions
+"""
+
+
+READ_EFFECTIVE_REBASE_BOUNDARY_TERMINAL = """
+MATCH (control:CrmDealRepairControl {run_id: $run_id, state: 'allocated'})
+MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
+WHERE control.sealed_revision = control.revision
+  AND completion.rebase_request_digest IS NOT NULL
+  AND completion.rebase_revision = control.revision
+  AND completion.allocation_revision = control.revision
+  AND completion.receipt_revision = control.revision
+  AND completion.allocation_sealed_boundary_digest = control.sealed_boundary_digest
+  AND completion.receipt_sealed_boundary_digest = control.sealed_boundary_digest
+RETURN properties(control) AS control, {} AS dispatch, [properties(completion)] AS completions
+"""
+
+
+READ_REBASE_REPLAY_INTEGRITY = """
+MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id,
+  completion_id: $completion_id, unit_count: $unit_count, unit_ids: $unit_ids,
+  unit_set_digest: $unit_set_digest, rebase_request_digest: $rebase_request_digest})
+WHERE NOT EXISTS { MATCH (:CrmDealRepairMutationResult {run_id: $run_id}) }
+  AND NOT EXISTS { MATCH (:CrmDealRepairVerification {run_id: $run_id}) }
+  AND NOT EXISTS { MATCH (:CrmDealRepairSecondaryDisposition {run_id: $run_id}) }
+  AND NOT EXISTS { MATCH (:CrmDealRepairFence {run_id: $run_id, state: 'claimed'}) }
+CALL {
+  WITH completion
+  OPTIONAL MATCH (unit:CrmDealRepairUnit {run_id: completion.run_id})
+  RETURN count(unit) AS stored_count
+}
+WITH completion, stored_count
+WHERE stored_count = completion.unit_count
+RETURN completion.completion_id AS completion_id
+"""
+
+
+READ_REBASE_UNIT_BATCH = """
+UNWIND $units AS expected
+MATCH (stored:CrmDealRepairUnit {run_id: $run_id, unit_id: expected.unit_id})
+WHERE stored.generation = expected.generation AND stored.sequence = expected.sequence
+  AND stored.attempt = expected.attempt AND stored.boundary_digest = expected.boundary_digest
+  AND stored.inventory_fingerprint = expected.inventory_fingerprint
+  AND stored.state = expected.state AND stored.inventory_key = expected.inventory_key
+  AND stored.source_record_pk = expected.source_record_pk
+  AND stored.inventory_graph_fingerprint = expected.inventory_graph_fingerprint
+  AND stored.inventory_stored_payload_fingerprint = expected.inventory_stored_payload_fingerprint
+  AND stored.inventory_binding_digest = expected.inventory_binding_digest
+RETURN count(stored) AS matched_count
 """

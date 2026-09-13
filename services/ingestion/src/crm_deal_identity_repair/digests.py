@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Iterable, Iterator
 
 from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json_bytes
@@ -36,6 +37,75 @@ INVENTORY_PART_MAX_BYTES = 256 * 1024 * 1024
 # This domain is intentionally the same bytes used by the original allocation side so
 # existing allocated units and their derived unit_ids remain valid.
 INVENTORY_BINDING_DOMAIN = b"crm-deal-identity-repair-allocation-v1\x00"
+
+
+class CanonicalObjectDigest:
+    """Incrementally encode the exact canonical bytes used by :func:`object_digest`."""
+
+    def __init__(self, domain: bytes) -> None:
+        self._digest = hashlib.sha256()
+        self._digest.update(domain)
+        self._digest.update(b"{")
+        self._last_key: str | None = None
+        self._array_open = False
+        self._array_first = True
+
+    def value(self, key: str, value: JsonValue) -> None:
+        self._prefix(key)
+        self._digest.update(canonical_json_line(value)[:-1])
+
+    def array(self, key: str, values: Iterable[bytes]) -> None:
+        """Append one canonical byte-array property without retaining its values."""
+        self.begin_array(key)
+        for value in values:
+            self.array_value(value)
+        self.end_array()
+
+    def begin_array(self, key: str) -> None:
+        self._prefix(key)
+        self._digest.update(b"[")
+        self._array_open = True
+        self._array_first = True
+
+    def array_value(self, value: bytes) -> None:
+        if not self._array_open or not value.endswith(b"\n"):
+            raise RuntimeError("canonical digest array input is invalid")
+        if not self._array_first:
+            self._digest.update(b",")
+        self._digest.update(value[:-1])
+        self._array_first = False
+
+    def end_array(self) -> None:
+        if not self._array_open:
+            raise RuntimeError("canonical digest array is not open")
+        self._digest.update(b"]")
+        self._array_open = False
+
+    def finish(self) -> str:
+        if self._array_open:
+            raise RuntimeError("canonical digest array was not closed")
+        self._digest.update(b"}\n")
+        return "sha256:" + self._digest.hexdigest()
+
+    def _prefix(self, key: str) -> None:
+        if self._last_key is not None:
+            if key <= self._last_key:
+                raise RuntimeError("canonical digest keys are not ordered")
+            self._digest.update(b",")
+        self._digest.update(canonical_json_line(key)[:-1])
+        self._digest.update(b":")
+        self._last_key = key
+
+
+def canonical_json_line(value: JsonValue) -> bytes:
+    """Serialize one finite JSON value with the repository canonical settings."""
+    try:
+        encoded = json.dumps(
+            value, sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=False
+        )
+    except (TypeError, ValueError) as exc:
+        raise RuntimeError("repair digest value is not canonical JSON") from exc
+    return (encoded + "\n").encode("utf-8")
 
 
 def inventory_binding_digest(item: RepairInventoryItem) -> str:

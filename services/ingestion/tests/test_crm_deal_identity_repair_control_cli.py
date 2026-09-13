@@ -246,8 +246,19 @@ def test_status_is_read_only_when_repair_is_disabled_and_reports_separate_contro
             calls.append("status_snapshot")
             return "current-boundary"
 
-        def get_status(self, repair_id: str, snapshot: object, reason: object) -> object:
-            assert (repair_id, snapshot, reason) == ("repair-1", "current-boundary", None)
+        def get_status(
+            self,
+            repair_id: str,
+            snapshot: object,
+            reason: object,
+            effective_boundary: object,
+        ) -> object:
+            assert (repair_id, snapshot, reason, effective_boundary) == (
+                "repair-1",
+                "current-boundary",
+                None,
+                _DIGEST,
+            )
             calls.append("get_status")
             return SimpleNamespace(
                 repair_id=repair_id,
@@ -257,6 +268,7 @@ def test_status_is_read_only_when_repair_is_disabled_and_reports_separate_contro
                 qualification_identity=_DIGEST,
                 expected_boundary_digest=_DIGEST,
                 observed_boundary_digest=_DIGEST,
+                effective_boundary_digest=_DIGEST,
                 source_instance_id="legacy-default",
                 control_instance_id="legacy-default",
                 inventory_row_count=1,
@@ -274,7 +286,7 @@ def test_status_is_read_only_when_repair_is_disabled_and_reports_separate_contro
             assert run == _run()
             assert (approval_key_id, approval_secret) == ("approval-key-1", b"approval-secret")
             calls.append("effective_boundary")
-            return None
+            return _DIGEST
 
     class Control:
         def __init__(self, _client: object) -> None:
@@ -299,6 +311,7 @@ def test_status_is_read_only_when_repair_is_disabled_and_reports_separate_contro
     monkeypatch.setattr(client_module, "Neo4jClient", _Client)
     monkeypatch.setattr(ledger_module, "CrmDealRepairLedgerRepository", Ledger)
     monkeypatch.setattr(control_repository_module, "CrmDealRepairControlRepository", Control)
+    monkeypatch.setattr(rebase_module, "CrmDealRepairRebaseRepository", Rebase)
     monkeypatch.setattr(
         migration_module, "assert_crm_deal_repair_ledger_ready", lambda _client: None
     )
@@ -347,7 +360,7 @@ def test_status_is_read_only_when_repair_is_disabled_and_reports_separate_contro
         "qualification_identity": _DIGEST,
         "expected_boundary_digest": _DIGEST,
         "observed_boundary_digest": _DIGEST,
-        "effective_boundary_digest": None,
+        "effective_boundary_digest": _DIGEST,
         "source_instance_id": "legacy-default",
         "control_instance_id": "legacy-default",
         "inventory_row_count": 1,

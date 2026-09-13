@@ -141,7 +141,11 @@ class CrmDealRepairIntegrationRepository:
                 effective = CrmDealRepairRebaseRepository(
                     self._client
                 ).effective_boundary_digest_from_transaction(
-                    tx, run, approval_key_id=origin_key_id, approval_secret=origin_secret
+                    tx,
+                    run,
+                    approval_key_id=origin_key_id,
+                    approval_secret=origin_secret,
+                    require_live_dispatch=request.operation not in {"accept", "release-dispatch"},
                 )
                 if effective is None or effective != authority.sealed_boundary_digest:
                     raise RuntimeError("repair rebase effective allocation authority is invalid")
