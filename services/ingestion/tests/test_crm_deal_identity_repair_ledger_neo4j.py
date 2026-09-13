@@ -3711,9 +3711,8 @@ def test_424_replay_and_effective_status_reject_an_extra_completion(
     )
     with neo4j_driver.session() as session:
         session.run(
-            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
-            "CREATE (extra:CrmDealRepairAllocationCompletion) SET extra = properties(completion), "
-            "extra.completion_id = 'extra-completion'",
+            "CREATE (:CrmDealRepairAllocationCompletion {run_id: $run_id, "
+            "completion_id: 'extra-completion'})",
             run_id=run.run_id,
         ).consume()
 
@@ -4051,7 +4050,7 @@ def test_424_rebase_guard_matrix_rejects_without_authority_mutation(
         ("dispatch_foreign_authority", "guard rejected"),
         ("unsettled_publication", "guard rejected"),
         ("tampered_receipt_hmac", "receipt integrity"),
-        ("tampered_origin_hmac", "origin HMAC"),
+        ("tampered_origin_hmac", "origin integrity"),
     ),
 )
 def test_424_rebase_authority_guards_reject_after_current_boundary_revalidation(

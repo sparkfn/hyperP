@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 import gc
 import json
 import tracemalloc
@@ -254,8 +255,38 @@ def test_rebase_repository_uses_bounded_snapshot_and_transaction_local_effective
     from src.graph import crm_deal_identity_repair_rebase as repository
 
     source = Path(repository.__file__).read_text(encoding="utf-8")
-    assert "status_snapshot_from_transaction" in source
-    assert "_snapshot_from_transaction" not in source
+    tree = ast.parse(source)
+    imported_public_helper = any(
+        isinstance(node, ast.ImportFrom)
+        and node.module == "src.graph.crm_deal_identity_repair_status_snapshot"
+        and any(alias.name == "status_snapshot_from_transaction" for alias in node.names)
+        for node in ast.walk(tree)
+    )
+    public_call = any(
+        isinstance(node, ast.Call)
+        and isinstance(node.func, ast.Name)
+        and node.func.id == "status_snapshot_from_transaction"
+        for node in ast.walk(tree)
+    )
+    private_import_or_call = any(
+        (
+            isinstance(node, ast.ImportFrom)
+            and any(alias.name == "_snapshot_from_transaction" for alias in node.names)
+        )
+        or (
+            isinstance(node, ast.Call)
+            and (
+                isinstance(node.func, ast.Name)
+                and node.func.id == "_snapshot_from_transaction"
+                or isinstance(node.func, ast.Attribute)
+                and node.func.attr == "_snapshot_from_transaction"
+            )
+        )
+        for node in ast.walk(tree)
+    )
+    assert imported_public_helper
+    assert public_call
+    assert not private_import_or_call
     assert "def effective_boundary_digest_from_transaction" in source
     assert "return self._client.execute_read" in source
 

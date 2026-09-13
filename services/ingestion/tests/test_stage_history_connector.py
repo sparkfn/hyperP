@@ -148,6 +148,7 @@ def _capture_fixture(
 ) -> _CaptureFixture:
     store = new_store(tmp_path / "primary", tmp_path / "backup", key_provider())
     provenance = _provenance()
+    retention_expires_at = datetime.now(UTC) + timedelta(days=30)
     with store.begin(artifact_kind="owner-export") as artifact:
         artifact.write_json("owner-summary.json", {"rows": 1})
         owner = artifact.seal(
@@ -156,7 +157,7 @@ def _capture_fixture(
                 "owner_manifest_file": "owner-summary.json",
             },
             provenance=provenance,
-            retention_expires_at=_NOW + timedelta(days=30),
+            retention_expires_at=retention_expires_at,
         )
     with store.begin(artifact_kind="stage-capability") as artifact:
         artifact.write_json("stage-summary.json", {"rows": len(expected_rows)})
@@ -166,7 +167,7 @@ def _capture_fixture(
                 "recommendation": "bounded_spool_reconcile",
             },
             provenance=provenance,
-            retention_expires_at=_NOW + timedelta(days=30),
+            retention_expires_at=retention_expires_at,
         )
     fixture = _CaptureFixture(
         store=store,
