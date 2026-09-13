@@ -15,7 +15,9 @@ _INTEGRATION_COMMANDS = (
 )
 _UNIT_COMMANDS = frozenset({"apply", "verify", "rollback-status", "rollback"})
 _ROLLBACK_COMMANDS = frozenset({"rollback-status", "rollback"})
-_CONTROL_COMMANDS = frozenset({"quiesce", "allocate", "pause", "resume", *_INTEGRATION_COMMANDS})
+_CONTROL_COMMANDS = frozenset(
+    {"quiesce", "allocate", "pause", "resume", "rebase-boundary", *_INTEGRATION_COMMANDS}
+)
 
 
 def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
@@ -49,6 +51,8 @@ def parse_arguments(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser.add_argument("--owner-id")
     parser.add_argument("--expected-revision", type=int)
     parser.add_argument("--approval-id")
+    parser.add_argument("--fresh-artifact-id")
+    parser.add_argument("--expected-observed-boundary-digest")
     parser.add_argument("--unit-id")
     parser.add_argument("--authorization-reference")
     parser.add_argument("--predecessor-transition-id")
@@ -94,6 +98,11 @@ def _validate_control(parser: argparse.ArgumentParser, arguments: argparse.Names
         parser.error("--expected-revision must be non-negative")
     if arguments.command == "allocate" and not arguments.approval_id:
         parser.error("allocate requires --approval-id")
+    if arguments.command == "rebase-boundary":
+        if not arguments.approval_id or not arguments.fresh_artifact_id:
+            parser.error("rebase-boundary requires --approval-id and --fresh-artifact-id")
+        if not arguments.expected_observed_boundary_digest:
+            parser.error("rebase-boundary requires --expected-observed-boundary-digest")
 
 
 def _validate_integration(parser: argparse.ArgumentParser, arguments: argparse.Namespace) -> None:

@@ -156,6 +156,97 @@ def verify_repair_artifact(
     )
 
 
+
+def verify_rebase_artifact(
+    store: RepairArtifactStore,
+    *,
+    artifact_id: str,
+    repair_id: str,
+    source_contract_uuid: str,
+    configuration_digest: str,
+) -> VerifiedRepairArtifact:
+    """Authenticate fresh #424 evidence without pinning it to the new image."""
+    manifest = store.verify(artifact_id)
+    _validate_rebase_authenticated_manifest(
+        manifest,
+        repair_id=repair_id,
+        source_contract_uuid=source_contract_uuid,
+        configuration_digest=configuration_digest,
+    )
+    inventory_file_names = _inventory_file_names(manifest)
+    documents = _verified_evidence_documents(
+        Path(manifest.provenance.artifact_path), Path(manifest.backup_path)
+    )
+    digest_state = hashlib.sha256()
+    digest_state.update(INVENTORY_DIGEST_DOMAIN)
+
+    def digesting_lines() -> Iterator[bytes]:
+        for line in _verified_inventory_lines(
+            Path(manifest.provenance.artifact_path),
+            Path(manifest.backup_path),
+            inventory_file_names,
+        ):
+            digest_state.update(line)
+            yield line
+
+    pks, eligible_count, negative_count = inventory_source_record_pks_from_lines(digesting_lines())
+    digest = "sha256:" + digest_state.hexdigest()
+    if manifest.metadata.get("inventory_digest") != digest:
+        raise RuntimeError("repair inventory digest does not match sealed bytes")
+    validate_artifact_count_boundary(
+        manifest, documents, digest, len(pks), eligible_count, negative_count
+    )
+    return VerifiedRepairArtifact(
+        manifest, inventory_file_names, pks, digest, len(pks), eligible_count, negative_count
+    )
+
+
+def _validate_rebase_authenticated_manifest(
+    manifest: ArtifactManifest,
+    *,
+    repair_id: str,
+    source_contract_uuid: str,
+    configuration_digest: str,
+) -> None:
+    """Keep all qualification checks except runtime image/SHA equality."""
+    if manifest.artifact_kind != _ARTIFACT_KIND:
+        raise RuntimeError("repair artifact kind is not eligible for qualification")
+    _inventory_file_names(manifest)
+    metadata = manifest.metadata
+    if set(metadata) != {
+        "repair_id",
+        "environment",
+        "artifact_scope",
+        "execution_allowed",
+        "inventory_digest",
+        "population_counts",
+        "stale_run_state",
+    }:
+        raise RuntimeError("repair artifact metadata fields are invalid")
+    if (
+        metadata.get("repair_id") != repair_id
+        or metadata.get("execution_allowed") is not False
+    ):
+        raise RuntimeError("repair artifact identity is not eligible for rebase")
+    if (
+        metadata.get("environment") != "staging"
+        or metadata.get("artifact_scope") != "graph_discovery_only"
+    ):
+        raise RuntimeError("repair artifact metadata is not staging graph-discovery evidence")
+    provenance = manifest.provenance
+    if (
+        provenance.source_contract_uuid != source_contract_uuid
+        or provenance.configuration_digest != configuration_digest
+        or not provenance.repository_sha
+        or not provenance.image_digest
+    ):
+        raise RuntimeError("repair artifact producer provenance is invalid")
+    restricted = canonical_json_text_object(
+        provenance.restricted_boundaries_json, "repair artifact restricted-boundaries provenance"
+    )
+    if restricted != _RESTRICTED_BOUNDARY:
+        raise RuntimeError("repair artifact restricted-boundaries provenance is invalid")
+
 def _validate_authenticated_manifest(
     manifest: ArtifactManifest,
     *,

@@ -167,21 +167,32 @@ class CrmDealRepairLedgerRepository:
         repair_id: str,
         snapshot: RepairBoundarySnapshot | None = None,
         drift_reason: RepairBoundaryDriftReason | None = None,
+        effective_boundary_digest: str | None = None,
     ) -> RepairRunStatus:
         stored = self._get_stored_qualification(repair_id)
         if stored is None:
             return RepairRunStatus.not_qualified(repair_id)
         if drift_reason is not None:
-            return RepairRunStatus.drifted(stored.run, drift_reason)
+            return RepairRunStatus.drifted(
+                stored.run, drift_reason, effective_boundary_digest=effective_boundary_digest
+            )
         if snapshot is None:
-            return RepairRunStatus.drifted(stored.run, "persisted_boundary_change")
-        if snapshot.boundary_digest != stored.run.boundary_digest:
+            return RepairRunStatus.drifted(
+                stored.run, "persisted_boundary_change",
+                effective_boundary_digest=effective_boundary_digest,
+            )
+        expected_boundary = effective_boundary_digest or stored.run.boundary_digest
+        if snapshot.boundary_digest != expected_boundary:
             return RepairRunStatus.drifted(
                 stored.run,
                 "persisted_boundary_change",
                 observed_boundary_digest=snapshot.boundary_digest,
+                effective_boundary_digest=effective_boundary_digest,
             )
-        return RepairRunStatus.admissible(stored.run, snapshot.boundary_digest)
+        return RepairRunStatus.admissible(
+            stored.run, snapshot.boundary_digest,
+            effective_boundary_digest=effective_boundary_digest,
+        )
 
     def _get_stored_qualification(self, repair_id: str) -> _StoredQualification | None:
         record = self._client.execute_read(

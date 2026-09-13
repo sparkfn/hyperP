@@ -113,6 +113,7 @@ class RepairRunStatus:
     observed_boundary_digest: str | None
     reason_code: RepairStatusReason
     execution_allowed: Literal[False] = False
+    effective_boundary_digest: str | None = None
 
     def __post_init__(self) -> None:
         _nonempty(self.repair_id, "repair ID")
@@ -133,7 +134,10 @@ class RepairRunStatus:
 
     @classmethod
     def admissible(
-        cls, run: RepairQualificationRun, observed_boundary_digest: str
+        cls,
+        run: RepairQualificationRun,
+        observed_boundary_digest: str,
+        *, effective_boundary_digest: str | None = None,
     ) -> RepairRunStatus:
         return cls(
             run.repair_id,
@@ -143,6 +147,7 @@ class RepairRunStatus:
             run.boundary_digest,
             observed_boundary_digest,
             "exact_boundary_match",
+            effective_boundary_digest=effective_boundary_digest,
         )
 
     @classmethod
@@ -152,6 +157,7 @@ class RepairRunStatus:
         reason_code: RepairBoundaryDriftReason,
         *,
         observed_boundary_digest: str | None = None,
+        effective_boundary_digest: str | None = None,
     ) -> RepairRunStatus:
         return cls(
             run.repair_id,
@@ -161,6 +167,7 @@ class RepairRunStatus:
             run.boundary_digest,
             observed_boundary_digest,
             reason_code,
+            effective_boundary_digest=effective_boundary_digest,
         )
 
     @property
@@ -196,6 +203,7 @@ def _validate_not_qualified(status: RepairRunStatus) -> None:
             status.qualification_identity,
             status.expected_boundary_digest,
             status.observed_boundary_digest,
+            status.effective_boundary_digest,
         )
     ):
         raise ValueError("not-qualified repair status has immutable boundary data")
@@ -212,6 +220,8 @@ def _validate_qualified_status(status: RepairRunStatus) -> None:
     _validate_digest(status.expected_boundary_digest, "expected boundary digest")
     if status.observed_boundary_digest is not None:
         _validate_digest(status.observed_boundary_digest, "observed boundary digest")
+    if status.effective_boundary_digest is not None:
+        _validate_digest(status.effective_boundary_digest, "effective boundary digest")
     if status.manifest.repair_id != status.repair_id:
         raise ValueError("repair status manifest repair ID is inconsistent")
     if status.manifest.qualification_identity != status.qualification_identity:
@@ -223,6 +233,8 @@ def _validate_qualified_status(status: RepairRunStatus) -> None:
 def _validate_admissible_status(status: RepairRunStatus) -> None:
     if (
         status.reason_code != "exact_boundary_match"
-        or status.observed_boundary_digest != status.expected_boundary_digest
+        or status.observed_boundary_digest != (
+            status.effective_boundary_digest or status.expected_boundary_digest
+        )
     ):
         raise ValueError("admissible repair status is inconsistent")

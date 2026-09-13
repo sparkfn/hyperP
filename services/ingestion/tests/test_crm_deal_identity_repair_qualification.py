@@ -21,6 +21,7 @@ from src.crm_deal_identity_repair.models import RepairInventoryItem, RepairParti
 from src.crm_deal_identity_repair.qualification import (
     VerifiedRepairArtifact,
     build_execution_manifest,
+    verify_rebase_artifact,
     verify_repair_artifact,
 )
 from src.models import JsonValue
@@ -588,3 +589,27 @@ def test_build_manifest_enforces_ceiling_instances_and_stop_conditions(tmp_path:
     kwargs["control_instance_id"] = "invalid control"
     with pytest.raises(ValueError):
         build_execution_manifest(artifact, **kwargs)
+
+
+def test_rebase_artifact_accepts_authenticated_prior_producer_but_qualify_stays_pinned(
+    tmp_path: Path,
+) -> None:
+    manifest = _manifest(tmp_path)
+    accepted = verify_rebase_artifact(
+        _Store(manifest),
+        artifact_id=manifest.artifact_id,
+        repair_id="repair-300",
+        source_contract_uuid="12345678-1234-5678-9234-567812345678",
+        configuration_digest="sha256:" + "c" * 64,
+    )
+    assert accepted.manifest.provenance.repository_sha == "a" * 40
+    with pytest.raises(RuntimeError, match="provenance"):
+        verify_repair_artifact(
+            _Store(manifest),
+            artifact_id=manifest.artifact_id,
+            repair_id="repair-300",
+            source_contract_uuid="12345678-1234-5678-9234-567812345678",
+            repository_sha="f" * 40,
+            image_digest="sha256:" + "f" * 64,
+            configuration_digest="sha256:" + "c" * 64,
+        )

@@ -203,9 +203,13 @@ def test_status_is_read_only_when_repair_is_disabled_and_reports_separate_contro
     import src.graph.crm_deal_identity_repair_control as control_repository_module
     import src.graph.crm_deal_identity_repair_ledger as ledger_module
     import src.graph.crm_deal_identity_repair_ledger_migration as migration_module
+    import src.graph.crm_deal_identity_repair_rebase as rebase_module
 
     settings = SimpleNamespace(
-        deployment_environment="staging", crm_deal_identity_repair_enabled=False
+        deployment_environment="staging",
+        crm_deal_identity_repair_enabled=False,
+        crm_deal_identity_repair_approval_key_secret=_Secret("approval-secret"),
+        crm_deal_identity_repair_approval_key_id="approval-key-1",
     )
     calls: list[str] = []
 
@@ -259,6 +263,18 @@ def test_status_is_read_only_when_repair_is_disabled_and_reports_separate_contro
                 eligible_unit_count=1,
                 negative_control_count=0,
             )
+
+    class Rebase:
+        def __init__(self, _client: object) -> None:
+            calls.append("rebase")
+
+        def effective_boundary_digest(
+            self, run: RepairQualificationRun, *, approval_key_id: str, approval_secret: bytes
+        ) -> None:
+            assert run == _run()
+            assert (approval_key_id, approval_secret) == ("approval-key-1", b"approval-secret")
+            calls.append("effective_boundary")
+            return None
 
     class Control:
         def __init__(self, _client: object) -> None:
@@ -317,8 +333,10 @@ def test_status_is_read_only_when_repair_is_disabled_and_reports_separate_contro
         "get_qualification",
         "source_record_pks",
         "status_snapshot",
-        "get_status",
         "control",
+        "rebase",
+        "effective_boundary",
+        "get_status",
         "status",
     ]
     assert payload == {
@@ -329,6 +347,7 @@ def test_status_is_read_only_when_repair_is_disabled_and_reports_separate_contro
         "qualification_identity": _DIGEST,
         "expected_boundary_digest": _DIGEST,
         "observed_boundary_digest": _DIGEST,
+        "effective_boundary_digest": None,
         "source_instance_id": "legacy-default",
         "control_instance_id": "legacy-default",
         "inventory_row_count": 1,
