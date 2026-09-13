@@ -6,7 +6,10 @@ import hmac
 from collections.abc import Mapping
 from dataclasses import dataclass
 
-from src.crm_deal_identity_repair.control_models import RepairControlRequest, RepairDispatchLease
+from src.crm_deal_identity_repair.control_models import (
+    RepairControlCommand,
+    RepairDispatchLease,
+)
 from src.crm_deal_identity_repair.digests import object_digest
 from src.crm_deal_identity_repair.execution_records import _digest, _identity, _nonnegative
 from src.models import JsonValue
@@ -18,9 +21,9 @@ REBASE_HMAC_DOMAIN = b"crm-deal-identity-repair-rebase-hmac-v1\x00"
 
 @dataclass(frozen=True)
 class RepairBoundaryRebaseRequest:
-    """The untrusted, non-executable identity of one requested boundary rebase."""
+    """Non-executable rebase identity from an operator or trusted durable reader."""
 
-    control: RepairControlRequest
+    control: RepairControlCommand
     approval_id: str
     fresh_artifact_id: str
     expected_observed_boundary_digest: str

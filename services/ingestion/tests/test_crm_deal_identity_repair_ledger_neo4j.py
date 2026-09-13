@@ -17,7 +17,7 @@ from contextlib import contextmanager
 from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
-from threading import Event
+from threading import Barrier, Event
 from typing import TypeVar, cast
 from urllib.parse import urlparse
 
@@ -3507,6 +3507,36 @@ def _initial_rebased_admission(
     return repository, request, RepairIntegrationContext(run, (), authority)
 
 
+def _current_rebase_observed_boundary(
+    ledger: CrmDealRepairLedgerRepository,
+    run: RepairQualificationRun,
+) -> str:
+    return ledger.status_snapshot(
+        source_instance_id=run.source_instance_id,
+        control_instance_id=run.control_instance_id,
+        source_record_pks=ledger.source_record_pks(run.repair_id),
+    ).boundary_digest
+
+
+def _rebase_authority_image(driver: Driver, run: RepairQualificationRun) -> dict[str, object]:
+    with driver.session() as session:
+        record = session.run(
+            """
+            MATCH (control:CrmDealRepairControl {run_id: $run_id})
+            MATCH (dispatch:BitrixDispatchControl {
+              control_instance_id: control.control_instance_id})
+            MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
+            OPTIONAL MATCH (unit:CrmDealRepairUnit {run_id: $run_id})
+            WITH control, dispatch, completion, unit
+            ORDER BY unit.unit_id
+            RETURN properties(control) AS control, properties(dispatch) AS dispatch,
+              properties(completion) AS completion, collect(properties(unit)) AS units
+            """,
+            run_id=run.run_id,
+        ).single(strict=True)
+    return dict(record)
+
+
 def test_424_rebase_rotates_only_effective_authority_and_replays(
     neo4j_driver: Driver,
 ) -> None:
@@ -3699,12 +3729,10 @@ def test_424_replay_and_effective_status_reject_an_extra_completion(
         )
 
 
-def test_424_concurrent_exact_replay_converges_and_conflicting_request_rejects(
-    neo4j_driver: Driver,
-) -> None:
+def test_424_concurrent_exact_replay_converges(neo4j_driver: Driver) -> None:
     _, _, run, plan, observed_boundary_digest = _allocated_rebase_fixture(
         neo4j_driver,
-        repair_id="repair-424-concurrent",
+        repair_id="repair-424-concurrent-exact",
     )
 
     def rebase_once() -> RepairBoundaryRebaseResult:
@@ -3716,28 +3744,74 @@ def test_424_concurrent_exact_replay_converges_and_conflicting_request_rejects(
     assert results[0].replacement_boundary_digest == results[1].replacement_boundary_digest
     assert results[0].lease.revision == results[1].lease.revision == 3
 
+
+def test_424_concurrent_conflicting_rebases_choose_one_durable_authority(
+    neo4j_driver: Driver,
+) -> None:
+    _, _, run, plan, observed_boundary_digest = _allocated_rebase_fixture(
+        neo4j_driver,
+        repair_id="repair-424-concurrent-conflict",
+    )
+    primary = _rebase_request(run, observed_boundary_digest)
     conflicting = RepairBoundaryRebaseRequest(
         RepairControlRequest(run.repair_id, run.run_id, "owner", "token", 2),
-        "approval-conflict",
-        "fresh-artifact-conflict",
+        "approval-concurrent-conflict",
+        primary.fresh_artifact_id,
         observed_boundary_digest,
     )
-    with pytest.raises(RuntimeError):
-        _rebase(
-            neo4j_driver,
-            run,
-            plan,
-            observed_boundary_digest,
-            request=conflicting,
-        )
-    with neo4j_driver.session() as session:
-        row = session.run(
-            "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
-            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
-            "RETURN control.revision AS revision, count(completion) AS completions",
-            run_id=run.run_id,
-        ).single(strict=True)
-    assert dict(row) == {"revision": 3, "completions": 1}
+    before = _rebase_authority_image(neo4j_driver, run)
+    start = Barrier(2)
+
+    def submit(
+        request: RepairBoundaryRebaseRequest,
+    ) -> tuple[RepairBoundaryRebaseRequest, RepairBoundaryRebaseResult | BaseException]:
+        try:
+            start.wait(timeout=10)
+            return request, _rebase(
+                neo4j_driver,
+                run,
+                plan,
+                observed_boundary_digest,
+                request=request,
+            )
+        except BaseException as exc:  # noqa: BLE001
+            return request, exc
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(submit, (primary, conflicting)))
+    winners = [
+        (request, outcome)
+        for request, outcome in outcomes
+        if isinstance(outcome, RepairBoundaryRebaseResult)
+    ]
+    losers = [
+        (request, outcome) for request, outcome in outcomes if isinstance(outcome, BaseException)
+    ]
+    assert len(winners) == len(losers) == 1
+    winner_request, winner = winners[0]
+    loser_request, loser = losers[0]
+    assert winner.replayed is False
+    assert isinstance(loser, RuntimeError)
+    assert winner_request.request_digest != loser_request.request_digest
+
+    after = _rebase_authority_image(neo4j_driver, run)
+    control = after["control"]
+    completion = after["completion"]
+    assert isinstance(control, Mapping)
+    assert isinstance(completion, Mapping)
+    assert after["units"] == before["units"]
+    assert control["revision"] == control["sealed_revision"] == 3
+    assert control["sealed_boundary_digest"] == winner.replacement_boundary_digest
+    assert completion["rebase_request_digest"] == winner_request.request_digest
+    assert completion["rebase_approval_id"] == winner_request.approval_id
+    assert completion["rebase_fresh_artifact_id"] == winner_request.fresh_artifact_id
+    assert completion["rebase_revision"] == control["revision"]
+    assert completion["rebase_replacement_boundary_digest"] == control["sealed_boundary_digest"]
+    assert (
+        completion["allocation_revision"] == completion["receipt_revision"] == control["revision"]
+    )
+    assert completion["rebase_receipt_digest"] == winner.receipt_digest
+    assert completion["rebase_audit_digest"] == winner.audit_digest
 
 
 @pytest.mark.parametrize(
@@ -3966,6 +4040,89 @@ def test_424_rebase_guard_matrix_rejects_without_authority_mutation(
         ).single(strict=True)
     assert dict(after) == dict(before)
     assert ledger.get_qualification(run.repair_id) == run
+
+
+@pytest.mark.parametrize(
+    ("guard", "error_pattern"),
+    (
+        ("wrong_control_state", "guard rejected"),
+        ("dispatch_unblocked", "guard rejected"),
+        ("dispatch_wrong_reason", "guard rejected"),
+        ("dispatch_foreign_authority", "guard rejected"),
+        ("unsettled_publication", "guard rejected"),
+        ("tampered_receipt_hmac", "receipt integrity"),
+        ("tampered_origin_hmac", "origin HMAC"),
+    ),
+)
+def test_424_rebase_authority_guards_reject_after_current_boundary_revalidation(
+    neo4j_driver: Driver,
+    guard: str,
+    error_pattern: str,
+) -> None:
+    ledger, _, run, plan, _ = _allocated_rebase_fixture(
+        neo4j_driver,
+        repair_id="repair-424-authority-" + guard,
+    )
+    with neo4j_driver.session() as session:
+        if guard == "wrong_control_state":
+            session.run(
+                "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+                "SET control.state = 'paused'",
+                run_id=run.run_id,
+            ).consume()
+        elif guard == "dispatch_unblocked":
+            session.run(
+                "MATCH (dispatch:BitrixDispatchControl "
+                "{control_instance_id: $control_instance_id}) SET dispatch.blocked = false",
+                control_instance_id=run.control_instance_id,
+            ).consume()
+        elif guard == "dispatch_wrong_reason":
+            session.run(
+                "MATCH (dispatch:BitrixDispatchControl "
+                "{control_instance_id: $control_instance_id}) "
+                "SET dispatch.block_reason = 'other-maintenance'",
+                control_instance_id=run.control_instance_id,
+            ).consume()
+        elif guard == "dispatch_foreign_authority":
+            session.run(
+                "MATCH (dispatch:BitrixDispatchControl "
+                "{control_instance_id: $control_instance_id}) "
+                "SET dispatch.repair_run_id = 'foreign-run', "
+                "dispatch.repair_owner_id = 'foreign-owner', "
+                "dispatch.repair_token_digest = 'foreign-token', dispatch.repair_revision = 99",
+                control_instance_id=run.control_instance_id,
+            ).consume()
+        elif guard == "unsettled_publication":
+            session.run(
+                "CREATE (:CrmDealRepairPublicationReservation {"
+                "control_instance_id: $control_instance_id, publication_key: 'rebase-pending', "
+                "state: 'preparing'})",
+                control_instance_id=run.control_instance_id,
+            ).consume()
+        elif guard == "tampered_receipt_hmac":
+            session.run(
+                "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+                "SET completion.receipt_digest = $tampered_hmac",
+                run_id=run.run_id,
+                tampered_hmac="f" * 64,
+            ).consume()
+        elif guard == "tampered_origin_hmac":
+            session.run(
+                "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+                "SET completion.allocation_origin_hmac = $tampered_hmac",
+                run_id=run.run_id,
+                tampered_hmac="e" * 64,
+            ).consume()
+        else:
+            raise AssertionError("unhandled rebase authority guard")
+
+    observed_boundary_digest = _current_rebase_observed_boundary(ledger, run)
+    before = _rebase_authority_image(neo4j_driver, run)
+    with pytest.raises(RuntimeError, match=error_pattern):
+        _rebase(neo4j_driver, run, plan, observed_boundary_digest)
+    after = _rebase_authority_image(neo4j_driver, run)
+
+    assert after == before
 
 
 def test_424_rebase_tampered_effective_evidence_and_later_drift_fail_closed(

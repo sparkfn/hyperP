@@ -22,6 +22,7 @@ from src.crm_deal_identity_repair.control_models import (
     RepairAllocationCompletion,
     RepairControlRequest,
     RepairDispatchLease,
+    _trusted_request_from_durable_digest,
 )
 from src.crm_deal_identity_repair.digests import (
     CanonicalObjectDigest,
@@ -51,6 +52,45 @@ def _request() -> RepairBoundaryRebaseRequest:
         "fresh-artifact-424",
         _DIGEST,
     )
+
+
+def test_rebase_request_accepts_trusted_durable_control_without_rehashing() -> None:
+    raw_control = RepairControlRequest(
+        "repair-424",
+        "run-424",
+        "owner-424",
+        "secret-424",
+        5,
+    )
+    durable_control = _trusted_request_from_durable_digest(
+        raw_control.repair_id,
+        raw_control.run_id,
+        raw_control.owner_id,
+        raw_control.token_digest,
+        raw_control.expected_revision,
+    )
+    raw_request = RepairBoundaryRebaseRequest(
+        raw_control,
+        "approval-424",
+        "fresh-artifact-424",
+        _DIGEST,
+    )
+    durable_request = RepairBoundaryRebaseRequest(
+        durable_control,
+        "approval-424",
+        "fresh-artifact-424",
+        _DIGEST,
+    )
+
+    assert durable_request.to_dict() == raw_request.to_dict()
+    assert durable_request.request_digest == raw_request.request_digest
+
+
+def test_status_evidence_reexports_canonical_digest_helpers() -> None:
+    from src.graph import crm_deal_identity_repair_status_evidence as status_evidence
+
+    assert status_evidence.CanonicalObjectDigest is CanonicalObjectDigest
+    assert status_evidence.canonical_json_line is canonical_json_line
 
 
 def test_canonical_incremental_array_digest_matches_legacy_object_digest() -> None:

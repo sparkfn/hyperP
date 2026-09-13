@@ -8,10 +8,13 @@ from neo4j import ManagedTransaction
 
 from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json_bytes
 from src.crm_deal_identity_repair.bounded import CanonicalByteSorter
+from src.crm_deal_identity_repair.digests import CanonicalObjectDigest, canonical_json_line
 from src.graph.crm_deal_identity_repair_boundary_evidence import (
     canonical_boundary_evidence,
     record_json_dict,
 )
+
+__all__ = ("CanonicalObjectDigest", "canonical_json_line", "spool_evidence")
 
 
 def spool_evidence(
