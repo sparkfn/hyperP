@@ -180,3 +180,6 @@ warn_return_any = false
 [tool.pytest.ini_options]
 testpaths = ["services/api/tests", "services/ingestion/tests"]
 pythonpath = ["services/api/src"]
+markers = [
+    "large_boundary: blocking exact 178,328-row CRM repair boundary probes",
+]

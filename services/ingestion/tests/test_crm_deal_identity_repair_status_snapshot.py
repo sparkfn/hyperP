@@ -69,24 +69,37 @@ _REPRESENTATIVE_SMALL_TOTAL: Final = 500
 _REPRESENTATIVE_LARGE_TOTAL: Final = 2_000
 _REPRESENTATIVE_BASE_PAYLOAD_BLOB_BYTES: Final = 512
 _REPRESENTATIVE_HEAVY_PAYLOAD_BLOB_BYTES: Final = 8 * 1024
+_REPRESENTATIVE_HEAVY_TOTAL: Final = 1_000
 _REPRESENTATIVE_PAYLOAD_DELTA_PER_ROW: Final = (
     _REPRESENTATIVE_HEAVY_PAYLOAD_BLOB_BYTES - _REPRESENTATIVE_BASE_PAYLOAD_BLOB_BYTES
 )
 _REPRESENTATIVE_ALL_PAYLOAD_DELTA_BYTES: Final = (
-    _REPRESENTATIVE_SMALL_TOTAL * _REPRESENTATIVE_PAYLOAD_DELTA_PER_ROW
+    _REPRESENTATIVE_HEAVY_TOTAL * _REPRESENTATIVE_PAYLOAD_DELTA_PER_ROW
 )
 _REPRESENTATIVE_LIVE_PAGE_PAYLOAD_DELTA_BYTES: Final = 100 * _REPRESENTATIVE_PAYLOAD_DELTA_PER_ROW
-_REPRESENTATIVE_MAX_PAYLOAD_DELTA_BYTES: Final = 2 * 1024 * 1024
+_REPRESENTATIVE_MAX_PAYLOAD_DELTA_BYTES: Final = 4 * 1024 * 1024
 
 # The 16-byte full-cardinality blob intentionally replaces the former 512-byte blob.
 # CI collection required: pin these final-fixture digests from the first optimized Linux
 # child result. They must never be computed from the implementation under test here.
-_EXPECTED_FULL_STATUS_INVENTORY_DIGEST = "COLLECT_FROM_FIRST_OPTIMIZED_CI"
-_EXPECTED_FULL_STATUS_SOURCE_RECORDS_DIGEST = "COLLECT_FROM_FIRST_OPTIMIZED_CI"
-_EXPECTED_FULL_STATUS_SOURCE_INSTANCE_DIGEST = "COLLECT_FROM_FIRST_OPTIMIZED_CI"
-_EXPECTED_FULL_STATUS_STALE_RUN_EVIDENCE_DIGEST = "COLLECT_FROM_FIRST_OPTIMIZED_CI"
-_EXPECTED_FULL_STATUS_CONTROL_DIGEST = "COLLECT_FROM_FIRST_OPTIMIZED_CI"
-_EXPECTED_FULL_STATUS_BOUNDARY_DIGEST = "COLLECT_FROM_FIRST_OPTIMIZED_CI"
+_EXPECTED_FULL_STATUS_INVENTORY_DIGEST = (
+    "sha256:b66fc2cc8bf283520d4267ae50bdc5016dad4f273520d4c2e123ef13e116c48a"
+)
+_EXPECTED_FULL_STATUS_SOURCE_RECORDS_DIGEST = (
+    "sha256:e0d360c4b625b45028654d295354047f0a4615965f3921a74af893b6a2813c3a"
+)
+_EXPECTED_FULL_STATUS_SOURCE_INSTANCE_DIGEST = (
+    "sha256:67679848766408d54613348f3dd9dd46e6d63a580583c456881ed7c61d18a1ef"
+)
+_EXPECTED_FULL_STATUS_STALE_RUN_EVIDENCE_DIGEST = (
+    "sha256:ab53a30e6005f1d8ceccb465c0dbea1cc743bde9560dfc0b488753ab3f171f8d"
+)
+_EXPECTED_FULL_STATUS_CONTROL_DIGEST = (
+    "sha256:4efb98a775c68e5d1ce88d7454ac4c4051da9d94fd15adbb9072f21c2fccd3f1"
+)
+_EXPECTED_FULL_STATUS_BOUNDARY_DIGEST = (
+    "sha256:193b4d33386c9290cc4eff340a9b5412803eeddcf72150721a0a75d2972e6a9d"
+)
 
 _FULL_STATUS_EXPECTED_METRICS: Final[dict[str, ProbeMetric]] = {
     "inventory_row_count": _FULL_STATUS_TOTAL,
@@ -428,6 +441,7 @@ class _GuardedStatusTransaction:
         }
 
 
+@pytest.mark.large_boundary
 def test_status_snapshot_streams_full_high_cardinality_boundary(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
@@ -451,7 +465,7 @@ def test_status_snapshot_traced_allocations_are_bounded_and_payload_insensitive(
         distinct_payloads=True,
     )
     payload_heavy = _traced_status_snapshot(
-        _REPRESENTATIVE_SMALL_TOTAL,
+        _REPRESENTATIVE_HEAVY_TOTAL,
         payload_blob_bytes=_REPRESENTATIVE_HEAVY_PAYLOAD_BLOB_BYTES,
         distinct_payloads=True,
     )
@@ -462,9 +476,9 @@ def test_status_snapshot_traced_allocations_are_bounded_and_payload_insensitive(
 
     # The frozen PK tuple is permitted O(N) state. Retaining payload-bearing pages/results is not.
     assert large.peak_bytes - small.peak_bytes < 5 * 1024 * 1024
-    # A 100-row live page adds only 768,000 raw bytes. The 2 MiB allowance permits
-    # canonicalization slack, but stays below the 3,840,000 bytes required to retain
-    # the additional distinct payload bytes for all 500 rows.
+    # A 100-row live page adds only 768,000 raw bytes. The 4 MiB allowance permits
+    # canonicalization slack, but stays well below the 7,680,000 bytes required to retain
+    # the additional distinct payload bytes for all 1,000 heavy rows.
     assert (
         _REPRESENTATIVE_MAX_PAYLOAD_DELTA_BYTES
         < _REPRESENTATIVE_ALL_PAYLOAD_DELTA_BYTES

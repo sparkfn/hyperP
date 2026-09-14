@@ -58,10 +58,9 @@ services:
       NEO4J_server_memory_pagecache_size: 128m
 
 steps:
-  # Bounded two-wave DAG: python plus four isolated Neo4j shards are the only roots.
-  # Intelligence and frontend run together after Python and every present shard complete.
-  # Full-coverage PRs are 5 then 2 steps; docs/frontend-only PRs are 1 then 2.
-  # A PR with k surviving path-filtered shards has max(1 + k, 2) <= 5 active validations.
+  # Measured #426 exception: the exact 178,328-row probes run in one blocking lane after
+  # the fast ledger shard frees its root slot. This keeps at most five validations active.
+  # Intelligence and frontend remain blocked on Python, every present shard, and this lane.
   # Python: lint + format check + strict typecheck + unit tests, all against the
   # uv workspace venv (dev group includes ruff, mypy, pytest). One install, sequential.
   - name: python-checks
@@ -87,7 +86,27 @@ steps:
       - uv run --package profile-unifier-api pytest services/api/tests/test_persons_list_queries.py::test_person_list_preferred_address_hydration_does_not_expand_provenance_edges
       - uv run --package profile-unifier-api pytest services/api/tests
       - uv sync --frozen --group training
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests --durations=25 --durations-min=1.0
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests -m "not large_boundary" --durations=25 --durations-min=1.0
+
+  - name: large-boundary-checks
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm
+    # Start only after the ledger root completes, replacing its executor slot rather than
+    # creating a sixth root. This remains blocking for both second-wave validations.
+    depends_on:
+      - neo4j-ledger-310-checks
+    environment:
+      UV_PROJECT_ENVIRONMENT: .venv-large-boundary-checks
+      PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-large-boundary-checks"
+      PYTHONDONTWRITEBYTECODE: "1"
+    when:
+      - path:
+          exclude:
+            - docs/**
+            - services/frontend2/**
+    commands:
+      - uv sync --frozen
+      - uv sync --frozen --group training
+      - uv run --package profile-unifier-ingestion pytest -m large_boundary services/ingestion/tests/test_crm_deal_identity_repair_status_snapshot.py::test_status_snapshot_streams_full_high_cardinality_boundary services/ingestion/tests/test_crm_deal_identity_repair_rebase.py::test_rebase_compact_preparation_streams_178328_rows_without_retaining_payloads_or_units --durations=25 --durations-min=1.0
 
   - name: intelligence-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
@@ -95,6 +114,8 @@ steps:
     # Each present shard remains a blocking dependency.
     depends_on:
       - python-checks
+      - name: large-boundary-checks
+        optional: true
       - name: neo4j-projection-checks
         optional: true
       - name: neo4j-ledger-310-checks
@@ -261,6 +282,8 @@ steps:
     image: node:22-bookworm
     depends_on:
       - python-checks
+      - name: large-boundary-checks
+        optional: true
       - name: neo4j-projection-checks
         optional: true
       - name: neo4j-ledger-310-checks

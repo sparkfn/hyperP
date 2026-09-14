@@ -66,9 +66,9 @@ services:
       NEO4J_server_memory_pagecache_size: 128m
 
 steps:
-  # Bounded two-wave DAG: Python plus four isolated, unconditional Neo4j shards are roots.
-  # Intelligence and the production frontend build run together only after all five roots complete.
-  # MAIN therefore has 5 then 2 validation steps, never unrestricted all-root fan-out.
+  # Measured #426 exception: the exact 178,328-row probes run in one blocking lane after
+  # the fast ledger root completes, retaining at most five active validations.
+  # Intelligence and the production frontend build wait for every root and this lane.
   # Re-run the PR python suite on the merged main commit to catch merge breakage,
   # then add the production-install signal (mirrors the Dockerfile runtime install).
   - name: python-checks
@@ -91,16 +91,31 @@ steps:
       - uv run --package profile-unifier-api pytest services/api/tests/test_persons_list_queries.py::test_person_list_preferred_address_hydration_does_not_expand_provenance_edges
       - uv run --package profile-unifier-api pytest services/api/tests
       - uv sync --frozen --group training
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests --durations=25 --durations-min=1.0
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests -m "not large_boundary" --durations=25 --durations-min=1.0
       # Production runtime install (no dev group) — verifies the lockfile resolves for
       # the exact install the api/ingestion Dockerfiles run.
       - uv sync --frozen --no-dev --package profile-unifier-api
       - uv sync --frozen --no-dev --package profile-unifier-ingestion
 
+  - name: large-boundary-checks
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm
+    # The lane starts after the ledger root releases its executor slot and remains blocking.
+    depends_on:
+      - neo4j-ledger-310-checks
+    environment:
+      UV_PROJECT_ENVIRONMENT: .venv-large-boundary-checks
+      PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-large-boundary-checks"
+      PYTHONDONTWRITEBYTECODE: "1"
+    commands:
+      - uv sync --frozen
+      - uv sync --frozen --group training
+      - uv run --package profile-unifier-ingestion pytest -m large_boundary services/ingestion/tests/test_crm_deal_identity_repair_status_snapshot.py::test_status_snapshot_streams_full_high_cardinality_boundary services/ingestion/tests/test_crm_deal_identity_repair_rebase.py::test_rebase_compact_preparation_streams_178328_rows_without_retaining_payloads_or_units --durations=25 --durations-min=1.0
+
   - name: intelligence-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
     depends_on:
       - python-checks
+      - large-boundary-checks
       - neo4j-projection-checks
       - neo4j-ledger-310-checks
       - neo4j-census-migration-api-checks
@@ -239,6 +254,7 @@ steps:
     image: node:22-bookworm
     depends_on:
       - python-checks
+      - large-boundary-checks
       - neo4j-projection-checks
       - neo4j-ledger-310-checks
       - neo4j-census-migration-api-checks

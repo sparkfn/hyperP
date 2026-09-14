@@ -2,9 +2,11 @@
 
 from __future__ import annotations
 
-from itertools import combinations
+import ast
 import subprocess
 import sys
+import tomllib
+from itertools import combinations
 from pathlib import Path
 from typing import cast
 
@@ -20,6 +22,15 @@ _ROOT_STEP_NAMES = (
     "neo4j-ledger-310-checks",
     "neo4j-census-migration-api-checks",
     "neo4j-repair-mapping-checks",
+)
+_LARGE_BOUNDARY_STEP_NAME = "large-boundary-checks"
+_LARGE_BOUNDARY_DEPENDENCY = "neo4j-ledger-310-checks"
+_PR_LARGE_BOUNDARY_WHEN = [{"path": {"exclude": ["docs/**", "services/frontend2/**"]}}]
+_LARGE_BOUNDARY_NODE_IDS = (
+    "services/ingestion/tests/test_crm_deal_identity_repair_status_snapshot.py::"
+    "test_status_snapshot_streams_full_high_cardinality_boundary",
+    "services/ingestion/tests/test_crm_deal_identity_repair_rebase.py::"
+    "test_rebase_compact_preparation_streams_178328_rows_without_retaining_payloads_or_units",
 )
 _NEO4J_SERVICE_SETTINGS = {
     "NEO4J_PLUGINS": "[]",
@@ -90,6 +101,16 @@ _PYTHON_COMMANDS = (
     "uv run --package profile-unifier-api pytest services/api/tests",
     "uv sync --frozen --group training",
     "uv run --package profile-unifier-ingestion pytest services/ingestion/tests "
+    '-m "not large_boundary" --durations=25 --durations-min=1.0',
+)
+_LARGE_BOUNDARY_COMMANDS = (
+    "uv sync --frozen",
+    "uv sync --frozen --group training",
+    "uv run --package profile-unifier-ingestion pytest -m large_boundary "
+    "services/ingestion/tests/test_crm_deal_identity_repair_status_snapshot.py::"
+    "test_status_snapshot_streams_full_high_cardinality_boundary "
+    "services/ingestion/tests/test_crm_deal_identity_repair_rebase.py::"
+    "test_rebase_compact_preparation_streams_178328_rows_without_retaining_payloads_or_units "
     "--durations=25 --durations-min=1.0",
 )
 _INTELLIGENCE_COMMANDS = (
@@ -234,6 +255,49 @@ def _neo4j_manifest(steps: dict[str, dict[str, object]]) -> frozenset[tuple[str,
     return frozenset(manifest)
 
 
+def _toml_mapping(value: object) -> dict[str, object]:
+    assert isinstance(value, dict)
+    mapped: dict[str, object] = {}
+    for key, item in value.items():
+        assert isinstance(key, str)
+        mapped[key] = item
+    return mapped
+
+
+def _registered_pytest_markers() -> tuple[str, ...]:
+    document = _toml_mapping(tomllib.loads((_REPOSITORY_ROOT / "pyproject.toml").read_text()))
+    tool = _toml_mapping(document.get("tool"))
+    pytest_config = _toml_mapping(tool.get("pytest"))
+    options = _toml_mapping(pytest_config.get("ini_options"))
+    markers = options.get("markers")
+    assert isinstance(markers, list) and all(isinstance(marker, str) for marker in markers)
+    return tuple(cast(list[str], markers))
+
+
+def _is_large_boundary_decorator(decorator: ast.expr) -> bool:
+    if not isinstance(decorator, ast.Attribute):
+        return False
+    marker = decorator
+    if marker.attr != "large_boundary" or not isinstance(marker.value, ast.Attribute):
+        return False
+    return marker.value.attr == "mark" and isinstance(marker.value.value, ast.Name) and (
+        marker.value.value.id == "pytest"
+    )
+
+
+def _marked_large_boundary_node_ids() -> frozenset[str]:
+    marked: set[str] = set()
+    paths = {node_id.split("::", 1)[0] for node_id in _LARGE_BOUNDARY_NODE_IDS}
+    for path in paths:
+        module = ast.parse((_REPOSITORY_ROOT / path).read_text(), filename=path)
+        for node in module.body:
+            if isinstance(node, ast.FunctionDef) and any(
+                _is_large_boundary_decorator(decorator) for decorator in node.decorator_list
+            ):
+                marked.add(f"{path}::{node.name}")
+    return frozenset(marked)
+
+
 def test_woodpecker_neo4j_readiness_timeout_rejects_non_finite_values() -> None:
     script = _REPOSITORY_ROOT / "scripts" / "wait_for_neo4j.py"
     for timeout in ("nan", "inf", "-inf"):
@@ -258,16 +322,22 @@ def test_woodpecker_neo4j_readiness_timeout_rejects_non_finite_values() -> None:
         assert "finite positive number" in result.stderr
 
 
-def test_woodpecker_bounded_validation_dag_has_exact_two_wave_schedule() -> None:
+def test_woodpecker_bounded_validation_dag_preserves_five_step_limit() -> None:
     workflows = {name: _workflow_document(name) for name in _WORKFLOW_NAMES}
     pr_second_wave = frozenset({"intelligence-checks", "frontend-checks"})
     for workflow_name, workflow in workflows.items():
         is_pr = workflow_name == "pr.yaml"
         frontend_name = "frontend-checks" if is_pr else "frontend-build"
         steps = _workflow_steps(workflow)
-        assert set(steps) == {*_ROOT_STEP_NAMES, "intelligence-checks", frontend_name}
+        assert set(steps) == {
+            *_ROOT_STEP_NAMES,
+            _LARGE_BOUNDARY_STEP_NAME,
+            "intelligence-checks",
+            frontend_name,
+        }
         _assert_acyclic_dependencies(steps)
         assert all(steps[step_name].get("depends_on") == [] for step_name in _ROOT_STEP_NAMES)
+        assert steps[_LARGE_BOUNDARY_STEP_NAME].get("depends_on") == [_LARGE_BOUNDARY_DEPENDENCY]
         assert workflow.get("when") == (
             {"event": ["pull_request"]}
             if is_pr
@@ -275,36 +345,57 @@ def test_woodpecker_bounded_validation_dag_has_exact_two_wave_schedule() -> None
         )
         expected_dependencies = [
             "python-checks",
+            {"name": _LARGE_BOUNDARY_STEP_NAME, "optional": True},
             *({"name": name, "optional": True} for name in _SHARD_STEP_NAMES),
         ]
         if is_pr:
             assert steps["intelligence-checks"].get("depends_on") == expected_dependencies
             assert steps[frontend_name].get("depends_on") == expected_dependencies
         else:
-            assert steps["intelligence-checks"].get("depends_on") == list(_ROOT_STEP_NAMES)
-            assert steps[frontend_name].get("depends_on") == list(_ROOT_STEP_NAMES)
+            expected_main_dependencies = [
+                "python-checks",
+                _LARGE_BOUNDARY_STEP_NAME,
+                *_SHARD_STEP_NAMES,
+            ]
+            assert steps["intelligence-checks"].get("depends_on") == expected_main_dependencies
+            assert steps[frontend_name].get("depends_on") == expected_main_dependencies
         for step_name, step in steps.items():
-            if is_pr and step_name in _SHARD_STEP_NAMES:
-                assert step.get("when") == [
-                    {"path": {"exclude": ["docs/**", "services/frontend2/**"]}}
-                ]
+            if is_pr and step_name in (*_SHARD_STEP_NAMES, _LARGE_BOUNDARY_STEP_NAME):
+                assert step.get("when") == _PR_LARGE_BOUNDARY_WHEN
             else:
                 assert "when" not in step
         expected_second_wave = frozenset({"intelligence-checks", frontend_name})
         assert _waves(steps, frozenset(steps)) == [
             frozenset(_ROOT_STEP_NAMES),
+            frozenset({_LARGE_BOUNDARY_STEP_NAME}),
             expected_second_wave,
         ]
         assert max(map(len, _waves(steps, frozenset(steps)))) == 5
     pr_steps = _workflow_steps(workflows["pr.yaml"])
     for size in range(len(_SHARD_STEP_NAMES) + 1):
         for surviving_shards in combinations(_SHARD_STEP_NAMES, size):
-            active_steps = frozenset({"python-checks", *surviving_shards, *pr_second_wave})
-            assert _waves(pr_steps, active_steps) == [
-                frozenset({"python-checks", *surviving_shards}),
-                pr_second_wave,
-            ]
-            assert max(map(len, _waves(pr_steps, active_steps))) == max(1 + size, 2)
+            has_large_boundary = _LARGE_BOUNDARY_DEPENDENCY in surviving_shards
+            active_steps = frozenset(
+                {
+                    "python-checks",
+                    *surviving_shards,
+                    *pr_second_wave,
+                    *({_LARGE_BOUNDARY_STEP_NAME} if has_large_boundary else set()),
+                }
+            )
+            expected_waves = [frozenset({"python-checks", *surviving_shards})]
+            if has_large_boundary:
+                expected_waves.append(frozenset({_LARGE_BOUNDARY_STEP_NAME}))
+            expected_waves.append(pr_second_wave)
+            assert _waves(pr_steps, active_steps) == expected_waves
+            assert max(map(len, _waves(pr_steps, active_steps))) <= 5
+
+
+def test_large_boundary_marker_is_registered_and_selects_only_the_exact_probes() -> None:
+    assert _registered_pytest_markers() == (
+        "large_boundary: blocking exact 178,328-row CRM repair boundary probes",
+    )
+    assert _marked_large_boundary_node_ids() == frozenset(_LARGE_BOUNDARY_NODE_IDS)
 
 
 def test_woodpecker_validation_commands_preserve_pr_main_differences() -> None:
@@ -316,6 +407,8 @@ def test_woodpecker_validation_commands_preserve_pr_main_differences() -> None:
         "uv sync --frozen --no-dev --package profile-unifier-api",
         "uv sync --frozen --no-dev --package profile-unifier-ingestion",
     ]
+    assert _commands(pr_steps[_LARGE_BOUNDARY_STEP_NAME]) == list(_LARGE_BOUNDARY_COMMANDS)
+    assert _commands(main_steps[_LARGE_BOUNDARY_STEP_NAME]) == list(_LARGE_BOUNDARY_COMMANDS)
     assert _commands(pr_steps["intelligence-checks"]) == list(_INTELLIGENCE_COMMANDS)
     assert _commands(main_steps["intelligence-checks"]) == [
         *_INTELLIGENCE_COMMANDS,
@@ -350,7 +443,7 @@ def test_woodpecker_neo4j_shards_are_complete_isolated_and_parity_checked() -> N
             service_by_name[name] = service
         steps = _workflow_steps(workflow)
         assert len(service_by_name) == len(_NEO4J_SHARDS)
-        python_step_names = (*_ROOT_STEP_NAMES, "intelligence-checks")
+        python_step_names = (*_ROOT_STEP_NAMES, _LARGE_BOUNDARY_STEP_NAME, "intelligence-checks")
         python_environments: list[dict[str, object]] = []
         for step_name in python_step_names:
             step = steps[step_name]
@@ -369,6 +462,13 @@ def test_woodpecker_neo4j_shards_are_complete_isolated_and_parity_checked() -> N
         assert python_environment.get("PYTEST_ADDOPTS") == (
             "-o cache_dir=.pytest_cache-python-checks"
         )
+        large_boundary_environment = steps[_LARGE_BOUNDARY_STEP_NAME].get("environment")
+        assert isinstance(large_boundary_environment, dict)
+        typed_large_boundary_environment = cast(dict[str, object], large_boundary_environment)
+        assert typed_large_boundary_environment.get("PYTEST_ADDOPTS") == (
+            "-o cache_dir=.pytest_cache-large-boundary-checks"
+        )
+        assert typed_large_boundary_environment.get("PYTHONDONTWRITEBYTECODE") == "1"
         passwords: set[str] = set()
         for shard, contract in _NEO4J_SHARDS.items():
             service_name, families, readiness_index = contract
