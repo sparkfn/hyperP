@@ -618,7 +618,7 @@ def test_rebase_compact_preparation_retains_only_bounded_streaming_state() -> No
     assert payload_sensitive.peak_bytes - small.peak_bytes < _MAX_PAYLOAD_SENSITIVITY_BYTES
 
 
-def test_rebase_compact_preparation_streams_178328_rows_without_retaining_payloads_or_units() -> (
+def test_rebase_compact_preparation_streams_178328_rows_without_retaining_payloads_or_units(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     """Run exact production-cardinality streaming evidence in an isolated process."""
