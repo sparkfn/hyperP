@@ -66,9 +66,9 @@ services:
       NEO4J_server_memory_pagecache_size: 128m
 
 steps:
-  # Bounded two-wave DAG: Python plus four isolated, unconditional Neo4j shards are roots.
-  # Intelligence and the production frontend build run together only after all five roots complete.
-  # MAIN therefore has 5 then 2 validation steps, never unrestricted all-root fan-out.
+  # Measured #426 exception: the exact 178,328-row probes are an unconditional root.
+  # Projection + ledger share one root step, retaining every logical shard command while
+  # keeping five roots and a stage-compatible two-wave schedule.
   # Re-run the PR python suite on the merged main commit to catch merge breakage,
   # then add the production-install signal (mirrors the Dockerfile runtime install).
   - name: python-checks
@@ -91,18 +91,31 @@ steps:
       - uv run --package profile-unifier-api pytest services/api/tests/test_persons_list_queries.py::test_person_list_preferred_address_hydration_does_not_expand_provenance_edges
       - uv run --package profile-unifier-api pytest services/api/tests
       - uv sync --frozen --group training
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests -m "not large_boundary" --durations=25 --durations-min=1.0
       # Production runtime install (no dev group) — verifies the lockfile resolves for
       # the exact install the api/ingestion Dockerfiles run.
       - uv sync --frozen --no-dev --package profile-unifier-api
       - uv sync --frozen --no-dev --package profile-unifier-ingestion
 
+  - name: large-boundary-checks
+    image: ghcr.io/astral-sh/uv:python3.12-bookworm
+    # Exact boundary coverage remains an unconditional blocking root on MAIN.
+    depends_on: []
+    environment:
+      UV_PROJECT_ENVIRONMENT: .venv-large-boundary-checks
+      PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-large-boundary-checks"
+      PYTHONDONTWRITEBYTECODE: "1"
+    commands:
+      - uv sync --frozen
+      - uv sync --frozen --group training
+      - uv run --package profile-unifier-ingestion pytest -m large_boundary services/ingestion/tests/test_crm_deal_identity_repair_status_snapshot.py::test_status_snapshot_streams_full_high_cardinality_boundary services/ingestion/tests/test_crm_deal_identity_repair_rebase.py::test_rebase_compact_preparation_streams_178328_rows_without_retaining_payloads_or_units --durations=25 --durations-min=1.0
+
   - name: intelligence-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
     depends_on:
       - python-checks
-      - neo4j-projection-checks
-      - neo4j-ledger-310-checks
+      - large-boundary-checks
+      - neo4j-projection-ledger-checks
       - neo4j-census-migration-api-checks
       - neo4j-repair-mapping-checks
     environment:
@@ -119,37 +132,27 @@ steps:
   # Keep the real Neo4j compilation/execution gate aligned with PR validation.
   # Four isolated services retain the complete real-query gate on every main push.
   # MAIN shards are unconditional; only PR shards have approved path exclusions.
-  - name: neo4j-projection-checks
+  - name: neo4j-projection-ledger-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
     depends_on: []
     environment:
-      UV_PROJECT_ENVIRONMENT: .venv-neo4j-projection-checks
-      PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-neo4j-projection-checks"
+      UV_PROJECT_ENVIRONMENT: .venv-neo4j-projection-ledger-checks
+      PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-neo4j-projection-ledger-checks"
       PYTHONDONTWRITEBYTECODE: "1"
       HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_URI: bolt://neo4j-projection:7687
       HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_USER: neo4j
       HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD: ci-projection
       HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_SERVICE_HOST: neo4j-projection
-    commands:
-      - uv sync --frozen
-      - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_URI --user-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_USER --password-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD --timeout-seconds 90
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_projection_repository_neo4j.py -q
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_activation_neo4j.py -q
-      - uv run --package hyperp-intelligence pytest services/intelligence/tests -k crm_activities_neo4j -q
-
-  - name: neo4j-ledger-310-checks
-    image: ghcr.io/astral-sh/uv:python3.12-bookworm
-    depends_on: []
-    environment:
-      UV_PROJECT_ENVIRONMENT: .venv-neo4j-ledger-310-checks
-      PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-neo4j-ledger-310-checks"
-      PYTHONDONTWRITEBYTECODE: "1"
       HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_URI: bolt://neo4j-ledger-310:7687
       HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_USER: neo4j
       HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_PASSWORD: ci-ledger-310
       HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_SERVICE_HOST: neo4j-ledger-310
     commands:
       - uv sync --frozen
+      - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_URI --user-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_USER --password-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD --timeout-seconds 90
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_projection_repository_neo4j.py -q
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_activation_neo4j.py -q
+      - uv run --package hyperp-intelligence pytest services/intelligence/tests -k crm_activities_neo4j -q
       - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_URI --user-env HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_USER --password-env HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_PASSWORD --timeout-seconds 90
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_deal_identity_repair_ledger_neo4j.py -k 'test_310_' -q
 
@@ -239,8 +242,8 @@ steps:
     image: node:22-bookworm
     depends_on:
       - python-checks
-      - neo4j-projection-checks
-      - neo4j-ledger-310-checks
+      - large-boundary-checks
+      - neo4j-projection-ledger-checks
       - neo4j-census-migration-api-checks
       - neo4j-repair-mapping-checks
     commands:

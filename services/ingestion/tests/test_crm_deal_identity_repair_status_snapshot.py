@@ -3,18 +3,24 @@
 from __future__ import annotations
 
 import shutil
+import sys
 import time
 import tracemalloc
 from collections.abc import Iterator
+from dataclasses import dataclass
 from pathlib import Path
-
-try:
-    import resource
-except ImportError:  # pragma: no cover - Windows CI does not expose getrusage.
-    resource = None
+from typing import Final
 
 import pytest
 
+from _crm_deal_identity_repair_probe import (
+    ProbeMetric,
+    child_probe_requested,
+    emit_child_probe_result,
+    format_probe_evidence,
+    format_probe_metrics,
+    run_child_probe,
+)
 from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json_bytes
 from src.crm_deal_identity_repair import bounded
 from src.crm_deal_identity_repair.digests import (
@@ -22,6 +28,7 @@ from src.crm_deal_identity_repair.digests import (
     inventory_digest_from_parts,
     object_digest,
 )
+from src.crm_deal_identity_repair.execution_boundary_models import RepairBoundarySnapshot
 from src.crm_deal_identity_repair.models import RepairInventoryItem
 from src.graph import crm_deal_identity_repair_status_snapshot as status_snapshot
 from src.graph.crm_deal_identity_repair_boundary_evidence import (
@@ -48,6 +55,87 @@ from src.models import JsonValue
 
 
 _STALE_RUN_ID = "e5deb1d6-7333-4660-be4f-c44fcf5af686"
+
+_FULL_STATUS_WORKLOAD: Final = "status-snapshot-full-178328"
+_FULL_STATUS_TOTAL: Final = 178_328
+_FULL_STATUS_NEGATIVE_CONTROL_INDICES: Final = frozenset(
+    {0, 35_665, 71_331, 106_997, 142_663, 178_327}
+)
+_FULL_STATUS_HISTORICAL_VERSION_INDEX: Final = 71_332
+_FULL_STATUS_MAX_PEAK_BYTES: Final = 48 * 1024 * 1024
+_FULL_STATUS_PAYLOAD_BLOB_BYTES: Final = 16
+
+_REPRESENTATIVE_SMALL_TOTAL: Final = 500
+_REPRESENTATIVE_LARGE_TOTAL: Final = 2_000
+_REPRESENTATIVE_BASE_PAYLOAD_BLOB_BYTES: Final = 512
+_REPRESENTATIVE_HEAVY_PAYLOAD_BLOB_BYTES: Final = 8 * 1024
+_REPRESENTATIVE_HEAVY_TOTAL: Final = 1_000
+_REPRESENTATIVE_PAYLOAD_DELTA_PER_ROW: Final = (
+    _REPRESENTATIVE_HEAVY_PAYLOAD_BLOB_BYTES - _REPRESENTATIVE_BASE_PAYLOAD_BLOB_BYTES
+)
+_REPRESENTATIVE_ALL_PAYLOAD_DELTA_BYTES: Final = (
+    _REPRESENTATIVE_HEAVY_TOTAL * _REPRESENTATIVE_PAYLOAD_DELTA_PER_ROW
+)
+_REPRESENTATIVE_LIVE_PAGE_PAYLOAD_DELTA_BYTES: Final = 100 * _REPRESENTATIVE_PAYLOAD_DELTA_PER_ROW
+_REPRESENTATIVE_MAX_PAYLOAD_DELTA_BYTES: Final = 4 * 1024 * 1024
+
+# The 16-byte full-cardinality blob intentionally replaces the former 512-byte blob.
+# CI collection required: pin these final-fixture digests from the first optimized Linux
+# child result. They must never be computed from the implementation under test here.
+_EXPECTED_FULL_STATUS_INVENTORY_DIGEST = (
+    "sha256:b66fc2cc8bf283520d4267ae50bdc5016dad4f273520d4c2e123ef13e116c48a"
+)
+_EXPECTED_FULL_STATUS_SOURCE_RECORDS_DIGEST = (
+    "sha256:e0d360c4b625b45028654d295354047f0a4615965f3921a74af893b6a2813c3a"
+)
+_EXPECTED_FULL_STATUS_SOURCE_INSTANCE_DIGEST = (
+    "sha256:67679848766408d54613348f3dd9dd46e6d63a580583c456881ed7c61d18a1ef"
+)
+_EXPECTED_FULL_STATUS_STALE_RUN_EVIDENCE_DIGEST = (
+    "sha256:ab53a30e6005f1d8ceccb465c0dbea1cc743bde9560dfc0b488753ab3f171f8d"
+)
+_EXPECTED_FULL_STATUS_CONTROL_DIGEST = (
+    "sha256:4efb98a775c68e5d1ce88d7454ac4c4051da9d94fd15adbb9072f21c2fccd3f1"
+)
+_EXPECTED_FULL_STATUS_BOUNDARY_DIGEST = (
+    "sha256:193b4d33386c9290cc4eff340a9b5412803eeddcf72150721a0a75d2972e6a9d"
+)
+
+_FULL_STATUS_EXPECTED_METRICS: Final[dict[str, ProbeMetric]] = {
+    "inventory_row_count": _FULL_STATUS_TOTAL,
+    "eligible_unit_count": 178_322,
+    "negative_control_count": 6,
+    "control_index_0": 0,
+    "control_index_1": 35_665,
+    "control_index_2": 71_331,
+    "control_index_3": 106_997,
+    "control_index_4": 142_663,
+    "control_index_5": 178_327,
+    "historical_version_index": _FULL_STATUS_HISTORICAL_VERSION_INDEX,
+    "historical_version_fixture_seen": True,
+    "unicode_payload_fixture_seen": True,
+    "inventory_digest": _EXPECTED_FULL_STATUS_INVENTORY_DIGEST,
+    "source_records_digest": _EXPECTED_FULL_STATUS_SOURCE_RECORDS_DIGEST,
+    "source_instance_digest": _EXPECTED_FULL_STATUS_SOURCE_INSTANCE_DIGEST,
+    "stale_run_evidence_digest": _EXPECTED_FULL_STATUS_STALE_RUN_EVIDENCE_DIGEST,
+    "control_digest": _EXPECTED_FULL_STATUS_CONTROL_DIGEST,
+    "boundary_digest": _EXPECTED_FULL_STATUS_BOUNDARY_DIGEST,
+    "live_result_cleared": True,
+    "all_results_consumed": True,
+    "data_call_count": 0,
+    "max_live_results": 1,
+    "max_active_page_size": 100,
+    "max_projection_param_size": 100,
+    "max_source_param_size": 100,
+    "max_rows_per_result": 100,
+}
+
+
+@dataclass(frozen=True)
+class _TraceMeasurement:
+    boundary: RepairBoundarySnapshot
+    transaction: _GuardedStatusTransaction
+    peak_bytes: int
 
 
 class _GuardedResult:
@@ -78,9 +166,11 @@ class _GuardedResult:
         if not self._exhausted:
             raise AssertionError("status must exhaust every result before consume")
         self._consumed = True
+        self._transaction.consumed_result_count += 1
         self._transaction.live_result = None
 
     def data(self) -> list[dict[str, JsonValue]]:
+        self._transaction.data_call_count += 1
         raise AssertionError("status must not materialize result.data()")
 
 
@@ -97,16 +187,35 @@ class _SmallResult:
 
 
 class _GuardedStatusTransaction:
-    def __init__(self, total: int, negative_control_indices: frozenset[int]) -> None:
+    def __init__(
+        self,
+        total: int,
+        negative_control_indices: frozenset[int],
+        historical_version_index: int,
+        *,
+        payload_blob_bytes: int = _FULL_STATUS_PAYLOAD_BLOB_BYTES,
+        distinct_payloads: bool = False,
+    ) -> None:
         self.total = total
         self.negative_control_indices = negative_control_indices
+        self.historical_version_index = historical_version_index
         self.live_result: _GuardedResult | None = None
         self.max_live_results = 0
         self.max_active_page_size = 0
         self.max_projection_param_size = 0
         self.max_source_param_size = 0
         self.max_rows_per_result = 0
-        self._payload_blob = "x" * 512
+        self.consumed_result_count = 0
+        self.created_result_count = 0
+        self.data_call_count = 0
+        self.historical_version_fixture_seen = False
+        self.unicode_payload_fixture_seen = False
+        self._distinct_payloads = distinct_payloads
+        self._payload_blob = "x" * payload_blob_bytes
+        self._shared_payloads: dict[str, str] = {
+            "Ångström": self._payload_value("Ångström"),
+            "historical": self._payload_value("historical"),
+        }
 
     def run(self, query: str, **parameters: object) -> _GuardedResult:
         if self.live_result is not None:
@@ -114,6 +223,7 @@ class _GuardedStatusTransaction:
         rows = self._rows(query, parameters)
         result = _GuardedResult(self, rows)
         self.live_result = result
+        self.created_result_count += 1
         self.max_live_results = max(self.max_live_results, 1)
         return result
 
@@ -223,7 +333,7 @@ class _GuardedStatusTransaction:
 
     def _inventory_record(self, index: int) -> dict[str, JsonValue]:
         source_record_pk = f"pk-{index:06d}"
-        current_version = "2" if index == 71_332 else "1"
+        current_version = "2" if index == self.historical_version_index else "1"
         owner_ids: list[JsonValue]
         if index in self.negative_control_indices:
             owner_ids = [{"person_id": f"person-{index}", "is_active": True}]
@@ -238,11 +348,12 @@ class _GuardedStatusTransaction:
                 "source_record_version": current_version,
                 "lifecycle_status": "active",
                 "is_latest": True,
-                "raw_payload": self._payload("Ångström"),
+                "raw_payload": self._payload("Ångström", index),
                 "normalized_payload": "{}",
             }
         ]
-        if index == 71_332:
+        if index == self.historical_version_index:
+            self.historical_version_fixture_seen = True
             logical_versions.insert(
                 0,
                 {
@@ -250,7 +361,7 @@ class _GuardedStatusTransaction:
                     "source_record_version": "1",
                     "lifecycle_status": "superseded",
                     "is_latest": False,
-                    "raw_payload": self._payload("historical"),
+                    "raw_payload": self._payload("historical", index),
                     "normalized_payload": "{}",
                 },
             )
@@ -262,7 +373,7 @@ class _GuardedStatusTransaction:
             "is_latest": True,
             "record_hash": f"hash-{index}",
             "observed_at": "2026-09-12T00:00:00Z",
-            "raw_payload": self._payload("Ångström"),
+            "raw_payload": self._payload("Ångström", index),
             "normalized_payload": "{}",
             "linked_people": owner_ids,
             "logical_versions": logical_versions,
@@ -282,11 +393,20 @@ class _GuardedStatusTransaction:
             "right_properties": None,
         }
 
-    def _payload(self, marker: str) -> str:
+    def _payload(self, marker: str, index: int) -> str:
+        if marker != "historical":
+            self.unicode_payload_fixture_seen = True
+        if self._distinct_payloads:
+            return self._payload_value(marker, index)
+        return self._shared_payloads[marker]
+
+    def _payload_value(self, marker: str, index: int | None = None) -> str:
+        row_prefix = "" if index is None else f"{index:06d}:"
         return (
             '{"crm_deal_identity_policy_version":"legacy","marker":"'
             + marker
             + '","blob":"'
+            + row_prefix
             + self._payload_blob
             + '"}'
         )
@@ -321,13 +441,66 @@ class _GuardedStatusTransaction:
         }
 
 
-def test_status_snapshot_streams_full_high_cardinality_boundary() -> None:
-    total = 178_328
-    expected_pks = tuple(f"pk-{index:06d}" for index in range(total))
-    negative_control_indices = frozenset({0, 35_665, 71_331, 106_997, 142_663, 178_327})
-    transaction = _GuardedStatusTransaction(total, negative_control_indices)
+@pytest.mark.large_boundary
+def test_status_snapshot_streams_full_high_cardinality_boundary(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    result = run_child_probe(Path(__file__), _FULL_STATUS_WORKLOAD)
+    with capsys.disabled():
+        print(format_probe_evidence(result))
+    assert result.elapsed_seconds > 0
+    assert result.peak_rss_bytes < 2 * 1024 * 1024 * 1024
+    assert result.metrics == _FULL_STATUS_EXPECTED_METRICS, format_probe_metrics(result)
 
-    started = time.perf_counter()
+
+def test_status_snapshot_traced_allocations_are_bounded_and_payload_insensitive() -> None:
+    small = _traced_status_snapshot(
+        _REPRESENTATIVE_SMALL_TOTAL,
+        payload_blob_bytes=_REPRESENTATIVE_BASE_PAYLOAD_BLOB_BYTES,
+        distinct_payloads=True,
+    )
+    large = _traced_status_snapshot(
+        _REPRESENTATIVE_LARGE_TOTAL,
+        payload_blob_bytes=_REPRESENTATIVE_BASE_PAYLOAD_BLOB_BYTES,
+        distinct_payloads=True,
+    )
+    payload_heavy = _traced_status_snapshot(
+        _REPRESENTATIVE_HEAVY_TOTAL,
+        payload_blob_bytes=_REPRESENTATIVE_HEAVY_PAYLOAD_BLOB_BYTES,
+        distinct_payloads=True,
+    )
+
+    for measurement in (small, large, payload_heavy):
+        _assert_representative_snapshot(measurement)
+        assert measurement.peak_bytes < _FULL_STATUS_MAX_PEAK_BYTES
+
+    # The frozen PK tuple is permitted O(N) state. Retaining payload-bearing pages/results is not.
+    assert large.peak_bytes - small.peak_bytes < 5 * 1024 * 1024
+    # A 100-row live page adds only 768,000 raw bytes. The 4 MiB allowance permits
+    # canonicalization slack, but stays well below the 7,680,000 bytes required to retain
+    # the additional distinct payload bytes for all 1,000 heavy rows.
+    assert (
+        _REPRESENTATIVE_MAX_PAYLOAD_DELTA_BYTES
+        < _REPRESENTATIVE_ALL_PAYLOAD_DELTA_BYTES
+    )
+    assert (
+        _REPRESENTATIVE_LIVE_PAGE_PAYLOAD_DELTA_BYTES
+        < _REPRESENTATIVE_MAX_PAYLOAD_DELTA_BYTES
+    )
+    assert payload_heavy.peak_bytes - small.peak_bytes < _REPRESENTATIVE_MAX_PAYLOAD_DELTA_BYTES
+
+
+def _traced_status_snapshot(
+    total: int,
+    *,
+    payload_blob_bytes: int,
+    distinct_payloads: bool,
+) -> _TraceMeasurement:
+    expected_pks, transaction = _status_fixture(
+        total,
+        payload_blob_bytes=payload_blob_bytes,
+        distinct_payloads=distinct_payloads,
+    )
     tracemalloc.start()
     try:
         boundary = status_snapshot.status_snapshot_from_transaction(
@@ -339,27 +512,115 @@ def test_status_snapshot_streams_full_high_cardinality_boundary() -> None:
         _, peak_bytes = tracemalloc.get_traced_memory()
     finally:
         tracemalloc.stop()
-    elapsed_seconds = time.perf_counter() - started
-    rss_after = _maximum_rss_bytes()
+    return _TraceMeasurement(boundary, transaction, peak_bytes)
 
-    assert boundary.inventory_row_count == total
+
+def _assert_representative_snapshot(measurement: _TraceMeasurement) -> None:
+    transaction = measurement.transaction
+    boundary = measurement.boundary
+    assert boundary.inventory_row_count == transaction.total
     assert boundary.negative_control_count == 6
-    assert boundary.eligible_unit_count == 178_322
-    assert boundary.inventory_digest.startswith("sha256:")
-    assert boundary.source_records_digest.startswith("sha256:")
-    assert boundary.stale_run_evidence_digest.startswith("sha256:")
-    assert boundary.control_digest.startswith("sha256:")
-    assert boundary.boundary_digest.startswith("sha256:")
+    assert boundary.eligible_unit_count == transaction.total - 6
+    assert transaction.historical_version_fixture_seen
+    assert transaction.unicode_payload_fixture_seen
     assert transaction.live_result is None
+    assert transaction.created_result_count == transaction.consumed_result_count
+    assert transaction.data_call_count == 0
     assert transaction.max_live_results == 1
     assert transaction.max_active_page_size == 100
     assert transaction.max_projection_param_size == 100
     assert transaction.max_source_param_size == 100
     assert transaction.max_rows_per_result == 100
-    assert peak_bytes < 48 * 1024 * 1024
-    assert elapsed_seconds > 0
-    if resource is not None:
-        assert rss_after < 2 * 1024 * 1024 * 1024
+
+
+def _status_fixture(
+    total: int,
+    *,
+    payload_blob_bytes: int = _FULL_STATUS_PAYLOAD_BLOB_BYTES,
+    distinct_payloads: bool = False,
+) -> tuple[tuple[str, ...], _GuardedStatusTransaction]:
+    negative_control_indices = _negative_control_indices(total)
+    historical_version_index = _historical_version_index(total, negative_control_indices)
+    expected_pks = tuple(f"pk-{index:06d}" for index in range(total))
+    transaction = _GuardedStatusTransaction(
+        total,
+        negative_control_indices,
+        historical_version_index,
+        payload_blob_bytes=payload_blob_bytes,
+        distinct_payloads=distinct_payloads,
+    )
+    return expected_pks, transaction
+
+
+def _negative_control_indices(total: int) -> frozenset[int]:
+    if total == _FULL_STATUS_TOTAL:
+        return _FULL_STATUS_NEGATIVE_CONTROL_INDICES
+    return frozenset({0, total // 5, 2 * total // 5, total // 2, 4 * total // 5, total - 1})
+
+
+def _historical_version_index(total: int, controls: frozenset[int]) -> int:
+    if total == _FULL_STATUS_TOTAL:
+        return _FULL_STATUS_HISTORICAL_VERSION_INDEX
+    historical_index = total // 2 + 1
+    if historical_index in controls:
+        raise AssertionError("representative historical fixture overlaps a negative control")
+    return historical_index
+
+
+def _emit_full_status_probe() -> None:
+    expected_pks, transaction = _status_fixture(_FULL_STATUS_TOTAL)
+    started = time.perf_counter()
+    boundary = status_snapshot.status_snapshot_from_transaction(
+        transaction,
+        "portal-a",
+        "portal-a",
+        expected_pks,
+    )
+    elapsed_seconds = time.perf_counter() - started
+    emit_child_probe_result(
+        _FULL_STATUS_WORKLOAD,
+        elapsed_seconds,
+        _full_status_probe_metrics(boundary, transaction),
+    )
+
+
+def _full_status_probe_metrics(
+    boundary: RepairBoundarySnapshot,
+    transaction: _GuardedStatusTransaction,
+) -> dict[str, ProbeMetric]:
+    controls = tuple(sorted(transaction.negative_control_indices))
+    if len(controls) != 6:
+        raise AssertionError("full status fixture must contain six negative controls")
+    return {
+        "inventory_row_count": boundary.inventory_row_count,
+        "eligible_unit_count": boundary.eligible_unit_count,
+        "negative_control_count": boundary.negative_control_count,
+        "control_index_0": controls[0],
+        "control_index_1": controls[1],
+        "control_index_2": controls[2],
+        "control_index_3": controls[3],
+        "control_index_4": controls[4],
+        "control_index_5": controls[5],
+        "historical_version_index": transaction.historical_version_index,
+        "historical_version_fixture_seen": transaction.historical_version_fixture_seen,
+        "unicode_payload_fixture_seen": transaction.unicode_payload_fixture_seen,
+        "inventory_digest": boundary.inventory_digest,
+        "source_records_digest": boundary.source_records_digest,
+        "source_instance_digest": boundary.source_instance_digest,
+        "stale_run_evidence_digest": boundary.stale_run_evidence_digest,
+        "control_digest": boundary.control_digest,
+        "boundary_digest": boundary.boundary_digest,
+        "live_result_cleared": transaction.live_result is None,
+        "all_results_consumed": (
+            transaction.created_result_count == transaction.consumed_result_count
+        ),
+        "data_call_count": transaction.data_call_count,
+        "max_live_results": transaction.max_live_results,
+        "max_active_page_size": transaction.max_active_page_size,
+        "max_projection_param_size": transaction.max_projection_param_size,
+        "max_source_param_size": transaction.max_source_param_size,
+        "max_rows_per_result": transaction.max_rows_per_result,
+    }
 
 
 def test_source_record_digest_pages_exact_legacy_object_bytes() -> None:
@@ -616,7 +877,5 @@ def test_canonical_scratch_is_removed_when_sqlite_setup_fails(
     assert not scratch.exists()
 
 
-def _maximum_rss_bytes() -> int:
-    if resource is None:
-        return 0
-    return resource.getrusage(resource.RUSAGE_SELF).ru_maxrss * 1024
+if child_probe_requested(sys.argv, _FULL_STATUS_WORKLOAD):
+    _emit_full_status_probe()
