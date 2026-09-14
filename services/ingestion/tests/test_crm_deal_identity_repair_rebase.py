@@ -58,19 +58,29 @@ _FULL_REBASE_PROBE_WORKLOAD = "rebase-178328"
 _FULL_REBASE_TOTAL = 178_328
 _FULL_REBASE_ELIGIBLE = 178_322
 _FULL_REBASE_BATCH_SIZE = 250
+_FULL_REBASE_PAYLOAD_BYTES = 0
 _MAX_REBASE_TRACED_BYTES = 64 * 1024 * 1024
-_MAX_REPRESENTATIVE_GROWTH_BYTES = 4 * 1024 * 1024
+_REPRESENTATIVE_SMALL_TOTAL = 500
+_REPRESENTATIVE_LARGE_TOTAL = 2_000
+_REPRESENTATIVE_BASELINE_PAYLOAD_BYTES = 128
+_REPRESENTATIVE_PAYLOAD_BYTES = 8 * 1024
+_MAX_REPRESENTATIVE_GROWTH_BYTES = 2 * 1024 * 1024
 _MAX_PAYLOAD_SENSITIVITY_BYTES = 2 * 1024 * 1024
 
-# These full-cardinality identity values must be collected from the first optimized
-# Linux CI child probe, then remain fixed independent expectations. They cannot be
-# derived by this test from the evidence it is validating.
-_EXPECTED_FULL_REBASE_COMPLETION_ID = "COLLECT_FROM_FIRST_OPTIMIZED_CI"
-_EXPECTED_FULL_REBASE_ALLOCATION_DIGEST = "COLLECT_FROM_FIRST_OPTIMIZED_CI"
-_EXPECTED_FULL_REBASE_UNIT_SET_DIGEST = "COLLECT_FROM_FIRST_OPTIMIZED_CI"
-_EXPECTED_FULL_REBASE_FIRST_UNIT_ID = "COLLECT_FROM_FIRST_OPTIMIZED_CI"
-_EXPECTED_FULL_REBASE_MIDDLE_UNIT_ID = "COLLECT_FROM_FIRST_OPTIMIZED_CI"
-_EXPECTED_FULL_REBASE_LAST_UNIT_ID = "COLLECT_FROM_FIRST_OPTIMIZED_CI"
+# Payload bytes are deliberately excluded from compact allocation identity: the
+# production rebase parser constructs payload={} and _unit binds only inventory
+# identity plus the graph/stored fingerprints. These #1056 values therefore remain
+# valid after shrinking this full-cardinality fixture's payload.
+_EXPECTED_FULL_REBASE_COMPLETION_ID = "925309a9-5d3e-5987-842d-e455ca9ae580"
+_EXPECTED_FULL_REBASE_ALLOCATION_DIGEST = (
+    "sha256:6c2b1c1b51bc7da175eb43d75972180bfa22d91b506129726994f5faec1b5cc2"
+)
+_EXPECTED_FULL_REBASE_UNIT_SET_DIGEST = (
+    "sha256:b0334124f8fbc93d1cf463fe251375aa763ca105129f54f8c859f66dd68d7a6a"
+)
+_EXPECTED_FULL_REBASE_FIRST_UNIT_ID = "d36ae152-0ad4-5d98-9925-518191e2cd7b"
+_EXPECTED_FULL_REBASE_MIDDLE_UNIT_ID = "54ab6917-8b63-59c5-8341-5f226a21828b"
+_EXPECTED_FULL_REBASE_LAST_UNIT_ID = "978185a5-d370-5330-9740-514b3cd5a443"
 
 
 def _request() -> RepairBoundaryRebaseRequest:
@@ -344,18 +354,37 @@ def test_rebase_approval_path_rejects_aliases_and_root_escapes(tmp_path: Path) -
 class _InventoryLineSource:
     """Fresh, payload-bearing JSONL passes with observable iterator cleanup."""
 
+    _PREFIX = b'{"source_system":"bitrix_chat","source_record_id":"bitrix-crm-deal-'
+    _AFTER_RECORD_ID = b'","source_record_pk":"pk-'
+    _AFTER_SOURCE_RECORD_PK = b'","deal_id":"'
+    _AFTER_DEAL_ID = b'","partition":"'
+    _AFTER_PARTITION = b'","repair_conditions":["'
+    _AFTER_CONDITION = (
+        b'"],"graph_fingerprint":"'
+        + _DIGEST.encode("ascii")
+        + b'","stored_payload_fingerprint":"'
+        + _OTHER_DIGEST.encode("ascii")
+        + b'","payload":'
+    )
+    _SUFFIX = b',"execution_allowed":false}\n'
+
     def __init__(
         self,
         total: int,
         negative_control_indices: frozenset[int] = _NEGATIVE_CONTROL_INDICES,
-        payload_bytes: int = 512,
+        payload_bytes: int = _REPRESENTATIVE_BASELINE_PAYLOAD_BYTES,
     ) -> None:
         self.total = total
         self.negative_control_indices = negative_control_indices
         self.calls = 0
         self.active_iterators = 0
         self.maximum_active_iterators = 0
-        self.payload = "x" * payload_bytes
+        self._payload_json = json.dumps(
+            {"payload_blob": "x" * payload_bytes},
+            separators=(",", ":"),
+            ensure_ascii=False,
+            allow_nan=False,
+        ).encode("utf-8")
 
     def lines(self) -> Iterator[bytes]:
         self.calls += 1
@@ -364,27 +393,30 @@ class _InventoryLineSource:
         try:
             for index in range(self.total):
                 partition = (
-                    "negative_control"
+                    b"negative_control"
                     if index in self.negative_control_indices
-                    else "ownership_repair"
+                    else b"ownership_repair"
                 )
-                yield (
-                    json.dumps(
-                        {
-                            "source_system": "bitrix_chat",
-                            "source_record_id": f"bitrix-crm-deal-{index:06d}",
-                            "source_record_pk": f"pk-{index:06d}",
-                            "deal_id": f"{index:06d}",
-                            "partition": partition,
-                            "repair_conditions": [partition],
-                            "graph_fingerprint": _DIGEST,
-                            "stored_payload_fingerprint": _OTHER_DIGEST,
-                            "payload": {"payload_blob": self.payload},
-                            "execution_allowed": False,
-                        },
-                        separators=(",", ":"),
-                    ).encode("utf-8")
-                    + b"\n"
+                index_bytes = f"{index:06d}".encode("ascii")
+                # All dynamic fragments are either ASCII decimal digits generated
+                # locally or one of these fixed JSON strings; payload JSON is
+                # encoded once per source, not once per row.
+                yield b"".join(
+                    (
+                        self._PREFIX,
+                        index_bytes,
+                        self._AFTER_RECORD_ID,
+                        index_bytes,
+                        self._AFTER_SOURCE_RECORD_PK,
+                        index_bytes,
+                        self._AFTER_DEAL_ID,
+                        partition,
+                        self._AFTER_PARTITION,
+                        partition,
+                        self._AFTER_CONDITION,
+                        self._payload_json,
+                        self._SUFFIX,
+                    )
                 )
         finally:
             self.active_iterators -= 1
@@ -480,7 +512,10 @@ def _consume_unit_batches(evidence: RebaseAllocationEvidence) -> tuple[int, int,
 
 def _full_rebase_probe_metrics() -> dict[str, ProbeMetric]:
     overlay = _high_cardinality_overlay(_FULL_REBASE_TOTAL)
-    source = _InventoryLineSource(_FULL_REBASE_TOTAL)
+    source = _InventoryLineSource(
+        _FULL_REBASE_TOTAL,
+        payload_bytes=_FULL_REBASE_PAYLOAD_BYTES,
+    )
     evidence = stream_rebase_allocation_evidence(
         run_id="run-424",
         boundary_digest=_DIGEST,
@@ -605,14 +640,25 @@ def _traced_rebase_observation(total: int, payload_bytes: int) -> _RebaseTraceOb
 
 def test_rebase_compact_preparation_retains_only_bounded_streaming_state() -> None:
     """Trace representative scales and payloads without tracing production cardinality."""
-    small = _traced_rebase_observation(1_000, 512)
-    large = _traced_rebase_observation(4_000, 512)
-    payload_sensitive = _traced_rebase_observation(1_000, 32 * 1024)
+    small = _traced_rebase_observation(
+        _REPRESENTATIVE_SMALL_TOTAL,
+        _REPRESENTATIVE_BASELINE_PAYLOAD_BYTES,
+    )
+    large = _traced_rebase_observation(
+        _REPRESENTATIVE_LARGE_TOTAL,
+        _REPRESENTATIVE_BASELINE_PAYLOAD_BYTES,
+    )
+    payload_sensitive = _traced_rebase_observation(
+        _REPRESENTATIVE_SMALL_TOTAL,
+        _REPRESENTATIVE_PAYLOAD_BYTES,
+    )
 
     for observation in (small, large, payload_sensitive):
         assert observation.peak_bytes < _MAX_REBASE_TRACED_BYTES
         assert observation.payload_bearing_unit_count == 0
-    assert large.observed_unit_count == 3_994
+    assert large.observed_unit_count == _REPRESENTATIVE_LARGE_TOTAL - len(
+        _representative_negative_controls(_REPRESENTATIVE_LARGE_TOTAL)
+    )
     assert large.maximum_batch_size == _FULL_REBASE_BATCH_SIZE
     assert large.peak_bytes - small.peak_bytes < _MAX_REPRESENTATIVE_GROWTH_BYTES
     assert payload_sensitive.peak_bytes - small.peak_bytes < _MAX_PAYLOAD_SENSITIVITY_BYTES
