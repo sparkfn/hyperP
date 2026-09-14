@@ -89,7 +89,8 @@ _PYTHON_COMMANDS = (
     "test_person_list_preferred_address_hydration_does_not_expand_provenance_edges",
     "uv run --package profile-unifier-api pytest services/api/tests",
     "uv sync --frozen --group training",
-    "uv run --package profile-unifier-ingestion pytest services/ingestion/tests",
+    "uv run --package profile-unifier-ingestion pytest services/ingestion/tests "
+    "--durations=25 --durations-min=1.0",
 )
 _INTELLIGENCE_COMMANDS = (
     "uv sync --frozen --group dev",

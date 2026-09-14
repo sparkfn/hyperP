@@ -87,7 +87,7 @@ steps:
       - uv run --package profile-unifier-api pytest services/api/tests/test_persons_list_queries.py::test_person_list_preferred_address_hydration_does_not_expand_provenance_edges
       - uv run --package profile-unifier-api pytest services/api/tests
       - uv sync --frozen --group training
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests --durations=25 --durations-min=1.0
 
   - name: intelligence-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
