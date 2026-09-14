@@ -4,15 +4,23 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import uuid
-from dataclasses import dataclass
+from collections.abc import Callable, Iterator
+from dataclasses import asdict, dataclass
+from typing import cast
 
 from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json_bytes
-from src.crm_deal_identity_repair.approval_overlay import ApprovalOverlay
+from src.crm_deal_identity_repair.approval_overlay import ApprovalOverlay, ApprovalRow
 from src.crm_deal_identity_repair.control_models import RepairAllocationCompletion
-from src.crm_deal_identity_repair.digests import inventory_binding_digest, object_digest
+from src.crm_deal_identity_repair.digests import (
+    CanonicalObjectDigest,
+    canonical_json_line,
+    inventory_binding_digest,
+    object_digest,
+)
 from src.crm_deal_identity_repair.execution_records import RepairUnit
-from src.crm_deal_identity_repair.models import RepairInventoryItem
+from src.crm_deal_identity_repair.models import RepairInventoryItem, RepairPartition
 from src.models import JsonValue
 
 _ALLOCATION_DOMAIN = b"crm-deal-identity-repair-allocation-v1\x00"
@@ -142,3 +150,196 @@ def _unit(
         item.stored_payload_fingerprint,
         binding,
     )
+
+
+@dataclass(frozen=True)
+class RebaseAllocationEvidence:
+    """Compact, replayable expected-unit evidence for boundary rebasing."""
+
+    completion: RepairAllocationCompletion
+    unit_set_digest: str
+    unit_ids: tuple[str, ...]
+    _unit_batches: Callable[[], Iterator[list[dict[str, JsonValue]]]]
+
+    def unit_batches(self) -> Iterator[list[dict[str, JsonValue]]]:
+        """Re-read authenticated inventory and yield bounded expected-unit batches."""
+        yield from self._unit_batches()
+
+
+def stream_rebase_allocation_evidence(
+    *,
+    run_id: str,
+    boundary_digest: str,
+    overlay: ApprovalOverlay,
+    inventory_lines: Callable[[], Iterator[bytes]],
+    batch_size: int = 500,
+) -> RebaseAllocationEvidence:
+    """Derive legacy-identical allocation identities without retaining payloads or units."""
+    if batch_size < 1:
+        raise ValueError("rebase unit batch size must be positive")
+    rows = {row.inventory_key: row for row in overlay.rows}
+    if len(rows) != len(overlay.rows):
+        raise ValueError("approval overlay has duplicate row identities")
+    unit_ids = _stream_selected_unit_ids(run_id, boundary_digest, rows, inventory_lines)
+    count = len(unit_ids)
+    if count > overlay.unit_ceiling:
+        raise ValueError("approval overlay executable ceiling is exceeded")
+    allocation_digest = _stream_allocation_digest(
+        run_id, boundary_digest, overlay.overlay_digest, unit_ids
+    )
+    completion = RepairAllocationCompletion(
+        run_id,
+        str(uuid.uuid5(uuid.NAMESPACE_URL, allocation_digest)),
+        boundary_digest,
+        overlay.overlay_digest,
+        allocation_digest,
+        count,
+    )
+    unit_set_digest = _stream_unit_set_digest(run_id, boundary_digest, rows, inventory_lines)
+
+    def batches() -> Iterator[list[dict[str, JsonValue]]]:
+        yield from _stream_unit_batches(run_id, boundary_digest, rows, inventory_lines, batch_size)
+
+    return RebaseAllocationEvidence(completion, unit_set_digest, unit_ids, batches)
+
+
+def _stream_selected_unit_ids(
+    run_id: str,
+    boundary_digest: str,
+    rows: dict[str, ApprovalRow],
+    inventory_lines: Callable[[], Iterator[bytes]],
+) -> tuple[str, ...]:
+    seen: set[str] = set()
+    unit_ids: list[str] = []
+    sequence = 0
+    for item in _compact_inventory_items(inventory_lines):
+        row = _validated_overlay_row(rows, item)
+        if item.inventory_key in seen:
+            raise ValueError("qualified inventory contains duplicate identities")
+        seen.add(item.inventory_key)
+        if row.disposition == "executable":
+            if item.partition == "negative_control":
+                raise ValueError("negative-control inventory rows are never executable")
+            unit_ids.append(_unit(run_id, boundary_digest, item, sequence).unit_id)
+            sequence += 1
+    if seen != set(rows):
+        raise ValueError("approval overlay row coverage is incomplete or changed")
+    if len(unit_ids) != len(set(unit_ids)):
+        raise RuntimeError("rebase allocation unit IDs are not unique")
+    return tuple(unit_ids)
+
+
+def _stream_allocation_digest(
+    run_id: str,
+    boundary_digest: str,
+    overlay_digest: str,
+    unit_ids: tuple[str, ...],
+) -> str:
+    digest = CanonicalObjectDigest(_ALLOCATION_DOMAIN)
+    digest.value("boundary_digest", boundary_digest)
+    digest.value("overlay_digest", overlay_digest)
+    digest.value("run_id", run_id)
+    digest.value("unit_count", len(unit_ids))
+    digest.begin_array("unit_ids")
+    for unit_id in unit_ids:
+        digest.array_value(canonical_json_line(unit_id))
+    digest.end_array()
+    return digest.finish()
+
+
+def _stream_unit_set_digest(
+    run_id: str,
+    boundary_digest: str,
+    rows: dict[str, ApprovalRow],
+    inventory_lines: Callable[[], Iterator[bytes]],
+) -> str:
+    digest = CanonicalObjectDigest(b"crm-deal-identity-repair-allocation-unit-set-v1\x00")
+    digest.begin_array("units")
+    sequence = 0
+    for item in _compact_inventory_items(inventory_lines):
+        row = _validated_overlay_row(rows, item)
+        if row.disposition != "executable":
+            continue
+        unit = _unit(run_id, boundary_digest, item, sequence)
+        digest.array_value(canonical_json_bytes(_unit_json(unit)))
+        sequence += 1
+    digest.end_array()
+    return digest.finish()
+
+
+def _stream_unit_batches(
+    run_id: str,
+    boundary_digest: str,
+    rows: dict[str, ApprovalRow],
+    inventory_lines: Callable[[], Iterator[bytes]],
+    batch_size: int,
+) -> Iterator[list[dict[str, JsonValue]]]:
+    batch: list[dict[str, JsonValue]] = []
+    sequence = 0
+    for item in _compact_inventory_items(inventory_lines):
+        row = _validated_overlay_row(rows, item)
+        if row.disposition != "executable":
+            continue
+        batch.append(_unit_json(_unit(run_id, boundary_digest, item, sequence)))
+        sequence += 1
+        if len(batch) == batch_size:
+            yield batch
+            batch = []
+    if batch:
+        yield batch
+
+
+def _compact_inventory_items(
+    inventory_lines: Callable[[], Iterator[bytes]],
+) -> Iterator[RepairInventoryItem]:
+    for line in inventory_lines():
+        raw = json.loads(line)
+        if not isinstance(raw, dict):
+            raise ValueError("qualified inventory row is malformed")
+        values = cast(dict[str, JsonValue], raw)
+        required = (
+            "source_system",
+            "source_record_id",
+            "source_record_pk",
+            "deal_id",
+            "partition",
+            "graph_fingerprint",
+            "stored_payload_fingerprint",
+        )
+        if any(not isinstance(values.get(key), str) for key in required):
+            raise ValueError("qualified inventory row is malformed")
+        conditions = values.get("repair_conditions")
+        if not isinstance(conditions, list) or not all(
+            isinstance(item, str) for item in conditions
+        ):
+            raise ValueError("qualified inventory row is malformed")
+        partition = cast(RepairPartition, values["partition"])
+        item = RepairInventoryItem(
+            source_system=cast(str, values["source_system"]),
+            source_record_id=cast(str, values["source_record_id"]),
+            source_record_pk=cast(str, values["source_record_pk"]),
+            deal_id=cast(str, values["deal_id"]),
+            partition=partition,
+            repair_conditions=cast(tuple[RepairPartition, ...], tuple(conditions)),
+            graph_fingerprint=cast(str, values["graph_fingerprint"]),
+            stored_payload_fingerprint=cast(str, values["stored_payload_fingerprint"]),
+            payload={},
+        )
+        yield item
+
+
+def _validated_overlay_row(rows: dict[str, ApprovalRow], item: RepairInventoryItem) -> ApprovalRow:
+    row = rows.get(item.inventory_key)
+    if row is None:
+        raise ValueError("approval overlay row coverage is incomplete or changed")
+    if (
+        row.source_record_pk != item.source_record_pk
+        or row.graph_fingerprint != item.graph_fingerprint
+        or row.stored_payload_fingerprint != item.stored_payload_fingerprint
+    ):
+        raise ValueError("approval overlay row fingerprint binding changed")
+    return row
+
+
+def _unit_json(unit: RepairUnit) -> dict[str, JsonValue]:
+    return cast(dict[str, JsonValue], asdict(unit))

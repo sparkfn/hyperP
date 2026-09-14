@@ -169,3 +169,42 @@ over every prior unit.  The residual difference is that a post-settle *manual*
 deletion of an older unit's ledger nodes is no longer detected at admission.
 No production or repair code path deletes those nodes, so the residual is
 acceptable and documented here.
+
+### Allocated boundary rebase (issue #424)
+
+`rebase-boundary` is the only staging-only route for replacing the effective
+full-boundary seal of an already allocated repair. It is not an allocation
+retry or a generic seal overwrite: qualification, original approval, completion
+identity, original allocation/request digests, all allocated unit identities,
+and every unit fingerprint/state remain immutable. The operator must provide the
+exact owner/token/revision, original approved overlay, a separately authenticated
+fresh inventory artifact, and the complete currently observed boundary digest.
+
+The command verifies the original qualified artifact and approval, verifies the
+fresh artifact's primary/backup bytes and current producer provenance, requires
+an exact inventory byte/digest/count/identity/population match and exactly six
+unchanged negative controls, and re-derives expected unit identities solely to
+validate the already stored allocation. It fails closed unless the control is
+`allocated`, dispatch remains blocked and owned by the run, publication is
+settled, source-instance evidence is unchanged, allocation receipt/origin HMAC
+are valid, and there are zero mutation results, verification results, secondary
+dispositions, acceptance/release records, and active fences.
+
+The repository takes dispatch, control, and completion locks in a fixed order,
+rereads authority after locking, recomputes the complete component boundary, and
+atomically advances the allocated/blocked lifecycle revision, control seal,
+completion allocation seal, allocation-origin HMAC, allocation receipt, and a
+signed immutable rebase audit projection. It creates or modifies no repair unit,
+never publishes work, and cannot accept or release dispatch. Exact replay only
+returns the authenticated durable rebase result; any different request, stale
+revision, later drift, corrupt audit/HMAC/receipt, or partial allocation fails
+without a partial update.
+
+The effective seal is accepted by status and first-unit apply admission only
+when the signed rebase audit and replacement allocation authority validate.
+The original qualification boundary remains visible and immutable. Subsequent
+boundary drift remains blocking. A live staging invocation is a separately
+approved operational step: Beat and both workers must be stopped, dispatch must
+remain blocked, queues/evidence must be rechecked, and no independent/manual
+graph writer may run. This repository change does not create or claim a global
+maintenance lock.

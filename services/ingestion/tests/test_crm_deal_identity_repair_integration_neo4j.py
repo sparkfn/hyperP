@@ -43,6 +43,7 @@ from src.graph.crm_deal_identity_repair_verification import (
 )
 from src.graph.crm_deal_identity_repair_verification_run import canonical_source_record_pks_json
 from src.graph.queries import crm_deal_identity_repair_integration as queries
+from src.graph.queries import crm_deal_identity_repair_rebase as rebase_queries
 from src.graph.queries import crm_deal_identity_repair_rollback as rollback_queries
 from test_crm_deal_identity_repair_mutation_neo4j import (
     _CONTROL,
@@ -236,6 +237,7 @@ def _seed_zero_unit_run(driver: Driver) -> None:
               execution_allowed: false})
             CREATE (run)-[:QUALIFIED_WITH]->(boundary)
             CREATE (:CrmDealRepairControl {repair_id: $repair_id, run_id: $run_id,
+              control_instance_id: $control_instance_id,
               owner_id: $owner_id, token_digest: $token_digest, revision: $revision,
               boundary_digest: $boundary_digest, state: 'allocated', sealed_revision: $revision,
               sealed_boundary_digest: $sealed_boundary_digest,
@@ -383,6 +385,202 @@ def test_admission_requires_checkpoint_and_rejects_blocked_or_tampered(
             lambda tx: tx.run(queries.CLAIM_ADMITTED_FENCE, **values).single(strict=True)
         )
     assert admitted["fence"]["unit_id"] == "unit-b"
+
+
+def test_stale_admission_waiting_on_rebase_lock_revalidates_complete_authority(
+    neo4j_driver: Driver,
+) -> None:
+    """An old admission cannot claim after the rebase transaction rotates control authority."""
+    _seed_zero_unit_run(neo4j_driver)
+    admission: dict[str, object] = _params() | {
+        "unit_id": "unit-a",
+        "generation": 1,
+        "sequence": 0,
+        "attempt": 1,
+        "inventory_fingerprint": _DIGEST,
+        "inventory_binding_digest": _DIGEST,
+        "fence_id": "fence-a",
+        "fence_fingerprint": _DIGEST,
+    }
+    replacement_boundary = "sha256:" + "b" * 64
+    locked = Event()
+    admission_started = Event()
+    errors: list[BaseException] = []
+    admission_rows: list[bool] = []
+    marker = "rebase-first-stale-admission"
+    with neo4j_driver.session() as session:
+        session.run(
+            """
+            MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
+            SET completion.unit_count = 1, completion.unit_ids = ['unit-a']
+            CREATE (:CrmDealRepairUnit {run_id: $run_id, unit_id: 'unit-a', generation: 1,
+              sequence: 0, attempt: 1, boundary_digest: $boundary_digest,
+              inventory_fingerprint: $inventory_digest, inventory_binding_digest: $inventory_digest,
+              state: 'allocated'})
+            """,
+            **admission,
+        ).consume()
+
+    def rebase() -> None:
+        transaction = None
+        try:
+            with neo4j_driver.session() as session:
+                transaction = session.begin_transaction()
+                transaction.run(
+                    rebase_queries.LOCK_REBASE_AUTHORITY,
+                    repair_id=admission["repair_id"],
+                    run_id=admission["run_id"],
+                    boundary_digest=admission["boundary_digest"],
+                    rebase_request_digest="rebase-admission-race",
+                ).single(strict=True)
+                locked.set()
+                assert admission_started.wait(timeout=10)
+                _wait_for_marked_lock_wait(neo4j_driver, marker, "integration_admission_updated_at")
+                transaction.run(
+                    """
+                    MATCH (control:CrmDealRepairControl {run_id: $run_id})
+                    MATCH (dispatch:BitrixDispatchControl
+                      {control_instance_id: $control_instance_id})
+                    MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
+                    SET control.revision = 2, control.sealed_revision = 2,
+                        control.sealed_boundary_digest = $replacement_boundary,
+                        dispatch.repair_revision = 2,
+                        completion.allocation_revision = 2,
+                        completion.allocation_sealed_boundary_digest = $replacement_boundary,
+                        completion.receipt_revision = 2,
+                        completion.receipt_sealed_boundary_digest = $replacement_boundary,
+                        completion.rebase_request_digest = 'rebase-admission-race'
+                    """,
+                    **(admission | {"replacement_boundary": replacement_boundary}),
+                ).consume()
+                transaction.commit()
+        except BaseException as exc:  # noqa: BLE001
+            _rollback_if_open(transaction)
+            errors.append(exc)
+
+    def admit() -> None:
+        transaction = None
+        try:
+            assert locked.wait(timeout=10)
+            admission_started.set()
+            with neo4j_driver.session() as session:
+                transaction = session.begin_transaction(metadata={"crm_repair_test_marker": marker})
+                row = transaction.run(queries.CLAIM_ADMITTED_FENCE, **admission).single()
+                transaction.commit()
+            admission_rows.append(row is None)
+        except BaseException as exc:  # noqa: BLE001
+            _rollback_if_open(transaction)
+            errors.append(exc)
+
+    threads = (Thread(target=rebase), Thread(target=admit))
+    for thread in threads:
+        thread.start()
+    for thread in threads:
+        thread.join(timeout=30)
+    assert all(not thread.is_alive() for thread in threads)
+    assert not errors
+    assert admission_rows == [True]
+    with neo4j_driver.session() as session:
+        row = session.run(
+            """
+            MATCH (control:CrmDealRepairControl {run_id: $run_id})
+            MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
+            OPTIONAL MATCH (fence:CrmDealRepairFence {run_id: $run_id, unit_id: 'unit-a'})
+            RETURN control.revision AS control_revision,
+              completion.allocation_revision AS allocation_revision,
+              completion.receipt_revision AS receipt_revision, count(fence) AS fences
+            """,
+            **admission,
+        ).single(strict=True)
+    assert dict(row) == {
+        "control_revision": 2,
+        "allocation_revision": 2,
+        "receipt_revision": 2,
+        "fences": 0,
+    }
+
+
+def test_rebased_terminal_acceptance_and_release_replay_preserve_foreign_block(
+    neo4j_driver: Driver,
+) -> None:
+    """Exact terminal replays retain a replacement seal but cannot clear a foreign block."""
+    _seed_zero_unit_run(neo4j_driver)
+    initial_values = _params()
+    replacement_boundary = "sha256:" + "b" * 64
+    values: dict[str, object] = initial_values | {
+        "revision": 2,
+        "allocation_revision": 2,
+        "sealed_boundary_digest": replacement_boundary,
+    }
+    with neo4j_driver.session() as session:
+        session.run(
+            """
+            MATCH (control:CrmDealRepairControl {run_id: $run_id})
+            MATCH (dispatch:BitrixDispatchControl {control_instance_id: $control_instance_id})
+            MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
+            SET control.revision = 2, control.sealed_revision = 2,
+                control.sealed_boundary_digest = $replacement_boundary,
+                dispatch.repair_revision = 2,
+                completion.rebase_request_digest = 'rebased-request',
+                completion.rebase_revision = 2,
+                completion.rebase_replacement_boundary_digest = $replacement_boundary,
+                completion.allocation_revision = 2,
+                completion.allocation_sealed_boundary_digest = $replacement_boundary,
+                completion.receipt_revision = 2,
+                completion.receipt_sealed_boundary_digest = $replacement_boundary
+            """,
+            **(initial_values | {"replacement_boundary": replacement_boundary}),
+        ).consume()
+        accepted = session.execute_write(
+            lambda tx: tx.run(queries.ACCEPT_AND_RELEASE, **values).single(strict=True)
+        )
+        released = session.execute_write(
+            lambda tx: tx.run(queries.RELEASE_DISPATCH, **values).single(strict=True)
+        )
+        session.run(
+            """
+            MATCH (dispatch:BitrixDispatchControl {control_instance_id: $control_instance_id})
+            SET dispatch.blocked = true, dispatch.block_reason = 'foreign-maintenance',
+                dispatch.repair_run_id = 'foreign-run', dispatch.repair_owner_id = 'foreign-owner',
+                dispatch.repair_token_digest = 'foreign-token', dispatch.repair_revision = 99,
+                dispatch.foreign_marker = 'preserve-me'
+            """,
+            **values,
+        ).consume()
+        live = session.run(rebase_queries.READ_EFFECTIVE_REBASE_BOUNDARY, **values).single()
+        terminal = session.run(
+            rebase_queries.READ_EFFECTIVE_REBASE_BOUNDARY_TERMINAL,
+            **values,
+        ).single(strict=True)
+        acceptance_replay = session.execute_write(
+            lambda tx: tx.run(queries.ACCEPT_AND_RELEASE, **values).single(strict=True)
+        )
+        release_replay = session.execute_write(
+            lambda tx: tx.run(queries.RELEASE_DISPATCH, **values).single(strict=True)
+        )
+        dispatch = session.run(
+            """
+            MATCH (dispatch:BitrixDispatchControl {control_instance_id: $control_instance_id})
+            RETURN dispatch.blocked AS blocked, dispatch.block_reason AS reason,
+              dispatch.repair_run_id AS run_id, dispatch.repair_owner_id AS owner,
+              dispatch.repair_revision AS revision, dispatch.foreign_marker AS marker
+            """,
+            **values,
+        ).single(strict=True)
+    assert accepted["receipt_digest"] == values["acceptance_receipt_digest"]
+    assert released["request_digest"] == values["request_digest"]
+    assert live is None
+    assert terminal["control"]["sealed_boundary_digest"] == replacement_boundary
+    assert acceptance_replay["receipt_digest"] == values["acceptance_receipt_digest"]
+    assert release_replay["request_digest"] == values["request_digest"]
+    assert dict(dispatch) == {
+        "blocked": True,
+        "reason": "foreign-maintenance",
+        "run_id": "foreign-run",
+        "owner": "foreign-owner",
+        "revision": 99,
+        "marker": "preserve-me",
+    }
 
 
 def _seed_unit_a_settle_chain(session: Session, values: dict[str, object]) -> None:

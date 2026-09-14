@@ -14,24 +14,35 @@ import time
 from collections.abc import Callable, Iterator, Mapping
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import contextmanager
+from dataclasses import asdict
 from datetime import UTC, datetime
 from pathlib import Path
-from threading import Event
+from threading import Barrier, Event
 from typing import TypeVar, cast
 from urllib.parse import urlparse
 
 import pytest
 from neo4j import Driver, GraphDatabase, ManagedTransaction, Record, Session
-from src.crm_deal_identity_repair.allocation import AllocationPlan
+from src.crm_deal_identity_repair.allocation import (
+    AllocationPlan,
+    RebaseAllocationEvidence,
+)
 from src.crm_deal_identity_repair.control_models import (
     RepairControlRequest,
     RepairDispatchLease,
     control_token_digest,
 )
+from src.crm_deal_identity_repair.digests import object_digest
 from src.crm_deal_identity_repair.execution_models import (
     RepairBoundarySnapshot,
     RepairExecutionBoundaryManifest,
     RepairQualificationRun,
+)
+from src.crm_deal_identity_repair.integration_models import RepairIntegrationRequest
+from src.crm_deal_identity_repair.integration_service import RepairIntegrationContext
+from src.crm_deal_identity_repair.rebase import (
+    RepairBoundaryRebaseRequest,
+    RepairBoundaryRebaseResult,
 )
 from src.crm_deal_identity_repair.task_inspection import BrokerInspection, TaskAbsenceEvidence
 from src.graph import crm_deal_identity_repair_control as control_repository_module
@@ -40,6 +51,7 @@ from src.graph.bitrix_source_instances import BitrixSourceInstanceRepository
 from src.graph.bootstrap import bootstrap_legacy_bitrix_source_instance
 from src.graph.client import Neo4jClient
 from src.graph.crm_deal_identity_repair_control import CrmDealRepairControlRepository
+from src.graph.crm_deal_identity_repair_integration import CrmDealRepairIntegrationRepository
 from src.graph.crm_deal_identity_repair_ledger import (
     CrmDealRepairLedgerRepository,
     ExpectedRepairBoundaryDriftError,
@@ -51,8 +63,11 @@ from src.graph.crm_deal_identity_repair_ledger_migration import (
     assert_crm_deal_repair_ledger_ready,
     ensure_crm_deal_repair_ledger_ready,
 )
+from src.graph.crm_deal_identity_repair_rebase import CrmDealRepairRebaseRepository
 from src.graph.ingestion_control_instance_migration import migrate_ingestion_control_instances
+from src.graph.queries import crm_deal_identity_repair_rebase as rebase_queries
 from src.graph.queries.crm_deal_identity_repair_mutation import STAGE_REPAIR_IDENTIFIERS
+from src.models import JsonValue
 
 T = TypeVar("T")
 
@@ -161,7 +176,7 @@ def _clear_repair_metadata(driver: Driver) -> None:
         ).consume()
         session.run(
             "MATCH (record:SourceRecord) WHERE record.source_record_pk STARTS WITH 'repair-test-' "
-            "DETACH DELETE record"
+            "OR record.source_record_pk STARTS WITH 'repair-rebase-negative-' DETACH DELETE record"
         ).consume()
         session.run(
             "MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', "
@@ -189,6 +204,15 @@ def _clear_repair_metadata(driver: Driver) -> None:
         ).consume()
         session.run(
             "MATCH (node) WHERE node.control_instance_id = 'other-control' DETACH DELETE node"
+        ).consume()
+        session.run(
+            "MATCH (person:Person) WHERE person.person_id STARTS WITH 'rebase-owner-' "
+            "DETACH DELETE person"
+        ).consume()
+        session.run(
+            "MATCH (identifier:Identifier) "
+            "WHERE identifier.normalized_value STARTS WITH 'contact-repair-rebase-negative-' "
+            "DETACH DELETE identifier"
         ).consume()
 
 
@@ -1138,6 +1162,52 @@ def _qualified_control_repository(
     ledger = _repository(driver)
     _persist_evidence(driver)
     snapshot = _snapshot(ledger)
+    run = ledger.qualify(_manifest(snapshot, repair_id=repair_id), snapshot)
+    return ledger, CrmDealRepairControlRepository(cast(Neo4jClient, _client(driver))), run
+
+
+def _qualified_rebase_control_repository(
+    driver: Driver, *, repair_id: str
+) -> tuple[CrmDealRepairLedgerRepository, CrmDealRepairControlRepository, RepairQualificationRun]:
+    """Create one executable row plus the six exact negative controls required by #424."""
+    ledger = _repository(driver)
+    _persist_evidence(driver)
+    negative_pks = tuple(f"repair-rebase-negative-{index}" for index in range(6))
+    with driver.session() as session:
+        session.run(
+            """
+            MATCH (source:SourceSystem {source_key: 'bitrix_chat'})
+            UNWIND $pks AS source_record_pk
+            CREATE (record:SourceRecord {source_record_pk: source_record_pk,
+              source_record_id: 'bitrix-crm-deal-' + source_record_pk,
+              source_record_version: '1', source_version_key: source_record_pk + ':1',
+              record_hash: 'sha256:negative-control', lifecycle_status: 'active',
+              is_latest: true, record_type: 'crm_deal',
+              source_instance_id: $source_instance_id,
+              raw_payload: '{"crm_deal_identity_policy_version":"legacy"}',
+              normalized_payload: '{}'})
+              -[:FROM_SOURCE]->(source)
+            CREATE (owner:Person {person_id: 'rebase-owner-' + source_record_pk})
+            CREATE (record)-[:LINKED_TO {is_active: true}]->(owner)
+            CREATE (identifier:Identifier {identifier_type: 'crm_contact_id',
+              normalized_value: 'contact-' + source_record_pk})
+            CREATE (owner)-[:IDENTIFIED_BY {is_active: true,
+              source_record_pk: source_record_pk}]->(identifier)
+            """,
+            pks=list(negative_pks),
+            source_instance_id=_TEST_SOURCE_INSTANCE_ID,
+        ).consume()
+    source_record_pks = tuple(sorted((_TEST_SOURCE_RECORD_PK, *negative_pks)))
+    snapshot = ledger.snapshot(
+        source_instance_id=_TEST_SOURCE_INSTANCE_ID,
+        control_instance_id=_TEST_CONTROL_INSTANCE_ID,
+        source_record_pks=source_record_pks,
+    )
+    assert (
+        snapshot.inventory_row_count,
+        snapshot.eligible_unit_count,
+        snapshot.negative_control_count,
+    ) == (7, 1, 6)
     run = ledger.qualify(_manifest(snapshot, repair_id=repair_id), snapshot)
     return ledger, CrmDealRepairControlRepository(cast(Neo4jClient, _client(driver))), run
 
@@ -2393,6 +2463,7 @@ def _seed_quiesced_allocation_control(
     *,
     owner: str = "owner",
     token_digest: str = "token",
+    source_record_pks: tuple[str, ...] | None = None,
 ) -> None:
     durable_token_digest = control_token_digest(token_digest)
     with driver.session() as session:
@@ -2405,7 +2476,9 @@ def _seed_quiesced_allocation_control(
             "WITH 1 AS ignored "
             "MATCH (dispatch:BitrixDispatchControl {source_key: 'bitrix_chat', "
             "control_instance_id: $control_instance_id}) "
-            "SET dispatch.blocked = true, dispatch.repair_run_id = $run_id, "
+            "SET dispatch.blocked = true, "
+            "dispatch.block_reason = 'crm_deal_identity_repair_quiesce', "
+            "dispatch.repair_run_id = $run_id, "
             "dispatch.repair_owner_id = $owner, dispatch.repair_token_digest = $token_digest, "
             "dispatch.repair_revision = 1",
             repair_id=run.repair_id,
@@ -2415,7 +2488,13 @@ def _seed_quiesced_allocation_control(
             token_digest=durable_token_digest,
             boundary_digest=run.boundary_digest,
         ).consume()
-    sealed = _snapshot(_repository(driver))
+    ledger = _repository(driver)
+    qualified_source_record_pks = source_record_pks or ledger.source_record_pks(run.repair_id)
+    sealed = ledger.status_snapshot(
+        source_instance_id=run.source_instance_id,
+        control_instance_id=run.control_instance_id,
+        source_record_pks=qualified_source_record_pks,
+    )
     with driver.session() as session:
         session.run(
             "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
@@ -3264,3 +3343,861 @@ def _singleton_unit_index_seek_details(raw_plan: object) -> list[str]:
                 raise ValueError("Neo4j execution plan child must be a mapping")
             pending.append(child)
     return details
+
+
+def _rebase_request(
+    run: RepairQualificationRun, boundary_digest: str
+) -> RepairBoundaryRebaseRequest:
+    return RepairBoundaryRebaseRequest(
+        RepairControlRequest(run.repair_id, run.run_id, "owner", "token", 2),
+        "approval-rebase",
+        "fresh-artifact-rebase",
+        boundary_digest,
+    )
+
+
+def _rebase_evidence(plan: AllocationPlan) -> RebaseAllocationEvidence:
+    units = tuple(asdict(unit) for unit in plan.units)
+    unit_set_digest = object_digest(
+        b"crm-deal-identity-repair-allocation-unit-set-v1\x00",
+        {"units": list(units)},
+    )
+
+    def batches() -> Iterator[list[dict[str, JsonValue]]]:
+        yield [cast(dict[str, JsonValue], unit) for unit in units]
+
+    return RebaseAllocationEvidence(
+        plan.completion,
+        unit_set_digest,
+        tuple(unit.unit_id for unit in plan.units),
+        batches,
+    )
+
+
+def _rebase(
+    driver: Driver,
+    run: RepairQualificationRun,
+    plan: AllocationPlan,
+    boundary_digest: str,
+    request: RepairBoundaryRebaseRequest | None = None,
+) -> RepairBoundaryRebaseResult:
+    repository = CrmDealRepairRebaseRepository(cast(Neo4jClient, _client(driver)))
+    return repository.rebase_boundary(
+        request or _rebase_request(run, boundary_digest),
+        evidence=_rebase_evidence(plan),
+        fresh_artifact_manifest_hmac="c" * 64,
+        fresh_inventory_digest=run.inventory_digest,
+        fresh_producer_repository_sha="d" * 40,
+        fresh_producer_image_digest="sha256:" + "e" * 64,
+        approval_key_id=_TEST_ALLOCATION_ORIGIN_KEY_ID,
+        approval_secret=_TEST_ALLOCATION_ORIGIN_SECRET,
+    )
+
+
+class _InjectedRebaseWriteFailureError(RuntimeError):
+    """Test-only marker for a transaction that must roll back its prior writes."""
+
+
+class _FailAfterRebaseWriteClient(_Client):
+    def __init__(self, driver: Driver, failure_query: str) -> None:
+        super().__init__(driver)
+        self._failure_query = failure_query
+
+    def execute_write(self, work: Callable[[ManagedTransaction], T]) -> T:
+        with self._driver.session() as session:
+            transaction = session.begin_transaction()
+            failure_query = self._failure_query
+
+            class _TransactionProxy:
+                def run(self, query: str, **parameters: object) -> object:
+                    result = transaction.run(query, **parameters)
+                    if query == failure_query:
+                        raise _InjectedRebaseWriteFailureError("injected rebase write failure")
+                    return result
+
+            try:
+                result = work(cast(ManagedTransaction, _TransactionProxy()))
+            except BaseException:
+                transaction.rollback()
+                raise
+            transaction.commit()
+            return result
+
+
+def _allocated_rebase_fixture(
+    driver: Driver,
+    *,
+    repair_id: str,
+) -> tuple[
+    CrmDealRepairLedgerRepository,
+    CrmDealRepairControlRepository,
+    RepairQualificationRun,
+    AllocationPlan,
+    str,
+]:
+    ledger, control, run = _qualified_rebase_control_repository(driver, repair_id=repair_id)
+    _seed_quiesced_allocation_control(
+        driver,
+        run,
+        source_record_pks=ledger.source_record_pks(run.repair_id),
+    )
+    plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 1)
+    _allocate(
+        control,
+        RepairControlRequest(run.repair_id, run.run_id, "owner", "token", 1),
+        boundary_digest=run.boundary_digest,
+        proof_digest="proof",
+        plan=plan,
+    )
+    with driver.session() as session:
+        session.run(
+            "MATCH (dispatch:BitrixDispatchControl {control_instance_id: $control_instance_id}) "
+            "SET dispatch.rebase_test_drift = $repair_id",
+            control_instance_id=run.control_instance_id,
+            repair_id=repair_id,
+        ).consume()
+    observed = ledger.status_snapshot(
+        source_instance_id=run.source_instance_id,
+        control_instance_id=run.control_instance_id,
+        source_record_pks=ledger.source_record_pks(run.repair_id),
+    )
+    return ledger, control, run, plan, observed.boundary_digest
+
+
+def _rebased_allocation(
+    driver: Driver,
+    *,
+    repair_id: str,
+) -> tuple[
+    CrmDealRepairLedgerRepository,
+    RepairQualificationRun,
+    AllocationPlan,
+    RepairBoundaryRebaseResult,
+]:
+    ledger, _, run, plan, observed_boundary_digest = _allocated_rebase_fixture(
+        driver,
+        repair_id=repair_id,
+    )
+    return ledger, run, plan, _rebase(driver, run, plan, observed_boundary_digest)
+
+
+def _initial_rebased_admission(
+    driver: Driver,
+    run: RepairQualificationRun,
+    plan: AllocationPlan,
+) -> tuple[
+    CrmDealRepairIntegrationRepository,
+    RepairIntegrationRequest,
+    RepairIntegrationContext,
+]:
+    request = RepairIntegrationRequest(
+        "apply",
+        RepairControlRequest(run.repair_id, run.run_id, "owner", "token", 3),
+        "approval-rebase",
+        plan.units[0].unit_id,
+    )
+    repository = CrmDealRepairIntegrationRepository(cast(Neo4jClient, _client(driver)))
+    authority = repository.load_authority(
+        request,
+        run,
+        plan.completion.overlay_digest,
+        _TEST_ALLOCATION_ORIGIN_KEY_ID,
+        _TEST_ALLOCATION_ORIGIN_SECRET,
+    )
+    return repository, request, RepairIntegrationContext(run, (), authority)
+
+
+def _current_rebase_observed_boundary(
+    ledger: CrmDealRepairLedgerRepository,
+    run: RepairQualificationRun,
+) -> str:
+    return ledger.status_snapshot(
+        source_instance_id=run.source_instance_id,
+        control_instance_id=run.control_instance_id,
+        source_record_pks=ledger.source_record_pks(run.repair_id),
+    ).boundary_digest
+
+
+def _rebase_authority_image(driver: Driver, run: RepairQualificationRun) -> dict[str, object]:
+    with driver.session() as session:
+        record = session.run(
+            """
+            MATCH (control:CrmDealRepairControl {run_id: $run_id})
+            MATCH (dispatch:BitrixDispatchControl {
+              control_instance_id: control.control_instance_id})
+            MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id})
+            OPTIONAL MATCH (unit:CrmDealRepairUnit {run_id: $run_id})
+            WITH control, dispatch, completion, unit
+            ORDER BY unit.unit_id
+            RETURN properties(control) AS control, properties(dispatch) AS dispatch,
+              properties(completion) AS completion, collect(properties(unit)) AS units
+            """,
+            run_id=run.run_id,
+        ).single(strict=True)
+    return dict(record)
+
+
+def test_424_rebase_rotates_only_effective_authority_and_replays(
+    neo4j_driver: Driver,
+) -> None:
+    ledger, control, run = _qualified_rebase_control_repository(
+        neo4j_driver, repair_id="repair-424-ok"
+    )
+    _seed_quiesced_allocation_control(
+        neo4j_driver,
+        run,
+        source_record_pks=ledger.source_record_pks(run.repair_id),
+    )
+    plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 1)
+    _allocate(
+        control,
+        RepairControlRequest(run.repair_id, run.run_id, "owner", "token", 1),
+        boundary_digest=run.boundary_digest,
+        proof_digest="proof",
+        plan=plan,
+    )
+    with neo4j_driver.session() as session:
+        before = session.run(
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "MATCH (unit:CrmDealRepairUnit {run_id: $run_id}) "
+            "RETURN completion.completion_id AS completion_id, "
+            "completion.allocation_digest AS digest, "
+            "completion.unit_set_digest AS unit_set, properties(unit) AS unit",
+            run_id=run.run_id,
+        ).single(strict=True)
+        session.run(
+            "MATCH (dispatch:BitrixDispatchControl {control_instance_id: $control_instance_id}) "
+            "SET dispatch.rebase_test_drift = 'before'",
+            control_instance_id=run.control_instance_id,
+        ).consume()
+    observed = ledger.status_snapshot(
+        source_instance_id=run.source_instance_id,
+        control_instance_id=run.control_instance_id,
+        source_record_pks=ledger.source_record_pks(run.repair_id),
+    )
+    result = _rebase(neo4j_driver, run, plan, observed.boundary_digest)
+    replay = _rebase(neo4j_driver, run, plan, observed.boundary_digest)
+    assert result.replayed is False
+    assert replay.replayed is True
+    assert result.previous_boundary_digest != run.boundary_digest
+    assert replay.lease == result.lease
+    assert replay.previous_boundary_digest == result.previous_boundary_digest
+    assert replay.replacement_boundary_digest == result.replacement_boundary_digest
+    assert replay.receipt_digest == result.receipt_digest
+    assert replay.audit_digest == result.audit_digest
+    with neo4j_driver.session() as session:
+        after = session.run(
+            "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "MATCH (unit:CrmDealRepairUnit {run_id: $run_id}) "
+            "RETURN control.revision AS revision, control.sealed_revision AS sealed_revision, "
+            "control.sealed_boundary_digest AS seal, completion.completion_id AS completion_id, "
+            "completion.allocation_digest AS digest, completion.unit_set_digest AS unit_set, "
+            "completion.allocation_revision AS allocation_revision, "
+            "completion.receipt_revision AS receipt_revision, "
+            "completion.allocation_origin_hmac AS origin, "
+            "completion.rebase_audit_digest AS audit, "
+            "completion.rebase_hmac AS hmac, properties(unit) AS unit, "
+            "count(unit) AS unit_count",
+            run_id=run.run_id,
+        ).single(strict=True)
+    assert after["revision"] == 3
+    assert after["sealed_revision"] == 3
+    assert after["seal"] == result.replacement_boundary_digest
+    assert after["completion_id"] == before["completion_id"]
+    assert after["digest"] == before["digest"]
+    assert after["unit_set"] == before["unit_set"]
+    assert after["unit"] == before["unit"]
+    assert after["unit_count"] == 1
+    assert after["allocation_revision"] == after["receipt_revision"] == 3
+    assert isinstance(after["origin"], str) and isinstance(after["audit"], str)
+    assert isinstance(after["hmac"], str)
+    rebase_repository = CrmDealRepairRebaseRepository(cast(Neo4jClient, _client(neo4j_driver)))
+    effective = rebase_repository.effective_boundary_digest(
+        run,
+        approval_key_id=_TEST_ALLOCATION_ORIGIN_KEY_ID,
+        approval_secret=_TEST_ALLOCATION_ORIGIN_SECRET,
+    )
+    assert effective == result.replacement_boundary_digest
+    status = ledger.get_status(
+        run.repair_id,
+        ledger.status_snapshot(
+            source_instance_id=run.source_instance_id,
+            control_instance_id=run.control_instance_id,
+            source_record_pks=ledger.source_record_pks(run.repair_id),
+        ),
+        effective_boundary_digest=effective,
+    )
+    assert status.admissibility == "admissible"
+
+
+def test_424_signed_rebase_allows_only_authenticated_initial_apply_admission(
+    neo4j_driver: Driver,
+) -> None:
+    _, run, plan, result = _rebased_allocation(
+        neo4j_driver,
+        repair_id="repair-424-initial-apply",
+    )
+    repository, request, context = _initial_rebased_admission(neo4j_driver, run, plan)
+
+    unit, fence = repository.admit_and_claim_fence(request, context)
+
+    assert context.authority.sealed_boundary_digest == result.replacement_boundary_digest
+    assert context.authority.allocation_revision == result.lease.revision == 3
+    assert (unit.unit_id, fence.unit_id, fence.state) == (
+        plan.units[0].unit_id,
+        unit.unit_id,
+        "claimed",
+    )
+
+
+@pytest.mark.parametrize("require_live_dispatch", (True, False))
+@pytest.mark.parametrize(
+    ("property_name", "statement"),
+    (
+        ("allocation_revision", "SET completion.allocation_revision = 99"),
+        ("allocation_state", "SET completion.allocation_state = 'quiesced'"),
+        (
+            "allocation_control_instance_id",
+            "SET completion.allocation_control_instance_id = 'foreign-control'",
+        ),
+        (
+            "allocation_sealed_boundary_digest",
+            "SET completion.allocation_sealed_boundary_digest = 'sha256:' + 'f'",
+        ),
+    ),
+)
+def test_424_effective_status_and_initial_apply_reject_tampered_allocation_authority(
+    neo4j_driver: Driver,
+    property_name: str,
+    statement: str,
+    require_live_dispatch: bool,
+) -> None:
+    _, run, plan, _ = _rebased_allocation(
+        neo4j_driver,
+        repair_id="repair-424-allocation-" + property_name,
+    )
+    integration, request, context = _initial_rebased_admission(neo4j_driver, run, plan)
+    rebase = CrmDealRepairRebaseRepository(cast(Neo4jClient, _client(neo4j_driver)))
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) " + statement,
+            run_id=run.run_id,
+        ).consume()
+
+    with pytest.raises(RuntimeError, match="allocation authority differs"):
+        rebase.effective_boundary_digest(
+            run,
+            approval_key_id=_TEST_ALLOCATION_ORIGIN_KEY_ID,
+            approval_secret=_TEST_ALLOCATION_ORIGIN_SECRET,
+            require_live_dispatch=require_live_dispatch,
+        )
+    with pytest.raises(RuntimeError, match="admission"):
+        integration.admit_and_claim_fence(request, context)
+    with neo4j_driver.session() as session:
+        fences = session.run(
+            "MATCH (fence:CrmDealRepairFence {run_id: $run_id}) RETURN count(fence) AS count",
+            run_id=run.run_id,
+        ).single(strict=True)["count"]
+    assert fences == 0
+
+
+def test_424_replay_and_effective_status_reject_an_extra_completion(
+    neo4j_driver: Driver,
+) -> None:
+    _, run, plan, _ = _rebased_allocation(
+        neo4j_driver,
+        repair_id="repair-424-extra-completion",
+    )
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE (:CrmDealRepairAllocationCompletion {run_id: $run_id, "
+            "completion_id: 'extra-completion'})",
+            run_id=run.run_id,
+        ).consume()
+
+    with pytest.raises(RuntimeError, match="rebase lock authority rejected"):
+        _rebase(neo4j_driver, run, plan, "sha256:" + "0" * 64)
+    with pytest.raises(RuntimeError, match="ambiguous"):
+        CrmDealRepairRebaseRepository(
+            cast(Neo4jClient, _client(neo4j_driver))
+        ).effective_boundary_digest(
+            run,
+            approval_key_id=_TEST_ALLOCATION_ORIGIN_KEY_ID,
+            approval_secret=_TEST_ALLOCATION_ORIGIN_SECRET,
+        )
+
+
+def test_424_concurrent_exact_replay_converges(neo4j_driver: Driver) -> None:
+    _, _, run, plan, observed_boundary_digest = _allocated_rebase_fixture(
+        neo4j_driver,
+        repair_id="repair-424-concurrent-exact",
+    )
+
+    def rebase_once() -> RepairBoundaryRebaseResult:
+        return _rebase(neo4j_driver, run, plan, observed_boundary_digest)
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        results = list(pool.map(lambda _: rebase_once(), range(2)))
+    assert sorted(result.replayed for result in results) == [False, True]
+    assert results[0].replacement_boundary_digest == results[1].replacement_boundary_digest
+    assert results[0].lease.revision == results[1].lease.revision == 3
+
+
+def test_424_concurrent_conflicting_rebases_choose_one_durable_authority(
+    neo4j_driver: Driver,
+) -> None:
+    _, _, run, plan, observed_boundary_digest = _allocated_rebase_fixture(
+        neo4j_driver,
+        repair_id="repair-424-concurrent-conflict",
+    )
+    primary = _rebase_request(run, observed_boundary_digest)
+    conflicting = RepairBoundaryRebaseRequest(
+        RepairControlRequest(run.repair_id, run.run_id, "owner", "token", 2),
+        "approval-concurrent-conflict",
+        primary.fresh_artifact_id,
+        observed_boundary_digest,
+    )
+    before = _rebase_authority_image(neo4j_driver, run)
+    start = Barrier(2)
+
+    def submit(
+        request: RepairBoundaryRebaseRequest,
+    ) -> tuple[RepairBoundaryRebaseRequest, RepairBoundaryRebaseResult | BaseException]:
+        try:
+            start.wait(timeout=10)
+            return request, _rebase(
+                neo4j_driver,
+                run,
+                plan,
+                observed_boundary_digest,
+                request=request,
+            )
+        except BaseException as exc:  # noqa: BLE001
+            return request, exc
+
+    with ThreadPoolExecutor(max_workers=2) as pool:
+        outcomes = list(pool.map(submit, (primary, conflicting)))
+    winners = [
+        (request, outcome)
+        for request, outcome in outcomes
+        if isinstance(outcome, RepairBoundaryRebaseResult)
+    ]
+    losers = [
+        (request, outcome) for request, outcome in outcomes if isinstance(outcome, BaseException)
+    ]
+    assert len(winners) == len(losers) == 1
+    winner_request, winner = winners[0]
+    loser_request, loser = losers[0]
+    assert winner.replayed is False
+    assert isinstance(loser, RuntimeError)
+    assert winner_request.request_digest != loser_request.request_digest
+
+    after = _rebase_authority_image(neo4j_driver, run)
+    control = after["control"]
+    completion = after["completion"]
+    assert isinstance(control, Mapping)
+    assert isinstance(completion, Mapping)
+    assert after["units"] == before["units"]
+    assert control["revision"] == control["sealed_revision"] == 3
+    assert control["sealed_boundary_digest"] == winner.replacement_boundary_digest
+    assert completion["rebase_request_digest"] == winner_request.request_digest
+    assert completion["rebase_approval_id"] == winner_request.approval_id
+    assert completion["rebase_fresh_artifact_id"] == winner_request.fresh_artifact_id
+    assert completion["rebase_revision"] == control["revision"]
+    assert completion["rebase_replacement_boundary_digest"] == control["sealed_boundary_digest"]
+    assert (
+        completion["allocation_revision"] == completion["receipt_revision"] == control["revision"]
+    )
+    assert completion["rebase_receipt_digest"] == winner.receipt_digest
+    assert completion["rebase_audit_digest"] == winner.audit_digest
+
+
+@pytest.mark.parametrize(
+    ("stage", "failure_query"),
+    (
+        ("lock", rebase_queries.LOCK_REBASE_AUTHORITY),
+        ("advance", rebase_queries.ADVANCE_REBASE_CONTROL),
+        ("commit", rebase_queries.COMMIT_REBASE_BOUNDARY),
+    ),
+    ids=("after-lock", "after-control-advance", "after-seal-commit"),
+)
+def test_424_rebase_write_failure_rolls_back_each_mutation_stage(
+    neo4j_driver: Driver,
+    stage: str,
+    failure_query: str,
+) -> None:
+    _, _, run, plan, observed_boundary_digest = _allocated_rebase_fixture(
+        neo4j_driver,
+        repair_id="repair-424-rollback-" + stage,
+    )
+    before: dict[str, object]
+    with neo4j_driver.session() as session:
+        before = dict(
+            session.run(
+                "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+                "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+                "RETURN properties(control) AS control, properties(completion) AS completion",
+                run_id=run.run_id,
+            ).single(strict=True)
+        )
+    repository = CrmDealRepairRebaseRepository(
+        cast(Neo4jClient, _FailAfterRebaseWriteClient(neo4j_driver, failure_query))
+    )
+
+    with pytest.raises(_InjectedRebaseWriteFailureError):
+        repository.rebase_boundary(
+            _rebase_request(run, observed_boundary_digest),
+            evidence=_rebase_evidence(plan),
+            fresh_artifact_manifest_hmac="c" * 64,
+            fresh_inventory_digest=run.inventory_digest,
+            fresh_producer_repository_sha="d" * 40,
+            fresh_producer_image_digest="sha256:" + "e" * 64,
+            approval_key_id=_TEST_ALLOCATION_ORIGIN_KEY_ID,
+            approval_secret=_TEST_ALLOCATION_ORIGIN_SECRET,
+        )
+    with neo4j_driver.session() as session:
+        after = dict(
+            session.run(
+                "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+                "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+                "RETURN properties(control) AS control, properties(completion) AS completion",
+                run_id=run.run_id,
+            ).single(strict=True)
+        )
+    assert after == before
+
+
+def test_424_rebase_mutation_guard_leaves_authority_unchanged(
+    neo4j_driver: Driver,
+) -> None:
+    ledger, control, run = _qualified_rebase_control_repository(
+        neo4j_driver, repair_id="repair-424-guard"
+    )
+    _seed_quiesced_allocation_control(
+        neo4j_driver,
+        run,
+        source_record_pks=ledger.source_record_pks(run.repair_id),
+    )
+    plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 1)
+    _allocate(
+        control,
+        RepairControlRequest(run.repair_id, run.run_id, "owner", "token", 1),
+        boundary_digest=run.boundary_digest,
+        proof_digest="proof",
+        plan=plan,
+    )
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE (:CrmDealRepairMutationResult {run_id: $run_id, mutation_id: 'blocking'})",
+            run_id=run.run_id,
+        ).consume()
+        before = session.run(
+            "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "RETURN control.revision AS revision, completion.receipt_digest AS receipt",
+            run_id=run.run_id,
+        ).single(strict=True)
+    observed = ledger.status_snapshot(
+        source_instance_id=run.source_instance_id,
+        control_instance_id=run.control_instance_id,
+        source_record_pks=ledger.source_record_pks(run.repair_id),
+    )
+    with pytest.raises(RuntimeError, match="guard"):
+        _rebase(neo4j_driver, run, plan, observed.boundary_digest)
+    with neo4j_driver.session() as session:
+        after = session.run(
+            "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "RETURN control.revision AS revision, completion.receipt_digest AS receipt",
+            run_id=run.run_id,
+        ).single(strict=True)
+    assert dict(after) == dict(before)
+
+
+@pytest.mark.parametrize(
+    "guard",
+    (
+        "stale_owner",
+        "stale_token",
+        "stale_revision",
+        "source_instance_drift",
+        "negative_control_drift",
+        "mutation_result",
+        "verification",
+        "secondary_disposition",
+        "active_fence",
+        "missing_unit",
+        "extra_unit",
+        "corrupt_unit",
+    ),
+)
+def test_424_rebase_guard_matrix_rejects_without_authority_mutation(
+    neo4j_driver: Driver,
+    guard: str,
+) -> None:
+    ledger, _, run, plan, observed_boundary_digest = _allocated_rebase_fixture(
+        neo4j_driver,
+        repair_id="repair-424-guard-" + guard,
+    )
+    request = _rebase_request(run, observed_boundary_digest)
+    if guard == "stale_owner":
+        request = RepairBoundaryRebaseRequest(
+            RepairControlRequest(run.repair_id, run.run_id, "other-owner", "token", 2),
+            request.approval_id,
+            request.fresh_artifact_id,
+            request.expected_observed_boundary_digest,
+        )
+    elif guard == "stale_token":
+        request = RepairBoundaryRebaseRequest(
+            RepairControlRequest(run.repair_id, run.run_id, "owner", "other-token", 2),
+            request.approval_id,
+            request.fresh_artifact_id,
+            request.expected_observed_boundary_digest,
+        )
+    elif guard == "stale_revision":
+        request = RepairBoundaryRebaseRequest(
+            RepairControlRequest(run.repair_id, run.run_id, "owner", "token", 1),
+            request.approval_id,
+            request.fresh_artifact_id,
+            request.expected_observed_boundary_digest,
+        )
+    with neo4j_driver.session() as session:
+        if guard == "source_instance_drift":
+            session.run(
+                "MATCH (record:SourceRecord {source_record_pk: $source_record_pk}) "
+                "SET record.source_instance_id = 'foreign-instance'",
+                source_record_pk=_TEST_SOURCE_RECORD_PK,
+            ).consume()
+        elif guard == "negative_control_drift":
+            session.run(
+                "MATCH (record:SourceRecord {source_record_pk: 'repair-rebase-negative-0'}) "
+                "SET record.lifecycle_status = 'inactive'"
+            ).consume()
+        elif guard == "mutation_result":
+            session.run(
+                "CREATE (:CrmDealRepairMutationResult {run_id: $run_id, mutation_id: 'blocked'})",
+                run_id=run.run_id,
+            ).consume()
+        elif guard == "verification":
+            session.run(
+                "CREATE (:CrmDealRepairVerification {run_id: $run_id, verification_id: 'blocked'})",
+                run_id=run.run_id,
+            ).consume()
+        elif guard == "secondary_disposition":
+            session.run(
+                "CREATE (:CrmDealRepairSecondaryDisposition {run_id: $run_id, "
+                "disposition_id: 'blocked'})",
+                run_id=run.run_id,
+            ).consume()
+        elif guard == "active_fence":
+            session.run(
+                "CREATE (:CrmDealRepairFence {run_id: $run_id, fence_id: 'blocked', "
+                "state: 'claimed'})",
+                run_id=run.run_id,
+            ).consume()
+        elif guard == "missing_unit":
+            session.run(
+                "MATCH (unit:CrmDealRepairUnit {run_id: $run_id}) DETACH DELETE unit",
+                run_id=run.run_id,
+            ).consume()
+        elif guard == "extra_unit":
+            session.run(
+                "CREATE (:CrmDealRepairUnit {run_id: $run_id, unit_id: 'extra-unit', "
+                "state: 'allocated'})",
+                run_id=run.run_id,
+            ).consume()
+        elif guard == "corrupt_unit":
+            session.run(
+                "MATCH (unit:CrmDealRepairUnit {run_id: $run_id}) "
+                "SET unit.inventory_key = 'corrupt'",
+                run_id=run.run_id,
+            ).consume()
+        before = session.run(
+            "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "RETURN control.revision AS revision, control.sealed_boundary_digest AS seal, "
+            "completion.rebase_request_digest AS rebase_request_digest",
+            run_id=run.run_id,
+        ).single(strict=True)
+
+    with pytest.raises((ExpectedRepairBoundaryDriftError, RuntimeError)):
+        _rebase(
+            neo4j_driver,
+            run,
+            plan,
+            observed_boundary_digest,
+            request=request,
+        )
+    with neo4j_driver.session() as session:
+        after = session.run(
+            "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+            "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+            "RETURN control.revision AS revision, control.sealed_boundary_digest AS seal, "
+            "completion.rebase_request_digest AS rebase_request_digest",
+            run_id=run.run_id,
+        ).single(strict=True)
+    assert dict(after) == dict(before)
+    assert ledger.get_qualification(run.repair_id) == run
+
+
+@pytest.mark.parametrize(
+    ("guard", "error_pattern"),
+    (
+        ("wrong_control_state", "guard rejected"),
+        ("dispatch_unblocked", "guard rejected"),
+        ("dispatch_wrong_reason", "guard rejected"),
+        ("dispatch_foreign_authority", "guard rejected"),
+        ("unsettled_publication", "guard rejected"),
+        ("tampered_receipt_hmac", "receipt integrity"),
+        ("tampered_origin_hmac", "origin integrity"),
+    ),
+)
+def test_424_rebase_authority_guards_reject_after_current_boundary_revalidation(
+    neo4j_driver: Driver,
+    guard: str,
+    error_pattern: str,
+) -> None:
+    ledger, _, run, plan, _ = _allocated_rebase_fixture(
+        neo4j_driver,
+        repair_id="repair-424-authority-" + guard,
+    )
+    with neo4j_driver.session() as session:
+        if guard == "wrong_control_state":
+            session.run(
+                "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+                "SET control.state = 'paused'",
+                run_id=run.run_id,
+            ).consume()
+        elif guard == "dispatch_unblocked":
+            session.run(
+                "MATCH (dispatch:BitrixDispatchControl "
+                "{control_instance_id: $control_instance_id}) SET dispatch.blocked = false",
+                control_instance_id=run.control_instance_id,
+            ).consume()
+        elif guard == "dispatch_wrong_reason":
+            session.run(
+                "MATCH (dispatch:BitrixDispatchControl "
+                "{control_instance_id: $control_instance_id}) "
+                "SET dispatch.block_reason = 'other-maintenance'",
+                control_instance_id=run.control_instance_id,
+            ).consume()
+        elif guard == "dispatch_foreign_authority":
+            session.run(
+                "MATCH (dispatch:BitrixDispatchControl "
+                "{control_instance_id: $control_instance_id}) "
+                "SET dispatch.repair_run_id = 'foreign-run', "
+                "dispatch.repair_owner_id = 'foreign-owner', "
+                "dispatch.repair_token_digest = 'foreign-token', dispatch.repair_revision = 99",
+                control_instance_id=run.control_instance_id,
+            ).consume()
+        elif guard == "unsettled_publication":
+            session.run(
+                "CREATE (:CrmDealRepairPublicationReservation {"
+                "control_instance_id: $control_instance_id, publication_key: 'rebase-pending', "
+                "state: 'preparing'})",
+                control_instance_id=run.control_instance_id,
+            ).consume()
+        elif guard == "tampered_receipt_hmac":
+            session.run(
+                "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+                "SET completion.receipt_digest = $tampered_hmac",
+                run_id=run.run_id,
+                tampered_hmac="f" * 64,
+            ).consume()
+        elif guard == "tampered_origin_hmac":
+            session.run(
+                "MATCH (completion:CrmDealRepairAllocationCompletion {run_id: $run_id}) "
+                "SET completion.allocation_origin_hmac = $tampered_hmac",
+                run_id=run.run_id,
+                tampered_hmac="e" * 64,
+            ).consume()
+        else:
+            raise AssertionError("unhandled rebase authority guard")
+
+    observed_boundary_digest = _current_rebase_observed_boundary(ledger, run)
+    before = _rebase_authority_image(neo4j_driver, run)
+    with pytest.raises(RuntimeError, match=error_pattern):
+        _rebase(neo4j_driver, run, plan, observed_boundary_digest)
+    after = _rebase_authority_image(neo4j_driver, run)
+
+    assert after == before
+
+
+def test_424_rebase_tampered_effective_evidence_and_later_drift_fail_closed(
+    neo4j_driver: Driver,
+) -> None:
+    ledger, control, run = _qualified_rebase_control_repository(
+        neo4j_driver, repair_id="repair-424-tamper"
+    )
+    _seed_quiesced_allocation_control(
+        neo4j_driver,
+        run,
+        source_record_pks=ledger.source_record_pks(run.repair_id),
+    )
+    plan = _allocation_plan_for_test(run.run_id, run.boundary_digest, 1)
+    _allocate(
+        control,
+        RepairControlRequest(run.repair_id, run.run_id, "owner", "token", 1),
+        boundary_digest=run.boundary_digest,
+        proof_digest="proof",
+        plan=plan,
+    )
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (dispatch:BitrixDispatchControl {control_instance_id: $control_instance_id}) "
+            "SET dispatch.rebase_test_drift = 'before'",
+            control_instance_id=run.control_instance_id,
+        ).consume()
+    observed = ledger.status_snapshot(
+        source_instance_id=run.source_instance_id,
+        control_instance_id=run.control_instance_id,
+        source_record_pks=ledger.source_record_pks(run.repair_id),
+    )
+    result = _rebase(neo4j_driver, run, plan, observed.boundary_digest)
+    repository = CrmDealRepairRebaseRepository(cast(Neo4jClient, _client(neo4j_driver)))
+    with neo4j_driver.session() as session:
+        sealed = session.run(
+            "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+            "RETURN control.sealed_control_digest AS sealed_control_digest",
+            run_id=run.run_id,
+        ).single(strict=True)["sealed_control_digest"]
+        session.run(
+            "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+            "SET control.sealed_control_digest = 'sha256:' + 'f'",
+            run_id=run.run_id,
+        ).consume()
+    with pytest.raises(RuntimeError):
+        repository.effective_boundary_digest(
+            run,
+            approval_key_id=_TEST_ALLOCATION_ORIGIN_KEY_ID,
+            approval_secret=_TEST_ALLOCATION_ORIGIN_SECRET,
+        )
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (control:CrmDealRepairControl {run_id: $run_id}) "
+            "SET control.sealed_control_digest = $sealed_control_digest",
+            run_id=run.run_id,
+            sealed_control_digest=sealed,
+        ).consume()
+        session.run(
+            "MATCH (dispatch:BitrixDispatchControl {control_instance_id: $control_instance_id}) "
+            "SET dispatch.rebase_test_drift = 'after'",
+            control_instance_id=run.control_instance_id,
+        ).consume()
+    effective = repository.effective_boundary_digest(
+        run,
+        approval_key_id=_TEST_ALLOCATION_ORIGIN_KEY_ID,
+        approval_secret=_TEST_ALLOCATION_ORIGIN_SECRET,
+    )
+    assert effective == result.replacement_boundary_digest
+    status = ledger.get_status(
+        run.repair_id,
+        ledger.status_snapshot(
+            source_instance_id=run.source_instance_id,
+            control_instance_id=run.control_instance_id,
+            source_record_pks=ledger.source_record_pks(run.repair_id),
+        ),
+        effective_boundary_digest=effective,
+    )
+    assert status.admissibility == "drifted"

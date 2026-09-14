@@ -134,7 +134,7 @@ def _context_loader(
                     control_instance_id=run.control_instance_id,
                     source_record_pks=ledger.source_record_pks(run.repair_id),
                 )
-                if snapshot.boundary_digest != run.boundary_digest:
+                if snapshot.boundary_digest != authority.sealed_boundary_digest:
                     raise RuntimeError("repair integration boundary drift detected")
         return RepairIntegrationContext(run, inventory, authority)
 

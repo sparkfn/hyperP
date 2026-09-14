@@ -129,6 +129,26 @@ class CrmDealRepairIntegrationRepository:
             )
             if not hmac.compare_digest(authority.allocation_origin_hmac, expected):
                 raise RuntimeError("repair allocation origin HMAC is invalid")
+            marker = completion.get("rebase_request_digest")
+            partial_rebase = any(str(key).startswith("rebase_") for key in completion)
+            if marker is None and partial_rebase:
+                raise RuntimeError("repair rebase authority marker is malformed")
+            if marker is not None:
+                if not isinstance(marker, str) or not marker:
+                    raise RuntimeError("repair rebase authority marker is malformed")
+                from src.graph.crm_deal_identity_repair_rebase import CrmDealRepairRebaseRepository
+
+                effective = CrmDealRepairRebaseRepository(
+                    self._client
+                ).effective_boundary_digest_from_transaction(
+                    tx,
+                    run,
+                    approval_key_id=origin_key_id,
+                    approval_secret=origin_secret,
+                    require_live_dispatch=request.operation not in {"accept", "release-dispatch"},
+                )
+                if effective is None or effective != authority.sealed_boundary_digest:
+                    raise RuntimeError("repair rebase effective allocation authority is invalid")
             return authority
 
         return self._client.execute_read(work)

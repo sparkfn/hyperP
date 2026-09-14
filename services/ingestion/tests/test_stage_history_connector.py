@@ -47,7 +47,7 @@ _REPOSITORY_SHA = "a" * 40
 _IMAGE_DIGEST = f"sha256:{'b' * 64}"
 _CONFIG_DIGEST = f"sha256:{'c' * 64}"
 _QUALIFICATION_DIGEST = f"sha256:{'e' * 64}"
-_NOW = datetime(2026, 8, 14, 4, 0, tzinfo=UTC)
+_NOW = datetime.now(UTC)
 _EVIDENCE_BY_STAGE_ID: dict[str, StageQualificationEvidence] = {}
 
 

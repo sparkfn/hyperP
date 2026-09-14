@@ -8,10 +8,13 @@ import os
 from argparse import Namespace
 from collections.abc import Mapping, Sequence
 from datetime import UTC, datetime, timedelta
+from itertools import zip_longest
 from pathlib import Path
 from typing import TYPE_CHECKING, Protocol, cast
 
+from src.crm_deal_identity_repair.allocation import RebaseAllocationEvidence
 from src.crm_deal_identity_repair.cli import parse_arguments
+from src.crm_deal_identity_repair.control_models import RepairControlRequest
 from src.crm_deal_identity_repair.execution_models import (
     RepairBoundaryDriftReason,
     RepairBoundarySnapshot,
@@ -23,6 +26,10 @@ from src.crm_deal_identity_repair.execution_protocols import (
     RepairQualificationRepository,
 )
 from src.crm_deal_identity_repair.models import RepairInventoryItem, inventory_item_from_json
+from src.crm_deal_identity_repair.rebase import (
+    RepairBoundaryRebaseRequest,
+    RepairBoundaryRebaseResult,
+)
 from src.models import JsonValue
 
 if TYPE_CHECKING:
@@ -39,6 +46,21 @@ class _RepairStatusRepository(RepairQualificationRepository, RepairBoundaryReade
         control_instance_id: str,
         source_record_pks: tuple[str, ...],
     ) -> RepairBoundarySnapshot: ...
+
+
+class _RebaseRepository(Protocol):
+    def rebase_boundary(
+        self,
+        request: RepairBoundaryRebaseRequest,
+        *,
+        evidence: RebaseAllocationEvidence,
+        fresh_artifact_manifest_hmac: str,
+        fresh_inventory_digest: str,
+        fresh_producer_repository_sha: str,
+        fresh_producer_image_digest: str,
+        approval_key_id: str,
+        approval_secret: bytes,
+    ) -> RepairBoundaryRebaseResult: ...
 
 
 class _RepairRuntimeSettings(Protocol):
@@ -81,7 +103,6 @@ def main(argv: Sequence[str] | None = None) -> int:
 def _control(arguments: Namespace) -> int:
     """Run a default-off #310 metadata command; no command dispatches work."""
     from src.config import get_settings
-    from src.crm_deal_identity_repair.control_models import RepairControlRequest
     from src.graph.client import Neo4jClient
     from src.graph.crm_deal_identity_repair_control import CrmDealRepairControlRepository
     from src.graph.crm_deal_identity_repair_ledger import CrmDealRepairLedgerRepository
@@ -104,6 +125,7 @@ def _control(arguments: Namespace) -> int:
         arguments.expected_revision,
     )
     client = Neo4jClient(settings)
+    rebase_result: RepairBoundaryRebaseResult | None = None
     try:
         assert_crm_deal_repair_ledger_ready(client)
         ledger = CrmDealRepairLedgerRepository(client)
@@ -115,6 +137,13 @@ def _control(arguments: Namespace) -> int:
             lease = repository.pause(request)
         elif arguments.command == "resume":
             lease = repository.resume(request)
+        elif arguments.command == "rebase-boundary":
+            from src.graph.crm_deal_identity_repair_rebase import CrmDealRepairRebaseRepository
+
+            rebase_result = _rebase_boundary(
+                arguments, settings, CrmDealRepairRebaseRepository(client), run, request
+            )
+            lease = rebase_result.lease
         elif arguments.command == "quiesce":
             # The CLI intentionally invokes its own bounded inspectors rather
             # than accepting caller-provided observations as authorization.
@@ -216,11 +245,143 @@ def _control(arguments: Namespace) -> int:
                 "state": lease.state,
                 "revision": lease.revision,
                 "execution_allowed": False,
+                **(
+                    {
+                        "rebase_replayed": rebase_result.replayed,
+                        "replacement_boundary_digest": rebase_result.replacement_boundary_digest,
+                        "rebase_receipt_digest": rebase_result.receipt_digest,
+                        "rebase_audit_digest": rebase_result.audit_digest,
+                    }
+                    if rebase_result is not None
+                    else {}
+                ),
             },
             sort_keys=True,
         )
     )
     return 0
+
+
+def _rebase_boundary(
+    arguments: Namespace,
+    settings: Settings,
+    repository: _RebaseRepository,
+    run: RepairQualificationRun,
+    control: RepairControlRequest,
+) -> RepairBoundaryRebaseResult:
+    """Authenticate original/fresh artifacts before the one repository CAS."""
+    from src.crm_deal_identity_repair.allocation import stream_rebase_allocation_evidence
+    from src.crm_deal_identity_repair.approval_overlay import (
+        assert_overlay_binds_qualification,
+        verify_approval_overlay,
+    )
+    from src.crm_deal_identity_repair.artifacts import (
+        repair_artifact_store_from_settings,
+        repair_inventory_configuration_digest,
+    )
+    from src.crm_deal_identity_repair.integration_runtime import _approval_overlay_path
+    from src.crm_deal_identity_repair.qualification import (
+        iter_verified_inventory_lines,
+        verify_qualified_repair_artifact,
+        verify_rebase_artifact,
+    )
+    from src.crm_deal_identity_repair.qualification_inventory import (
+        recompute_population_counts_from_lines,
+    )
+
+    secret = settings.crm_deal_identity_repair_approval_key_secret.get_secret_value().encode()
+    key_id = settings.crm_deal_identity_repair_approval_key_id
+    if not secret or not key_id:
+        raise RuntimeError("repair approval overlay signing configuration is missing")
+    configuration_digest = repair_inventory_configuration_digest(settings)
+    with repair_artifact_store_from_settings(settings) as store:
+        original = verify_qualified_repair_artifact(store, run=run)
+        fresh = verify_rebase_artifact(
+            store,
+            artifact_id=arguments.fresh_artifact_id,
+            repair_id=run.repair_id,
+            source_contract_uuid=run.manifest.source_contract_uuid,
+            configuration_digest=configuration_digest,
+        )
+    _assert_fresh_rebase_inventory(original, fresh, run)
+    original_population = recompute_population_counts_from_lines(
+        iter_verified_inventory_lines(original)
+    )
+    fresh_population = recompute_population_counts_from_lines(iter_verified_inventory_lines(fresh))
+    if (
+        original_population != original.population_counts
+        or fresh_population != fresh.population_counts
+    ):
+        raise RuntimeError("repair rebase population counts are not recomputable")
+    if original_population != fresh_population:
+        raise RuntimeError("repair rebase fresh population counts differ")
+    overlay = verify_approval_overlay(
+        _approval_overlay_path(
+            settings.crm_deal_identity_repair_approval_root,
+            arguments.approval_id,
+        ),
+        secret=secret,
+    )
+    if overlay.approval_id != arguments.approval_id:
+        raise RuntimeError("repair approval overlay ID does not match the request")
+    assert_overlay_binds_qualification(overlay, run=run, expected_key_id=key_id)
+    evidence = stream_rebase_allocation_evidence(
+        run_id=run.run_id,
+        boundary_digest=run.boundary_digest,
+        overlay=overlay,
+        inventory_lines=lambda: iter_verified_inventory_lines(original),
+    )
+    request = RepairBoundaryRebaseRequest(
+        control,
+        arguments.approval_id,
+        arguments.fresh_artifact_id,
+        arguments.expected_observed_boundary_digest,
+    )
+    return repository.rebase_boundary(
+        request,
+        evidence=evidence,
+        fresh_artifact_manifest_hmac=fresh.manifest.manifest_hmac,
+        fresh_inventory_digest=fresh.inventory_digest,
+        fresh_producer_repository_sha=fresh.manifest.provenance.repository_sha,
+        fresh_producer_image_digest=fresh.manifest.provenance.image_digest,
+        approval_key_id=key_id,
+        approval_secret=secret,
+    )
+
+
+def _assert_fresh_rebase_inventory(
+    original: VerifiedRepairArtifact,
+    fresh: VerifiedRepairArtifact,
+    run: RepairQualificationRun,
+) -> None:
+    """Require a separate freshly sealed artifact with exact immutable inventory bytes."""
+    if fresh.manifest.artifact_id == original.manifest.artifact_id:
+        raise RuntimeError("repair rebase requires a separate fresh inventory artifact")
+    if (
+        fresh.inventory_digest,
+        fresh.inventory_row_count,
+        fresh.eligible_unit_count,
+        fresh.negative_control_count,
+        fresh.inventory_source_record_pks,
+        fresh.population_counts,
+    ) != (
+        run.inventory_digest,
+        run.inventory_row_count,
+        run.eligible_unit_count,
+        run.negative_control_count,
+        original.inventory_source_record_pks,
+        original.population_counts,
+    ):
+        raise RuntimeError("repair rebase fresh artifact does not preserve allocated inventory")
+    if fresh.negative_control_count != 6:
+        raise RuntimeError("repair rebase requires exactly six negative controls")
+    from src.crm_deal_identity_repair.qualification import iter_verified_inventory_lines
+
+    for original_line, fresh_line in zip_longest(
+        iter_verified_inventory_lines(original), iter_verified_inventory_lines(fresh)
+    ):
+        if original_line != fresh_line:
+            raise RuntimeError("repair rebase fresh artifact inventory bytes differ")
 
 
 def _inventory_item(raw: object) -> RepairInventoryItem:
@@ -437,8 +598,28 @@ def _status(arguments: Namespace) -> int:
         repository = CrmDealRepairLedgerRepository(client)
         run = repository.get_qualification(arguments.repair_id)
         snapshot, drift_reason = _status_snapshot(repository, run)
-        status = repository.get_status(arguments.repair_id, snapshot, drift_reason)
-        control_status = CrmDealRepairControlRepository(client).status(arguments.repair_id)
+        control_repository = CrmDealRepairControlRepository(client)
+        approval_secret_value = getattr(
+            settings, "crm_deal_identity_repair_approval_key_secret", None
+        )
+        approval_secret = (
+            approval_secret_value.get_secret_value().encode()
+            if approval_secret_value is not None
+            else None
+        )
+        approval_key_id = getattr(settings, "crm_deal_identity_repair_approval_key_id", None)
+        if run is None:
+            effective_boundary = None
+        else:
+            from src.graph.crm_deal_identity_repair_rebase import CrmDealRepairRebaseRepository
+
+            effective_boundary = CrmDealRepairRebaseRepository(client).effective_boundary_digest(
+                run, approval_key_id=approval_key_id, approval_secret=approval_secret
+            )
+        status = repository.get_status(
+            arguments.repair_id, snapshot, drift_reason, effective_boundary
+        )
+        control_status = control_repository.status(arguments.repair_id)
     finally:
         try:
             if client is not None:
@@ -455,6 +636,7 @@ def _status(arguments: Namespace) -> int:
                 "qualification_identity": status.qualification_identity,
                 "expected_boundary_digest": status.expected_boundary_digest,
                 "observed_boundary_digest": status.observed_boundary_digest,
+                "effective_boundary_digest": status.effective_boundary_digest,
                 "source_instance_id": status.source_instance_id,
                 "control_instance_id": status.control_instance_id,
                 "inventory_row_count": status.inventory_row_count,
