@@ -15,17 +15,20 @@ import yaml
 _REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
 _WORKFLOW_NAMES = ("pr.yaml", "main.yaml")
 _SHARDS = ("projection", "ledger-310", "census-migration-api", "repair-mapping")
-_SHARD_STEP_NAMES = tuple(f"neo4j-{shard}-checks" for shard in _SHARDS)
-_ROOT_STEP_NAMES = (
-    "python-checks",
-    "neo4j-projection-checks",
-    "neo4j-ledger-310-checks",
+_LARGE_BOUNDARY_STEP_NAME = "large-boundary-checks"
+_COMBINED_SHARD_STEP_NAME = "neo4j-projection-ledger-checks"
+_SHARD_STEP_NAMES = (
+    _COMBINED_SHARD_STEP_NAME,
     "neo4j-census-migration-api-checks",
     "neo4j-repair-mapping-checks",
 )
-_LARGE_BOUNDARY_STEP_NAME = "large-boundary-checks"
-_LARGE_BOUNDARY_DEPENDENCY = "neo4j-ledger-310-checks"
-_PR_LARGE_BOUNDARY_WHEN = [{"path": {"exclude": ["docs/**", "services/frontend2/**"]}}]
+_LOGICAL_SHARDS_BY_STEP = {
+    _COMBINED_SHARD_STEP_NAME: ("projection", "ledger-310"),
+    "neo4j-census-migration-api-checks": ("census-migration-api",),
+    "neo4j-repair-mapping-checks": ("repair-mapping",),
+}
+_ROOT_STEP_NAMES = ("python-checks", _LARGE_BOUNDARY_STEP_NAME, *_SHARD_STEP_NAMES)
+_PR_SHARD_WHEN = [{"path": {"exclude": ["docs/**", "services/frontend2/**"]}}]
 _LARGE_BOUNDARY_NODE_IDS = (
     "services/ingestion/tests/test_crm_deal_identity_repair_status_snapshot.py::"
     "test_status_snapshot_streams_full_high_cardinality_boundary",
@@ -84,7 +87,10 @@ _NEO4J_SUITE_MANIFEST = frozenset(
     | {(f"services/ingestion/tests/test_{name}.py", "") for name in _INGESTION_NEO4J_TESTS}
     | {
         ("services/ingestion/tests/test_crm_deal_identity_repair_ledger_neo4j.py", "test_310_"),
-        ("services/ingestion/tests/test_crm_deal_identity_repair_ledger_neo4j.py", "not test_310_"),
+        (
+            "services/ingestion/tests/test_crm_deal_identity_repair_ledger_neo4j.py",
+            "not test_310_",
+        ),
     }
 )
 _PYTHON_COMMANDS = (
@@ -129,6 +135,18 @@ _IDENTIFIER_SCOPE_SCHEMA_COMMAND = (
 _PROJECTION_INTELLIGENCE_COMMAND = (
     "uv run --package hyperp-intelligence pytest services/intelligence/tests "
     "-k crm_activities_neo4j -q"
+)
+_PROJECTION_NEO4J_COMMANDS = (
+    "uv run --package profile-unifier-ingestion pytest "
+    "services/ingestion/tests/test_crm_tenant_projection_repository_neo4j.py -q",
+    "uv run --package profile-unifier-ingestion pytest "
+    "services/ingestion/tests/test_crm_tenant_activation_neo4j.py -q",
+    _PROJECTION_INTELLIGENCE_COMMAND,
+)
+_LEDGER_310_COMMAND = (
+    "uv run --package profile-unifier-ingestion pytest "
+    "services/ingestion/tests/test_crm_deal_identity_repair_ledger_neo4j.py "
+    "-k 'test_310_' -q"
 )
 
 
@@ -239,8 +257,8 @@ def _assert_readiness_precedes_pytest(step: dict[str, object], family: str) -> N
 
 def _neo4j_manifest(steps: dict[str, dict[str, object]]) -> frozenset[tuple[str, str]]:
     manifest: set[tuple[str, str]] = set()
-    for shard in _NEO4J_SHARDS:
-        commands = steps[f"neo4j-{shard}-checks"].get("commands")
+    for step_name in _SHARD_STEP_NAMES:
+        commands = steps[step_name].get("commands")
         assert isinstance(commands, list)
         for command in commands:
             assert isinstance(command, str)
@@ -322,22 +340,16 @@ def test_woodpecker_neo4j_readiness_timeout_rejects_non_finite_values() -> None:
         assert "finite positive number" in result.stderr
 
 
-def test_woodpecker_bounded_validation_dag_preserves_five_step_limit() -> None:
+def test_woodpecker_bounded_validation_dag_has_exact_two_wave_schedule() -> None:
     workflows = {name: _workflow_document(name) for name in _WORKFLOW_NAMES}
     pr_second_wave = frozenset({"intelligence-checks", "frontend-checks"})
     for workflow_name, workflow in workflows.items():
         is_pr = workflow_name == "pr.yaml"
         frontend_name = "frontend-checks" if is_pr else "frontend-build"
         steps = _workflow_steps(workflow)
-        assert set(steps) == {
-            *_ROOT_STEP_NAMES,
-            _LARGE_BOUNDARY_STEP_NAME,
-            "intelligence-checks",
-            frontend_name,
-        }
+        assert set(steps) == {*_ROOT_STEP_NAMES, "intelligence-checks", frontend_name}
         _assert_acyclic_dependencies(steps)
         assert all(steps[step_name].get("depends_on") == [] for step_name in _ROOT_STEP_NAMES)
-        assert steps[_LARGE_BOUNDARY_STEP_NAME].get("depends_on") == [_LARGE_BOUNDARY_DEPENDENCY]
         assert workflow.get("when") == (
             {"event": ["pull_request"]}
             if is_pr
@@ -345,50 +357,47 @@ def test_woodpecker_bounded_validation_dag_preserves_five_step_limit() -> None:
         )
         expected_dependencies = [
             "python-checks",
-            {"name": _LARGE_BOUNDARY_STEP_NAME, "optional": True},
+            _LARGE_BOUNDARY_STEP_NAME,
             *({"name": name, "optional": True} for name in _SHARD_STEP_NAMES),
         ]
         if is_pr:
             assert steps["intelligence-checks"].get("depends_on") == expected_dependencies
             assert steps[frontend_name].get("depends_on") == expected_dependencies
         else:
-            expected_main_dependencies = [
-                "python-checks",
-                _LARGE_BOUNDARY_STEP_NAME,
-                *_SHARD_STEP_NAMES,
-            ]
-            assert steps["intelligence-checks"].get("depends_on") == expected_main_dependencies
-            assert steps[frontend_name].get("depends_on") == expected_main_dependencies
+            assert steps["intelligence-checks"].get("depends_on") == list(_ROOT_STEP_NAMES)
+            assert steps[frontend_name].get("depends_on") == list(_ROOT_STEP_NAMES)
         for step_name, step in steps.items():
-            if is_pr and step_name in (*_SHARD_STEP_NAMES, _LARGE_BOUNDARY_STEP_NAME):
-                assert step.get("when") == _PR_LARGE_BOUNDARY_WHEN
+            if is_pr and step_name in _SHARD_STEP_NAMES:
+                assert step.get("when") == _PR_SHARD_WHEN
             else:
                 assert "when" not in step
         expected_second_wave = frozenset({"intelligence-checks", frontend_name})
         assert _waves(steps, frozenset(steps)) == [
             frozenset(_ROOT_STEP_NAMES),
-            frozenset({_LARGE_BOUNDARY_STEP_NAME}),
             expected_second_wave,
         ]
         assert max(map(len, _waves(steps, frozenset(steps)))) == 5
     pr_steps = _workflow_steps(workflows["pr.yaml"])
     for size in range(len(_SHARD_STEP_NAMES) + 1):
         for surviving_shards in combinations(_SHARD_STEP_NAMES, size):
-            has_large_boundary = _LARGE_BOUNDARY_DEPENDENCY in surviving_shards
             active_steps = frozenset(
                 {
                     "python-checks",
+                    _LARGE_BOUNDARY_STEP_NAME,
                     *surviving_shards,
                     *pr_second_wave,
-                    *({_LARGE_BOUNDARY_STEP_NAME} if has_large_boundary else set()),
                 }
             )
-            expected_waves = [frozenset({"python-checks", *surviving_shards})]
-            if has_large_boundary:
-                expected_waves.append(frozenset({_LARGE_BOUNDARY_STEP_NAME}))
-            expected_waves.append(pr_second_wave)
-            assert _waves(pr_steps, active_steps) == expected_waves
+            assert _waves(pr_steps, active_steps) == [
+                frozenset({"python-checks", _LARGE_BOUNDARY_STEP_NAME, *surviving_shards}),
+                pr_second_wave,
+            ]
             assert max(map(len, _waves(pr_steps, active_steps))) <= 5
+    docs_frontend_steps = frozenset({"python-checks", _LARGE_BOUNDARY_STEP_NAME, *pr_second_wave})
+    assert _waves(pr_steps, docs_frontend_steps) == [
+        frozenset({"python-checks", _LARGE_BOUNDARY_STEP_NAME}),
+        pr_second_wave,
+    ]
 
 
 def test_large_boundary_marker_is_registered_and_selects_only_the_exact_probes() -> None:
@@ -424,7 +433,7 @@ def test_woodpecker_validation_commands_preserve_pr_main_differences() -> None:
     assert all(
         _commands(pr_steps[name]) == _commands(main_steps[name]) for name in _SHARD_STEP_NAMES
     )
-    assert _PROJECTION_INTELLIGENCE_COMMAND in _commands(pr_steps["neo4j-projection-checks"])
+    assert _PROJECTION_INTELLIGENCE_COMMAND in _commands(pr_steps[_COMBINED_SHARD_STEP_NAME])
 
 
 def test_woodpecker_neo4j_shards_are_complete_isolated_and_parity_checked() -> None:
@@ -443,7 +452,7 @@ def test_woodpecker_neo4j_shards_are_complete_isolated_and_parity_checked() -> N
             service_by_name[name] = service
         steps = _workflow_steps(workflow)
         assert len(service_by_name) == len(_NEO4J_SHARDS)
-        python_step_names = (*_ROOT_STEP_NAMES, _LARGE_BOUNDARY_STEP_NAME, "intelligence-checks")
+        python_step_names = (*_ROOT_STEP_NAMES, "intelligence-checks")
         python_environments: list[dict[str, object]] = []
         for step_name in python_step_names:
             step = steps[step_name]
@@ -469,6 +478,12 @@ def test_woodpecker_neo4j_shards_are_complete_isolated_and_parity_checked() -> N
             "-o cache_dir=.pytest_cache-large-boundary-checks"
         )
         assert typed_large_boundary_environment.get("PYTHONDONTWRITEBYTECODE") == "1"
+        logical_step_names = {
+            shard: step_name
+            for step_name, logical_shards in _LOGICAL_SHARDS_BY_STEP.items()
+            for shard in logical_shards
+        }
+        assert set(logical_step_names) == set(_NEO4J_SHARDS)
         passwords: set[str] = set()
         for shard, contract in _NEO4J_SHARDS.items():
             service_name, families, readiness_index = contract
@@ -485,46 +500,63 @@ def test_woodpecker_neo4j_shards_are_complete_isolated_and_parity_checked() -> N
             password = auth.removeprefix("neo4j/")
             assert password and password not in passwords
             passwords.add(password)
-            step = steps[f"neo4j-{shard}-checks"]
+            step = steps[logical_step_names[shard]]
             step_environment = step.get("environment")
             assert step.get("depends_on") == []
-            readiness_family = families[readiness_index]
-            _assert_readiness_precedes_pytest(step, readiness_family)
-            if shard == "census-migration-api":
-                commands = _commands(step)
-                assert commands[2] == _IDENTIFIER_SCOPE_SCHEMA_COMMAND
-                assert commands.count(_IDENTIFIER_SCOPE_SCHEMA_COMMAND) == 1
             assert isinstance(step_environment, dict)
             shard_environment = cast(dict[str, object], step_environment)
-            assert shard_environment.get("UV_PROJECT_ENVIRONMENT") == f".venv-neo4j-{shard}-checks"
-            assert shard_environment.get("PYTEST_ADDOPTS") == (
-                f"-o cache_dir=.pytest_cache-neo4j-{shard}-checks"
-            )
-            assert shard_environment.get("PYTHONDONTWRITEBYTECODE") == "1"
-            assert shard_environment.get("HYPERP_NEO4J_PERSON_LIST_TEST_ALLOW_SCHEMA_MUTATION") == (
-                "1" if shard == "census-migration-api" else None
-            )
-            expected_neo4j_keys = {
-                f"{family}_{suffix}"
-                for family in families
-                for suffix in ("URI", "USER", "PASSWORD", "SERVICE_HOST")
-            }
-            if shard == "census-migration-api":
-                expected_neo4j_keys.add("HYPERP_NEO4J_PERSON_LIST_TEST_ALLOW_SCHEMA_MUTATION")
-            actual_neo4j_keys = {
-                key for key in shard_environment if key.startswith("HYPERP_NEO4J_")
-            }
-            assert actual_neo4j_keys == expected_neo4j_keys
             for family in families:
                 assert shard_environment.get(f"{family}_URI") == f"bolt://{service_name}:7687"
                 assert shard_environment.get(f"{family}_USER") == "neo4j"
                 assert shard_environment.get(f"{family}_PASSWORD") == password
                 assert shard_environment.get(f"{family}_SERVICE_HOST") == service_name
-            assert {
-                key.removesuffix("_SERVICE_HOST")
-                for key in shard_environment
-                if key.endswith("_SERVICE_HOST") and key.startswith("HYPERP_NEO4J_")
-            } == set(families)
+
+        for step_name, logical_shards in _LOGICAL_SHARDS_BY_STEP.items():
+            step = steps[step_name]
+            commands = _commands(step)
+            step_environment = step.get("environment")
+            assert step.get("depends_on") == []
+            assert isinstance(step_environment, dict)
+            shard_environment = cast(dict[str, object], step_environment)
+            assert shard_environment.get("UV_PROJECT_ENVIRONMENT") == f".venv-{step_name}"
+            expected_cache_directory = f"-o cache_dir=.pytest_cache-{step_name}"
+            assert shard_environment.get("PYTEST_ADDOPTS") == expected_cache_directory
+            assert shard_environment.get("PYTHONDONTWRITEBYTECODE") == "1"
+            expected_neo4j_keys = {
+                f"{family}_{suffix}"
+                for shard in logical_shards
+                for family in _NEO4J_SHARDS[shard][1]
+                for suffix in ("URI", "USER", "PASSWORD", "SERVICE_HOST")
+            }
+            if "census-migration-api" in logical_shards:
+                expected_neo4j_keys.add("HYPERP_NEO4J_PERSON_LIST_TEST_ALLOW_SCHEMA_MUTATION")
+                assert (
+                    shard_environment.get("HYPERP_NEO4J_PERSON_LIST_TEST_ALLOW_SCHEMA_MUTATION")
+                    == "1"
+                )
+            actual_neo4j_keys = {
+                key for key in shard_environment if key.startswith("HYPERP_NEO4J_")
+            }
+            assert actual_neo4j_keys == expected_neo4j_keys
+            if step_name == _COMBINED_SHARD_STEP_NAME:
+                projection_family = _NEO4J_SHARDS["projection"][1][0]
+                ledger_family = _NEO4J_SHARDS["ledger-310"][1][0]
+                assert commands == [
+                    "uv sync --frozen",
+                    _readiness_command(projection_family),
+                    *_PROJECTION_NEO4J_COMMANDS,
+                    _readiness_command(ledger_family),
+                    _LEDGER_310_COMMAND,
+                ]
+            else:
+                first_shard = logical_shards[0]
+                readiness_family = _NEO4J_SHARDS[first_shard][1][
+                    _NEO4J_SHARDS[first_shard][2]
+                ]
+                _assert_readiness_precedes_pytest(step, readiness_family)
+                if first_shard == "census-migration-api":
+                    assert commands[2] == _IDENTIFIER_SCOPE_SCHEMA_COMMAND
+                    assert commands.count(_IDENTIFIER_SCOPE_SCHEMA_COMMAND) == 1
 
         manifests[workflow_name] = _neo4j_manifest(steps)
         rendered = str(workflow).lower()

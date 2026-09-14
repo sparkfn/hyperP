@@ -58,9 +58,9 @@ services:
       NEO4J_server_memory_pagecache_size: 128m
 
 steps:
-  # Measured #426 exception: the exact 178,328-row probes run in one blocking lane after
-  # the fast ledger shard frees its root slot. This keeps at most five validations active.
-  # Intelligence and frontend remain blocked on Python, every present shard, and this lane.
+  # Measured #426 exception: the exact 178,328-row probes are an unconditional root.
+  # Projection + ledger share one root step, retaining all logical shard commands while
+  # keeping five roots and a stage-compatible two-wave schedule.
   # Python: lint + format check + strict typecheck + unit tests, all against the
   # uv workspace venv (dev group includes ruff, mypy, pytest). One install, sequential.
   - name: python-checks
@@ -90,19 +90,12 @@ steps:
 
   - name: large-boundary-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
-    # Start only after the ledger root completes, replacing its executor slot rather than
-    # creating a sixth root. This remains blocking for both second-wave validations.
-    depends_on:
-      - neo4j-ledger-310-checks
+    # Unconditional even for docs/frontend-only PRs: exact boundary coverage remains blocking.
+    depends_on: []
     environment:
       UV_PROJECT_ENVIRONMENT: .venv-large-boundary-checks
       PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-large-boundary-checks"
       PYTHONDONTWRITEBYTECODE: "1"
-    when:
-      - path:
-          exclude:
-            - docs/**
-            - services/frontend2/**
     commands:
       - uv sync --frozen
       - uv sync --frozen --group training
@@ -114,11 +107,8 @@ steps:
     # Each present shard remains a blocking dependency.
     depends_on:
       - python-checks
-      - name: large-boundary-checks
-        optional: true
-      - name: neo4j-projection-checks
-        optional: true
-      - name: neo4j-ledger-310-checks
+      - large-boundary-checks
+      - name: neo4j-projection-ledger-checks
         optional: true
       - name: neo4j-census-migration-api-checks
         optional: true
@@ -138,36 +128,17 @@ steps:
   # This is an untrusted-workflow service boundary: no Docker socket, host volume, or secret.
   # Four isolated services keep shard cleanup, schema mutation, and locking independent.
   # PR-only docs/frontend changes skip every real-Neo4j shard; mixed changes still run them.
-  - name: neo4j-projection-checks
+  - name: neo4j-projection-ledger-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
     depends_on: []
     environment:
-      UV_PROJECT_ENVIRONMENT: .venv-neo4j-projection-checks
-      PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-neo4j-projection-checks"
+      UV_PROJECT_ENVIRONMENT: .venv-neo4j-projection-ledger-checks
+      PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-neo4j-projection-ledger-checks"
       PYTHONDONTWRITEBYTECODE: "1"
       HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_URI: bolt://neo4j-projection:7687
       HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_USER: neo4j
       HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD: ci-projection
       HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_SERVICE_HOST: neo4j-projection
-    when:
-      - path:
-          exclude:
-            - docs/**
-            - services/frontend2/**
-    commands:
-      - uv sync --frozen
-      - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_URI --user-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_USER --password-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD --timeout-seconds 90
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_projection_repository_neo4j.py -q
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_activation_neo4j.py -q
-      - uv run --package hyperp-intelligence pytest services/intelligence/tests -k crm_activities_neo4j -q
-
-  - name: neo4j-ledger-310-checks
-    image: ghcr.io/astral-sh/uv:python3.12-bookworm
-    depends_on: []
-    environment:
-      UV_PROJECT_ENVIRONMENT: .venv-neo4j-ledger-310-checks
-      PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-neo4j-ledger-310-checks"
-      PYTHONDONTWRITEBYTECODE: "1"
       HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_URI: bolt://neo4j-ledger-310:7687
       HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_USER: neo4j
       HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_PASSWORD: ci-ledger-310
@@ -179,6 +150,10 @@ steps:
             - services/frontend2/**
     commands:
       - uv sync --frozen
+      - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_URI --user-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_USER --password-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD --timeout-seconds 90
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_projection_repository_neo4j.py -q
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_activation_neo4j.py -q
+      - uv run --package hyperp-intelligence pytest services/intelligence/tests -k crm_activities_neo4j -q
       - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_URI --user-env HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_USER --password-env HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_PASSWORD --timeout-seconds 90
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_deal_identity_repair_ledger_neo4j.py -k 'test_310_' -q
 
@@ -282,11 +257,8 @@ steps:
     image: node:22-bookworm
     depends_on:
       - python-checks
-      - name: large-boundary-checks
-        optional: true
-      - name: neo4j-projection-checks
-        optional: true
-      - name: neo4j-ledger-310-checks
+      - large-boundary-checks
+      - name: neo4j-projection-ledger-checks
         optional: true
       - name: neo4j-census-migration-api-checks
         optional: true

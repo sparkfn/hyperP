@@ -19,7 +19,7 @@ from typing import Final, TypeGuard
 
 CHILD_PROBE_ARGUMENT: Final = "--crm-deal-identity-repair-child-probe"
 PROBE_RESULT_VERSION: Final = 1
-LINUX_RSS_SOURCE: Final = "linux-resource-ru_maxrss-bytes"
+LINUX_RSS_SOURCE: Final = "linux-proc-self-status-vmhwm-kb-times-1024-bytes"
 MAX_CHILD_PEAK_RSS_BYTES: Final = 2 * 1024 * 1024 * 1024
 _MAX_METRIC_COUNT: Final = 32
 _MAX_METRIC_NAME_LENGTH: Final = 64
@@ -103,15 +103,31 @@ def emit_child_probe_result(
 
 
 def linux_peak_rss_bytes() -> int:
-    """Return child-owned Linux high-water RSS, rejecting unavailable evidence."""
+    """Return current-mm Linux high-water RSS, rejecting unavailable evidence."""
     if sys.platform != "linux":
         raise RuntimeError("CRM repair child probes require Linux peak-RSS evidence")
-    import resource
+    try:
+        status = Path("/proc/self/status").read_text(encoding="ascii")
+    except (OSError, UnicodeError) as error:
+        raise RuntimeError("CRM repair child probe could not read Linux VmHWM evidence") from error
 
-    peak_bytes = int(resource.getrusage(resource.RUSAGE_SELF).ru_maxrss) * 1024
-    if peak_bytes <= 0:
-        raise RuntimeError("CRM repair child probe reported unavailable Linux peak RSS")
-    return peak_bytes
+    vmhwm_lines = [line for line in status.splitlines() if line.startswith("VmHWM:")]
+    if not vmhwm_lines:
+        raise RuntimeError("CRM repair child probe did not report Linux VmHWM evidence")
+    if len(vmhwm_lines) != 1:
+        raise RuntimeError("CRM repair child probe reported ambiguous Linux VmHWM evidence")
+    fields = vmhwm_lines[0].split()
+    if len(fields) != 3 or fields[0] != "VmHWM:":
+        raise RuntimeError("CRM repair child probe reported malformed Linux VmHWM evidence")
+    raw_kibibytes = fields[1]
+    if fields[2] != "kB":
+        raise RuntimeError("CRM repair child probe reported Linux VmHWM with the wrong unit")
+    if not raw_kibibytes.isascii() or not raw_kibibytes.isdecimal():
+        raise RuntimeError("CRM repair child probe reported malformed Linux VmHWM value")
+    peak_kibibytes = int(raw_kibibytes)
+    if peak_kibibytes <= 0:
+        raise RuntimeError("CRM repair child probe reported nonpositive Linux VmHWM evidence")
+    return peak_kibibytes * 1024
 
 
 def format_probe_evidence(result: ChildProbeResult) -> str:
