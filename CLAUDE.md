@@ -477,3 +477,16 @@ The person/relationship graph uses `react-force-graph-2d` (dynamically imported,
 ### Identity-link machine synchronization (#256)
 
 The OAuth-only `/oauth2/v1/identity-links/{events,snapshot}` routes are a separate privacy-safe ordered synchronization contract, not a replacement for `/v1/events`. They require an unscoped OAuth client with `identity-links:read` or `admin`; they are deliberately absent from MCP because MCP cannot provide the durable cursor and checkpoint semantics. Event pages freeze `through_revision`; snapshot pages freeze `snapshot_revision` and recovery is snapshot plus event tail. Snapshot reads remain unavailable until the leased, keyset-resumable baseline marks both migration and stream counter ready. Lifecycle writers must append through the existing Neo4j transaction; no second session, post-commit event, or exported raw evidence is allowed.
+
+### Issue #440 CI profiles
+
+Default PR and MAIN validation use the **active** profile only. It selects exact
+historical test modules before pytest imports them, omits Intelligence and the
+training/numpy group, and emits collected-node and Neo4j-query manifests. New tests
+remain active unless they are explicitly listed in the auditable CI selection manifest.
+
+Historical repair/Intelligence/training validation is intentionally not scheduled.
+Use `python scripts/ci_historical_validation.py --acknowledge-dormant-reactivation
+--disposable-neo4j` to inspect its command set, or add `--execute` only with an
+explicitly disposable target and `HYPERP_HISTORICAL_DISPOSABLE_NEO4J=1`. That command
+never authorizes runtime repair reactivation or a live target.

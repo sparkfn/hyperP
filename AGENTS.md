@@ -191,3 +191,17 @@ for a callback-only effect.
 - Preserve core product decisions: precision over recall, immutable source facts,
   explainable merge decisions, controlled LLM rollout, protected sensitive IDs,
   and repository-mediated graph access.
+
+## Issue #440 CI profiles
+
+Default PR/MAIN validation uses the active profile only:
+
+- Exact historical modules are ignored before pytest imports them.
+- Intelligence and the training/numpy group are not installed.
+- Collected-node and Neo4j-query manifests are emitted in CI.
+- New tests remain active unless explicitly listed in the selection manifest.
+
+Historical repair, Intelligence, exact-boundary, and numpy-training validation is
+available only through `python scripts/ci_historical_validation.py` with both required
+reactivation gates. The restoration command never authorizes runtime repair activation
+or a live target.
