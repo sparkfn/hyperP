@@ -50,7 +50,7 @@ def main() -> int:
     if args.command == "verify-nodes":
         nodes = validate_default_nodes(args.service, args.path.read_text(encoding="utf-8"))
         for node in nodes:
-            print(f"default-node={node}")
+            print(f"collected-node={node}")
         return 0
     if args.command == "query-manifest":
         workflow_text = args.workflow.read_text(encoding="utf-8")
@@ -59,7 +59,7 @@ def main() -> int:
         for sentinel in ACTIVE_QUERY_SENTINELS:
             print(f"active-query-sentinel={sentinel}")
         for command in commands:
-            print(f"default-query={command}")
+            print(f"configured-query={command}")
         return 0
     _emit_historical_manifest()
     return 0
