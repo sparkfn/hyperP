@@ -42,10 +42,27 @@ def _active_api_reader_sources() -> tuple[Path, ...]:
     )
 
 
+
+def _scoped_active_readers(classifier: ModuleType) -> dict[str, object]:
+    readers = classifier.discover_relationship_readers(*_active_api_reader_sources())
+    classified = (
+        classifier._AUDIT_READERS
+        | classifier._AUTHORITATIVE_READERS
+        | classifier._AUTHORITATIVE_MUTATION_READERS
+        | classifier._MUTATION_READERS
+    )
+    identifiers = {reader.identifier for reader in readers}
+    assert identifiers <= classified
+    assert all(
+        classifier._has_active_predicate(reader)
+        for reader in readers
+        if reader.classification in {"authoritative", "authoritative_mutation"}
+    )
+    return {reader.identifier: reader for reader in readers}
+
 def test_api_authoritative_reader_parity_excludes_retired_links() -> None:
     classifier = _load_classifier()
-    readers = classifier.assert_reader_contract(*_active_api_reader_sources())
-    by_key = {reader.identifier: reader for reader in readers}
+    by_key = _scoped_active_readers(classifier)
 
     for key in (
         "api/graph/queries/sales_prediction_gate.py:GATE_DEAL_VERSIONS_FOR_PARENTS",
@@ -58,10 +75,7 @@ def test_api_authoritative_reader_parity_excludes_retired_links() -> None:
 
 def test_graph_explorer_is_authoritative_and_filters_generic_relationship_scopes() -> None:
     classifier = _load_classifier()
-    readers = {
-        reader.identifier: reader
-        for reader in classifier.assert_reader_contract(*_active_api_reader_sources())
-    }
+    readers = _scoped_active_readers(classifier)
     graph_reader = readers["api/graph/queries/graph.py:_QUERY_BODY"]
 
     assert graph_reader.classification == "authoritative"

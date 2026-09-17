@@ -220,7 +220,7 @@ def _materializer_counts(driver: Driver, parameters: dict[str, object]) -> dict[
             "THEN vehicle END) AS contradictory_vehicles "
             "MATCH (:Person {person_id: $person_id})-[purchase_again:PURCHASED]->(:Order) "
             "RETURN purchases, active_purchases, vehicles, active_vehicles, "
-            "count(CASE WHEN purchase_again.is_active "
+            "contradictory_vehicles, count(CASE WHEN purchase_again.is_active "
             "AND purchase_again.retired_at IS NOT NULL THEN purchase_again END) "
             "AS contradictory_purchases",
             **parameters,

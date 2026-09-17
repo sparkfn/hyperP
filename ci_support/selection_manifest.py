@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import ast
 from pathlib import Path
 from typing import Final
 
@@ -136,7 +137,7 @@ ACTIVE_NODE_SENTINELS: Final[dict[str, tuple[str, ...]]] = {
         "services/api/tests/test_mcp_app.py::"
         "test_mcp_tools_match_every_canonical_api_operation",
         "services/api/tests/test_ci_selection_gate.py::"
-        "test_active_profile_rejects_explicit_historical_path_and_node_before_import",
+        "test_root_plugin_rejects_explicit_historical_targets_before_import",
         "services/api/tests/test_person_crm_metrics_neo4j.py::"
         "test_deal_metrics_query_uses_projected_stage_and_excludes_live_activity_records",
     ),
@@ -146,7 +147,9 @@ ACTIVE_NODE_SENTINELS: Final[dict[str, tuple[str, ...]]] = {
         "services/ingestion/tests/test_active_publication_fencing_neo4j.py::"
         "test_stale_publication_confirmation_fails_closed",
         "services/ingestion/tests/test_active_relationship_reader_contract.py::"
-        "test_active_materializers_are_classified_and_filter_current_relationships",
+        "test_active_materializers_remain_classified_and_current_filtered",
+        "services/ingestion/tests/test_active_reader_classifier_discovery.py::"
+        "test_clause_boundary_discovery_after_create_fails_closed",
         "services/ingestion/tests/test_bitrix_backfill_tasks.py::"
         "test_live_canvas_allows_deal_only_when_activities_are_reviewed_excluded",
         "services/ingestion/tests/test_scheduled_ingestion_tasks.py::"
@@ -195,6 +198,24 @@ def tool_exclude_args(tool: str) -> tuple[str, ...]:
     raise ValueError(f"unsupported tool: {tool}")
 
 
+
+def validate_active_node_sentinel_definitions() -> None:
+    """Require every active sentinel to resolve to an actual top-level test function."""
+    for sentinels in ACTIVE_NODE_SENTINELS.values():
+        for sentinel in sentinels:
+            path_text, function_name = sentinel.split("::", maxsplit=1)
+            path = REPOSITORY_ROOT / path_text
+            if not path.is_file():
+                raise ValueError(f"active sentinel source is missing: {sentinel}")
+            tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+            functions = {
+                node.name
+                for node in tree.body
+                if isinstance(node, (ast.FunctionDef, ast.AsyncFunctionDef))
+            }
+            if function_name not in functions:
+                raise ValueError(f"active sentinel function is missing: {sentinel}")
+
 def selected_node_ids(output: str) -> tuple[str, ...]:
     """Extract pytest node IDs from quiet collection output."""
     return tuple(
@@ -206,6 +227,7 @@ def selected_node_ids(output: str) -> tuple[str, ...]:
 
 def validate_default_nodes(service: str, output: str) -> tuple[str, ...]:
     """Validate actual default collection against positive and negative manifest entries."""
+    validate_active_node_sentinel_definitions()
     nodes = selected_node_ids(output)
     if not nodes:
         raise ValueError(f"{service} collection emitted no test nodes")
