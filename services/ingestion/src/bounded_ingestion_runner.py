@@ -154,6 +154,7 @@ class BoundedIngestionRunner:
         if self._shutdown.requested():
             return self._pause_at(context, control, "shutdown", after_lifecycle)
         if lifecycle.backoff is not None:
+            assert lifecycle.backoff_observed_at is not None
             return self._handle_backoff(
                 context,
                 control,

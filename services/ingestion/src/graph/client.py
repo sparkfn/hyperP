@@ -7,7 +7,7 @@ from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from typing import Any, TypeVar
 
-from neo4j import Driver, GraphDatabase, ManagedTransaction, Session, unit_of_work
+from neo4j import GraphDatabase, ManagedTransaction, Session, unit_of_work
 
 from src.config import Settings
 
@@ -35,19 +35,20 @@ class Neo4jClient:
         *,
         bounded_timeout_seconds: float | None = None,
     ) -> None:
-        driver_options: dict[str, float] = {}
-        if bounded_timeout_seconds is not None:
-            if bounded_timeout_seconds <= 0:
-                raise ValueError("bounded timeout must be positive")
-            driver_options = {
-                "connection_timeout": bounded_timeout_seconds,
-                "connection_acquisition_timeout": bounded_timeout_seconds,
-                "max_transaction_retry_time": bounded_timeout_seconds,
-            }
-        self._driver: Driver = GraphDatabase.driver(
+        if bounded_timeout_seconds is None:
+            self._driver = GraphDatabase.driver(
+                settings.neo4j_uri,
+                auth=(settings.neo4j_user, settings.neo4j_password),
+            )
+            return
+        if bounded_timeout_seconds <= 0:
+            raise ValueError("bounded timeout must be positive")
+        self._driver = GraphDatabase.driver(
             settings.neo4j_uri,
             auth=(settings.neo4j_user, settings.neo4j_password),
-            **driver_options,
+            connection_timeout=bounded_timeout_seconds,
+            connection_acquisition_timeout=bounded_timeout_seconds,
+            max_transaction_retry_time=bounded_timeout_seconds,
         )
 
     # -- session management ---------------------------------------------------
