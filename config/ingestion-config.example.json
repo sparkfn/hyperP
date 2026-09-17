@@ -46,7 +46,11 @@
     "crm_identity_association_contract_version": "crm-company-membership-snapshot-v1"
   },
   "scheduled_ingestion": {
-    "enabled": false
+    "enabled": false,
+    "timezone": "Asia/Singapore",
+    "local_opening": "09:00",
+    "local_cutoff": "23:00",
+    "drain_reserve_seconds": 900
   },
   "stage_history_ingestion": {
     "enabled": false,

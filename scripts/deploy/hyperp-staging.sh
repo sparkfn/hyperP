@@ -21,10 +21,22 @@ EXPECTED_SERVICES=(
 CURRENT_PHASE="preflight"
 REPO_DIR=""
 COMPOSE_FILE=""
-LIFECYCLE_PAUSE_MARKER=""
-LIFECYCLE_PAUSED=false
+POLICY_HELPER=""
+WORKER_CONTROL=""
+PAUSED_CSV=""
+WORKER_RUNNING_RECREATE=false
 COMPOSE=()
 CONFIGURED_SERVICES=()
+
+is_paused() {
+  local service="$1"
+  case "${service}" in
+    ingestion-worker) [[ "${INGESTION_WORKER_PAUSED:-false}" == true ]] ;;
+    lifecycle-worker) [[ "${LIFECYCLE_WORKER_PAUSED:-false}" == true ]] ;;
+    beat) [[ "${BEAT_PAUSED:-false}" == true ]] ;;
+    *) return 1 ;;
+  esac
+}
 
 safe_diagnostics() {
   local service=""
@@ -157,11 +169,14 @@ assert_runtime_contract() {
   export WHATSADMIN_API_MAX_ATTEMPTS=5
   export WHATSADMIN_API_RETRY_BASE_DELAY_SECONDS=1
 
-  mapfile -t CONFIGURED_SERVICES < <("${COMPOSE[@]}" config --services) \
+  local resolved_services=()
+  mapfile -t resolved_services < <("${COMPOSE[@]}" config --services) \
     || fail "could not resolve Compose services"
-  (( ${#CONFIGURED_SERVICES[@]} > 0 )) || fail "Compose configuration has no services"
+  (( ${#resolved_services[@]} > 0 )) || fail "Compose configuration has no services"
+  CONFIGURED_SERVICES=("${EXPECTED_SERVICES[@]}")
   for key in "${EXPECTED_SERVICES[@]}"; do
-    contains_service "${key}" || fail "Compose configuration is missing required service ${key}"
+    printf '%s\n' "${resolved_services[@]}" | grep -Fxq "${key}" \
+      || fail "Compose configuration is missing required service ${key}"
   done
 
   for ingestion_service in ingestion-worker lifecycle-worker beat; do
@@ -190,7 +205,7 @@ assert_all_configured_services_running() {
   running_services="$("${COMPOSE[@]}" ps --status running --services)" \
     || fail "could not list running Compose services"
   for configured_service in "${CONFIGURED_SERVICES[@]}"; do
-    if [[ "${configured_service}" == lifecycle-worker && "${LIFECYCLE_PAUSED}" == true ]]; then
+    if is_paused "${configured_service}"; then
       continue
     fi
     grep -Fxq "${configured_service}" <<< "${running_services}" \
@@ -258,6 +273,30 @@ assert_external_health() {
   fail "external staging health check failed"
 }
 
+assert_pre_merge_checkout_state() {
+  local legacy_marker="${REPO_DIR}/.lifecycle-worker-paused"
+  local status=""
+
+  if [[ ! -e "${legacy_marker}" && ! -L "${legacy_marker}" ]]; then
+    [[ -z "$(git -C "${REPO_DIR}" status --porcelain --untracked-files=normal)" ]] \
+      || fail "staging checkout is dirty before fast-forward"
+    return 0
+  fi
+  [[ -f "${legacy_marker}" && ! -L "${legacy_marker}" && ! -s "${legacy_marker}" ]] \
+    || fail "legacy lifecycle pause marker is unsafe before fast-forward"
+  git -C "${REPO_DIR}" ls-files --error-unmatch -- .lifecycle-worker-paused \
+    >/dev/null 2>&1 && fail "legacy lifecycle pause marker is tracked"
+  status="$(git -C "${REPO_DIR}" status --porcelain --untracked-files=normal)"
+  [[ "${status}" == "?? .lifecycle-worker-paused" ]] \
+    || fail "legacy lifecycle pause marker requires no other dirty checkout state"
+}
+
+create_paused_services() {
+  docker compose create --help 2>&1 | grep -Fq -- '--no-deps' \
+    || fail "Docker Compose create lacks required --no-deps support for paused workers"
+  "${COMPOSE[@]}" create --no-deps --force-recreate "$@"
+}
+
 write_deployed_revision() {
   local revision_tmp=""
 
@@ -320,6 +359,9 @@ command -v curl >/dev/null || fail "curl is not installed"
 command -v docker >/dev/null || fail "docker is not installed"
 command -v flock >/dev/null || fail "flock is not installed"
 command -v git >/dev/null || fail "git is not installed"
+command -v python3 >/dev/null || fail "python3 is not installed"
+python3 -c "from zoneinfo import ZoneInfo; ZoneInfo('Asia/Singapore')" \
+  || fail "python3 lacks Asia/Singapore timezone support"
 [[ -d "${STAGING_DIR}" ]] || fail "staging directory is missing at ${STAGING_DIR}"
 docker compose version --format '{{json .}}' >/dev/null 2>&1 \
   || fail "Docker Compose v2 is not available"
@@ -335,16 +377,9 @@ flock -w 300 9 || fail "timed out waiting for another HyperP staging deployment"
 CURRENT_PHASE="checking staging checkout"
 REPO_DIR="$(git -C "${STAGING_DIR}" rev-parse --show-toplevel 2>/dev/null)" \
   || fail "staging directory is not inside a Git checkout"
-COMPOSE_FILE="${REPO_DIR}/.docker/staging/docker-compose.yml"
-LIFECYCLE_PAUSE_MARKER="${REPO_DIR}/.lifecycle-worker-paused"
-COMPOSE=(docker compose -p hyperp-ada-asia -f "${COMPOSE_FILE}")
-[[ -f "${COMPOSE_FILE}" ]] || fail "Compose file is missing at ${COMPOSE_FILE}"
-[[ -x "${REPO_DIR}/scripts/lifecycle-worker-deploy-guard.sh" ]] \
-  || fail "lifecycle deployment guard is missing or not executable"
 [[ "$(git -C "${REPO_DIR}" branch --show-current)" == staging ]] \
   || fail "staging checkout is not on staging"
-[[ -z "$(git -C "${REPO_DIR}" status --porcelain --untracked-files=normal)" ]] \
-  || fail "staging checkout is dirty"
+assert_pre_merge_checkout_state
 git -C "${REPO_DIR}" remote get-url origin >/dev/null 2>&1 \
   || fail "staging checkout has no origin remote"
 
@@ -363,16 +398,44 @@ git -C "${REPO_DIR}" merge-base --is-ancestor HEAD "${EXPECTED_SHA}" \
 BEFORE_SHA="$(git -C "${REPO_DIR}" rev-parse HEAD)"
 DEPLOYMENT_BASE_SHA="$(deployment_base_revision "${BEFORE_SHA}")"
 git -C "${REPO_DIR}" merge --ff-only "${EXPECTED_SHA}"
+COMPOSE_FILE="${REPO_DIR}/.docker/staging/docker-compose.yml"
+POLICY_HELPER="${REPO_DIR}/scripts/deploy/scheduled_ingestion_policy.py"
+WORKER_CONTROL="${REPO_DIR}/scripts/worker-control.sh"
+COMPOSE=(env COMPOSE_PROFILES= docker compose -p hyperp-ada-asia -f "${COMPOSE_FILE}")
+[[ -f "${COMPOSE_FILE}" ]] || fail "Compose file is missing after fast-forward"
+[[ -x "${REPO_DIR}/scripts/lifecycle-worker-deploy-guard.sh" ]] \
+  || fail "lifecycle deployment guard is missing after fast-forward"
+[[ -x "${WORKER_CONTROL}" ]] || fail "worker control is missing after fast-forward"
+[[ -f "${POLICY_HELPER}" ]] \
+  || fail "scheduled-ingestion policy helper is missing after fast-forward"
+HYPERP_DEPLOY_LOCK_HELD=true STAGING_REPO_DIR="${REPO_DIR}" \
+  "${WORKER_CONTROL}" migrate-legacy
 assert_git_sync
 
 CURRENT_PHASE="validating the Compose contract"
 assert_runtime_contract
 
-if [[ -f "${LIFECYCLE_PAUSE_MARKER}" ]]; then
-  LIFECYCLE_PAUSED=true
-  printf '%s\n' '[hyperp-staging] lifecycle pause marker is present; preserving pause'
-  "${COMPOSE[@]}" stop lifecycle-worker
+worker_intent=""
+if ! worker_intent="$(
+  HYPERP_DEPLOY_LOCK_HELD=true STAGING_REPO_DIR="${REPO_DIR}" "${WORKER_CONTROL}" intent
+)"; then
+  fail "could not read canonical worker pause intent"
 fi
+eval "${worker_intent}"
+PAUSED_CSV=""
+for worker_service in ingestion-worker lifecycle-worker beat; do
+  if is_paused "${worker_service}"; then
+    PAUSED_CSV+="${PAUSED_CSV:+,}${worker_service}"
+    HYPERP_DEPLOY_LOCK_HELD=true STAGING_REPO_DIR="${REPO_DIR}" \
+      "${WORKER_CONTROL}" enforce "${worker_service}" \
+      || fail "could not enforce paused ${worker_service} before deployment"
+  fi
+done
+policy_inspect=""
+if ! policy_inspect="$(python3 "${POLICY_HELPER}" inspect --compose-file "${COMPOSE_FILE}")"; then
+  fail "could not inspect effective scheduled-ingestion deployment policy"
+fi
+eval "${policy_inspect}"
 
 CURRENT_PHASE="planning selective rebuild"
 ALL_SERVICES=(api frontend2 ingestion-worker lifecycle-worker beat)
@@ -435,14 +498,36 @@ for service in "${ALL_SERVICES[@]}"; do
   [[ -n "${RECREATE_NEEDED[${service}]:-}" ]] && RECREATE_SERVICE_INPUT+=("${service}")
 done
 
-eval "$(
-  "${REPO_DIR}/scripts/lifecycle-worker-deploy-guard.sh" \
-    plan "${LIFECYCLE_PAUSED}" "${RECREATE_SERVICE_INPUT[@]}"
-)"
-read -r -a RECREATE_SERVICE_ARRAY <<< "${RECREATE_SERVICES}"
-if [[ " ${RECREATE_SERVICES} " == *" api "* || \
-  " ${RECREATE_SERVICES} " == *" frontend2 "* ]]; then
+guard_plan=""
+if ! guard_plan="$("${REPO_DIR}/scripts/lifecycle-worker-deploy-guard.sh" \
+  plan "${PAUSED_CSV}" "${RECREATE_SERVICE_INPUT[@]}")"; then
+  fail "could not plan paused and running worker recreation"
+fi
+RUNNING_RECREATE_SERVICES=""
+STOPPED_RECREATE_SERVICES=""
+eval "${guard_plan}"
+read -r -a RUNNING_RECREATE_SERVICE_ARRAY <<< "${RUNNING_RECREATE_SERVICES}"
+read -r -a STOPPED_RECREATE_SERVICE_ARRAY <<< "${STOPPED_RECREATE_SERVICES}"
+if [[ " ${RUNNING_RECREATE_SERVICES} " == *" api "* || \
+  " ${RUNNING_RECREATE_SERVICES} " == *" frontend2 "* ]]; then
   RESTART_WEB=true
+fi
+for worker_service in ingestion-worker lifecycle-worker beat; do
+  if [[ " ${RUNNING_RECREATE_SERVICES} " == *" ${worker_service} "* ]]; then
+    WORKER_RUNNING_RECREATE=true
+  fi
+done
+if [[ "${SCHEDULE_POLICY_ENABLED:-false}" == true && "${WORKER_RUNNING_RECREATE}" == true ]]; then
+  python3 "${POLICY_HELPER}" admit --compose-file "${COMPOSE_FILE}" \
+    || fail "scheduled-ingestion policy closes worker recreation outside the drain-safe window"
+fi
+if [[ "${WORKER_RUNNING_RECREATE}" == true || ${#STOPPED_RECREATE_SERVICE_ARRAY[@]} -gt 0 ]]; then
+  policy_evidence=""
+  if ! policy_evidence="$(python3 "${POLICY_HELPER}" prepare --compose-file "${COMPOSE_FILE}" \
+    --state-directory "${REPO_DIR}/.docker/staging/data")"; then
+    fail "could not atomically record scheduled-ingestion policy evidence"
+  fi
+  eval "${policy_evidence}"
 fi
 
 CURRENT_PHASE="building and recreating changed services"
@@ -454,23 +539,34 @@ else
   "${COMPOSE[@]}" build "${BUILD_SERVICE_ARRAY[@]}"
 fi
 
-if [[ " ${RECREATE_SERVICES} " == *" api "* ]]; then
+if [[ " ${RUNNING_RECREATE_SERVICES} " == *" api "* ]]; then
   "${COMPOSE[@]}" run --rm --no-deps ingestion-worker \
     python -m src.person_completeness_control check
   "${COMPOSE[@]}" run --rm --no-deps ingestion-worker \
     python -m src.crm_deal_count_control check
 fi
 
-if (( ${#RECREATE_SERVICE_ARRAY[@]} > 0 )); then
-  printf '[hyperp-staging] recreating changed services: %s\n' "${RECREATE_SERVICES}"
-  "${COMPOSE[@]}" up -d --no-deps --force-recreate "${RECREATE_SERVICE_ARRAY[@]}"
-  if [[ " ${RECREATE_SERVICES} " == *" api "* ]]; then
+if (( ${#RUNNING_RECREATE_SERVICE_ARRAY[@]} > 0 )); then
+  if [[ "${SCHEDULE_POLICY_ENABLED:-false}" == true && "${WORKER_RUNNING_RECREATE}" == true ]]; then
+    python3 "${POLICY_HELPER}" admit --compose-file "${COMPOSE_FILE}" \
+      || fail "scheduled-ingestion policy closed while images were building;" \
+        "images were built but not started"
+  fi
+  printf '[hyperp-staging] recreating running services: %s\n' "${RUNNING_RECREATE_SERVICES}"
+  "${COMPOSE[@]}" up -d --no-deps --force-recreate "${RUNNING_RECREATE_SERVICE_ARRAY[@]}"
+  if [[ " ${RUNNING_RECREATE_SERVICES} " == *" api "* ]]; then
     "${COMPOSE[@]}" run --rm --no-deps ingestion-worker \
       python -m src.person_completeness_control check
     "${COMPOSE[@]}" run --rm --no-deps ingestion-worker \
       python -m src.crm_deal_count_control check
   fi
-else
+fi
+if (( ${#STOPPED_RECREATE_SERVICE_ARRAY[@]} > 0 )); then
+  printf '[hyperp-staging] recreating paused services stopped: %s\n' "${STOPPED_RECREATE_SERVICES}"
+  create_paused_services "${STOPPED_RECREATE_SERVICE_ARRAY[@]}"
+fi
+if (( ${#RUNNING_RECREATE_SERVICE_ARRAY[@]} == 0 && \
+  ${#STOPPED_RECREATE_SERVICE_ARRAY[@]} == 0 )); then
   printf '%s\n' '[hyperp-staging] no service configuration or code changed; skipping recreation'
 fi
 
@@ -484,15 +580,15 @@ CURRENT_PHASE="verifying deployed services"
 assert_all_configured_services_running
 assert_healthy neo4j
 assert_healthy redis
-wait_service_stable ingestion-worker
-if [[ "${LIFECYCLE_PAUSED}" == true ]]; then
-  STAGING_COMPOSE_PROJECT=hyperp-ada-asia \
-    "${REPO_DIR}/scripts/lifecycle-worker-deploy-guard.sh" \
-    verify-paused "${COMPOSE_FILE}"
-else
-  wait_service_stable lifecycle-worker
-fi
-wait_service_stable beat
+for worker_service in ingestion-worker lifecycle-worker beat; do
+  if is_paused "${worker_service}"; then
+    STAGING_COMPOSE_PROJECT=hyperp-ada-asia \
+      "${REPO_DIR}/scripts/lifecycle-worker-deploy-guard.sh" \
+      verify-paused "${COMPOSE_FILE}" "${worker_service}"
+  else
+    wait_service_stable "${worker_service}"
+  fi
+done
 assert_internal_api_health
 assert_external_health "${HEALTH_URL}"
 assert_git_sync

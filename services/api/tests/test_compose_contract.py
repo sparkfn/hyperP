@@ -131,8 +131,6 @@ EXCEPTIONS: tuple[ComposeTransformation, ...] = (
         _ROOT_LIFECYCLE_VOLUMES,
         _STAGING_LIFECYCLE_VOLUMES,
     ),
-    ComposeTransformation(("services", "beat", "cpus"), 0.5, 0.25),
-    ComposeTransformation(("services", "beat", "mem_limit"), "512M", "256M"),
     ComposeTransformation(
         ("services", "beat", "volumes"),
         _volumes("./data/celerybeat:/var/celerybeat", "./config:/app/config:ro"),
@@ -227,6 +225,7 @@ def test_staging_compose_critical_invariants() -> None:
     assert intelligence["build"] == {
         "context": "../..", "dockerfile": "services/intelligence/Dockerfile"
     }
+    assert intelligence["profiles"] == ["intelligence"]
     assert intelligence["volumes"] == ["intelligence-data:/var/lib/intelligence"]
     assert intelligence["read_only"] is True
     assert intelligence["cpus"] == "${INTELLIGENCE_CPUS:-0.5}"
@@ -250,8 +249,48 @@ def test_staging_compose_critical_invariants() -> None:
     assert ingestion_worker["env_file"] == [
         "./.evidence/issue147-smoke-20260815/stage-history-runtime.env"
     ]
-    assert beat["cpus"] == 0.25
-    assert beat["mem_limit"] == "256M"
+    lifecycle_worker = services["lifecycle-worker"]
+    assert isinstance(lifecycle_worker, dict)
+    for worker, cpu, memory, grace in (
+        (
+            ingestion_worker,
+            "${INGESTION_WORKER_CPUS:-1.0}",
+            "${INGESTION_WORKER_MEMORY_LIMIT:-2G}",
+            "${INGESTION_WORKER_STOP_GRACE_PERIOD:-300s}",
+        ),
+        (
+            lifecycle_worker,
+            "${LIFECYCLE_WORKER_CPUS:-0.5}",
+            "${LIFECYCLE_WORKER_MEMORY_LIMIT:-1G}",
+            "${LIFECYCLE_WORKER_STOP_GRACE_PERIOD:-300s}",
+        ),
+        (
+            beat,
+            "${BEAT_CPUS:-0.25}",
+            "${BEAT_MEMORY_LIMIT:-256M}",
+            "${BEAT_STOP_GRACE_PERIOD:-30s}",
+        ),
+    ):
+        assert worker["cpus"] == cpu
+        assert worker["mem_limit"] == memory
+        assert worker["stop_grace_period"] == grace
+    assert ingestion_worker["command"][-1] == "--concurrency=${INGESTION_WORKER_CONCURRENCY:-1}"
+    assert lifecycle_worker["command"][-1] == "--concurrency=${LIFECYCLE_WORKER_CONCURRENCY:-1}"
+    environment = staging["x-ingestion-env"]
+    assert isinstance(environment, dict)
+    assert {key: environment[key] for key in (
+        "SCHEDULED_INGESTION_TIMEZONE",
+        "SCHEDULED_INGESTION_LOCAL_OPENING",
+        "SCHEDULED_INGESTION_LOCAL_CUTOFF",
+        "SCHEDULED_INGESTION_DRAIN_RESERVE_SECONDS",
+    )} == {
+        "SCHEDULED_INGESTION_TIMEZONE": "${SCHEDULED_INGESTION_TIMEZONE:-Asia/Singapore}",
+        "SCHEDULED_INGESTION_LOCAL_OPENING": "${SCHEDULED_INGESTION_LOCAL_OPENING:-09:00}",
+        "SCHEDULED_INGESTION_LOCAL_CUTOFF": "${SCHEDULED_INGESTION_LOCAL_CUTOFF:-23:00}",
+        "SCHEDULED_INGESTION_DRAIN_RESERVE_SECONDS": (
+            "${SCHEDULED_INGESTION_DRAIN_RESERVE_SECONDS:-900}"
+        ),
+    }
     assert staging["networks"] == {"traefik": {"external": True, "name": "traefik"}}
 
 

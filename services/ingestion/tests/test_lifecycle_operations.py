@@ -10,7 +10,7 @@ import pytest
 from pytest import CaptureFixture, MonkeyPatch
 
 _ROOT = Path(__file__).parents[3]
-_CONTROL_SCRIPT = _ROOT / "scripts/lifecycle-worker-control.sh"
+_CONTROL_SCRIPT = _ROOT / "scripts/worker-control.sh"
 _DEPLOY_GUARD = _ROOT / "scripts/lifecycle-worker-deploy-guard.sh"
 _DEPLOY_SCRIPT = _ROOT / "scripts/deploy/hyperp-staging.sh"
 _STAGING_PIPELINE = _ROOT / ".woodpecker/staging.yaml"
@@ -52,10 +52,29 @@ def _run_control(
     *,
     fail_docker: bool = False,
     consumer_running: bool = False,
+    schedule_enabled: bool = False,
+    deny_admission: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     repo_dir = tmp_path / "staging-checkout"
     repo_dir.mkdir(exist_ok=True)
+    subprocess.run(["git", "init", "-q", str(repo_dir)], check=True)
     bin_dir, log_path = _fake_docker(tmp_path)
+    helper = repo_dir / "scripts/deploy/scheduled_ingestion_policy.py"
+    helper.parent.mkdir(parents=True)
+    helper.write_text("# fake policy helper\n", encoding="utf-8")
+    python = bin_dir / "python3"
+    python.write_text(
+        "#!/usr/bin/env bash\nset -euo pipefail\n"
+        "if [[ \"$*\" == *\" inspect\"* ]]; then\n"
+        "  printf 'SCHEDULE_POLICY_ENABLED=%s\\n' \"${SCHEDULE_ENABLED:-false}\"\n"
+        "  exit 0\n"
+        "fi\n"
+        "if [[ \"$*\" == *\" admit\"* ]]; then\n"
+        "  [[ ${DENY_ADMISSION:-false} != true ]] || exit 44\n"
+        "fi\n",
+        encoding="utf-8",
+    )
+    python.chmod(0o755)
     env = {
         **os.environ,
         "PATH": f"{bin_dir}:{os.environ['PATH']}",
@@ -65,9 +84,11 @@ def _run_control(
         "STAGING_COMPOSE_FILE": "host/docker-compose.yml",
         "FAIL_DOCKER": str(fail_docker).lower(),
         "CONSUMER_RUNNING": str(consumer_running).lower(),
+        "SCHEDULE_ENABLED": str(schedule_enabled).lower(),
+        "DENY_ADMISSION": str(deny_admission).lower(),
     }
     return subprocess.run(
-        [str(_CONTROL_SCRIPT), command],
+        ["bash", str(_CONTROL_SCRIPT), command, "lifecycle-worker"],
         cwd=tmp_path,
         env=env,
         check=False,
@@ -76,41 +97,42 @@ def _run_control(
     )
 
 
-def test_pause_stops_worker_before_persisting_marker_and_uses_repo_directory(
+def test_pause_persists_worker_intent_before_stopping_and_uses_repo_directory(
     tmp_path: Path,
 ) -> None:
     result = _run_control(tmp_path, "pause")
     repo_dir = tmp_path / "staging-checkout"
 
     assert result.returncode == 0
-    assert (repo_dir / ".lifecycle-worker-paused").is_file()
+    assert (repo_dir / ".docker/staging/data/worker-pauses/lifecycle-worker").is_file()
     assert (tmp_path / "docker.log").read_text(encoding="utf-8").splitlines() == [
         f"{repo_dir}|compose -p hyperp-ada-asia -f host/docker-compose.yml stop lifecycle-worker",
         f"{repo_dir}|compose -p hyperp-ada-asia -f host/docker-compose.yml ps -q lifecycle-worker",
     ]
 
 
-def test_failed_pause_does_not_create_marker(tmp_path: Path) -> None:
+def test_failed_pause_retains_marker(tmp_path: Path) -> None:
     result = _run_control(tmp_path, "pause", fail_docker=True)
 
-    assert result.returncode == 42
-    assert not (tmp_path / "staging-checkout/.lifecycle-worker-paused").exists()
+    assert result.returncode != 0
+    marker = tmp_path / "staging-checkout/.docker/staging/data/worker-pauses/lifecycle-worker"
+    assert marker.is_file()
 
 
 def test_failed_resume_preserves_marker(tmp_path: Path) -> None:
-    marker = tmp_path / "staging-checkout/.lifecycle-worker-paused"
-    marker.parent.mkdir()
+    marker = tmp_path / "staging-checkout/.docker/staging/data/worker-pauses/lifecycle-worker"
+    marker.parent.mkdir(parents=True)
     marker.touch()
 
     result = _run_control(tmp_path, "resume", fail_docker=True)
 
-    assert result.returncode == 42
+    assert result.returncode != 0
     assert marker.is_file()
 
 
 def test_successful_resume_removes_marker(tmp_path: Path) -> None:
-    marker = tmp_path / "staging-checkout/.lifecycle-worker-paused"
-    marker.parent.mkdir()
+    marker = tmp_path / "staging-checkout/.docker/staging/data/worker-pauses/lifecycle-worker"
+    marker.parent.mkdir(parents=True)
     marker.touch()
 
     result = _run_control(tmp_path, "resume")
@@ -119,21 +141,41 @@ def test_successful_resume_removes_marker(tmp_path: Path) -> None:
     assert not marker.exists()
 
 
+def test_schedule_enabled_resume_denial_preserves_marker(tmp_path: Path) -> None:
+    marker = tmp_path / "staging-checkout/.docker/staging/data/worker-pauses/lifecycle-worker"
+    marker.parent.mkdir(parents=True)
+    marker.touch()
+
+    result = _run_control(
+        tmp_path,
+        "resume",
+        schedule_enabled=True,
+        deny_admission=True,
+    )
+
+    assert result.returncode != 0
+    assert marker.is_file()
+
+
 def test_status_reports_marker_and_consumer_state(tmp_path: Path) -> None:
-    marker = tmp_path / "staging-checkout/.lifecycle-worker-paused"
-    marker.parent.mkdir()
+    marker = tmp_path / "staging-checkout/.docker/staging/data/worker-pauses/lifecycle-worker"
+    marker.parent.mkdir(parents=True)
     marker.touch()
 
     result = _run_control(tmp_path, "status", consumer_running=True)
 
     assert result.returncode == 0
-    assert result.stdout.splitlines() == ["pause_marker=present", "consumer_running=true"]
+    assert result.stdout.splitlines() == [
+        "service=lifecycle-worker",
+        "pause_marker=present",
+        "consumer_running=true",
+    ]
 
 
 def test_status_does_not_misreport_compose_failure_as_stopped(tmp_path: Path) -> None:
     result = _run_control(tmp_path, "status", fail_docker=True)
 
-    assert result.returncode == 42
+    assert result.returncode != 0
     assert "consumer_running=false" not in result.stdout
 
 
@@ -151,7 +193,10 @@ def test_woodpecker_staging_deploy_uses_testable_lifecycle_guard() -> None:
     assert "plugin-kaniko" not in pipeline
     assert "StrictHostKeyChecking=yes" in pipeline
     assert "hyperp_staging_ssh_known_hosts" in pipeline
-    assert 'COMPOSE=(docker compose -p hyperp-ada-asia -f "${COMPOSE_FILE}")' in deploy
+    assert (
+        'COMPOSE=(env COMPOSE_PROFILES= docker compose -p hyperp-ada-asia '
+        '-f "${COMPOSE_FILE}")'
+    ) in deploy
     assert "origin/main does not contain the staging revision" in deploy
     assert "flock -w 300 9" in deploy
     assert "BUILD_NEEDED[api]=1" in deploy
@@ -171,7 +216,7 @@ def test_woodpecker_staging_deploy_uses_testable_lifecycle_guard() -> None:
     build = deploy.index('"${COMPOSE[@]}" build "${BUILD_SERVICE_ARRAY[@]}"')
     preflight = deploy.index('"${COMPOSE[@]}" run --rm --no-deps ingestion-worker', build)
     recreate = deploy.index(
-        '"${COMPOSE[@]}" up -d --no-deps --force-recreate "${RECREATE_SERVICE_ARRAY[@]}"',
+        '"${COMPOSE[@]}" up -d --no-deps --force-recreate "${RUNNING_RECREATE_SERVICE_ARRAY[@]}"',
         preflight,
     )
     postflight = deploy.index('"${COMPOSE[@]}" run --rm --no-deps ingestion-worker', recreate)
@@ -180,15 +225,19 @@ def test_woodpecker_staging_deploy_uses_testable_lifecycle_guard() -> None:
     assert deploy.count("python -m src.crm_deal_count_control check") == 2
     assert "python -m src.person_completeness_control backfill" not in deploy
     assert "python -m src.crm_deal_count_control backfill" not in deploy
-    assert '"${COMPOSE[@]}" stop lifecycle-worker' in deploy
+    assert 'create --no-deps --force-recreate' in deploy
+    assert "lacks required --no-deps support" in deploy
     assert "lifecycle-worker-deploy-guard.sh" in deploy
-    assert 'plan "${LIFECYCLE_PAUSED}" "${RECREATE_SERVICE_INPUT[@]}"' in deploy
+    assert 'plan "${PAUSED_CSV}" "${RECREATE_SERVICE_INPUT[@]}"' in deploy
     assert 'verify-paused "${COMPOSE_FILE}"' in deploy
-    control = (_ROOT / "scripts/lifecycle-worker-control.sh").read_text(encoding="utf-8")
+    control = (_ROOT / "scripts/worker-control.sh").read_text(encoding="utf-8")
     deploy_guard = (_ROOT / "scripts/lifecycle-worker-deploy-guard.sh").read_text(encoding="utf-8")
     for script in (control, deploy_guard):
         assert "STAGING_COMPOSE_PROJECT:-hyperp-ada-asia" in script
-        assert 'docker compose -p "$compose_project" -f "$compose_file"' in script
+        assert 'env COMPOSE_PROFILES= docker compose -p "$compose_project"' in script
+    assert control.index("write_marker \"$service\"") < control.index('"${compose[@]}" stop')
+    assert "assert_resume_admitted" in control
+    assert "COMPOSE_PROFILES= python3" in control
 
 
 def test_paused_deploy_plan_builds_lifecycle_without_recreating_it() -> None:
@@ -196,7 +245,7 @@ def test_paused_deploy_plan_builds_lifecycle_without_recreating_it() -> None:
         [
             str(_DEPLOY_GUARD),
             "plan",
-            "true",
+            "lifecycle-worker",
             "api",
             "lifecycle-worker",
             "beat",
@@ -208,8 +257,8 @@ def test_paused_deploy_plan_builds_lifecycle_without_recreating_it() -> None:
 
     assert result.returncode == 0
     assert result.stdout.splitlines() == [
-        "BUILD_SERVICES=api\\ lifecycle-worker\\ beat",
-        "RECREATE_SERVICES=api\\ beat",
+        "RUNNING_RECREATE_SERVICES=api\\ beat",
+        "STOPPED_RECREATE_SERVICES=lifecycle-worker",
     ]
 
 
@@ -251,7 +300,7 @@ exit 43
         "FAIL_INSPECT": str(fail_inspect).lower(),
     }
     return subprocess.run(
-        [str(_DEPLOY_GUARD), "verify-paused", "compose.yml"],
+        [str(_DEPLOY_GUARD), "verify-paused", "compose.yml", "lifecycle-worker"],
         env=env,
         check=False,
         capture_output=True,
@@ -267,7 +316,7 @@ exit 43
         ({"container_ids": "one\n", "fail_inspect": True}, ""),
         (
             {"container_ids": "one\n", "inspect_running": "true"},
-            "running despite the deliberate pause marker",
+            "running despite deliberate pause intent",
         ),
     ],
 )
@@ -289,7 +338,20 @@ def test_paused_deploy_guard_accepts_missing_or_stopped_container(tmp_path: Path
 
     assert missing.returncode == 0
     assert stopped.returncode == 0
-    assert "deliberate pause preserved" in stopped.stdout
+    assert "Paused worker containers are stopped" in stopped.stdout
+
+
+def test_enforce_stops_a_running_paused_worker_without_clearing_intent(tmp_path: Path) -> None:
+    marker = tmp_path / "staging-checkout/.docker/staging/data/worker-pauses/lifecycle-worker"
+    marker.parent.mkdir(parents=True)
+    marker.touch()
+    (tmp_path / "consumer.running").touch()
+
+    result = _run_control(tmp_path, "enforce")
+
+    assert result.returncode == 0
+    assert marker.is_file()
+    assert "stop lifecycle-worker" in (tmp_path / "docker.log").read_text(encoding="utf-8")
 
 
 def test_operations_doc_defines_pause_recovery_and_wait_slo() -> None:
@@ -298,16 +360,16 @@ def test_operations_doc_defines_pause_recovery_and_wait_slo() -> None:
     )
 
     for command in (
-        "scripts/lifecycle-worker-control.sh pause",
-        "scripts/lifecycle-worker-control.sh status",
-        "scripts/lifecycle-worker-control.sh resume",
+        "scripts/worker-control.sh pause ingestion-worker",
+        "scripts/worker-control.sh status",
+        "scripts/lifecycle-worker-control.sh pause|status|resume",
         "python -m src.lifecycle_queue_admin status",
         "clear-knows --phase contacts --expected-owner",
         "clear-reconciliation --expected-owner",
     ):
         assert command in operations
     assert "consumer_running=false" in operations
-    assert "builds an updated lifecycle image while paused" in operations
+    assert "builds changed worker images even while paused" in operations
     assert "Exit code `1`" in operations
     assert "Exit code `2`" in operations
     assert "after **5 seconds**" in operations
