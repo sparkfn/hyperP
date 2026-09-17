@@ -7,10 +7,12 @@ import os
 import shlex
 import subprocess
 import sys
+from importlib.util import module_from_spec, spec_from_file_location
 from itertools import combinations
 from pathlib import Path
 
 import pytest
+from src.ingestion_config import load_ingestion_config
 
 _ROOT = Path(__file__).parents[3]
 _POLICY_HELPER = _ROOT / "scripts" / "deploy" / "scheduled_ingestion_policy.py"
@@ -151,6 +153,7 @@ def test_policy_probe_and_prepare_atomically_fill_only_missing_policy_keys(tmp_p
     probe = _policy_run(tmp_path, "probe", config=config)
     source_path = tmp_path / "effective-config/ingestion-config.json"
     os.chmod(source_path, 0o600)
+    source_metadata = source_path.stat()
     prior_umask = os.umask(0o000)
     try:
         prepared = _policy_run(
@@ -173,7 +176,60 @@ def test_policy_probe_and_prepare_atomically_fill_only_missing_policy_keys(tmp_p
     assert payload["scheduled_ingestion"]["manual_pause"] is True
     assert payload["scheduled_ingestion"]["local_cutoff"] == "23:00"
     assert payload["scheduled_ingestion"]["drain_reserve_seconds"] == 900
-    assert source_path.stat().st_mode & 0o777 == 0o600
+    prepared_metadata = source_path.stat()
+    assert prepared_metadata.st_mode & 0o777 == 0o600
+    assert prepared_metadata.st_uid == source_metadata.st_uid
+    assert prepared_metadata.st_gid == source_metadata.st_gid
+
+
+def test_policy_prepare_preserves_legacy_bare_exclusion_loader_semantics(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    bare_exclusions = {
+        "emails": ["operator@example.test"],
+        "email_domains": ["example.test"],
+        "names": ["Operator"],
+    }
+    _policy_run(tmp_path, "probe", config=bare_exclusions)
+    source_path = tmp_path / "effective-config/ingestion-config.json"
+    before = load_ingestion_config(str(source_path)).exclusions
+
+    prepared = _policy_run(
+        tmp_path,
+        "prepare",
+        config=bare_exclusions,
+        rewrite_source=False,
+    )
+    after = load_ingestion_config(str(source_path)).exclusions
+    payload = json.loads(source_path.read_text(encoding="utf-8"))
+
+    assert prepared.returncode == 0, prepared.stderr
+    assert after == before
+    assert payload["exclusions"] == bare_exclusions
+    assert payload["scheduled_ingestion"]["timezone"] == "Asia/Singapore"
+
+
+def test_atomic_prepare_rejects_fchown_failure_before_replace(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "scheduled_ingestion_policy_test_module"
+    specification = spec_from_file_location(module_name, _POLICY_HELPER)
+    assert specification is not None and specification.loader is not None
+    module = module_from_spec(specification)
+    sys.modules[module_name] = module
+    specification.loader.exec_module(module)
+    source_path = tmp_path / "ingestion-config.json"
+    source_path.write_text('{"scheduled_ingestion": {}}\n', encoding="utf-8")
+    before = source_path.read_text(encoding="utf-8")
+
+    def refuse_fchown(*_args: object) -> None:
+        raise OSError("permission denied")
+
+    monkeypatch.setattr(module.os, "fchown", refuse_fchown, raising=False)
+    with pytest.raises(module.PolicyError, match="atomically prepare"):
+        module._atomic_replace(source_path, {"scheduled_ingestion": {"enabled": False}})
+
+    assert source_path.read_text(encoding="utf-8") == before
 
 
 def test_policy_prepare_refuses_tracked_effective_config_before_write(tmp_path: Path) -> None:

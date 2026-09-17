@@ -149,11 +149,13 @@ def test_successful_resume_removes_marker(tmp_path: Path) -> None:
 
 def test_resume_requires_an_existing_safe_pause_marker(tmp_path: Path) -> None:
     result = _run_control(tmp_path, "resume")
+    docker_log = tmp_path / "docker.log"
 
     assert result.returncode != 0
-    assert "up -d --no-deps lifecycle-worker" not in (
-        tmp_path / "docker.log"
-    ).read_text(encoding="utf-8")
+    assert not docker_log.exists() or (
+        "up -d --no-deps lifecycle-worker"
+        not in docker_log.read_text(encoding="utf-8")
+    )
 
 
 def test_schedule_enabled_resume_denial_preserves_marker(tmp_path: Path) -> None:

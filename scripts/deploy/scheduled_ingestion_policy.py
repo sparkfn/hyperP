@@ -37,6 +37,16 @@ _CEILINGS: Final[dict[str, tuple[float, int, int]]] = {
     "lifecycle-worker": (0.5, 1024**3, 900),
     "beat": (0.25, 256 * 1024**2, 900),
 }
+_NESTED_CONFIG_SECTIONS: Final[frozenset[str]] = frozenset(
+    {
+        "exclusions",
+        "llm",
+        "bitrix_openlines",
+        "scheduled_ingestion",
+        "crm_tenant_mapping_authorization",
+        "stage_history_ingestion",
+    }
+)
 
 
 class PolicyError(RuntimeError):
@@ -54,6 +64,7 @@ class EffectiveConfig:
     cutoff: str
     reserve_seconds: int
     needs_migration: bool
+    legacy_bare_exclusions: bool
     payload: dict[str, object]
 
 
@@ -191,6 +202,10 @@ def _policy(
     return enabled, timezone, opening, cutoff, reserve, bool(missing)
 
 
+def _is_legacy_bare_exclusions(payload: dict[str, object]) -> bool:
+    return not _NESTED_CONFIG_SECTIONS.intersection(payload)
+
+
 def resolve_effective_config(
     document: dict[str, object],
     directory: Path,
@@ -224,6 +239,7 @@ def resolve_effective_config(
     if path.is_symlink() or not path.is_file():
         raise PolicyError("INGESTION_CONFIG_FILE must be a regular file")
     payload = _read_json(path)
+    legacy_bare_exclusions = _is_legacy_bare_exclusions(payload)
     enabled, timezone, opening, cutoff, reserve, needs_migration = _policy(
         payload,
         require_explicit=require_explicit,
@@ -235,7 +251,8 @@ def resolve_effective_config(
         opening,
         cutoff,
         reserve,
-        needs_migration,
+        needs_migration or legacy_bare_exclusions,
+        legacy_bare_exclusions,
         payload,
     )
 
@@ -393,7 +410,8 @@ def _assert_config_is_untracked(config_path: Path, repository_root: Path) -> Non
 
 
 def _atomic_replace(path: Path, payload: dict[str, object]) -> None:
-    mode = stat.S_IMODE(path.stat().st_mode)
+    source_metadata = path.stat()
+    mode = stat.S_IMODE(source_metadata.st_mode)
     temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
     serialized = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
     descriptor = -1
@@ -403,13 +421,24 @@ def _atomic_replace(path: Path, payload: dict[str, object]) -> None:
             os.O_WRONLY | os.O_CREAT | os.O_EXCL,
             mode,
         )
-        os.fchmod(descriptor, mode)
         remaining = memoryview(serialized)
         while remaining:
             written = os.write(descriptor, remaining)
             if written <= 0:
                 raise OSError("short write while preparing effective ingestion config")
             remaining = remaining[written:]
+        os.fsync(descriptor)
+        if not hasattr(os, "fchown"):
+            raise OSError("fchown is unavailable for ownership preservation")
+        os.fchown(descriptor, source_metadata.st_uid, source_metadata.st_gid)
+        os.fchmod(descriptor, mode)
+        temporary_metadata = os.fstat(descriptor)
+        if (
+            temporary_metadata.st_uid != source_metadata.st_uid
+            or temporary_metadata.st_gid != source_metadata.st_gid
+            or stat.S_IMODE(temporary_metadata.st_mode) != mode
+        ):
+            raise OSError("temporary config metadata did not match source metadata")
         os.fsync(descriptor)
         os.close(descriptor)
         descriptor = -1
@@ -432,10 +461,14 @@ def _prepare(config: EffectiveConfig, repository_root: Path) -> EffectiveConfig:
         return EffectiveConfig(
             config.path,
             *strict_policy,
+            False,
             config.payload,
         )
     _assert_config_is_untracked(config.path, repository_root)
-    payload = dict(config.payload)
+    if config.legacy_bare_exclusions:
+        payload = {"exclusions": dict(config.payload)}
+    else:
+        payload = dict(config.payload)
     scheduled = dict(
         _mapping(payload.get("scheduled_ingestion", {}), "scheduled_ingestion is invalid")
     )
@@ -457,6 +490,7 @@ def _prepare(config: EffectiveConfig, repository_root: Path) -> EffectiveConfig:
         opening,
         cutoff,
         reserve,
+        False,
         False,
         persisted,
     )
