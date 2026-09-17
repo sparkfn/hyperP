@@ -197,6 +197,13 @@ config values, overwrites `enabled`, manual/stronger pauses, or unrelated fields
 writes a Git-tracked effective config. The approved policy is `Asia/Singapore`,
 opening `09:00`, cutoff `23:00`, and a `900`-second drain reserve.
 
+For a legacy bare-exclusions file with no recognized nested configuration section,
+preparation first moves the complete legacy object under `exclusions` before adding
+the scheduling section. This preserves the same effective exclusions seen by the
+ingestion loader. Atomic replacement also preserves and verifies source UID, GID,
+and restrictive mode before replacement; unavailable ownership preservation fails
+without replacing the source file.
+
 When scheduling is enabled, deployment admits an unpaused worker start/recreation
 only in `[09:00, 22:45)` Asia/Singapore. It checks before image builds/config migration
 and immediately before container mutation, so an image build crossing the boundary
