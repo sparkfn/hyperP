@@ -27,7 +27,7 @@ def _run_at(
     descriptor = FixtureDescriptor({0: unit(0, (("identity-1", "v1"),), terminal=True)})
     control = MemoryControl()
     runner = BoundedIngestionRunner(
-        BoundedIngestionBudget(max_unit_seconds=60, drain_reserve_seconds=120),
+        BoundedIngestionBudget(max_unit_seconds=60, drain_reserve_seconds=155),
         FakeClock(now),
         FakeShutdown(),
     )
@@ -80,7 +80,7 @@ def test_next_weekly_opening_resumes_the_same_unfinished_checkpoint_window() -> 
     descriptor = FixtureDescriptor({0: unit(0, (("identity-1", "v1"),), terminal=True)})
     control = MemoryControl()
     runner = BoundedIngestionRunner(
-        BoundedIngestionBudget(max_unit_seconds=60, drain_reserve_seconds=120),
+        BoundedIngestionBudget(max_unit_seconds=60, drain_reserve_seconds=155),
         FakeClock(next_occurrence.starts_at),
         FakeShutdown(),
     )

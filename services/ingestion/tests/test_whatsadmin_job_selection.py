@@ -158,6 +158,7 @@ def test_celery_task_forwards_entity_key(monkeypatch: MonkeyPatch) -> None:
     from src import tasks
 
     calls: list[tuple[str, str, str | None, str | None, bool]] = []
+    monkeypatch.setattr(tasks, "active_reset_generation", lambda _environment: None)
     monkeypatch.setattr(tasks, "setup_logging", lambda _level: None)
     monkeypatch.setattr(tasks, "get_settings", TaskSettings)
     monkeypatch.setattr(tasks, "initialize_ingestion_graph", lambda: None)

@@ -40,8 +40,9 @@ class BoundedIngestionBudget:
             raise ValueError("bounded-ingestion durations must be positive and finite")
         if self.max_graph_transaction_seconds > self.max_unit_seconds:
             raise ValueError("graph timeout cannot exceed maximum unit duration")
-        if self.drain_reserve_seconds <= self.max_unit_seconds:
-            raise ValueError("drain reserve must exceed maximum unit duration")
+        minimum_lifecycle = self.max_unit_seconds + (3 * self.max_graph_transaction_seconds)
+        if self.drain_reserve_seconds < minimum_lifecycle:
+            raise ValueError("drain reserve must cover source and graph transitions")
 
     def permits(self, used: Usage, requested: Usage) -> bool:
         projected = used.add(requested)

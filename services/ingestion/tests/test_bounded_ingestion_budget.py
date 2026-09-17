@@ -30,7 +30,7 @@ def test_budget_pause_never_creates_a_connector_or_terminal_watermark() -> None:
         max_bytes=1_000,
         max_extraction_calls=1,
         max_unit_seconds=60,
-        drain_reserve_seconds=120,
+        drain_reserve_seconds=155,
     )
     descriptor = FixtureDescriptor({0: unit(0, (("identity-1", "v1"),), terminal=True)})
     control = MemoryControl()
@@ -57,7 +57,7 @@ def test_budget_pause_never_creates_a_connector_or_terminal_watermark() -> None:
 
 def test_atomic_usage_reservation_loss_pauses_without_fetch_or_completion() -> None:
     now = datetime(2026, 9, 17, 1, tzinfo=UTC)
-    budget = BoundedIngestionBudget(max_unit_seconds=60, drain_reserve_seconds=120)
+    budget = BoundedIngestionBudget(max_unit_seconds=60, drain_reserve_seconds=155)
     descriptor = FixtureDescriptor({0: unit(0, (("identity-1", "v1"),), terminal=True)})
     control = MemoryControl(reserve_allowed=False)
 
@@ -76,7 +76,7 @@ def test_terminal_page_with_durable_retry_obligation_cannot_finalize_or_advance_
     obligation = RetryObligation("page-0", "identity-1", "v1", "writer", 1, retry_at)
     descriptor = FixtureDescriptor({0: unit(0, (("identity-1", "v1"),), terminal=True)})
     control = MemoryControl(retry_by_replay={"page-0": (obligation,)})
-    budget = BoundedIngestionBudget(max_unit_seconds=60, drain_reserve_seconds=120)
+    budget = BoundedIngestionBudget(max_unit_seconds=60, drain_reserve_seconds=155)
 
     result = _runner(now, budget).run_one(descriptor, context(), control)
 
@@ -94,6 +94,11 @@ def test_budget_policy_rejects_nonfinite_or_underreserved_drain_settings() -> No
         {"max_unit_seconds": 0.0, "drain_reserve_seconds": 1.0},
         {"max_unit_seconds": float("inf"), "drain_reserve_seconds": 200.0},
         {"max_unit_seconds": 120.0, "drain_reserve_seconds": 120.0},
+        {
+            "max_unit_seconds": 60.0,
+            "max_graph_transaction_seconds": 10.0,
+            "drain_reserve_seconds": 89.0,
+        },
         {"max_graph_writers": 0, "max_unit_seconds": 60.0, "drain_reserve_seconds": 120.0},
     )
 

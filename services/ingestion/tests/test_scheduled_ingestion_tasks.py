@@ -168,6 +168,8 @@ def test_completed_chain_step_returns_without_running_ingestion(
 ) -> None:
     from src import tasks
 
+    monkeypatch.setattr(tasks, "active_reset_generation", lambda _environment: None)
+
     monkeypatch.setattr(tasks, "_scheduled_step_completed", lambda _key: True)
 
     result = tasks.run_ingestion_task.run(
@@ -185,6 +187,8 @@ def test_non_clean_chain_step_stops_without_marking_or_queuing_lifecycle(
     monkeypatch: MonkeyPatch,
 ) -> None:
     from src import tasks
+
+    monkeypatch.setattr(tasks, "active_reset_generation", lambda _environment: None)
 
     marked: list[str] = []
     lifecycle_calls: list[dict[str, object]] = []
@@ -224,6 +228,8 @@ def test_manual_full_chain_step_forwards_disabled_incremental_policy(
     monkeypatch: MonkeyPatch,
 ) -> None:
     from src import tasks
+
+    monkeypatch.setattr(tasks, "active_reset_generation", lambda _environment: None)
 
     incremental_values: list[bool] = []
     marked: list[str] = []

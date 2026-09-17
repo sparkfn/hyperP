@@ -18,7 +18,7 @@ from src.bounded_ingestion_runner import BoundedIngestionRunner
 
 def _runner(now: datetime) -> BoundedIngestionRunner:
     return BoundedIngestionRunner(
-        BoundedIngestionBudget(max_unit_seconds=60, drain_reserve_seconds=120),
+        BoundedIngestionBudget(max_unit_seconds=60, drain_reserve_seconds=155),
         FakeClock(now),
         shutdown=FakeClockShutdown(),
     )

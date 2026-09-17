@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 
 import pytest
 import src.bounded_ingestion_task_runtime as task_runtime
@@ -17,7 +17,12 @@ from _bounded_ingestion_fixture import (
 )
 from src.bounded_ingestion_budget import BoundedIngestionBudget
 from src.bounded_ingestion_dispatch import dispatch_one
-from src.bounded_ingestion_models import AttemptContext, OccurrenceContext, RunScope
+from src.bounded_ingestion_models import (
+    AttemptContext,
+    OccurrenceContext,
+    RunScope,
+    SourceBackoffError,
+)
 from src.connectors.registry import BoundedConnectorRegistry
 from src.resumable import CheckpointDescriptor
 
@@ -59,6 +64,50 @@ class _AdmissionControl(MemoryControl):
         return context() if self.admitted else None
 
 
+class _RetryAwareAdmissionControl(MemoryControl):
+    """Persist only the retry not-before needed to model a scheduled rebind."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.next_eligible_at: datetime | None = None
+        self.admission_occurrences: list[datetime] = []
+
+    def admit_or_resume(
+        self,
+        *,
+        scope: RunScope,
+        occurrence: OccurrenceContext,
+        initial_checkpoint: CheckpointDescriptor,
+        worker_task_id: str,
+        now: datetime,
+        lease_token: str | None = None,
+        lease_seconds: float = 300.0,
+        max_graph_writers: int = 1,
+    ) -> AttemptContext | None:
+        _ = (
+            scope,
+            initial_checkpoint,
+            worker_task_id,
+            now,
+            lease_token,
+            lease_seconds,
+            max_graph_writers,
+        )
+        self.admission_occurrences.append(occurrence.starts_at)
+        if self.next_eligible_at is not None and occurrence.starts_at < self.next_eligible_at:
+            return None
+        return context(occurrence_context=occurrence)
+
+    def pause(
+        self,
+        attempt: AttemptContext,
+        reason: str,
+        next_eligible_at: datetime,
+    ) -> bool:
+        self.next_eligible_at = next_eligible_at
+        return super().pause(attempt, reason, next_eligible_at)
+
+
 def _registry(descriptor: FixtureDescriptor) -> BoundedConnectorRegistry:
     registry = BoundedConnectorRegistry()
     registry.register(descriptor)
@@ -75,7 +124,7 @@ def test_stale_or_manual_admission_rejection_happens_before_source_factory_or_fe
         scope=scope(),
         occurrence=occurrence(),
         worker_task_id="task-1",
-        budget=BoundedIngestionBudget(max_unit_seconds=60, drain_reserve_seconds=120),
+        budget=BoundedIngestionBudget(max_unit_seconds=60, drain_reserve_seconds=155),
         clock=lambda: datetime(2026, 9, 17, 1, tzinfo=UTC),
     )
 
@@ -110,7 +159,7 @@ def test_descriptor_compatibility_mismatch_blocks_before_admission_and_side_effe
         scope=run_scope,
         occurrence=occurrence(),
         worker_task_id="task-1",
-        budget=BoundedIngestionBudget(max_unit_seconds=60, drain_reserve_seconds=120),
+        budget=BoundedIngestionBudget(max_unit_seconds=60, drain_reserve_seconds=155),
         clock=lambda: datetime(2026, 9, 17, 1, tzinfo=UTC),
     )
 
@@ -194,3 +243,105 @@ def test_task_scope_rejects_wrong_environment_before_connector_creation(
         )
 
     assert descriptor.create_calls == 0
+
+
+def test_dispatch_rejects_descriptor_lifecycle_larger_than_drain_reserve() -> None:
+    descriptor = FixtureDescriptor({0: unit(0, (("identity-1", "v1"),), terminal=True)})
+    control = _AdmissionControl(admitted=True)
+    insufficient = BoundedIngestionBudget(
+        max_unit_seconds=60,
+        max_graph_transaction_seconds=10,
+        drain_reserve_seconds=94,
+    )
+
+    result = dispatch_one(
+        registry=_registry(descriptor),
+        control=control,
+        scope=scope(),
+        occurrence=occurrence(),
+        worker_task_id="task-1",
+        budget=insufficient,
+        clock=lambda: datetime(2026, 9, 17, 1, tzinfo=UTC),
+    )
+
+    assert result.status == "blocked"
+    assert result.safe_message == "descriptor_lifecycle_exceeds_drain_reserve"
+    assert control.admissions == 0
+    assert descriptor.initial_checkpoint_calls == 0
+    assert descriptor.create_calls == 0
+
+
+def test_dispatch_accepts_exact_source_close_and_three_graph_transition_reserve() -> None:
+    descriptor = FixtureDescriptor({0: unit(0, (("identity-1", "v1"),), terminal=True)})
+    control = _AdmissionControl(admitted=True)
+    exact = BoundedIngestionBudget(
+        max_unit_seconds=60,
+        max_graph_transaction_seconds=10,
+        drain_reserve_seconds=95,
+    )
+
+    result = dispatch_one(
+        registry=_registry(descriptor),
+        control=control,
+        scope=scope(),
+        occurrence=occurrence(),
+        worker_task_id="task-1",
+        budget=exact,
+        clock=lambda: datetime(2026, 9, 17, 1, tzinfo=UTC),
+    )
+
+    assert result.status == "completed"
+    assert control.admissions == 1
+    assert descriptor.initial_checkpoint_calls == 1
+    assert descriptor.create_calls == 1
+
+
+def test_later_source_retry_blocks_intervening_weekly_rebinds_before_source_calls() -> None:
+    first = occurrence()
+    retry_at = first.next_eligible_at + timedelta(days=10)
+    descriptor = FixtureDescriptor(
+        {0: unit(0, (("identity-1", "v1"),))},
+        fetch_failure=SourceBackoffError(retry_at),
+    )
+    control = _RetryAwareAdmissionControl()
+    budget = BoundedIngestionBudget(max_unit_seconds=60, drain_reserve_seconds=155)
+
+    def clock() -> datetime:
+        return first.starts_at
+
+    initial = dispatch_one(
+        registry=_registry(descriptor),
+        control=control,
+        scope=scope(),
+        occurrence=first,
+        worker_task_id="first",
+        budget=budget,
+        clock=clock,
+    )
+
+    assert initial.status == "paused_with_checkpoint"
+    assert control.next_eligible_at == first.next_eligible_at + timedelta(days=14)
+    assert descriptor.fetch_calls == 1
+
+    for number, starts_at in enumerate(
+        (first.next_eligible_at, first.next_eligible_at + timedelta(days=7)),
+        start=1,
+    ):
+        blocked = dispatch_one(
+            registry=_registry(descriptor),
+            control=control,
+            scope=scope(),
+            occurrence=occurrence(starts_at=starts_at),
+            worker_task_id=f"intervening-{number}",
+            budget=budget,
+            clock=lambda starts_at=starts_at: starts_at,
+        )
+        assert blocked.status == "blocked"
+        assert blocked.safe_message == "bounded attempt was not admitted"
+
+    assert control.admission_occurrences == [
+        first.starts_at,
+        first.next_eligible_at,
+        first.next_eligible_at + timedelta(days=7),
+    ]
+    assert descriptor.fetch_calls == 1

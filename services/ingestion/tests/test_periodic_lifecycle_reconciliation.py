@@ -513,6 +513,7 @@ def test_successful_ingestion_queues_lifecycle_reconciliation(
     from src import tasks
 
     calls: list[str] = []
+    monkeypatch.setattr(tasks, "active_reset_generation", lambda _environment: None)
     monkeypatch.setattr(
         tasks,
         "get_settings",

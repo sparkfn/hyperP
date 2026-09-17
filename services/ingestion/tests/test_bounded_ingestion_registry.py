@@ -97,17 +97,25 @@ def test_scheduled_task_without_complete_bounded_context_rejects_before_runtime_
 
 
 def test_bitrix_fence_contract_retains_all_attempt_and_stream_identity_dimensions() -> None:
-    for fragment in (
+    identity_match = (
         "source_key: $source_key",
         "control_instance_id: $control_instance_id",
         "stream_key: $stream_key",
-        "logical_run_id: $logical_run_id",
-        "ingest_run_id: $ingest_run_id",
-        "attempt_generation: $attempt_generation",
-        "stream_generation: $stream_generation",
-        "fencing_token: $fencing_token",
-    ):
+    )
+    active_attempt_fence = (
+        "stream.logical_run_id = $logical_run_id",
+        "stream.ingest_run_id = $ingest_run_id",
+        "stream.attempt_generation = $attempt_generation",
+        "stream.stream_generation = $stream_generation",
+        "stream.fencing_token = $fencing_token",
+        "stream.status = 'active'",
+    )
+
+    for fragment in (*identity_match, *active_attempt_fence):
         assert fragment in LOCK_AND_ASSERT_ACTIVE_BITRIX_FENCE
+    assert LOCK_AND_ASSERT_ACTIVE_BITRIX_FENCE.index("SET stream.fence_lock_version") < (
+        LOCK_AND_ASSERT_ACTIVE_BITRIX_FENCE.index("WHERE stream.logical_run_id")
+    )
 
 
 def test_generationless_legacy_task_rejects_before_initialization_after_reset(

@@ -47,8 +47,6 @@ def dispatch_one(
     shutdown: ShutdownSignal | None = None,
 ) -> BoundedRunResult:
     drain_seconds = (occurrence.cutoff_at - occurrence.drain_starts_at).total_seconds()
-    if drain_seconds < budget.drain_reserve_seconds:
-        return _compatibility_block("occurrence_drain_reserve_too_small")
     try:
         descriptor = registry.require(scope.source_key, scope.mode)
     except LookupError as exc:
@@ -58,6 +56,15 @@ def dispatch_one(
             failure_category="capability",
             safe_message=str(exc),
         )
+    lifecycle_seconds = (
+        budget.max_unit_seconds
+        + descriptor.max_close_seconds
+        + (3 * budget.max_graph_transaction_seconds)
+    )
+    if drain_seconds < budget.drain_reserve_seconds:
+        return _compatibility_block("occurrence_drain_reserve_too_small")
+    if budget.drain_reserve_seconds < lifecycle_seconds:
+        return _compatibility_block("descriptor_lifecycle_exceeds_drain_reserve")
     if descriptor.connector_version != scope.connector_version:
         return _compatibility_block("connector_version_mismatch")
     if descriptor.checkpoint_schema_version != scope.checkpoint_schema_version:

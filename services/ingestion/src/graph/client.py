@@ -29,10 +29,25 @@ class Neo4jClient:
     - Clean shutdown
     """
 
-    def __init__(self, settings: Settings) -> None:
+    def __init__(
+        self,
+        settings: Settings,
+        *,
+        bounded_timeout_seconds: float | None = None,
+    ) -> None:
+        driver_options: dict[str, float] = {}
+        if bounded_timeout_seconds is not None:
+            if bounded_timeout_seconds <= 0:
+                raise ValueError("bounded timeout must be positive")
+            driver_options = {
+                "connection_timeout": bounded_timeout_seconds,
+                "connection_acquisition_timeout": bounded_timeout_seconds,
+                "max_transaction_retry_time": bounded_timeout_seconds,
+            }
         self._driver: Driver = GraphDatabase.driver(
             settings.neo4j_uri,
             auth=(settings.neo4j_user, settings.neo4j_password),
+            **driver_options,
         )
 
     # -- session management ---------------------------------------------------

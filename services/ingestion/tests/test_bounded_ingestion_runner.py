@@ -9,6 +9,7 @@ from _bounded_ingestion_fixture import (
     FakeClock,
     FakeShutdown,
     FixtureDescriptor,
+    InFlightFixtureDescriptor,
     MemoryControl,
     checkpoint,
     context,
@@ -24,7 +25,7 @@ from src.resumable import IngestionUnit
 
 def _runner(clock: FakeClock, shutdown: FakeShutdown | None = None) -> BoundedIngestionRunner:
     return BoundedIngestionRunner(
-        BoundedIngestionBudget(max_unit_seconds=60, drain_reserve_seconds=120),
+        BoundedIngestionBudget(max_unit_seconds=60, drain_reserve_seconds=155),
         clock,
         shutdown or FakeShutdown(),
     )
@@ -129,6 +130,23 @@ def test_source_backoff_at_or_after_drain_waits_for_the_next_weekly_occurrence()
     assert control.terminal_watermark is False
 
 
+def test_source_backoff_beyond_next_weekly_opening_selects_the_later_occurrence() -> None:
+    scheduled = occurrence()
+    retry_at = scheduled.next_eligible_at + timedelta(days=10)
+    descriptor = FixtureDescriptor(
+        {0: unit(0, (("identity-1", "v1"),))},
+        fetch_failure=SourceBackoffError(retry_at),
+    )
+    control = MemoryControl()
+
+    result = _runner(FakeClock(scheduled.starts_at)).run_one(descriptor, context(), control)
+
+    assert result.status == "paused_with_checkpoint"
+    assert result.pause_reason == "source_backoff"
+    assert control.pauses == [("source_backoff", scheduled.next_eligible_at + timedelta(days=14))]
+    assert descriptor.fetch_calls == 1
+
+
 @pytest.mark.parametrize(
     ("usage", "expected_message"),
     [
@@ -228,8 +246,9 @@ def test_connector_receives_executable_deadline_and_cancellation_signal() -> Non
     result = _runner(FakeClock(now), shutdown).run_one(descriptor, context(), control)
 
     assert result.status == "completed"
-    assert descriptor.seen_deadline == now + timedelta(seconds=65)
-    assert descriptor.seen_cancellation is shutdown
+    assert descriptor.seen_deadline == now + timedelta(seconds=60)
+    assert descriptor.seen_cancellation is not None
+    assert descriptor.seen_cancellation is not shutdown
 
 
 def test_reservation_elapsed_time_rebases_connector_lifecycle_deadline() -> None:
@@ -246,10 +265,10 @@ def test_reservation_elapsed_time_rebases_connector_lifecycle_deadline() -> None
 
     assert result.status == "completed"
     assert descriptor.create_calls == 1
-    assert descriptor.seen_deadline == now + timedelta(seconds=72)
+    assert descriptor.seen_deadline == now + timedelta(seconds=67)
 
 
-def test_unscheduled_lifecycle_overrun_cancels_and_fails_without_commit() -> None:
+def test_unscheduled_lifecycle_overrun_fails_without_commit() -> None:
     now = datetime(2026, 9, 17, 1, tzinfo=UTC)
     clock = FakeClock(now)
 
@@ -271,7 +290,7 @@ def test_unscheduled_lifecycle_overrun_cancels_and_fails_without_commit() -> Non
     assert control.writer_invocations == 0
 
 
-def test_insufficient_close_reserve_cancels_and_never_commits() -> None:
+def test_lifecycle_overrun_after_fetch_never_commits() -> None:
     now = datetime(2026, 9, 17, 1, tzinfo=UTC)
     clock = FakeClock(now)
 
@@ -288,6 +307,182 @@ def test_insufficient_close_reserve_cancels_and_never_commits() -> None:
 
     assert result.status == "failed"
     assert result.failure_category == "overrun"
+    assert descriptor.cancel_calls == 0
+    assert descriptor.close_calls == 1
+    assert control.writer_invocations == 0
+
+
+class _FetchStartedDeadlineClock(FakeClock):
+    def __init__(self, now: datetime, descriptor: InFlightFixtureDescriptor) -> None:
+        super().__init__(now)
+        self._descriptor = descriptor
+
+    def __call__(self) -> datetime:
+        if self._descriptor.fetch_started.is_set():
+            return self.now + timedelta(seconds=60)
+        return self.now
+
+
+def test_in_flight_fetch_waits_for_deadline_signal_then_supervisor_cancels_without_writer() -> None:
+    now = datetime(2026, 9, 17, 1, tzinfo=UTC)
+    descriptor = InFlightFixtureDescriptor(
+        {0: unit(0, (("identity-1", "v1"),), terminal=True)},
+        cooperate_with_cancellation=True,
+    )
+    control = MemoryControl()
+
+    result = _runner(_FetchStartedDeadlineClock(now, descriptor)).run_one(
+        descriptor,
+        context(),
+        control,
+    )
+
+    assert result.status == "failed"
+    assert result.failure_category == "overrun"
+    assert descriptor.fetch_started.is_set()
+    assert descriptor.cancel_started.is_set()
+    assert descriptor.fetch_finished.is_set()
+    assert descriptor.cancel_while_fetch_in_flight is True
+    assert descriptor.deadline_cancellation_observed is True
+    assert descriptor.fetch_thread_id != descriptor.cancel_thread_id
+    assert descriptor.close_finished.is_set()
+    assert control.writer_invocations == 0
+
+
+def test_non_cooperative_fetch_exceeding_close_bound_fails_cleanup_without_writer() -> None:
+    now = datetime(2026, 9, 17, 1, tzinfo=UTC)
+    descriptor = InFlightFixtureDescriptor(
+        {0: unit(0, (("identity-1", "v1"),), terminal=True)},
+        cooperate_with_cancellation=False,
+    )
+    control = MemoryControl()
+    clock = _FetchStartedDeadlineClock(now, descriptor)
+
+    try:
+        result = _runner(clock).run_one(descriptor, context(), control)
+    finally:
+        descriptor.fetch_release.set()
+
+    assert descriptor.close_finished.wait(timeout=1.0)
+    assert result.status == "failed"
+    assert result.failure_category == "source"
+    assert result.safe_message == "connector_cleanup_failed"
     assert descriptor.cancel_calls == 1
     assert descriptor.close_calls == 1
     assert control.writer_invocations == 0
+
+
+def test_non_cooperative_close_exceeding_close_bound_fails_cleanup_without_writer() -> None:
+    now = datetime(2026, 9, 17, 1, tzinfo=UTC)
+    descriptor = InFlightFixtureDescriptor(
+        {0: unit(0, (("identity-1", "v1"),), terminal=True)},
+        cooperate_with_cancellation=True,
+        block_close=True,
+    )
+    control = MemoryControl()
+    clock = _FetchStartedDeadlineClock(now, descriptor)
+
+    try:
+        result = _runner(clock).run_one(descriptor, context(), control)
+    finally:
+        descriptor.close_release.set()
+
+    assert descriptor.close_finished.wait(timeout=1.0)
+    assert result.status == "failed"
+    assert result.failure_category == "source"
+    assert result.safe_message == "connector_cleanup_failed"
+    assert descriptor.cancel_calls == 1
+    assert descriptor.close_started.is_set()
+    assert control.writer_invocations == 0
+
+
+class _ShutdownAfterFetchStartsClock(FakeClock):
+    def __init__(
+        self,
+        now: datetime,
+        descriptor: InFlightFixtureDescriptor,
+        shutdown: FakeShutdown,
+    ) -> None:
+        super().__init__(now)
+        self._descriptor = descriptor
+        self._shutdown = shutdown
+
+    def __call__(self) -> datetime:
+        if self._descriptor.fetch_started.is_set():
+            self._shutdown.is_requested = True
+        return self.now
+
+
+def test_shutdown_during_in_flight_fetch_cleans_up_and_persists_shutdown_pause() -> None:
+    now = datetime(2026, 9, 17, 1, tzinfo=UTC)
+    shutdown = FakeShutdown()
+    descriptor = InFlightFixtureDescriptor(
+        {0: unit(0, (("identity-1", "v1"),), terminal=True)},
+        cooperate_with_cancellation=True,
+    )
+    control = MemoryControl()
+    clock = _ShutdownAfterFetchStartsClock(now, descriptor, shutdown)
+
+    result = _runner(clock, shutdown).run_one(descriptor, context(), control)
+
+    assert result.status == "paused_with_checkpoint"
+    assert result.pause_reason == "shutdown"
+    assert descriptor.cancel_calls == 1
+    assert descriptor.close_finished.is_set()
+    assert control.pauses == [("shutdown", now)]
+    assert control.failures == []
+    assert control.writer_invocations == 0
+
+
+def test_source_lifecycle_leaves_two_graph_budgets_before_slow_commit_and_finalize() -> None:
+    scheduled = occurrence()
+    clock = FakeClock(scheduled.starts_at)
+
+    def finish_source() -> None:
+        clock.now = scheduled.cutoff_at - timedelta(seconds=61)
+
+    def spend_graph_budget() -> None:
+        clock.now += timedelta(seconds=30)
+
+    descriptor = FixtureDescriptor(
+        {0: unit(0, (("identity-1", "v1"),), terminal=True)},
+        on_close=finish_source,
+    )
+    control = MemoryControl(on_commit=spend_graph_budget, on_finalize=spend_graph_budget)
+
+    result = _runner(clock).run_one(
+        descriptor,
+        context(occurrence_context=scheduled),
+        control,
+    )
+
+    assert result.status == "completed"
+    assert control.writer_invocations == 1
+    assert control.finalized == 1
+    assert clock.now == scheduled.cutoff_at - timedelta(seconds=1)
+
+
+def test_slow_graph_transitions_never_start_when_two_budgets_do_not_remain() -> None:
+    scheduled = occurrence()
+    clock = FakeClock(scheduled.starts_at)
+
+    def leave_insufficient_graph_budget() -> None:
+        clock.now = scheduled.cutoff_at - timedelta(seconds=60)
+
+    descriptor = FixtureDescriptor(
+        {0: unit(0, (("identity-1", "v1"),), terminal=True)},
+        on_close=leave_insufficient_graph_budget,
+    )
+    control = MemoryControl()
+
+    result = _runner(clock).run_one(
+        descriptor,
+        context(occurrence_context=scheduled),
+        control,
+    )
+
+    assert result.status == "failed"
+    assert result.failure_category == "overrun"
+    assert result.safe_message == "graph_transition_deadline_exceeded"
+    assert control.writer_invocations == 0
+    assert control.finalized == 0

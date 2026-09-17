@@ -338,7 +338,9 @@ def test_admission_failure_fails_the_claimed_attempt(monkeypatch: MonkeyPatch) -
     assert _LogicalControl.failed == ["stream_admission_failed"]
 
 
-def test_split_task_requires_stable_idempotency_key() -> None:
+def test_split_task_requires_stable_idempotency_key(monkeypatch: MonkeyPatch) -> None:
+    monkeypatch.setattr(tasks, "active_reset_generation", lambda _environment: None)
+
     with pytest.raises(ValueError, match="stable idempotency_key"):
         tasks.run_ingestion_task.run(
             "bitrix_chat",

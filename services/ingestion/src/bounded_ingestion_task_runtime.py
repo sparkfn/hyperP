@@ -13,6 +13,7 @@ from typing import TypedDict
 
 from pydantic.types import JsonValue
 
+from src.bounded_ingestion_budget import BoundedIngestionBudget
 from src.bounded_ingestion_dispatch import dispatch_one
 from src.bounded_ingestion_models import (
     BoundedMode,
@@ -59,6 +60,22 @@ def clear_bounded_shutdown_for_test() -> None:
 class WorkerShutdownSignal:
     def requested(self) -> bool:
         return _shutdown_requested.is_set()
+
+
+def _bounded_runtime_control(
+    budget: BoundedIngestionBudget,
+) -> tuple[Neo4jClient, BoundedIngestionControl]:
+    graph_transition_seconds = budget.max_graph_transaction_seconds
+    driver_timeout_seconds = graph_transition_seconds / 2
+    transaction_timeout_seconds = graph_transition_seconds - driver_timeout_seconds
+    client = Neo4jClient(
+        get_settings(),
+        bounded_timeout_seconds=driver_timeout_seconds,
+    )
+    return client, BoundedIngestionControl(
+        client,
+        transaction_timeout_seconds=transaction_timeout_seconds,
+    )
 
 
 @contextmanager
@@ -148,7 +165,7 @@ def run_registered_bounded_unit(
     )
     clock = (lambda: now) if now is not None else utc_now
     budget = get_ingestion_config().bounded_ingestion
-    client = Neo4jClient(get_settings())
+    client, control = _bounded_runtime_control(budget)
     try:
         if source_key == "bitrix_chat":
             source_instance_id = effective_source_instance_id(
@@ -160,10 +177,7 @@ def run_registered_bounded_unit(
             )
         result = dispatch_one(
             registry=descriptor_registry,
-            control=BoundedIngestionControl(
-                client,
-                transaction_timeout_seconds=budget.max_graph_transaction_seconds,
-            ),
+            control=control,
             scope=scope,
             occurrence=occurrence,
             worker_task_id=worker_task_id,
@@ -178,12 +192,9 @@ def run_registered_bounded_unit(
 
 def active_reset_generation(environment: str) -> int | None:
     budget = get_ingestion_config().bounded_ingestion
-    client = Neo4jClient(get_settings())
+    client, control = _bounded_runtime_control(budget)
     try:
-        return BoundedIngestionControl(
-            client,
-            transaction_timeout_seconds=budget.max_graph_transaction_seconds,
-        ).active_reset_generation(environment)
+        return control.active_reset_generation(environment)
     finally:
         client.close()
 
@@ -196,12 +207,9 @@ def pause_bounded_run_disabled(
     reset_generation: int,
 ) -> bool:
     budget = get_ingestion_config().bounded_ingestion
-    client = Neo4jClient(get_settings())
+    client, control = _bounded_runtime_control(budget)
     try:
-        return BoundedIngestionControl(
-            client,
-            transaction_timeout_seconds=budget.max_graph_transaction_seconds,
-        ).pause_unclaimed(
+        return control.pause_unclaimed(
             logical_run_id,
             source_key,
             control_instance_id,
@@ -222,13 +230,9 @@ def recover_bounded_logical_run(
     descriptor_registry: BoundedConnectorRegistry = registry,
     now: datetime | None = None,
 ) -> BoundedTaskSummary:
-    client = Neo4jClient(get_settings())
+    budget = get_ingestion_config().bounded_ingestion
+    client, control = _bounded_runtime_control(budget)
     try:
-        budget = get_ingestion_config().bounded_ingestion
-        control = BoundedIngestionControl(
-            client,
-            transaction_timeout_seconds=budget.max_graph_transaction_seconds,
-        )
         recovery = control.recovery_state(
             logical_run_id,
             source_key,

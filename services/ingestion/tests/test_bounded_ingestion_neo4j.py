@@ -3,11 +3,13 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from datetime import timedelta
 from typing import TypeVar, cast
 
-from _bounded_ingestion_fixture import context, unit
+from _bounded_ingestion_fixture import context, occurrence, unit
 from neo4j import ManagedTransaction
 from src.bounded_ingestion_models import AttemptContext, BoundedUnit, UnitApplyResult
+from src.bounded_ingestion_runner import _backoff_eligibility
 from src.graph.bounded_ingestion_control import BoundedIngestionControl
 from src.graph.bounded_ingestion_schema import CREATE_BOUNDED_INGESTION_SCHEMA
 from src.graph.client import Neo4jClient
@@ -134,13 +136,15 @@ def test_control_schema_and_queries_persist_receipts_retries_and_exact_fences() 
 
     for fragment in (
         "logical.active_generation = generation",
-        "bounded_fencing_token: $fencing_token",
         "worker_task_id: $worker_task_id",
         "lease_token: $lease_token",
         "checkpoint.generation = generation",
         "checkpoint.status = 'active'",
     ):
         assert fragment in CLAIM_BOUNDED_ATTEMPT
+
+    assert "ELSE logical.bounded_fencing_token + 1 END AS fencing_token" in CLAIM_BOUNDED_ATTEMPT
+    assert "logical.bounded_fencing_token = fencing_token" in CLAIM_BOUNDED_ATTEMPT
 
     assert "creation_token" in CLAIM_BOUNDED_RECEIPT
     assert "receipt.status IN ['pending', 'retry_pending']" in FINALIZE_BOUNDED_UNIT
@@ -149,6 +153,15 @@ def test_control_schema_and_queries_persist_receipts_retries_and_exact_fences() 
     assert "retry.status = 'pending'" in PERSIST_BOUNDED_RETRY
     assert "coalesce(logical.retry_backlog, 0) = 0" in FINALIZE_BOUNDED_RUN
     assert "reserved_source_requests" in RESERVE_BOUNDED_USAGE
+
+
+def test_later_source_retry_not_before_maps_to_the_first_weekly_opening_after_it() -> None:
+    scheduled = occurrence()
+    source_retry_at = scheduled.next_eligible_at + timedelta(days=1)
+
+    assert _backoff_eligibility(
+        context(occurrence_context=scheduled), source_retry_at
+    ) == scheduled.next_eligible_at + timedelta(days=7)
 
 
 def test_bounded_status_projection_is_redacted_to_allowlisted_progress_fields() -> None:

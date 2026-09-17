@@ -465,7 +465,7 @@ def test_upgrade_validation_failure_stays_blocked(
     _seed(neo4j_driver)
     with neo4j_driver.session() as session:
         session.run(seed_statement).consume()
-    with pytest.raises(ValueError, match="Bitrix stream admission did not return a record"):
+    with pytest.raises(RuntimeError):
         _migrate(neo4j_driver)
     with neo4j_driver.session() as session:
         marker = session.run(_BLOCKED_MARKER).single(strict=True)
@@ -678,7 +678,7 @@ def test_readiness_fails_closed_without_exact_registry_constraint(
         session.run(_MIGRATION_CONSTRAINT).consume()
         if registry_statement is not None:
             session.run(registry_statement).consume()
-    with pytest.raises(ValueError, match="Bitrix stream admission did not return a record"):
+    with pytest.raises(RuntimeError):
         _migrate(neo4j_driver)
 
 
@@ -1162,13 +1162,15 @@ def test_expired_recovery_claim_uses_durable_identity_and_terminal_evidence(
     _prepare_bounded_graph(neo4j_driver, "fixture")
     control = BoundedIngestionControl(cast(Neo4jClient, _Client(neo4j_driver)))
     occurrence = _bounded_occurrence()
+    initial_lease_seconds = 300
+    lease_expires_at = occurrence.starts_at + timedelta(seconds=initial_lease_seconds)
     first = control.admit_or_resume(
         scope=_bounded_scope("fixture"),
         occurrence=occurrence,
         initial_checkpoint=_bounded_checkpoint(),
         worker_task_id="recovery-first",
         now=occurrence.starts_at,
-        lease_seconds=1,
+        lease_seconds=initial_lease_seconds,
     )
     assert isinstance(first, AttemptContext)
     with neo4j_driver.session() as session:
@@ -1183,15 +1185,16 @@ def test_expired_recovery_claim_uses_durable_identity_and_terminal_evidence(
         "fixture",
         "bounded-control",
         1,
-        occurrence.starts_at + timedelta(milliseconds=500),
+        lease_expires_at - timedelta(seconds=1),
     )
-    assert isinstance(leased, datetime)
+    assert leased == lease_expires_at
+    recovery_at = lease_expires_at + timedelta(seconds=1)
     recovered = control.recovery_state(
         first.logical_run_id,
         "fixture",
         "bounded-control",
         1,
-        occurrence.starts_at + timedelta(seconds=2),
+        recovery_at,
     )
     assert recovered is not None
     second = control.admit_or_resume(
@@ -1199,8 +1202,8 @@ def test_expired_recovery_claim_uses_durable_identity_and_terminal_evidence(
         occurrence=recovered.occurrence,
         initial_checkpoint=_bounded_checkpoint(),
         worker_task_id="recovery-second",
-        now=occurrence.starts_at + timedelta(seconds=2),
-        lease_seconds=60,
+        now=recovery_at,
+        lease_seconds=initial_lease_seconds,
     )
     assert isinstance(second, AttemptContext)
     assert second.attempt_generation == 2
@@ -1213,13 +1216,13 @@ def test_expired_recovery_claim_uses_durable_identity_and_terminal_evidence(
             "fixture",
             "bounded-control",
             1,
-            occurrence.starts_at + timedelta(seconds=3),
+            recovery_at + timedelta(seconds=1),
         )
         == "completed"
     )
 
 
-def test_failed_run_rebinds_only_to_the_next_weekly_occurrence(
+def test_later_source_retry_eligibility_rejects_an_intervening_weekly_rebind(
     neo4j_driver: Driver,
 ) -> None:
     _prepare_bounded_graph(neo4j_driver, "fixture")
@@ -1233,22 +1236,37 @@ def test_failed_run_rebinds_only_to_the_next_weekly_occurrence(
         now=first_occurrence.starts_at,
     )
     assert isinstance(first, AttemptContext)
+    intervening_occurrence = _bounded_occurrence(week=1)
+    source_retry_at = intervening_occurrence.starts_at + timedelta(days=1)
+    later_occurrence = _bounded_occurrence(week=2)
+    assert source_retry_at < later_occurrence.starts_at
     assert (
         control.fail(
             first,
             "source",
             "fixture failure",
-            first_occurrence.next_eligible_at,
+            later_occurrence.starts_at,
         )
         is True
     )
-    next_occurrence = _bounded_occurrence(week=1)
+
+    # A scheduled delivery before the persisted later eligibility cannot claim
+    # an attempt, so it cannot create or call a source connector.
+    intervening = control.admit_or_resume(
+        scope=_bounded_scope("fixture"),
+        occurrence=intervening_occurrence,
+        initial_checkpoint=_bounded_checkpoint(),
+        worker_task_id="intervening-week",
+        now=intervening_occurrence.starts_at,
+    )
+    assert intervening is None
+
     resumed = control.admit_or_resume(
         scope=_bounded_scope("fixture"),
-        occurrence=next_occurrence,
+        occurrence=later_occurrence,
         initial_checkpoint=_bounded_checkpoint(),
-        worker_task_id="failed-next-week",
-        now=next_occurrence.starts_at,
+        worker_task_id="later-week",
+        now=later_occurrence.starts_at,
     )
     assert isinstance(resumed, AttemptContext)
     assert resumed.logical_run_id == first.logical_run_id

@@ -143,6 +143,7 @@ WHERE (dispatch IS NULL OR coalesce(dispatch.blocked, false) = false)
   AND $occurrence_id <> logical.occurrence_id
   AND datetime($starts_at) > logical.occurrence_starts_at
   AND datetime($starts_at) >= logical.next_occurrence_at
+  AND datetime($starts_at) >= logical.next_eligible_at
   AND datetime($now) >= datetime($starts_at)
   AND datetime($now) < datetime($drain_starts_at)
   AND (

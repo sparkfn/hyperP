@@ -5,6 +5,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from threading import Event, get_ident
 
 from neo4j import ManagedTransaction
 from pydantic.types import JsonValue
@@ -148,6 +149,89 @@ class FixtureDescriptor:
         return FixtureConnector(self)
 
 
+class InFlightFixtureConnector:
+    """A deterministic connector whose fetch and close can remain in flight."""
+
+    def __init__(self, descriptor: InFlightFixtureDescriptor) -> None:
+        self._descriptor = descriptor
+
+    def validate_checkpoint(self, _checkpoint: CheckpointDescriptor) -> str:
+        return self._descriptor.compatibility
+
+    def fetch_one_unit(
+        self,
+        checkpoint: CheckpointDescriptor,
+        context: AttemptContext,
+    ) -> BoundedUnit:
+        self._descriptor.fetch_calls += 1
+        self._descriptor.fetch_thread_id = get_ident()
+        self._descriptor.fetch_started.set()
+        if self._descriptor.cooperate_with_cancellation:
+            if not self._descriptor.cancel_started.wait(self._descriptor.sync_timeout):
+                raise AssertionError("supervisor did not cancel in-flight fetch")
+            cancellation = context.cancellation
+            self._descriptor.deadline_cancellation_observed = (
+                cancellation is not None and cancellation.requested()
+            )
+        elif not self._descriptor.fetch_release.wait(self._descriptor.sync_timeout):
+            raise AssertionError("test did not release non-cooperative fetch")
+        self._descriptor.fetch_finished.set()
+        page = checkpoint.cursor.get("page")
+        if not isinstance(page, int):
+            raise AssertionError("fixture checkpoint page must be an integer")
+        return self._descriptor.units[page]
+
+    def cancel(self) -> None:
+        self._descriptor.cancel_calls += 1
+        self._descriptor.cancel_thread_id = get_ident()
+        self._descriptor.cancel_while_fetch_in_flight = not self._descriptor.fetch_finished.is_set()
+        self._descriptor.cancel_started.set()
+
+    def close(self) -> None:
+        self._descriptor.close_calls += 1
+        self._descriptor.close_started.set()
+        try:
+            if self._descriptor.block_close and not self._descriptor.close_release.wait(
+                self._descriptor.sync_timeout
+            ):
+                raise AssertionError("test did not release non-cooperative close")
+        finally:
+            self._descriptor.close_finished.set()
+
+
+class InFlightFixtureDescriptor(FixtureDescriptor):
+    """Descriptor exposing event-driven in-flight lifecycle assertions."""
+
+    def __init__(
+        self,
+        units: dict[int, BoundedUnit],
+        *,
+        cooperate_with_cancellation: bool,
+        block_close: bool = False,
+        max_close_seconds: float = 0.01,
+    ) -> None:
+        super().__init__(units)
+        self.cooperate_with_cancellation = cooperate_with_cancellation
+        self.block_close = block_close
+        self.max_close_seconds = max_close_seconds
+        self.sync_timeout = 1.0
+        self.fetch_started = Event()
+        self.fetch_finished = Event()
+        self.fetch_release = Event()
+        self.cancel_started = Event()
+        self.close_started = Event()
+        self.close_release = Event()
+        self.close_finished = Event()
+        self.fetch_thread_id: int | None = None
+        self.cancel_thread_id: int | None = None
+        self.cancel_while_fetch_in_flight = False
+        self.deadline_cancellation_observed = False
+
+    def create(self, _context: AttemptContext) -> InFlightFixtureConnector:
+        self.create_calls += 1
+        return InFlightFixtureConnector(self)
+
+
 @dataclass
 class MemoryControl:
     """A graph-control fake with receipts, output versions, retries, and watermarks."""
@@ -155,6 +239,8 @@ class MemoryControl:
     reserve_allowed: bool = True
     on_reserve: Callable[[], None] | None = None
     commit_allowed: bool = True
+    on_commit: Callable[[], None] | None = None
+    on_finalize: Callable[[], None] | None = None
     crash_after_writer: bool = False
     retry_by_replay: dict[str, tuple[RetryObligation, ...]] = field(default_factory=dict)
     reservations: list[Usage] = field(default_factory=list)
@@ -211,6 +297,8 @@ class MemoryControl:
             retry_obligations=self.retry_by_replay.get(unit.replay_id, ()),
         )
         self.receipts[unit.replay_id] = result
+        if self.on_commit is not None:
+            self.on_commit()
         return result
 
     def pause(
@@ -234,6 +322,8 @@ class MemoryControl:
 
     def finalize(self, _context: AttemptContext) -> bool:
         self.finalized += 1
+        if self.on_finalize is not None:
+            self.on_finalize()
         if self.retry_backlog:
             return False
         self.terminal_watermark = True
