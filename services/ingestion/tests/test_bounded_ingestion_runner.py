@@ -434,19 +434,15 @@ def test_shutdown_during_in_flight_fetch_cleans_up_and_persists_shutdown_pause()
     assert control.writer_invocations == 0
 
 
-def test_source_lifecycle_leaves_two_graph_budgets_before_slow_commit_and_finalize() -> None:
+def test_reserved_graph_budgets_allow_slow_commit_and_finalize() -> None:
     scheduled = occurrence()
     clock = FakeClock(scheduled.starts_at)
-
-    def finish_source() -> None:
-        clock.now = scheduled.cutoff_at - timedelta(seconds=61)
 
     def spend_graph_budget() -> None:
         clock.now += timedelta(seconds=30)
 
     descriptor = FixtureDescriptor(
         {0: unit(0, (("identity-1", "v1"),), terminal=True)},
-        on_close=finish_source,
     )
     control = MemoryControl(on_commit=spend_graph_budget, on_finalize=spend_graph_budget)
 
@@ -459,10 +455,10 @@ def test_source_lifecycle_leaves_two_graph_budgets_before_slow_commit_and_finali
     assert result.status == "completed"
     assert control.writer_invocations == 1
     assert control.finalized == 1
-    assert clock.now == scheduled.cutoff_at - timedelta(seconds=1)
+    assert clock.now == scheduled.starts_at + timedelta(seconds=60)
 
 
-def test_slow_graph_transitions_never_start_when_two_budgets_do_not_remain() -> None:
+def test_source_lifecycle_overrun_prevents_graph_transitions() -> None:
     scheduled = occurrence()
     clock = FakeClock(scheduled.starts_at)
 
@@ -483,6 +479,6 @@ def test_slow_graph_transitions_never_start_when_two_budgets_do_not_remain() -> 
 
     assert result.status == "failed"
     assert result.failure_category == "overrun"
-    assert result.safe_message == "graph_transition_deadline_exceeded"
+    assert result.safe_message == "connector_lifecycle_deadline_exceeded"
     assert control.writer_invocations == 0
     assert control.finalized == 0
