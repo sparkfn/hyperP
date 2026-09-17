@@ -1,22 +1,6 @@
-# MAIN post-merge validation for sparkfn/hyperP — push to `main` only.
-# Triggers: push events on the `main` branch only. No deploy, no production secrets,
-# no host volumes, no Docker socket, no image push.
-# Materially stronger than PR: re-validates python checks on the merged main commit, plus a
-# real Next.js production build (catches what tsc-only misses) and a production
-# dependency install (mirrors the Dockerfile's `uv sync --frozen --no-dev`).
-# Inspect via:  wpci home pipeline ls sparkfn/hyperP --branch main
-# Select the latest `event: push` result, then inspect it with `pipeline show`.
-#
-# SYNC NOTE: the python-checks step below is deliberately duplicated in .woodpecker/pr.yaml
-# (Woodpecker has no cross-file includes). When changing a command here, apply the same
-# change there so PR and MAIN do not silently diverge.
-#
-# DEFERRED (follow-up issue): Compose startup + health smoke + Docker image build are
-# stronger signals but require a Docker socket mount / trusted repo, which this
-# unprivileged PR/MAIN validation boundary forbids. They are tracked separately.
-#
-# Executor: local Woodpecker (docker backend, untrusted repo — no host volumes/socket).
-# Four isolated disposable Neo4j 5.26 services supply the same real-query gate as PR CI.
+# MAIN post-merge validation for sparkfn/hyperP: active workloads only.
+# Historical Intelligence, repair, exact-boundary, and training validation is opt-in via
+# scripts/ci_historical_validation.py and is never scheduled by Woodpecker.
 when:
   event:
     - push
@@ -29,17 +13,6 @@ services:
     environment:
       NEO4J_AUTH: neo4j/ci-projection
       NEO4J_PLUGINS: "[]"
-      # Query shards use direct Bolt only; disable the unused HTTP listener.
-      NEO4J_server_http_enabled: "false"
-      NEO4J_server_memory_heap_initial__size: 128m
-      NEO4J_server_memory_heap_max__size: 384m
-      NEO4J_server_memory_pagecache_size: 128m
-  - name: neo4j-ledger-310
-    image: neo4j:5.26-community
-    environment:
-      NEO4J_AUTH: neo4j/ci-ledger-310
-      NEO4J_PLUGINS: "[]"
-      # Query shards use direct Bolt only; disable the unused HTTP listener.
       NEO4J_server_http_enabled: "false"
       NEO4J_server_memory_heap_initial__size: 128m
       NEO4J_server_memory_heap_max__size: 384m
@@ -49,117 +22,74 @@ services:
     environment:
       NEO4J_AUTH: neo4j/ci-census-migration-api
       NEO4J_PLUGINS: "[]"
-      # Query shards use direct Bolt only; disable the unused HTTP listener.
       NEO4J_server_http_enabled: "false"
       NEO4J_server_memory_heap_initial__size: 128m
       NEO4J_server_memory_heap_max__size: 384m
       NEO4J_server_memory_pagecache_size: 128m
-  - name: neo4j-repair-mapping
+  - name: neo4j-tenant-mapping
     image: neo4j:5.26-community
     environment:
-      NEO4J_AUTH: neo4j/ci-repair-mapping
+      NEO4J_AUTH: neo4j/ci-tenant-mapping
       NEO4J_PLUGINS: "[]"
-      # Query shards use direct Bolt only; disable the unused HTTP listener.
       NEO4J_server_http_enabled: "false"
       NEO4J_server_memory_heap_initial__size: 128m
       NEO4J_server_memory_heap_max__size: 384m
       NEO4J_server_memory_pagecache_size: 128m
 
 steps:
-  # Measured #426 exception: the exact 178,328-row probes are an unconditional root.
-  # Projection + ledger share one root step, retaining every logical shard command while
-  # keeping five roots and a stage-compatible two-wave schedule.
-  # Re-run the PR python suite on the merged main commit to catch merge breakage,
-  # then add the production-install signal (mirrors the Dockerfile runtime install).
   - name: python-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
     depends_on: []
     environment:
+      HYPERP_CI_PROFILE: active
       UV_PROJECT_ENVIRONMENT: .venv-python-checks
       PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-python-checks"
       PYTHONDONTWRITEBYTECODE: "1"
     commands:
-      - uv sync --frozen
+      - uv sync --frozen --package profile-unifier-api --package profile-unifier-ingestion
       - uv run --package profile-unifier-api ruff check services/api/src
       - uv run --package profile-unifier-api ruff format --check services/api/src
-      - uv run --package profile-unifier-ingestion ruff check services/ingestion/src
-      - uv run --package profile-unifier-ingestion ruff format --check services/ingestion/src
+      - uv run --package profile-unifier-ingestion ruff check services/ingestion/src $(python scripts/ci_selection_manifest.py tool-excludes --tool ruff)
+      - uv run --package profile-unifier-ingestion ruff format --check services/ingestion/src $(python scripts/ci_selection_manifest.py tool-excludes --tool ruff)
       - uv run --package profile-unifier-api mypy --strict services/api/src
-      - uv run --package profile-unifier-ingestion mypy --strict services/ingestion/src
-      # pytest per-package (each venv has its runtime + dev deps); the root venv
-      # only has lint/type tools, so `uv run pytest` can't import runtime code.
-      - uv run --package profile-unifier-api pytest services/api/tests/test_persons_list_queries.py::test_person_list_preferred_address_hydration_does_not_expand_provenance_edges
+      - uv run --package profile-unifier-ingestion mypy --strict services/ingestion/src $(python scripts/ci_selection_manifest.py tool-excludes --tool mypy)
+      - mkdir -p .ci-manifests
+      - uv run --package profile-unifier-api pytest services/api/tests --collect-only -q > .ci-manifests/api-default-nodes.txt
+      - python scripts/ci_selection_manifest.py verify-nodes --service api --path .ci-manifests/api-default-nodes.txt
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests --collect-only -q > .ci-manifests/ingestion-default-nodes.txt
+      - python scripts/ci_selection_manifest.py verify-nodes --service ingestion --path .ci-manifests/ingestion-default-nodes.txt
       - uv run --package profile-unifier-api pytest services/api/tests
-      - uv sync --frozen --group training
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests -m "not large_boundary" --durations=25 --durations-min=1.0
-      # Production runtime install (no dev group) — verifies the lockfile resolves for
-      # the exact install the api/ingestion Dockerfiles run.
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests --durations=25 --durations-min=1.0
       - uv sync --frozen --no-dev --package profile-unifier-api
       - uv sync --frozen --no-dev --package profile-unifier-ingestion
 
-  - name: large-boundary-checks
-    image: ghcr.io/astral-sh/uv:python3.12-bookworm
-    # Exact boundary coverage remains an unconditional blocking root on MAIN.
-    depends_on: []
-    environment:
-      UV_PROJECT_ENVIRONMENT: .venv-large-boundary-checks
-      PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-large-boundary-checks"
-      PYTHONDONTWRITEBYTECODE: "1"
-    commands:
-      - uv sync --frozen
-      - uv sync --frozen --group training
-      - uv run --package profile-unifier-ingestion pytest -m large_boundary services/ingestion/tests/test_crm_deal_identity_repair_status_snapshot.py::test_status_snapshot_streams_full_high_cardinality_boundary services/ingestion/tests/test_crm_deal_identity_repair_rebase.py::test_rebase_compact_preparation_streams_178328_rows_without_retaining_payloads_or_units --durations=25 --durations-min=1.0
-
-  - name: intelligence-checks
-    image: ghcr.io/astral-sh/uv:python3.12-bookworm
-    depends_on:
-      - python-checks
-      - large-boundary-checks
-      - neo4j-projection-ledger-checks
-      - neo4j-census-migration-api-checks
-      - neo4j-repair-mapping-checks
-    environment:
-      UV_PROJECT_ENVIRONMENT: .venv-intelligence-checks
-      PYTHONDONTWRITEBYTECODE: "1"
-    commands:
-      - uv sync --frozen --group dev
-      - uv run --package hyperp-intelligence ruff format --check services/intelligence/src services/intelligence/tests
-      - uv run --package hyperp-intelligence ruff check services/intelligence/src services/intelligence/tests
-      - uv run --package hyperp-intelligence mypy --strict services/intelligence/src
-      - uv run --package hyperp-intelligence pytest services/intelligence/tests -q
-      - uv sync --frozen --no-dev --package hyperp-intelligence
-
-  # Keep the real Neo4j compilation/execution gate aligned with PR validation.
-  # Four isolated services retain the complete real-query gate on every main push.
-  # MAIN shards are unconditional; only PR shards have approved path exclusions.
-  - name: neo4j-projection-ledger-checks
+  - name: neo4j-projection-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
     depends_on: []
     environment:
-      UV_PROJECT_ENVIRONMENT: .venv-neo4j-projection-ledger-checks
-      PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-neo4j-projection-ledger-checks"
+      HYPERP_CI_PROFILE: active
+      UV_PROJECT_ENVIRONMENT: .venv-neo4j-projection-checks
+      PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-neo4j-projection-checks"
       PYTHONDONTWRITEBYTECODE: "1"
       HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_URI: bolt://neo4j-projection:7687
       HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_USER: neo4j
       HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD: ci-projection
       HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_SERVICE_HOST: neo4j-projection
-      HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_URI: bolt://neo4j-ledger-310:7687
-      HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_USER: neo4j
-      HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_PASSWORD: ci-ledger-310
-      HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_SERVICE_HOST: neo4j-ledger-310
+      HYPERP_NEO4J_ACTIVE_PUBLICATION_TEST_URI: bolt://neo4j-projection:7687
+      HYPERP_NEO4J_ACTIVE_PUBLICATION_TEST_USER: neo4j
+      HYPERP_NEO4J_ACTIVE_PUBLICATION_TEST_PASSWORD: ci-projection
+      HYPERP_NEO4J_ACTIVE_PUBLICATION_TEST_SERVICE_HOST: neo4j-projection
     commands:
-      - uv sync --frozen
+      - uv sync --frozen --package profile-unifier-ingestion
       - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_URI --user-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_USER --password-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD --timeout-seconds 90
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_projection_repository_neo4j.py -q
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_activation_neo4j.py -q
-      - uv run --package hyperp-intelligence pytest services/intelligence/tests -k crm_activities_neo4j -q
-      - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_URI --user-env HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_USER --password-env HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_PASSWORD --timeout-seconds 90
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_deal_identity_repair_ledger_neo4j.py -k 'test_310_' -q
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_projection_repository_neo4j.py services/ingestion/tests/test_crm_tenant_activation_neo4j.py services/ingestion/tests/test_active_publication_fencing_neo4j.py -q
+      - python scripts/ci_selection_manifest.py query-manifest --workflow .woodpecker/main.yaml
 
   - name: neo4j-census-migration-api-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
     depends_on: []
     environment:
+      HYPERP_CI_PROFILE: active
       UV_PROJECT_ENVIRONMENT: .venv-neo4j-census-migration-api-checks
       PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-neo4j-census-migration-api-checks"
       PYTHONDONTWRITEBYTECODE: "1"
@@ -201,51 +131,38 @@ steps:
       HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD: ci-census-migration-api
       HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_SERVICE_HOST: neo4j-census-migration-api
     commands:
-      - uv sync --frozen
+      - uv sync --frozen --package profile-unifier-api --package profile-unifier-ingestion
       - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_URI --user-env HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_USER --password-env HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_PASSWORD --timeout-seconds 90
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_identifier_scope_schema_neo4j.py -q
       - uv run --package profile-unifier-api pytest services/api/tests/test_person_identifiers_neo4j.py services/api/tests/test_person_crm_metrics_neo4j.py services/api/tests/test_persons_list_neo4j_234.py services/api/tests/test_persons_list_possible_match_neo4j.py services/api/tests/test_persons_list_plan_neo4j.py services/api/tests/test_identity_link_revisions_neo4j.py services/api/tests/test_person_graph_neo4j.py -q
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_person_completeness_migration_neo4j.py services/ingestion/tests/test_loyalty_points_migration_neo4j.py services/ingestion/tests/test_crm_deal_count_migration_neo4j.py services/ingestion/tests/test_ingestion_control_instance_migration_neo4j.py services/ingestion/tests/test_identifier_scope_migrations_neo4j.py services/ingestion/tests/test_identity_link_revision_baseline_neo4j.py -q
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_standalone_crm_census_neo4j.py -q
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_standalone_crm_lane_a_schema_neo4j.py -q
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_standalone_crm_source_child_integration_neo4j.py -q
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_company_membership_neo4j.py -q
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_person_completeness_migration_neo4j.py services/ingestion/tests/test_loyalty_points_migration_neo4j.py services/ingestion/tests/test_crm_deal_count_migration_neo4j.py services/ingestion/tests/test_ingestion_control_instance_migration_neo4j.py services/ingestion/tests/test_identifier_scope_migrations_neo4j.py services/ingestion/tests/test_identity_link_revision_baseline_neo4j.py services/ingestion/tests/test_standalone_crm_census_neo4j.py services/ingestion/tests/test_standalone_crm_lane_a_schema_neo4j.py services/ingestion/tests/test_standalone_crm_source_child_integration_neo4j.py services/ingestion/tests/test_crm_company_membership_neo4j.py -q
+      - python scripts/ci_selection_manifest.py query-manifest --workflow .woodpecker/main.yaml
 
-  - name: neo4j-repair-mapping-checks
+  - name: neo4j-tenant-mapping-checks
     image: ghcr.io/astral-sh/uv:python3.12-bookworm
     depends_on: []
     environment:
-      UV_PROJECT_ENVIRONMENT: .venv-neo4j-repair-mapping-checks
-      PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-neo4j-repair-mapping-checks"
+      HYPERP_CI_PROFILE: active
+      UV_PROJECT_ENVIRONMENT: .venv-neo4j-tenant-mapping-checks
+      PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-neo4j-tenant-mapping-checks"
       PYTHONDONTWRITEBYTECODE: "1"
-      HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_URI: bolt://neo4j-repair-mapping:7687
+      HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_URI: bolt://neo4j-tenant-mapping:7687
       HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_USER: neo4j
-      HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD: ci-repair-mapping
-      HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_SERVICE_HOST: neo4j-repair-mapping
-      HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_URI: bolt://neo4j-repair-mapping:7687
-      HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_USER: neo4j
-      HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_PASSWORD: ci-repair-mapping
-      HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST_SERVICE_HOST: neo4j-repair-mapping
+      HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD: ci-tenant-mapping
+      HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_SERVICE_HOST: neo4j-tenant-mapping
     commands:
-      - uv sync --frozen
+      - uv sync --frozen --package profile-unifier-ingestion
       - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_URI --user-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_USER --password-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD --timeout-seconds 90
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_preparation.py services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_lifecycle.py services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_freshness_integrity.py services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_strictness.py -q
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_deal_identity_repair_ledger_neo4j.py -k 'not test_310_' -q
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_deal_identity_repair_mutation_neo4j.py -q
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_deal_identity_repair_verification_neo4j.py -q
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_deal_identity_repair_rollback_neo4j.py -q
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_deal_identity_repair_integration_neo4j.py -q
+      - python scripts/ci_selection_manifest.py query-manifest --workflow .woodpecker/main.yaml
 
-  # Real Next.js production build. `next build` runs TypeScript type-checking itself,
-  # so this is strictly stronger than the PR `npm run typecheck` step.
   - name: frontend-build
     image: node:22-bookworm
     depends_on:
       - python-checks
-      - large-boundary-checks
-      - neo4j-projection-ledger-checks
+      - neo4j-projection-checks
       - neo4j-census-migration-api-checks
-      - neo4j-repair-mapping-checks
+      - neo4j-tenant-mapping-checks
     commands:
       - cd services/frontend2
       - npm install --legacy-peer-deps

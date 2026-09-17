@@ -1,166 +1,99 @@
-"""Parsed Woodpecker bounded-validation topology contract for issue #418."""
+"""Parsed active-only Woodpecker topology and selection contracts for issue #440."""
 
 from __future__ import annotations
 
-import ast
-import subprocess
-import sys
 import tomllib
-from itertools import combinations
 from pathlib import Path
 from typing import cast
 
 import yaml
 
-_REPOSITORY_ROOT = Path(__file__).resolve().parents[3]
-_WORKFLOW_NAMES = ("pr.yaml", "main.yaml")
-_SHARDS = ("projection", "ledger-310", "census-migration-api", "repair-mapping")
-_LARGE_BOUNDARY_STEP_NAME = "large-boundary-checks"
-_COMBINED_SHARD_STEP_NAME = "neo4j-projection-ledger-checks"
-_SHARD_STEP_NAMES = (
-    _COMBINED_SHARD_STEP_NAME,
+from ci_support.selection_manifest import (
+    ACTIVE_NODE_SENTINELS,
+    ACTIVE_QUERY_SENTINELS,
+    HISTORICAL_SOURCE_PATHS,
+    HISTORICAL_TEST_MODULES,
+    validate_default_query_manifest,
+)
+
+_ROOT = Path(__file__).resolve().parents[3]
+_WORKFLOWS = ("pr.yaml", "main.yaml")
+_SHARDS = (
+    "neo4j-projection-checks",
     "neo4j-census-migration-api-checks",
-    "neo4j-repair-mapping-checks",
+    "neo4j-tenant-mapping-checks",
 )
-_LOGICAL_SHARDS_BY_STEP = {
-    _COMBINED_SHARD_STEP_NAME: ("projection", "ledger-310"),
-    "neo4j-census-migration-api-checks": ("census-migration-api",),
-    "neo4j-repair-mapping-checks": ("repair-mapping",),
-}
-_ROOT_STEP_NAMES = ("python-checks", _LARGE_BOUNDARY_STEP_NAME, *_SHARD_STEP_NAMES)
-_PR_SHARD_WHEN = [{"path": {"exclude": ["docs/**", "services/frontend2/**"]}}]
-_LARGE_BOUNDARY_NODE_IDS = (
-    "services/ingestion/tests/test_crm_deal_identity_repair_status_snapshot.py::"
-    "test_status_snapshot_streams_full_high_cardinality_boundary",
-    "services/ingestion/tests/test_crm_deal_identity_repair_rebase.py::"
-    "test_rebase_compact_preparation_streams_178328_rows_without_retaining_payloads_or_units",
-)
-_NEO4J_SERVICE_SETTINGS = {
+_NEO4J_SETTINGS = {
     "NEO4J_PLUGINS": "[]",
     "NEO4J_server_http_enabled": "false",
     "NEO4J_server_memory_heap_initial__size": "128m",
     "NEO4J_server_memory_heap_max__size": "384m",
     "NEO4J_server_memory_pagecache_size": "128m",
 }
-
-_NEO4J_SHARDS = {
-    "projection": ("neo4j-projection", ("HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST",), 0),
-    "ledger-310": ("neo4j-ledger-310", ("HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST",), 0),
-    "census-migration-api": (
-        "neo4j-census-migration-api",
-        (
-            "HYPERP_NEO4J_PERSON_IDENTIFIERS_TEST HYPERP_NEO4J_CRM_METRICS_TEST "
-            "HYPERP_NEO4J_PERSON_LIST_TEST HYPERP_NEO4J_PERSON_COMPLETENESS_TEST "
-            "HYPERP_NEO4J_LOYALTY_POINTS_TEST HYPERP_NEO4J_CRM_DEAL_COUNT_TEST "
-            "HYPERP_NEO4J_CONTROL_MIGRATION_TEST HYPERP_NEO4J_STANDALONE_CRM_CENSUS_TEST "
-            "HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST"
-        ).split(),
-        3,
-    ),
-    "repair-mapping": (
-        "neo4j-repair-mapping",
-        ("HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST", "HYPERP_NEO4J_CRM_REPAIR_LEDGER_TEST"),
-        0,
-    ),
-}
-_API_NEO4J_TESTS = (
-    "person_identifiers_neo4j person_crm_metrics_neo4j persons_list_neo4j_234 "
-    "persons_list_possible_match_neo4j persons_list_plan_neo4j "
-    "identity_link_revisions_neo4j person_graph_neo4j"
-).split()
-_INGESTION_NEO4J_TESTS = (
-    "person_completeness_migration_neo4j loyalty_points_migration_neo4j "
-    "crm_deal_count_migration_neo4j ingestion_control_instance_migration_neo4j "
-    "identifier_scope_migrations_neo4j identifier_scope_schema_neo4j "
-    "identity_link_revision_baseline_neo4j standalone_crm_census_neo4j "
-    "standalone_crm_lane_a_schema_neo4j standalone_crm_source_child_integration_neo4j "
-    "crm_company_membership_neo4j crm_tenant_mapping_repository_neo4j_preparation "
-    "crm_tenant_mapping_repository_neo4j_lifecycle "
-    "crm_tenant_mapping_repository_neo4j_freshness_integrity "
-    "crm_tenant_mapping_repository_neo4j_strictness crm_tenant_projection_repository_neo4j "
-    "crm_tenant_activation_neo4j crm_deal_identity_repair_mutation_neo4j "
-    "crm_deal_identity_repair_verification_neo4j crm_deal_identity_repair_rollback_neo4j "
-    "crm_deal_identity_repair_integration_neo4j"
-).split()
-_NEO4J_SUITE_MANIFEST = frozenset(
-    {(f"services/api/tests/test_{name}.py", "") for name in _API_NEO4J_TESTS}
-    | {(f"services/ingestion/tests/test_{name}.py", "") for name in _INGESTION_NEO4J_TESTS}
-    | {
-        ("services/ingestion/tests/test_crm_deal_identity_repair_ledger_neo4j.py", "test_310_"),
-        (
-            "services/ingestion/tests/test_crm_deal_identity_repair_ledger_neo4j.py",
-            "not test_310_",
-        ),
+_PR_PATH_FILTER = [{"path": {"exclude": ["docs/**", "services/frontend2/**"]}}]
+_HISTORICAL_DORMANT_SOURCE_PATHS = frozenset(
+    {
+        "services/ingestion/src/graph/crm_deal_identity_repair_mutation_errors.py",
+        "services/ingestion/src/graph/crm_deal_identity_repair_verification_errors.py",
+        "services/ingestion/src/graph/queries/crm_deal_identity_repair.py",
+        "services/ingestion/src/graph/queries/crm_deal_identity_repair_mutation.py",
+        "services/ingestion/src/graph/queries/crm_deal_identity_repair_rebase.py",
+        "services/ingestion/src/graph/queries/crm_deal_identity_repair_rollback.py",
+        "services/ingestion/src/graph/queries/crm_deal_identity_repair_verification.py",
     }
 )
-_PYTHON_COMMANDS = (
-    "uv sync --frozen",
-    "uv run --package profile-unifier-api ruff check services/api/src",
-    "uv run --package profile-unifier-api ruff format --check services/api/src",
-    "uv run --package profile-unifier-ingestion ruff check services/ingestion/src",
-    "uv run --package profile-unifier-ingestion ruff format --check services/ingestion/src",
-    "uv run --package profile-unifier-api mypy --strict services/api/src",
-    "uv run --package profile-unifier-ingestion mypy --strict services/ingestion/src",
-    "uv run --package profile-unifier-api pytest "
-    "services/api/tests/test_persons_list_queries.py::"
-    "test_person_list_preferred_address_hydration_does_not_expand_provenance_edges",
-    "uv run --package profile-unifier-api pytest services/api/tests",
-    "uv sync --frozen --group training",
-    "uv run --package profile-unifier-ingestion pytest services/ingestion/tests "
-    '-m "not large_boundary" --durations=25 --durations-min=1.0',
+_SHARED_ACTIVE_SOURCE_PATHS = frozenset(
+    {
+        "services/ingestion/src/graph/crm_deal_identity_repair_control.py",
+        "services/ingestion/src/graph/crm_deal_identity_repair_ledger.py",
+        "services/ingestion/src/graph/crm_deal_identity_repair_ledger_migration.py",
+        "services/ingestion/src/graph/crm_deal_identity_repair_ledger_records.py",
+        "services/ingestion/src/graph/queries/crm_deal_identity_repair_control.py",
+        "services/ingestion/src/graph/queries/crm_deal_identity_repair_integration.py",
+        "services/ingestion/src/graph/queries/crm_deal_identity_repair_ledger.py",
+    }
 )
-_LARGE_BOUNDARY_COMMANDS = (
-    "uv sync --frozen",
-    "uv sync --frozen --group training",
-    "uv run --package profile-unifier-ingestion pytest -m large_boundary "
-    "services/ingestion/tests/test_crm_deal_identity_repair_status_snapshot.py::"
-    "test_status_snapshot_streams_full_high_cardinality_boundary "
-    "services/ingestion/tests/test_crm_deal_identity_repair_rebase.py::"
-    "test_rebase_compact_preparation_streams_178328_rows_without_retaining_payloads_or_units "
-    "--durations=25 --durations-min=1.0",
-)
-_INTELLIGENCE_COMMANDS = (
-    "uv sync --frozen --group dev",
-    "uv run --package hyperp-intelligence ruff format --check "
-    "services/intelligence/src services/intelligence/tests",
-    "uv run --package hyperp-intelligence ruff check "
-    "services/intelligence/src services/intelligence/tests",
-    "uv run --package hyperp-intelligence mypy --strict services/intelligence/src",
-    "uv run --package hyperp-intelligence pytest services/intelligence/tests -q",
-)
-_IDENTIFIER_SCOPE_SCHEMA_COMMAND = (
-    "uv run --package profile-unifier-ingestion pytest "
-    "services/ingestion/tests/test_identifier_scope_schema_neo4j.py -q"
-)
-_PROJECTION_INTELLIGENCE_COMMAND = (
-    "uv run --package hyperp-intelligence pytest services/intelligence/tests "
-    "-k crm_activities_neo4j -q"
-)
-_PROJECTION_NEO4J_COMMANDS = (
-    "uv run --package profile-unifier-ingestion pytest "
-    "services/ingestion/tests/test_crm_tenant_projection_repository_neo4j.py -q",
-    "uv run --package profile-unifier-ingestion pytest "
-    "services/ingestion/tests/test_crm_tenant_activation_neo4j.py -q",
-    _PROJECTION_INTELLIGENCE_COMMAND,
-)
-_LEDGER_310_COMMAND = (
-    "uv run --package profile-unifier-ingestion pytest "
-    "services/ingestion/tests/test_crm_deal_identity_repair_ledger_neo4j.py "
-    "-k 'test_310_' -q"
-)
+_EXPECTED_ACTIVE_NODE_SENTINELS = {
+    "api": (
+        "services/api/tests/test_active_api_reader_contract.py::"
+        "test_api_authoritative_reader_parity_excludes_retired_links",
+        "services/api/tests/test_mcp_app.py::"
+        "test_mcp_tools_match_every_canonical_api_operation",
+        "services/api/tests/test_person_crm_metrics_neo4j.py::"
+        "test_deal_metrics_query_uses_projected_stage_and_excludes_live_activity_records",
+    ),
+    "ingestion": (
+        "services/ingestion/tests/test_active_publication_fencing_neo4j.py::"
+        "test_publication_reservation_and_repair_claim_are_mutually_exclusive",
+        "services/ingestion/tests/test_active_publication_fencing_neo4j.py::"
+        "test_stale_publication_confirmation_fails_closed",
+        "services/ingestion/tests/test_active_relationship_reader_contract.py::"
+        "test_active_materializers_are_classified_and_filter_current_relationships",
+        "services/ingestion/tests/test_bitrix_backfill_tasks.py::"
+        "test_live_canvas_allows_deal_only_when_activities_are_reviewed_excluded",
+        "services/ingestion/tests/test_scheduled_ingestion_tasks.py::"
+        "test_successor_filters_executable_historical_activity_before_probing_or_publication",
+        "services/ingestion/tests/test_resumable.py::"
+        "test_checkpoint_can_advance_for_durable_dispositions",
+        "services/ingestion/tests/test_sales_prediction_evaluator_no_numpy.py::"
+        "test_evaluator_helpers_do_not_import_or_require_numpy",
+        "services/ingestion/tests/test_standalone_crm_census_topology.py::"
+        "test_default_off_configuration_and_authority_admission_fail_closed",
+    ),
+}
 
 
-def _workflow_document(workflow_name: str) -> dict[str, object]:
-    raw_document = yaml.safe_load((_REPOSITORY_ROOT / ".woodpecker" / workflow_name).read_text())
-    assert isinstance(raw_document, dict)
-    return cast(dict[str, object], raw_document)
+def _workflow(name: str) -> dict[str, object]:
+    document = yaml.safe_load((_ROOT / ".woodpecker" / name).read_text(encoding="utf-8"))
+    assert isinstance(document, dict)
+    return cast(dict[str, object], document)
 
 
-def _workflow_steps(workflow: dict[str, object]) -> dict[str, dict[str, object]]:
-    raw_steps = workflow.get("steps")
+def _steps(document: dict[str, object]) -> dict[str, dict[str, object]]:
+    raw_steps = document.get("steps")
     assert isinstance(raw_steps, list)
     steps: dict[str, dict[str, object]] = {}
-    for raw_step in cast(list[object], raw_steps):
+    for raw_step in raw_steps:
         assert isinstance(raw_step, dict)
         step = cast(dict[str, object], raw_step)
         name = step.get("name")
@@ -169,415 +102,228 @@ def _workflow_steps(workflow: dict[str, object]) -> dict[str, dict[str, object]]
     return steps
 
 
-def _dependency_details(dependency: object) -> tuple[str, bool]:
-    if isinstance(dependency, str):
-        return dependency, False
-    assert isinstance(dependency, dict)
-    details = cast(dict[str, object], dependency)
-    name = details.get("name")
-    optional = details.get("optional")
+def _commands(step: dict[str, object]) -> tuple[str, ...]:
+    commands = step.get("commands")
+    assert isinstance(commands, list) and all(isinstance(command, str) for command in commands)
+    return tuple(cast(list[str], commands))
+
+
+def _environment(step: dict[str, object]) -> dict[str, object]:
+    environment = step.get("environment")
+    assert isinstance(environment, dict)
+    return cast(dict[str, object], environment)
+
+
+def _dependency_details(item: object) -> tuple[str, bool]:
+    if isinstance(item, str):
+        return item, False
+    assert isinstance(item, dict)
+    name = item.get("name")
+    optional = item.get("optional")
     assert isinstance(name, str) and isinstance(optional, bool)
-    assert set(details) == {"name", "optional"}
+    assert set(item) == {"name", "optional"}
     return name, optional
 
 
-def _dependencies(step: dict[str, object]) -> list[tuple[str, bool]]:
-    raw_dependencies = step.get("depends_on")
-    assert isinstance(raw_dependencies, list)
-    return [_dependency_details(dependency) for dependency in raw_dependencies]
+def _dependencies(step: dict[str, object]) -> tuple[tuple[str, bool], ...]:
+    raw = step.get("depends_on")
+    assert isinstance(raw, list)
+    return tuple(_dependency_details(item) for item in raw)
 
 
-def _commands(step: dict[str, object]) -> list[str]:
-    raw_commands = step.get("commands")
-    assert isinstance(raw_commands, list) and all(
-        isinstance(command, str) for command in raw_commands
-    )
-    return cast(list[str], raw_commands)
+def _python_step_names() -> tuple[str, ...]:
+    return ("python-checks", *_SHARDS)
 
 
-def _assert_acyclic_dependencies(steps: dict[str, dict[str, object]]) -> None:
-    visiting: set[str] = set()
-    visited: set[str] = set()
-    def visit(step_name: str) -> None:
-        assert step_name not in visiting
-        if step_name in visited:
-            return
-        visiting.add(step_name)
-        for dependency_name, _optional in _dependencies(steps[step_name]):
-            assert dependency_name in steps and dependency_name != step_name
-            visit(dependency_name)
-        visiting.remove(step_name)
-        visited.add(step_name)
-
-    for step_name in steps:
-        visit(step_name)
-
-
-def _waves(
-    steps: dict[str, dict[str, object]], active_steps: frozenset[str]
-) -> list[frozenset[str]]:
-    completed: set[str] = set()
-    waiting: set[str] = set(active_steps)
-    waves: list[frozenset[str]] = []
-    while waiting:
-        ready = frozenset(
-            step_name
-            for step_name in waiting
-            if {
-                dependency_name
-                for dependency_name, optional in _dependencies(steps[step_name])
-                if dependency_name in active_steps or not optional
-            }
-            <= completed
-        )
-        assert ready
-        waves.append(ready)
-        completed.update(ready)
-        waiting.difference_update(ready)
-    return waves
-
-
-def _readiness_command(family: str) -> str:
-    assert (_REPOSITORY_ROOT / "scripts" / "wait_for_neo4j.py").is_file()
-    return (
-        "uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py "
-        f"--uri-env {family}_URI --user-env {family}_USER "
-        f"--password-env {family}_PASSWORD --timeout-seconds 90"
-    )
-
-
-def _assert_readiness_precedes_pytest(step: dict[str, object], family: str) -> None:
-    commands = _commands(step)
-    assert commands[:2] == ["uv sync --frozen", _readiness_command(family)]
-    assert commands.count(_readiness_command(family)) == 1
-    pytest_indexes = [index for index, command in enumerate(commands) if " pytest " in command]
-    assert pytest_indexes
-    assert 1 < min(pytest_indexes)
-
-
-def _neo4j_manifest(steps: dict[str, dict[str, object]]) -> frozenset[tuple[str, str]]:
-    manifest: set[tuple[str, str]] = set()
-    for step_name in _SHARD_STEP_NAMES:
-        commands = steps[step_name].get("commands")
-        assert isinstance(commands, list)
-        for command in commands:
-            assert isinstance(command, str)
-            if " pytest " not in command:
-                continue
-            selector = ""
-            if " -k '" in command:
-                selector = command.split(" -k '", 1)[1].split("'", 1)[0]
-            for token in command.split():
-                if token.startswith("services/") and "_neo4j" in token and token.endswith(".py"):
-                    manifest.add((token, selector))
-    return frozenset(manifest)
-
-
-def _toml_mapping(value: object) -> dict[str, object]:
-    assert isinstance(value, dict)
-    mapped: dict[str, object] = {}
-    for key, item in value.items():
-        assert isinstance(key, str)
-        mapped[key] = item
-    return mapped
-
-
-def _registered_pytest_markers() -> tuple[str, ...]:
-    document = _toml_mapping(tomllib.loads((_REPOSITORY_ROOT / "pyproject.toml").read_text()))
-    tool = _toml_mapping(document.get("tool"))
-    pytest_config = _toml_mapping(tool.get("pytest"))
-    options = _toml_mapping(pytest_config.get("ini_options"))
-    markers = options.get("markers")
-    assert isinstance(markers, list) and all(isinstance(marker, str) for marker in markers)
-    return tuple(cast(list[str], markers))
-
-
-def _is_large_boundary_decorator(decorator: ast.expr) -> bool:
-    if not isinstance(decorator, ast.Attribute):
-        return False
-    marker = decorator
-    if marker.attr != "large_boundary" or not isinstance(marker.value, ast.Attribute):
-        return False
-    return marker.value.attr == "mark" and isinstance(marker.value.value, ast.Name) and (
-        marker.value.value.id == "pytest"
-    )
-
-
-def _marked_large_boundary_node_ids() -> frozenset[str]:
-    marked: set[str] = set()
-    paths = {node_id.split("::", 1)[0] for node_id in _LARGE_BOUNDARY_NODE_IDS}
-    for path in paths:
-        module = ast.parse((_REPOSITORY_ROOT / path).read_text(), filename=path)
-        for node in module.body:
-            if isinstance(node, ast.FunctionDef) and any(
-                _is_large_boundary_decorator(decorator) for decorator in node.decorator_list
-            ):
-                marked.add(f"{path}::{node.name}")
-    return frozenset(marked)
-
-
-def test_woodpecker_neo4j_readiness_timeout_rejects_non_finite_values() -> None:
-    script = _REPOSITORY_ROOT / "scripts" / "wait_for_neo4j.py"
-    for timeout in ("nan", "inf", "-inf"):
-        result = subprocess.run(
-            [
-                sys.executable,
-                str(script),
-                "--uri-env",
-                "HYPERP_UNUSED_NEO4J_URI",
-                "--user-env",
-                "HYPERP_UNUSED_NEO4J_USER",
-                "--password-env",
-                "HYPERP_UNUSED_NEO4J_PASSWORD",
-                "--timeout-seconds",
-                timeout,
-            ],
-            capture_output=True,
-            check=False,
-            text=True,
-        )
-        assert result.returncode != 0
-        assert "finite positive number" in result.stderr
-
-
-def test_woodpecker_bounded_validation_dag_has_exact_two_wave_schedule() -> None:
-    workflows = {name: _workflow_document(name) for name in _WORKFLOW_NAMES}
-    pr_second_wave = frozenset({"intelligence-checks", "frontend-checks"})
-    for workflow_name, workflow in workflows.items():
-        is_pr = workflow_name == "pr.yaml"
-        frontend_name = "frontend-checks" if is_pr else "frontend-build"
-        steps = _workflow_steps(workflow)
-        assert set(steps) == {*_ROOT_STEP_NAMES, "intelligence-checks", frontend_name}
-        _assert_acyclic_dependencies(steps)
-        assert all(steps[step_name].get("depends_on") == [] for step_name in _ROOT_STEP_NAMES)
-        assert workflow.get("when") == (
-            {"event": ["pull_request"]}
-            if is_pr
-            else {"event": ["push"], "branch": ["main"]}
-        )
-        expected_dependencies = [
-            "python-checks",
-            _LARGE_BOUNDARY_STEP_NAME,
-            *({"name": name, "optional": True} for name in _SHARD_STEP_NAMES),
-        ]
-        if is_pr:
-            assert steps["intelligence-checks"].get("depends_on") == expected_dependencies
-            assert steps[frontend_name].get("depends_on") == expected_dependencies
-        else:
-            assert steps["intelligence-checks"].get("depends_on") == list(_ROOT_STEP_NAMES)
-            assert steps[frontend_name].get("depends_on") == list(_ROOT_STEP_NAMES)
-        for step_name, step in steps.items():
-            if is_pr and step_name in _SHARD_STEP_NAMES:
-                assert step.get("when") == _PR_SHARD_WHEN
-            else:
-                assert "when" not in step
-        expected_second_wave = frozenset({"intelligence-checks", frontend_name})
-        assert _waves(steps, frozenset(steps)) == [
-            frozenset(_ROOT_STEP_NAMES),
-            expected_second_wave,
-        ]
-        assert max(map(len, _waves(steps, frozenset(steps)))) == 5
-    pr_steps = _workflow_steps(workflows["pr.yaml"])
-    for size in range(len(_SHARD_STEP_NAMES) + 1):
-        for surviving_shards in combinations(_SHARD_STEP_NAMES, size):
-            active_steps = frozenset(
-                {
-                    "python-checks",
-                    _LARGE_BOUNDARY_STEP_NAME,
-                    *surviving_shards,
-                    *pr_second_wave,
-                }
+def test_workflows_keep_active_pr_main_boundaries_and_dependency_semantics() -> None:
+    for name in _WORKFLOWS:
+        document = _workflow(name)
+        steps = _steps(document)
+        frontend = "frontend-checks" if name == "pr.yaml" else "frontend-build"
+        assert set(steps) == {"python-checks", *_SHARDS, frontend}
+        expected_when = {"event": ["pull_request"]}
+        if name == "main.yaml":
+            expected_when = {"event": ["push"], "branch": ["main"]}
+        assert document["when"] == expected_when
+        assert all(steps[step]["depends_on"] == [] for step in _python_step_names())
+        dependencies = _dependencies(steps[frontend])
+        if name == "pr.yaml":
+            assert dependencies == (
+                ("python-checks", False),
+                *((shard, True) for shard in _SHARDS),
             )
-            assert _waves(pr_steps, active_steps) == [
-                frozenset({"python-checks", _LARGE_BOUNDARY_STEP_NAME, *surviving_shards}),
-                pr_second_wave,
-            ]
-            assert max(map(len, _waves(pr_steps, active_steps))) <= 5
-    docs_frontend_steps = frozenset({"python-checks", _LARGE_BOUNDARY_STEP_NAME, *pr_second_wave})
-    assert _waves(pr_steps, docs_frontend_steps) == [
-        frozenset({"python-checks", _LARGE_BOUNDARY_STEP_NAME}),
-        pr_second_wave,
-    ]
+            assert all(steps[shard].get("when") == _PR_PATH_FILTER for shard in _SHARDS)
+        else:
+            assert dependencies == (
+                ("python-checks", False),
+                *((shard, False) for shard in _SHARDS),
+            )
+            assert all("when" not in steps[shard] for shard in _SHARDS)
 
 
-def test_large_boundary_marker_is_registered_and_selects_only_the_exact_probes() -> None:
-    assert _registered_pytest_markers() == (
-        "large_boundary: blocking exact 178,328-row CRM repair boundary probes",
-    )
-    assert _marked_large_boundary_node_ids() == frozenset(_LARGE_BOUNDARY_NODE_IDS)
+def test_python_steps_have_unique_active_environment_and_cache_isolation() -> None:
+    for name in _WORKFLOWS:
+        steps = _steps(_workflow(name))
+        environments: list[dict[str, object]] = []
+        for step_name in _python_step_names():
+            step = steps[step_name]
+            environment = _environment(step)
+            assert step["image"] == "ghcr.io/astral-sh/uv:python3.12-bookworm"
+            assert environment["HYPERP_CI_PROFILE"] == "active"
+            assert environment["PYTHONDONTWRITEBYTECODE"] == "1"
+            assert environment["UV_PROJECT_ENVIRONMENT"] == f".venv-{step_name}"
+            assert environment["PYTEST_ADDOPTS"] == f"-o cache_dir=.pytest_cache-{step_name}"
+            environments.append(environment)
+        assert len({environment["UV_PROJECT_ENVIRONMENT"] for environment in environments}) == len(
+            environments
+        )
+        assert len({environment["PYTEST_ADDOPTS"] for environment in environments}) == len(
+            environments
+        )
 
 
-def test_woodpecker_validation_commands_preserve_pr_main_differences() -> None:
-    pr_steps = _workflow_steps(_workflow_document("pr.yaml"))
-    main_steps = _workflow_steps(_workflow_document("main.yaml"))
-    assert _commands(pr_steps["python-checks"]) == list(_PYTHON_COMMANDS)
-    assert _commands(main_steps["python-checks"]) == [
-        *_PYTHON_COMMANDS,
+def test_default_python_commands_are_active_only_and_main_keeps_production_installs() -> None:
+    pr_commands = _commands(_steps(_workflow("pr.yaml"))["python-checks"])
+    main_commands = _commands(_steps(_workflow("main.yaml"))["python-checks"])
+    assert pr_commands == main_commands[:-2]
+    assert main_commands[-2:] == (
         "uv sync --frozen --no-dev --package profile-unifier-api",
         "uv sync --frozen --no-dev --package profile-unifier-ingestion",
-    ]
-    assert _commands(pr_steps[_LARGE_BOUNDARY_STEP_NAME]) == list(_LARGE_BOUNDARY_COMMANDS)
-    assert _commands(main_steps[_LARGE_BOUNDARY_STEP_NAME]) == list(_LARGE_BOUNDARY_COMMANDS)
-    assert _commands(pr_steps["intelligence-checks"]) == list(_INTELLIGENCE_COMMANDS)
-    assert _commands(main_steps["intelligence-checks"]) == [
-        *_INTELLIGENCE_COMMANDS,
-        "uv sync --frozen --no-dev --package hyperp-intelligence",
-    ]
-    assert _commands(pr_steps["frontend-checks"]) == (
-        "cd services/frontend2|npm install --legacy-peer-deps|npm run typecheck|"
-        "npx eslint src|npm test"
-    ).split("|")
-    assert _commands(main_steps["frontend-build"]) == (
-        "cd services/frontend2|npm install --legacy-peer-deps|npm test|npm run build"
-    ).split("|")
-    assert all(
-        _commands(pr_steps[name]) == _commands(main_steps[name]) for name in _SHARD_STEP_NAMES
     )
-    assert _PROJECTION_INTELLIGENCE_COMMAND in _commands(pr_steps[_COMBINED_SHARD_STEP_NAME])
+    rendered = "\n".join(pr_commands)
+    assert "--package profile-unifier-api --package profile-unifier-ingestion" in rendered
+    assert "ci_selection_manifest.py verify-nodes --service api" in rendered
+    assert "ci_selection_manifest.py verify-nodes --service ingestion" in rendered
+    for prohibited in ("hyperp-intelligence", "--group training", "large_boundary", "178328"):
+        assert prohibited not in rendered
 
 
-def test_woodpecker_neo4j_shards_are_complete_isolated_and_parity_checked() -> None:
-    workflows = {name: _workflow_document(name) for name in _WORKFLOW_NAMES}
-    manifests: dict[str, frozenset[tuple[str, str]]] = {}
-    for workflow_name, workflow in workflows.items():
-        services = workflow.get("services")
-        assert isinstance(services, list)
-        assert len(services) == len(_NEO4J_SHARDS)
-        service_by_name: dict[str, dict[str, object]] = {}
-        for raw_service in cast(list[object], services):
-            assert isinstance(raw_service, dict)
-            service = cast(dict[str, object], raw_service)
-            name = service.get("name")
-            assert isinstance(name, str)
-            service_by_name[name] = service
-        steps = _workflow_steps(workflow)
-        assert len(service_by_name) == len(_NEO4J_SHARDS)
-        python_step_names = (*_ROOT_STEP_NAMES, "intelligence-checks")
-        python_environments: list[dict[str, object]] = []
-        for step_name in python_step_names:
-            step = steps[step_name]
-            assert step.get("image") == "ghcr.io/astral-sh/uv:python3.12-bookworm"
-            assert "workspace" not in step
-            environment = step.get("environment")
-            assert isinstance(environment, dict)
-            typed_environment = cast(dict[str, object], environment)
-            assert typed_environment.get("UV_PROJECT_ENVIRONMENT") == f".venv-{step_name}"
-            assert typed_environment.get("PYTHONDONTWRITEBYTECODE") == "1"
-            python_environments.append(typed_environment)
-        assert len({item["UV_PROJECT_ENVIRONMENT"] for item in python_environments}) == len(
-            python_environments
-        )
-        python_environment = python_environments[0]
-        assert python_environment.get("PYTEST_ADDOPTS") == (
-            "-o cache_dir=.pytest_cache-python-checks"
-        )
-        large_boundary_environment = steps[_LARGE_BOUNDARY_STEP_NAME].get("environment")
-        assert isinstance(large_boundary_environment, dict)
-        typed_large_boundary_environment = cast(dict[str, object], large_boundary_environment)
-        assert typed_large_boundary_environment.get("PYTEST_ADDOPTS") == (
-            "-o cache_dir=.pytest_cache-large-boundary-checks"
-        )
-        assert typed_large_boundary_environment.get("PYTHONDONTWRITEBYTECODE") == "1"
-        logical_step_names = {
-            shard: step_name
-            for step_name, logical_shards in _LOGICAL_SHARDS_BY_STEP.items()
-            for shard in logical_shards
-        }
-        assert set(logical_step_names) == set(_NEO4J_SHARDS)
-        passwords: set[str] = set()
-        for shard, contract in _NEO4J_SHARDS.items():
-            service_name, families, readiness_index = contract
-            service = service_by_name[service_name]
-            environment = service.get("environment")
-            assert service.get("image") == "neo4j:5.26-community"
-            assert isinstance(environment, dict)
-            service_environment = cast(dict[str, object], environment)
-            assert {
-                key: value for key, value in service_environment.items() if key != "NEO4J_AUTH"
-            } == _NEO4J_SERVICE_SETTINGS
-            auth = service_environment.get("NEO4J_AUTH")
-            assert isinstance(auth, str) and auth.startswith("neo4j/")
-            password = auth.removeprefix("neo4j/")
-            assert password and password not in passwords
-            passwords.add(password)
-            step = steps[logical_step_names[shard]]
-            step_environment = step.get("environment")
-            assert step.get("depends_on") == []
-            assert isinstance(step_environment, dict)
-            shard_environment = cast(dict[str, object], step_environment)
-            for family in families:
-                assert shard_environment.get(f"{family}_URI") == f"bolt://{service_name}:7687"
-                assert shard_environment.get(f"{family}_USER") == "neo4j"
-                assert shard_environment.get(f"{family}_PASSWORD") == password
-                assert shard_environment.get(f"{family}_SERVICE_HOST") == service_name
-
-        for step_name, logical_shards in _LOGICAL_SHARDS_BY_STEP.items():
-            step = steps[step_name]
-            commands = _commands(step)
-            step_environment = step.get("environment")
-            assert step.get("depends_on") == []
-            assert isinstance(step_environment, dict)
-            shard_environment = cast(dict[str, object], step_environment)
-            assert shard_environment.get("UV_PROJECT_ENVIRONMENT") == f".venv-{step_name}"
-            expected_cache_directory = f"-o cache_dir=.pytest_cache-{step_name}"
-            assert shard_environment.get("PYTEST_ADDOPTS") == expected_cache_directory
-            assert shard_environment.get("PYTHONDONTWRITEBYTECODE") == "1"
-            expected_neo4j_keys = {
-                f"{family}_{suffix}"
-                for shard in logical_shards
-                for family in _NEO4J_SHARDS[shard][1]
-                for suffix in ("URI", "USER", "PASSWORD", "SERVICE_HOST")
-            }
-            if "census-migration-api" in logical_shards:
-                expected_neo4j_keys.add("HYPERP_NEO4J_PERSON_LIST_TEST_ALLOW_SCHEMA_MUTATION")
-                assert (
-                    shard_environment.get("HYPERP_NEO4J_PERSON_LIST_TEST_ALLOW_SCHEMA_MUTATION")
-                    == "1"
-                )
-            actual_neo4j_keys = {
-                key for key in shard_environment if key.startswith("HYPERP_NEO4J_")
-            }
-            assert actual_neo4j_keys == expected_neo4j_keys
-            if step_name == _COMBINED_SHARD_STEP_NAME:
-                projection_family = _NEO4J_SHARDS["projection"][1][0]
-                ledger_family = _NEO4J_SHARDS["ledger-310"][1][0]
-                assert commands == [
-                    "uv sync --frozen",
-                    _readiness_command(projection_family),
-                    *_PROJECTION_NEO4J_COMMANDS,
-                    _readiness_command(ledger_family),
-                    _LEDGER_310_COMMAND,
-                ]
-            else:
-                first_shard = logical_shards[0]
-                readiness_family = _NEO4J_SHARDS[first_shard][1][
-                    _NEO4J_SHARDS[first_shard][2]
-                ]
-                _assert_readiness_precedes_pytest(step, readiness_family)
-                if first_shard == "census-migration-api":
-                    assert commands[2] == _IDENTIFIER_SCOPE_SCHEMA_COMMAND
-                    assert commands.count(_IDENTIFIER_SCOPE_SCHEMA_COMMAND) == 1
-
-        manifests[workflow_name] = _neo4j_manifest(steps)
-        rendered = str(workflow).lower()
-        prohibited_terms = (
-            "privileged",
-            "volumes",
-            "docker compose",
-            "pytest-xdist",
-            "xdist",
-            "docker.sock",
-            "retry",
-            "allow_failure",
-            "ignore_failure",
-            "continue-on-error",
-            "|| true",
-        )
-        for prohibited in prohibited_terms:
-            assert prohibited not in rendered
-        assert all(not ({"failure", "detach", "retry"} & set(step)) for step in steps.values())
-
-    assert manifests["pr.yaml"] == _NEO4J_SUITE_MANIFEST
-    assert manifests["main.yaml"] == _NEO4J_SUITE_MANIFEST
+def test_query_workloads_are_active_only_have_manifest_evidence_and_pr_main_parity() -> None:
+    manifests: dict[str, tuple[str, ...]] = {}
+    for name in _WORKFLOWS:
+        text = (_ROOT / ".woodpecker" / name).read_text(encoding="utf-8")
+        manifests[name] = validate_default_query_manifest(text)
+        assert text.count("ci_selection_manifest.py query-manifest") == len(_SHARDS)
+        assert "services/intelligence" not in text
+        for sentinel in ACTIVE_QUERY_SENTINELS:
+            assert sentinel in text
     assert manifests["pr.yaml"] == manifests["main.yaml"]
-    assert len({path for path, _selector in manifests["pr.yaml"]}) == 29
+
+
+def test_neo4j_services_are_isolated_and_each_has_retained_consumers() -> None:
+    expected_services = {
+        "neo4j-projection": "ci-projection",
+        "neo4j-census-migration-api": "ci-census-migration-api",
+        "neo4j-tenant-mapping": "ci-tenant-mapping",
+    }
+    for name in _WORKFLOWS:
+        document = _workflow(name)
+        services = document.get("services")
+        assert isinstance(services, list)
+        by_name = {
+            str(service["name"]): cast(dict[str, object], service)
+            for service in services
+            if isinstance(service, dict)
+        }
+        assert set(by_name) == set(expected_services)
+        for service_name, password in expected_services.items():
+            service = by_name[service_name]
+            assert service.get("image") == "neo4j:5.26-community"
+            environment = service.get("environment")
+            assert isinstance(environment, dict)
+            typed = cast(dict[str, object], environment)
+            assert typed["NEO4J_AUTH"] == f"neo4j/{password}"
+            assert {key: value for key, value in typed.items() if key != "NEO4J_AUTH"} == (
+                _NEO4J_SETTINGS
+            )
+        steps = _steps(document)
+        projection = _environment(steps["neo4j-projection-checks"])
+        assert projection["HYPERP_NEO4J_ACTIVE_PUBLICATION_TEST_SERVICE_HOST"] == (
+            "neo4j-projection"
+        )
+        assert projection["HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_SERVICE_HOST"] == (
+            "neo4j-projection"
+        )
+        mapping = _environment(steps["neo4j-tenant-mapping-checks"])
+        assert mapping["HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_SERVICE_HOST"] == (
+            "neo4j-tenant-mapping"
+        )
+        for step_name in _SHARDS:
+            commands = _commands(steps[step_name])
+            assert commands[0].startswith("uv sync --frozen --package profile-unifier")
+            assert "scripts/wait_for_neo4j.py" in "\n".join(commands)
+
+
+def test_selection_manifest_is_exact_pre_import_and_defaults_new_tests_to_active() -> None:
+    assert all((_ROOT / path).is_file() for path in HISTORICAL_TEST_MODULES)
+    assert all((_ROOT / path).is_file() for path in HISTORICAL_SOURCE_PATHS)
+    assert "services/api/tests/test_crm_deal_identity_repair_reader_classification.py" in (
+        HISTORICAL_TEST_MODULES
+    )
+    repair_tests = {
+        path.relative_to(_ROOT).as_posix()
+        for path in (_ROOT / "services/ingestion/tests").glob("test_crm_deal_identity_repair*.py")
+    }
+    assert repair_tests - HISTORICAL_TEST_MODULES == {
+        "services/ingestion/tests/test_crm_deal_identity_repair_reader_contract.py"
+    }
+    conftest = (_ROOT / "conftest.py").read_text(encoding="utf-8")
+    assert "pytest_ignore_collect" in conftest
+    assert "is_historical_test(collection_path)" in conftest
+    assert "glob" not in conftest and "crm*" not in conftest
+    assert ACTIVE_NODE_SENTINELS == _EXPECTED_ACTIVE_NODE_SENTINELS
+    assert _HISTORICAL_DORMANT_SOURCE_PATHS <= set(HISTORICAL_SOURCE_PATHS)
+    assert not (_SHARED_ACTIVE_SOURCE_PATHS & set(HISTORICAL_SOURCE_PATHS))
+
+
+def test_historical_restoration_is_gated_and_restores_historical_api_reader() -> None:
+    script = (_ROOT / "scripts/ci_historical_validation.py").read_text(encoding="utf-8")
+    assert "--acknowledge-dormant-reactivation" in script
+    assert "--disposable-neo4j" in script
+    assert "HYPERP_HISTORICAL_DISPOSABLE_NEO4J" in script
+    assert '"--group", "training"' in script
+    assert "hyperp-intelligence" in script
+    assert "test_crm_deal_identity_repair_reader_classification.py" in script
+    for name in _WORKFLOWS:
+        workflow = (_ROOT / ".woodpecker" / name).read_text(encoding="utf-8")
+        assert "ci_historical_validation.py" in workflow
+        assert "--execute" not in workflow
+        assert "HYPERP_HISTORICAL_REACTIVATION_ACK" not in workflow
+
+
+def test_active_mypy_uses_exact_skip_overrides_without_skipping_logistic_training_types() -> None:
+    document = tomllib.loads((_ROOT / "pyproject.toml").read_text(encoding="utf-8"))
+    overrides = document["tool"]["mypy"]["overrides"]
+    active_override = next(
+        override for override in overrides if override.get("follow_imports") == "skip"
+    )
+    expected_modules = {
+        "src." + path.removeprefix("services/ingestion/src/").removesuffix(".py").replace("/", ".")
+        for path in HISTORICAL_SOURCE_PATHS
+    }
+    assert set(active_override["module"]) == expected_modules
+    assert _HISTORICAL_DORMANT_SOURCE_PATHS <= set(HISTORICAL_SOURCE_PATHS)
+    assert "src.sales_prediction.trainer.logistic" not in active_override["module"]
+    assert any(
+        "src.sales_prediction.trainer.logistic" in override.get("module", [])
+        for override in overrides
+    )
+    assert all(override.get("follow_imports") != "skip" for override in overrides[:-1])
+
+
+def test_workflows_retain_untrusted_execution_and_failure_suppression_bans() -> None:
+    prohibited = (
+        "privileged",
+        "volumes",
+        "docker compose",
+        "docker.sock",
+        "retry",
+        "allow_failure",
+        "ignore_failure",
+        "continue-on-error",
+        "|| true",
+    )
+    for name in _WORKFLOWS:
+        rendered = (_ROOT / ".woodpecker" / name).read_text(encoding="utf-8").lower()
+        for token in prohibited:
+            assert token not in rendered

@@ -47,7 +47,7 @@ ignore = ["ANN401"]
 
 [tool.ruff.lint.flake8-bugbear]
 # FastAPI's idiomatic pattern uses Query/Depends/Path/Body/Header/Cookie
-# in argument defaults — these are factory calls, not mutable state.
+# in argument defaults ? these are factory calls, not mutable state.
 extend-immutable-calls = [
     "fastapi.Query",
     "fastapi.Depends",
@@ -78,7 +78,7 @@ warn_unused_ignores = true
 
 [[tool.mypy.overrides]]
 module = [
-    # Pydantic model modules — pydantic v2's BaseModel metaclass surfaces
+    # Pydantic model modules ? pydantic v2's BaseModel metaclass surfaces
     # `Any` in subclass bodies under `disallow_any_explicit`. The Any is in
     # the library's type stubs, not our code; relaxing here keeps the rest
     # of the codebase strict.
@@ -89,9 +89,10 @@ module = [
     "src.models",
     "src.profile_analysis_models",
     # numpy is a training-only dependency (#125.4); its guarded imports
+    # The trainer remains type-checked by default; only its numpy-backed tests are opt-in.
+    "src.sales_prediction.trainer.logistic",
     # surface as Any under strict mode. The trainer is the only module
     # that uses numpy; production scoring uses the pure-python evaluator.
-    "src.sales_prediction.trainer.logistic",
     "src.connectors.sggov.rental_flats_api_models",
     "src.connectors.fundbox.base",
     "src.connectors.fundbox.builders",
@@ -183,3 +184,72 @@ pythonpath = ["services/api/src"]
 markers = [
     "large_boundary: blocking exact 178,328-row CRM repair boundary probes",
 ]
+
+# Issue #440: exact dormant modules are not followed by default active mypy.
+[[tool.mypy.overrides]]
+module = [
+    "src.crm_deal_identity_repair_tasks",
+    "src.crm_deal_identity_repair_control",
+    "src.crm_deal_identity_repair.allocation",
+    "src.crm_deal_identity_repair.approval_overlay",
+    "src.crm_deal_identity_repair.artifacts",
+    "src.crm_deal_identity_repair.classifier",
+    "src.crm_deal_identity_repair.cli",
+    "src.crm_deal_identity_repair.execution_boundary_models",
+    "src.crm_deal_identity_repair.execution_protocols",
+    "src.crm_deal_identity_repair.execution_records",
+    "src.crm_deal_identity_repair.execution_status_models",
+    "src.crm_deal_identity_repair.integration_models",
+    "src.crm_deal_identity_repair.integration_runtime",
+    "src.crm_deal_identity_repair.integration_service",
+    "src.crm_deal_identity_repair.inventory",
+    "src.crm_deal_identity_repair.models",
+    "src.crm_deal_identity_repair.mutation_classifier",
+    "src.crm_deal_identity_repair.mutation_models",
+    "src.crm_deal_identity_repair.mutation_service",
+    "src.crm_deal_identity_repair.qualification",
+    "src.crm_deal_identity_repair.qualification_inventory",
+    "src.crm_deal_identity_repair.quiescence",
+    "src.crm_deal_identity_repair.rebase",
+    "src.crm_deal_identity_repair.rollback_models",
+    "src.crm_deal_identity_repair.rollback_service",
+    "src.crm_deal_identity_repair.task_inspection",
+    "src.crm_deal_identity_repair.verification_equations",
+    "src.crm_deal_identity_repair.verification_models",
+    "src.crm_deal_identity_repair.verification_service",
+    "src.graph.crm_deal_identity_repair",
+    "src.graph.crm_deal_identity_repair_boundary_evidence",
+    "src.graph.crm_deal_identity_repair_integration",
+    "src.graph.crm_deal_identity_repair_mutation",
+    "src.graph.crm_deal_identity_repair_mutation_errors",
+    "src.graph.crm_deal_identity_repair_mutation_authority",
+    "src.graph.crm_deal_identity_repair_mutation_payloads",
+    "src.graph.crm_deal_identity_repair_mutation_records",
+    "src.graph.crm_deal_identity_repair_mutation_state",
+    "src.graph.crm_deal_identity_repair_mutation_structures",
+    "src.graph.crm_deal_identity_repair_rebase",
+    "src.graph.crm_deal_identity_repair_rollback",
+    "src.graph.crm_deal_identity_repair_rollback_image",
+    "src.graph.crm_deal_identity_repair_rollback_ledger",
+    "src.graph.crm_deal_identity_repair_rollback_postcondition",
+    "src.graph.crm_deal_identity_repair_rollback_records",
+    "src.graph.crm_deal_identity_repair_rollback_restoration",
+    "src.graph.crm_deal_identity_repair_rollback_state",
+    "src.graph.crm_deal_identity_repair_status_evidence",
+    "src.graph.crm_deal_identity_repair_status_snapshot",
+    "src.graph.crm_deal_identity_repair_verification",
+    "src.graph.crm_deal_identity_repair_verification_errors",
+    "src.graph.queries.crm_deal_identity_repair",
+    "src.graph.queries.crm_deal_identity_repair_mutation",
+    "src.graph.queries.crm_deal_identity_repair_rebase",
+    "src.graph.queries.crm_deal_identity_repair_rollback",
+    "src.graph.queries.crm_deal_identity_repair_verification",
+    "src.graph.crm_deal_identity_repair_verification_derived",
+    "src.graph.crm_deal_identity_repair_verification_pair",
+    "src.graph.crm_deal_identity_repair_verification_records",
+    "src.graph.crm_deal_identity_repair_verification_replay",
+    "src.graph.crm_deal_identity_repair_verification_run",
+    "src.graph.crm_deal_identity_repair_verification_secondary",
+    "src.graph.crm_deal_identity_repair_verification_support",
+]
+follow_imports = "skip"
