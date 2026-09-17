@@ -46,7 +46,7 @@ steps:
       PYTEST_ADDOPTS: "-o cache_dir=.pytest_cache-python-checks"
       PYTHONDONTWRITEBYTECODE: "1"
     commands:
-      - uv sync --frozen --package profile-unifier-api --package profile-unifier-ingestion
+      - uv sync --frozen --group dev --package profile-unifier-api --package profile-unifier-ingestion
       - uv run --package profile-unifier-api ruff check services/api/src
       - uv run --package profile-unifier-api ruff format --check services/api/src
       - uv run --package profile-unifier-ingestion ruff check services/ingestion/src $(python scripts/ci_selection_manifest.py tool-excludes --tool ruff)
@@ -80,7 +80,7 @@ steps:
       HYPERP_NEO4J_ACTIVE_PUBLICATION_TEST_PASSWORD: ci-projection
       HYPERP_NEO4J_ACTIVE_PUBLICATION_TEST_SERVICE_HOST: neo4j-projection
     commands:
-      - uv sync --frozen --package profile-unifier-ingestion
+      - uv sync --frozen --group dev --package profile-unifier-ingestion
       - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_URI --user-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_USER --password-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD --timeout-seconds 90
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_projection_repository_neo4j.py services/ingestion/tests/test_crm_tenant_activation_neo4j.py services/ingestion/tests/test_active_publication_fencing_neo4j.py -q
       - python scripts/ci_selection_manifest.py query-manifest --workflow .woodpecker/main.yaml
@@ -131,7 +131,7 @@ steps:
       HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD: ci-census-migration-api
       HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_SERVICE_HOST: neo4j-census-migration-api
     commands:
-      - uv sync --frozen --package profile-unifier-api --package profile-unifier-ingestion
+      - uv sync --frozen --group dev --package profile-unifier-api --package profile-unifier-ingestion
       - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_URI --user-env HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_USER --password-env HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_PASSWORD --timeout-seconds 90
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_identifier_scope_schema_neo4j.py -q
       - uv run --package profile-unifier-api pytest services/api/tests/test_person_identifiers_neo4j.py services/api/tests/test_person_crm_metrics_neo4j.py services/api/tests/test_persons_list_neo4j_234.py services/api/tests/test_persons_list_possible_match_neo4j.py services/api/tests/test_persons_list_plan_neo4j.py services/api/tests/test_identity_link_revisions_neo4j.py services/api/tests/test_person_graph_neo4j.py -q
@@ -151,7 +151,7 @@ steps:
       HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD: ci-tenant-mapping
       HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_SERVICE_HOST: neo4j-tenant-mapping
     commands:
-      - uv sync --frozen --package profile-unifier-ingestion
+      - uv sync --frozen --group dev --package profile-unifier-ingestion
       - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_URI --user-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_USER --password-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD --timeout-seconds 90
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_preparation.py services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_lifecycle.py services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_freshness_integrity.py services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_strictness.py -q
       - python scripts/ci_selection_manifest.py query-manifest --workflow .woodpecker/main.yaml

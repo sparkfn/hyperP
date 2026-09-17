@@ -214,8 +214,15 @@ def _materializer_counts(driver: Driver, parameters: dict[str, object]) -> dict[
             "WITH person, count(purchase) AS purchases, "
             "count(CASE WHEN purchase.is_active THEN purchase END) AS active_purchases "
             "MATCH (person)-[vehicle:BOUGHT_VEHICLE]->(:Vehicle) "
-            "RETURN purchases, active_purchases, count(vehicle) AS vehicles, "
-            "count(CASE WHEN vehicle.is_active THEN vehicle END) AS active_vehicles",
+            "WITH purchases, active_purchases, count(vehicle) AS vehicles, "
+            "count(CASE WHEN vehicle.is_active THEN vehicle END) AS active_vehicles, "
+            "count(CASE WHEN vehicle.is_active AND vehicle.retired_at IS NOT NULL "
+            "THEN vehicle END) AS contradictory_vehicles "
+            "MATCH (:Person {person_id: $person_id})-[purchase_again:PURCHASED]->(:Order) "
+            "RETURN purchases, active_purchases, vehicles, active_vehicles, "
+            "count(CASE WHEN purchase_again.is_active "
+            "AND purchase_again.retired_at IS NOT NULL THEN purchase_again END) "
+            "AS contradictory_purchases",
             **parameters,
         ).single(strict=True)
     return {key: int(row[key]) for key in row.keys()}
@@ -230,9 +237,16 @@ def test_sales_materializers_preserve_retired_edges(neo4j_driver: Driver) -> Non
             "source_order_id: $source_order_id}) "
             "CREATE (vehicle:Vehicle {vehicle_id: $vehicle_id}) "
             "CREATE (person)-[:PURCHASED {source_system_key: $source_system_key, "
-            "source_order_id: $source_order_id, is_active: false}]->(order) "
+            "source_order_id: $source_order_id, is_active: true, retired_at: datetime()}]->(order) "
+            "CREATE (person)-[:PURCHASED {source_system_key: $source_system_key, "
+            "source_order_id: $source_order_id, is_active: false, "
+            "retired_at: datetime()}]->(order) "
             "CREATE (person)-[:BOUGHT_VEHICLE {source_system_key: $source_system_key, "
-            "source_order_id: $source_order_id, is_active: false}]->(vehicle)",
+            "source_order_id: $source_order_id, is_active: true, "
+            "retired_at: datetime()}]->(vehicle) "
+            "CREATE (person)-[:BOUGHT_VEHICLE {source_system_key: $source_system_key, "
+            "source_order_id: $source_order_id, is_active: false, "
+            "retired_at: datetime()}]->(vehicle)",
             **parameters,
         ).consume()
         for _ in range(2):
@@ -243,6 +257,8 @@ def test_sales_materializers_preserve_retired_edges(neo4j_driver: Driver) -> Non
         "active_purchases": 1,
         "vehicles": 2,
         "active_vehicles": 1,
+        "contradictory_vehicles": 0,
+        "contradictory_purchases": 0,
     }
 
 
@@ -268,4 +284,6 @@ def test_sales_materializers_normalize_legacy_active_edges(neo4j_driver: Driver)
         "active_purchases": 1,
         "vehicles": 1,
         "active_vehicles": 1,
+        "contradictory_vehicles": 0,
+        "contradictory_purchases": 0,
     }
