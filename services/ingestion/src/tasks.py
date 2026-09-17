@@ -1593,7 +1593,7 @@ def run_ingestion_task(
             raise Reject(str(exc), requeue=False) from exc
         return _bounded_task_outcome(bounded)
 
-    environment = getattr(get_settings(), deployment_environment, None)
+    environment = getattr(get_settings(), "deployment_environment", None)
     reset_generation = (
         active_reset_generation(environment) if isinstance(environment, str) else None
     )
