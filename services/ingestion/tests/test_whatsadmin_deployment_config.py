@@ -85,7 +85,8 @@ def test_whatsadmin_timeout_resilience_defaults_are_aligned() -> None:
         for example in examples:
             assert f"{name}={value}" in example
     assert "for ingestion_service in ingestion-worker lifecycle-worker beat" in deploy
-    assert 'contains_service "${key}"' in deploy
+    assert 'CONFIGURED_SERVICES=("${EXPECTED_SERVICES[@]}")' in deploy
+    assert 'printf \'%s\\n\' "${resolved_services[@]}" | grep -Fxq "${key}"' in deploy
     assert "Compose configuration is missing required service" in deploy
     assert 'resolved_service="$("${COMPOSE[@]}" config "${ingestion_service}")"' in deploy
 

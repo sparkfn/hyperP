@@ -52,8 +52,17 @@ marker_path() {
 
 assert_untracked() {
   local relative=$1
-  git ls-files --error-unmatch -- "$relative" >/dev/null 2>&1 \
-    && fail "pause marker must not be tracked"
+  local inspection_status=0
+
+  if git ls-files --error-unmatch -- "$relative" >/dev/null 2>&1; then
+    fail "pause marker must not be tracked"
+  else
+    inspection_status=$?
+  fi
+  if [[ "$inspection_status" -eq 1 ]]; then
+    return 0
+  fi
+  fail "could not inspect whether pause marker is tracked"
 }
 
 assert_marker() {
@@ -99,8 +108,7 @@ migrate_legacy() {
   [[ ! -e "$legacy" && ! -L "$legacy" ]] && return 0
   [[ -f "$legacy" && ! -L "$legacy" && ! -s "$legacy" ]] \
     || fail "legacy lifecycle pause marker is malformed"
-  git ls-files --error-unmatch -- .lifecycle-worker-paused >/dev/null 2>&1 \
-    && fail "legacy pause marker is tracked"
+  assert_untracked ".lifecycle-worker-paused"
   status=$(git status --porcelain --untracked-files=normal)
   [[ "$status" == "?? .lifecycle-worker-paused" ]] \
     || fail "legacy marker migration requires no unrelated dirty state"
@@ -115,7 +123,10 @@ migrate_legacy() {
 consumer_running() {
   local service=$1
   local container_id
-  container_id=$("${compose[@]}" ps -q "$service")
+
+  if ! container_id=$("${compose[@]}" ps -q "$service"); then
+    fail "could not inspect whether $service is running"
+  fi
   [[ -n "$container_id" ]]
 }
 
@@ -128,18 +139,35 @@ pause() {
 }
 
 assert_resume_admitted() {
-  local policy_output=""
+  local policy_probe=""
+  local policy_prepare=""
+  local policy_inspect=""
 
   command -v python3 >/dev/null || fail "python3 is required for resume admission"
   [[ -f "$policy_helper" && ! -L "$policy_helper" ]] \
     || fail "scheduled-ingestion policy helper is unavailable"
-  if ! policy_output="$(
+  if ! policy_probe="$(
+    COMPOSE_PROFILES= python3 "$policy_helper" probe \
+      --compose-file "$compose_file" --compose-project "$compose_project"
+  )"; then
+    fail "could not probe effective scheduled-ingestion policy before resume"
+  fi
+  eval "$policy_probe"
+  if ! policy_prepare="$(
+    COMPOSE_PROFILES= python3 "$policy_helper" prepare \
+      --compose-file "$compose_file" --compose-project "$compose_project" \
+      --repository-root "$repo_dir"
+  )"; then
+    fail "could not prepare effective scheduled-ingestion policy before resume"
+  fi
+  eval "$policy_prepare"
+  if ! policy_inspect="$(
     COMPOSE_PROFILES= python3 "$policy_helper" inspect \
       --compose-file "$compose_file" --compose-project "$compose_project"
   )"; then
-    fail "could not inspect effective scheduled-ingestion policy before resume"
+    fail "could not read back effective scheduled-ingestion policy before resume"
   fi
-  eval "$policy_output"
+  eval "$policy_inspect"
   if [[ "${SCHEDULE_POLICY_ENABLED:-false}" == true ]]; then
     COMPOSE_PROFILES= python3 "$policy_helper" admit \
       --compose-file "$compose_file" --compose-project "$compose_project" \
@@ -149,6 +177,7 @@ assert_resume_admitted() {
 
 resume() {
   local service=$1
+  marker_present "$service" || fail "$service has no deliberate pause marker to resume"
   assert_resume_admitted
   "${compose[@]}" up -d --no-deps "$service"
   consumer_running "$service" || fail "$service did not start; pause marker preserved"
@@ -180,11 +209,15 @@ status_one() {
 
 intent() {
   local service=""
+  local variable_name=""
+
   for service in "${SERVICES[@]}"; do
+    variable_name=${service//-/_}
+    variable_name=${variable_name^^}
     if marker_present "$service"; then
-      printf '%s_PAUSED=true\n' "${service//-/_}" | tr '[:lower:]' '[:upper:]'
+      printf '%s_PAUSED=true\n' "$variable_name"
     else
-      printf '%s_PAUSED=false\n' "${service//-/_}" | tr '[:lower:]' '[:upper:]'
+      printf '%s_PAUSED=false\n' "$variable_name"
     fi
   done
 }

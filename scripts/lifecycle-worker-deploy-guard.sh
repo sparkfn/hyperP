@@ -12,7 +12,11 @@ is_paused() {
 
 case "$action" in
   plan)
-    paused_services=${2:?comma-separated paused services are required}
+    [[ $# -ge 2 ]] || {
+      echo "comma-separated paused services argument is required" >&2
+      exit 2
+    }
+    paused_services=$2
     shift 2
     running_services=()
     stopped_services=()

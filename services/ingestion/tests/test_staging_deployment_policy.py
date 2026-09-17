@@ -58,9 +58,10 @@ def _policy_run(
     *extra: str,
     config: dict[str, object] | None = None,
     document: dict[str, object] | None = None,
+    rewrite_source: bool = True,
 ) -> subprocess.CompletedProcess[str]:
     config_root = tmp_path / "effective-config"
-    config_root.mkdir()
+    config_root.mkdir(exist_ok=True)
     effective_config = config or {
         "unrelated": {"retained": True},
         "scheduled_ingestion": {
@@ -72,14 +73,20 @@ def _policy_run(
             "drain_reserve_seconds": 900,
         },
     }
-    (config_root / "ingestion-config.json").write_text(
-        json.dumps(effective_config),
-        encoding="utf-8",
-    )
+    if rewrite_source:
+        (config_root / "ingestion-config.json").write_text(
+            json.dumps(effective_config),
+            encoding="utf-8",
+        )
     document_path = tmp_path / "compose.json"
     document_path.write_text(
         json.dumps(document or _resolved_document(config_root)),
         encoding="utf-8",
+    )
+    prepare_arguments = (
+        ("--repository-root", str(tmp_path))
+        if command == "prepare"
+        else ()
     )
     return subprocess.run(
         [
@@ -90,6 +97,7 @@ def _policy_run(
             str(document_path),
             "--compose-directory",
             str(tmp_path),
+            *prepare_arguments,
             *extra,
         ],
         check=False,
@@ -98,21 +106,18 @@ def _policy_run(
     )
 
 
-def test_policy_helper_records_non_effective_evidence_without_mutating_source(
+def test_policy_helper_preserves_complete_effective_config_without_copying_contents(
     tmp_path: Path,
 ) -> None:
-    state_directory = tmp_path / "ignored-state"
-    result = _policy_run(tmp_path, "prepare", "--state-directory", str(state_directory))
+    result = _policy_run(tmp_path, "prepare")
 
     assert result.returncode == 0, result.stderr
     source_path = tmp_path / "effective-config/ingestion-config.json"
-    staged_path = state_directory / "policy-evidence/ingestion-config.json"
     source = json.loads(source_path.read_text(encoding="utf-8"))
-    staged = json.loads(staged_path.read_text(encoding="utf-8"))
     assert source["scheduled_ingestion"]["manual_pause"] is True
-    assert source == staged
     assert "SCHEDULE_POLICY_ENABLED=false" in result.stdout
-    assert "SCHEDULE_POLICY_EVIDENCE_PATH=" in result.stdout
+    assert "SCHEDULE_POLICY_NEEDS_MIGRATION=false" in result.stdout
+    assert "EVIDENCE" not in result.stdout
 
 
 def test_policy_helper_rejects_missing_effective_policy_key(tmp_path: Path) -> None:
@@ -129,6 +134,69 @@ def test_policy_helper_rejects_missing_effective_policy_key(tmp_path: Path) -> N
 
     assert result.returncode == 2
     assert "drain_reserve_seconds is required" in result.stderr
+
+
+def test_policy_probe_and_prepare_atomically_fill_only_missing_policy_keys(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    config = {
+        "unrelated": {"retained": True},
+        "scheduled_ingestion": {
+            "enabled": False,
+            "manual_pause": True,
+            "timezone": "Asia/Singapore",
+            "local_opening": "09:00",
+        },
+    }
+
+    probe = _policy_run(tmp_path, "probe", config=config)
+    source_path = tmp_path / "effective-config/ingestion-config.json"
+    os.chmod(source_path, 0o600)
+    prior_umask = os.umask(0o000)
+    try:
+        prepared = _policy_run(
+            tmp_path,
+            "prepare",
+            config=config,
+            rewrite_source=False,
+        )
+    finally:
+        os.umask(prior_umask)
+    strict = _policy_run(tmp_path, "inspect", rewrite_source=False)
+    payload = json.loads(source_path.read_text(encoding="utf-8"))
+
+    assert probe.returncode == 0, probe.stderr
+    assert "SCHEDULE_POLICY_NEEDS_MIGRATION=true" in probe.stdout
+    assert prepared.returncode == 0, prepared.stderr
+    assert strict.returncode == 0, strict.stderr
+    assert payload["unrelated"] == {"retained": True}
+    assert payload["scheduled_ingestion"]["enabled"] is False
+    assert payload["scheduled_ingestion"]["manual_pause"] is True
+    assert payload["scheduled_ingestion"]["local_cutoff"] == "23:00"
+    assert payload["scheduled_ingestion"]["drain_reserve_seconds"] == 900
+    assert source_path.stat().st_mode & 0o777 == 0o600
+
+
+def test_policy_prepare_refuses_tracked_effective_config_before_write(tmp_path: Path) -> None:
+    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
+    config = {
+        "scheduled_ingestion": {
+            "enabled": False,
+            "timezone": "Asia/Singapore",
+        }
+    }
+    _policy_run(tmp_path, "probe", config=config)
+    source_path = tmp_path / "effective-config/ingestion-config.json"
+    before = source_path.read_text(encoding="utf-8")
+    subprocess.run(
+        ["git", "-C", str(tmp_path), "add", str(source_path.relative_to(tmp_path))],
+        check=True,
+    )
+
+    result = _policy_run(tmp_path, "prepare", config=config)
+
+    assert result.returncode == 2
+    assert "tracked" in result.stderr
+    assert source_path.read_text(encoding="utf-8") == before
 
 
 @pytest.mark.parametrize(
@@ -189,6 +257,23 @@ def test_policy_helper_rejects_worker_disagreement_and_out_of_policy_values(tmp_
 
     assert result.returncode == 2
     assert "policy error" in result.stderr
+
+
+def test_policy_probe_rejects_explicit_conflicting_policy_value(tmp_path: Path) -> None:
+    config = {
+        "scheduled_ingestion": {
+            "enabled": False,
+            "timezone": "UTC",
+            "local_opening": "09:00",
+            "local_cutoff": "23:00",
+            "drain_reserve_seconds": 900,
+        }
+    }
+
+    result = _policy_run(tmp_path, "probe", config=config)
+
+    assert result.returncode == 2
+    assert "approved deployment window" in result.stderr
 
 
 @pytest.mark.parametrize(
@@ -331,6 +416,63 @@ def test_guard_separates_running_and_stopped_recreation_for_all_pause_combinatio
         assert (service in running) is not is_paused
 
 
+def test_intent_output_drives_empty_pause_csv_to_running_guard_plan(tmp_path: Path) -> None:
+    repo = tmp_path / "staging"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    result = subprocess.run(
+        ["bash", str(_CONTROL), "intent"],
+        cwd=repo,
+        env={**os.environ, "HYPERP_DEPLOY_LOCK_FILE": str(tmp_path / "lock")},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    guard = subprocess.run(
+        [str(_GUARD), "plan", "", *_WORKERS],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "INGESTION_WORKER_PAUSED=false" in result.stdout
+    assert "LIFECYCLE_WORKER_PAUSED=false" in result.stdout
+    assert "BEAT_PAUSED=false" in result.stdout
+    assert "PAUSED=FALSE" not in result.stdout
+    assert guard.returncode == 0
+    assert "STOPPED_RECREATE_SERVICES=''" in guard.stdout
+
+
+def test_intent_output_drives_real_marker_to_stopped_guard_plan(tmp_path: Path) -> None:
+    repo = tmp_path / "staging"
+    marker = repo / ".docker/staging/data/worker-pauses/ingestion-worker"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True)
+    marker.parent.mkdir(parents=True)
+    marker.touch()
+    result = subprocess.run(
+        ["bash", str(_CONTROL), "intent"],
+        cwd=repo,
+        env={**os.environ, "HYPERP_DEPLOY_LOCK_FILE": str(tmp_path / "lock")},
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    guard = subprocess.run(
+        [str(_GUARD), "plan", "ingestion-worker", *_WORKERS],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+
+    assert result.returncode == 0, result.stderr
+    assert "INGESTION_WORKER_PAUSED=true" in result.stdout
+    assert "INGESTION_WORKER_PAUSED=TRUE" not in result.stdout
+    assert guard.returncode == 0
+    assert "STOPPED_RECREATE_SERVICES=ingestion-worker" in guard.stdout
+
+
 def test_dormant_intelligence_is_profiled_and_deploy_neutralizes_ambient_profiles() -> None:
     deployment = _DEPLOY.read_text(encoding="utf-8")
     for compose in _COMPOSES:
@@ -345,9 +487,9 @@ def test_dormant_intelligence_is_profiled_and_deploy_neutralizes_ambient_profile
         assert "INTELLIGENCE_CRM_ACTIVITY_CLEANUP_ENABLED:" in intelligence
     assert "COMPOSE=(env COMPOSE_PROFILES= docker compose" in deployment
     assert "intelligence" not in deployment.split("EXPECTED_SERVICES=", 1)[1].split(")", 1)[0]
-    assert "create --no-deps --force-recreate" in deployment
+    assert "up --no-start --no-deps --force-recreate" in deployment
+    assert "lacks required --no-start support" in deployment
     assert "lacks required --no-deps support" in deployment
-    assert 'create --force-recreate "$@"' not in deployment
     assert "stop intelligence" not in deployment
     assert "rm -f intelligence" not in deployment
 
@@ -368,12 +510,24 @@ def test_deployment_retains_active_publication_fencing_and_activity_retirement_g
 def test_deployment_captures_helper_output_before_eval_and_fails_closed() -> None:
     deployment = _DEPLOY.read_text(encoding="utf-8")
     assert 'if ! worker_intent="$(' in deployment
+    assert 'if ! policy_probe="$(python3 "${POLICY_HELPER}" probe' in deployment
+    assert 'if ! policy_prepare="$(python3 "${POLICY_HELPER}" prepare' in deployment
     assert 'if ! policy_inspect="$(python3 "${POLICY_HELPER}" inspect' in deployment
-    assert 'if ! policy_evidence="$(python3 "${POLICY_HELPER}" prepare' in deployment
     assert 'eval "${worker_intent}"' in deployment
+    assert 'eval "${policy_probe}"' in deployment
+    assert 'eval "${policy_prepare}"' in deployment
     assert 'eval "${policy_inspect}"' in deployment
-    assert 'eval "${policy_evidence}"' in deployment
     assert "python3 is not installed" in deployment
+
+
+def test_deployment_prepares_and_strictly_reads_back_policy_without_worker_recreation() -> None:
+    deployment = _DEPLOY.read_text(encoding="utf-8")
+    initial_gate = deployment.index('if [[ "${SCHEDULE_POLICY_ENABLED:-false}" == true')
+    prepare = deployment.index('if ! policy_prepare="$(python3 "${POLICY_HELPER}" prepare')
+    strict_readback = deployment.index('if ! policy_inspect="$(python3 "${POLICY_HELPER}" inspect')
+    build = deployment.index('CURRENT_PHASE="building and recreating changed services"')
+
+    assert initial_gate < prepare < strict_readback < build
 
 
 def test_first_deploy_defers_new_helper_requirements_until_after_fast_forward() -> None:

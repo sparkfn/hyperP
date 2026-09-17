@@ -291,10 +291,20 @@ assert_pre_merge_checkout_state() {
     || fail "legacy lifecycle pause marker requires no other dirty checkout state"
 }
 
-create_paused_services() {
-  docker compose create --help 2>&1 | grep -Fq -- '--no-deps' \
-    || fail "Docker Compose create lacks required --no-deps support for paused workers"
-  "${COMPOSE[@]}" create --no-deps --force-recreate "$@"
+assert_stopped_recreation_supported() {
+  local help_text=""
+
+  if ! help_text="$("${COMPOSE[@]}" up --help)"; then
+    fail "could not inspect Docker Compose stopped-recreation capability"
+  fi
+  grep -Fq -- '--no-start' <<< "${help_text}" \
+    || fail "Docker Compose up lacks required --no-start support for paused workers"
+  grep -Fq -- '--no-deps' <<< "${help_text}" \
+    || fail "Docker Compose up lacks required --no-deps support for paused workers"
+}
+
+recreate_paused_services() {
+  "${COMPOSE[@]}" up --no-start --no-deps --force-recreate "$@"
 }
 
 write_deployed_revision() {
@@ -431,11 +441,11 @@ for worker_service in ingestion-worker lifecycle-worker beat; do
       || fail "could not enforce paused ${worker_service} before deployment"
   fi
 done
-policy_inspect=""
-if ! policy_inspect="$(python3 "${POLICY_HELPER}" inspect --compose-file "${COMPOSE_FILE}")"; then
-  fail "could not inspect effective scheduled-ingestion deployment policy"
+policy_probe=""
+if ! policy_probe="$(python3 "${POLICY_HELPER}" probe --compose-file "${COMPOSE_FILE}")"; then
+  fail "could not probe effective scheduled-ingestion deployment policy"
 fi
-eval "${policy_inspect}"
+eval "${policy_probe}"
 
 CURRENT_PHASE="planning selective rebuild"
 ALL_SERVICES=(api frontend2 ingestion-worker lifecycle-worker beat)
@@ -521,14 +531,20 @@ if [[ "${SCHEDULE_POLICY_ENABLED:-false}" == true && "${WORKER_RUNNING_RECREATE}
   python3 "${POLICY_HELPER}" admit --compose-file "${COMPOSE_FILE}" \
     || fail "scheduled-ingestion policy closes worker recreation outside the drain-safe window"
 fi
-if [[ "${WORKER_RUNNING_RECREATE}" == true || ${#STOPPED_RECREATE_SERVICE_ARRAY[@]} -gt 0 ]]; then
-  policy_evidence=""
-  if ! policy_evidence="$(python3 "${POLICY_HELPER}" prepare --compose-file "${COMPOSE_FILE}" \
-    --state-directory "${REPO_DIR}/.docker/staging/data")"; then
-    fail "could not atomically record scheduled-ingestion policy evidence"
-  fi
-  eval "${policy_evidence}"
+if (( ${#STOPPED_RECREATE_SERVICE_ARRAY[@]} > 0 )); then
+  assert_stopped_recreation_supported
 fi
+policy_prepare=""
+if ! policy_prepare="$(python3 "${POLICY_HELPER}" prepare --compose-file "${COMPOSE_FILE}" \
+  --repository-root "${REPO_DIR}")"; then
+  fail "could not atomically prepare effective scheduled-ingestion policy"
+fi
+eval "${policy_prepare}"
+policy_inspect=""
+if ! policy_inspect="$(python3 "${POLICY_HELPER}" inspect --compose-file "${COMPOSE_FILE}")"; then
+  fail "could not strictly read back effective scheduled-ingestion policy"
+fi
+eval "${policy_inspect}"
 
 CURRENT_PHASE="building and recreating changed services"
 if (( ${#BUILD_SERVICE_ARRAY[@]} == 0 )); then
@@ -563,7 +579,7 @@ if (( ${#RUNNING_RECREATE_SERVICE_ARRAY[@]} > 0 )); then
 fi
 if (( ${#STOPPED_RECREATE_SERVICE_ARRAY[@]} > 0 )); then
   printf '[hyperp-staging] recreating paused services stopped: %s\n' "${STOPPED_RECREATE_SERVICES}"
-  create_paused_services "${STOPPED_RECREATE_SERVICE_ARRAY[@]}"
+  recreate_paused_services "${STOPPED_RECREATE_SERVICE_ARRAY[@]}"
 fi
 if (( ${#RUNNING_RECREATE_SERVICE_ARRAY[@]} == 0 && \
   ${#STOPPED_RECREATE_SERVICE_ARRAY[@]} == 0 )); then

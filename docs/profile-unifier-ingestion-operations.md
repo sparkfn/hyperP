@@ -176,8 +176,9 @@ Treat either of these combinations as an inconsistent state requiring investigat
 
 The staging deployment workflow builds changed worker images even while paused.
 It recreates unpaused eligible services with `up -d --no-deps --force-recreate`,
-and paused services with `create --no-deps --force-recreate`; if the installed
-Compose does not support `create --no-deps`, deployment fails closed. It then verifies
+and paused services with `up --no-start --no-deps --force-recreate`; deployment
+checks both supported flags before any service mutation and fails closed if either
+is unavailable. It then verifies
 every paused container remains stopped. Deployment never clears a marker or resumes
 a worker. Beat and completed ingestion tasks can still publish lifecycle work;
 Redis retains it until lifecycle consumption is explicitly resumed.
@@ -188,16 +189,16 @@ still present.
 
 The deployment-only policy helper discovers the actual host bind backing
 `/app/config`, requires all three workers to agree on it and `INGESTION_CONFIG_FILE`,
-and requires the mounted JSON to explicitly contain the exact approved timezone,
-opening, cutoff, and drain-reserve values. It records a read-back **non-effective
-evidence copy** below ignored `.docker/staging/data/policy-evidence/`; that copy
-does not alter the mounted config or activate scheduling. The helper never assumes
-a staging-local config directory, edits tracked config, logs config values, or
-overwrites unrelated or stronger disabled/manual controls. The approved policy is
-`Asia/Singapore`, opening `09:00`, cutoff `23:00`, and a `900`-second drain reserve.
+and probes the approved timezone/opening/cutoff/reserve before mutation. During an
+authorized worker deployment or resume, it atomically adds only missing approved
+keys to the actual mounted JSON, retains its source file mode, and strictly reads it
+back. Explicit conflicting values fail closed. It never emits a config copy, logs
+config values, overwrites `enabled`, manual/stronger pauses, or unrelated fields, or
+writes a Git-tracked effective config. The approved policy is `Asia/Singapore`,
+opening `09:00`, cutoff `23:00`, and a `900`-second drain reserve.
 
 When scheduling is enabled, deployment admits an unpaused worker start/recreation
-only in `[09:00, 22:45)` Asia/Singapore. It checks before image builds/policy staging
+only in `[09:00, 22:45)` Asia/Singapore. It checks before image builds/config migration
 and immediately before container mutation, so an image build crossing the boundary
 fails closed without starting a worker. Paused workers may be recreated stopped outside
 that interval. This is deployment admission only: #430/#431 own runtime admission,

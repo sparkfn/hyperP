@@ -8,6 +8,7 @@ import json
 import os
 import re
 import shlex
+import stat
 import subprocess
 import sys
 from dataclasses import dataclass
@@ -52,6 +53,7 @@ class EffectiveConfig:
     opening: str
     cutoff: str
     reserve_seconds: int
+    needs_migration: bool
     payload: dict[str, object]
 
 
@@ -158,34 +160,43 @@ def _time(value: object, key: str) -> str:
     return value
 
 
-def _policy(payload: dict[str, object]) -> tuple[bool, str, str, str, int]:
+def _policy(
+    payload: dict[str, object],
+    *,
+    require_explicit: bool,
+) -> tuple[bool, str, str, str, int, bool]:
     scheduled = _mapping(payload.get("scheduled_ingestion", {}), "scheduled_ingestion is invalid")
     enabled = scheduled.get("enabled", False)
     if not isinstance(enabled, bool):
         raise PolicyError("scheduled_ingestion.enabled is invalid")
-    for key in _POLICY:
-        if key not in scheduled:
-            raise PolicyError(f"scheduled_ingestion.{key} is required")
-    timezone = scheduled["timezone"]
+    missing = tuple(key for key in _POLICY if key not in scheduled)
+    if require_explicit and missing:
+        raise PolicyError(f"scheduled_ingestion.{missing[0]} is required")
+    timezone = scheduled.get("timezone", _POLICY["timezone"])
     if not isinstance(timezone, str):
         raise PolicyError("scheduled_ingestion.timezone is invalid")
     try:
         ZoneInfo(timezone)
     except ZoneInfoNotFoundError as error:
         raise PolicyError("scheduled_ingestion.timezone is invalid") from error
-    opening = _time(scheduled["local_opening"], "local_opening")
-    cutoff = _time(scheduled["local_cutoff"], "local_cutoff")
-    reserve = scheduled["drain_reserve_seconds"]
+    opening = _time(scheduled.get("local_opening", _POLICY["local_opening"]), "local_opening")
+    cutoff = _time(scheduled.get("local_cutoff", _POLICY["local_cutoff"]), "local_cutoff")
+    reserve = scheduled.get("drain_reserve_seconds", _POLICY["drain_reserve_seconds"])
     if isinstance(reserve, bool) or not isinstance(reserve, int) or reserve <= 0:
         raise PolicyError("scheduled_ingestion.drain_reserve_seconds is invalid")
     if opening >= cutoff:
         raise PolicyError("scheduled_ingestion opening must precede cutoff")
     if (timezone, opening, cutoff, reserve) != ("Asia/Singapore", "09:00", "23:00", 900):
         raise PolicyError("scheduled_ingestion policy must match the approved deployment window")
-    return enabled, timezone, opening, cutoff, reserve
+    return enabled, timezone, opening, cutoff, reserve, bool(missing)
 
 
-def resolve_effective_config(document: dict[str, object], directory: Path) -> EffectiveConfig:
+def resolve_effective_config(
+    document: dict[str, object],
+    directory: Path,
+    *,
+    require_explicit: bool,
+) -> EffectiveConfig:
     """Resolve the shared host config that backs /app/config in Compose."""
     services = _mapping(document.get("services"), "resolved Compose document has no services")
     roots: list[Path] = []
@@ -213,8 +224,20 @@ def resolve_effective_config(document: dict[str, object], directory: Path) -> Ef
     if path.is_symlink() or not path.is_file():
         raise PolicyError("INGESTION_CONFIG_FILE must be a regular file")
     payload = _read_json(path)
-    enabled, timezone, opening, cutoff, reserve = _policy(payload)
-    return EffectiveConfig(path, enabled, timezone, opening, cutoff, reserve, payload)
+    enabled, timezone, opening, cutoff, reserve, needs_migration = _policy(
+        payload,
+        require_explicit=require_explicit,
+    )
+    return EffectiveConfig(
+        path,
+        enabled,
+        timezone,
+        opening,
+        cutoff,
+        reserve,
+        needs_migration,
+        payload,
+    )
 
 
 def _bytes(value: object) -> int:
@@ -347,37 +370,96 @@ def _emit(config: EffectiveConfig) -> None:
     _shell("SCHEDULE_POLICY_LOCAL_OPENING", config.opening)
     _shell("SCHEDULE_POLICY_LOCAL_CUTOFF", config.cutoff)
     _shell("SCHEDULE_POLICY_DRAIN_RESERVE_SECONDS", config.reserve_seconds)
+    _shell("SCHEDULE_POLICY_NEEDS_MIGRATION", config.needs_migration)
 
 
-def _prepare(config: EffectiveConfig, state_directory: Path) -> Path:
-    if state_directory.is_symlink():
-        raise PolicyError("policy state directory is unsafe")
+def _assert_config_is_untracked(config_path: Path, repository_root: Path) -> None:
+    if repository_root.is_symlink() or not repository_root.is_dir():
+        raise PolicyError("repository root for config migration is unsafe")
+    try:
+        relative = config_path.relative_to(repository_root.resolve(strict=True))
+    except (OSError, ValueError):
+        return
+    result = subprocess.run(
+        ["git", "-C", str(repository_root), "ls-files", "--error-unmatch", "--", str(relative)],
+        check=False,
+        capture_output=True,
+        text=True,
+    )
+    if result.returncode == 0:
+        raise PolicyError("effective ingestion config is tracked; refusing to dirty checkout")
+    if result.returncode != 1:
+        raise PolicyError("could not inspect effective ingestion config tracking")
+
+
+def _atomic_replace(path: Path, payload: dict[str, object]) -> None:
+    mode = stat.S_IMODE(path.stat().st_mode)
+    temporary = path.with_name(f".{path.name}.tmp.{os.getpid()}")
+    serialized = (json.dumps(payload, indent=2, sort_keys=True) + "\n").encode("utf-8")
+    descriptor = -1
+    try:
+        descriptor = os.open(
+            temporary,
+            os.O_WRONLY | os.O_CREAT | os.O_EXCL,
+            mode,
+        )
+        os.fchmod(descriptor, mode)
+        remaining = memoryview(serialized)
+        while remaining:
+            written = os.write(descriptor, remaining)
+            if written <= 0:
+                raise OSError("short write while preparing effective ingestion config")
+            remaining = remaining[written:]
+        os.fsync(descriptor)
+        os.close(descriptor)
+        descriptor = -1
+        os.replace(temporary, path)
+        directory_descriptor = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_descriptor)
+        finally:
+            os.close(directory_descriptor)
+    except OSError as error:
+        if descriptor >= 0:
+            os.close(descriptor)
+        temporary.unlink(missing_ok=True)
+        raise PolicyError("could not atomically prepare effective ingestion config") from error
+
+
+def _prepare(config: EffectiveConfig, repository_root: Path) -> EffectiveConfig:
+    if not config.needs_migration:
+        strict_policy = _policy(config.payload, require_explicit=True)
+        return EffectiveConfig(
+            config.path,
+            *strict_policy,
+            config.payload,
+        )
+    _assert_config_is_untracked(config.path, repository_root)
     payload = dict(config.payload)
     scheduled = dict(
         _mapping(payload.get("scheduled_ingestion", {}), "scheduled_ingestion is invalid")
     )
-    scheduled.setdefault("enabled", config.enabled)
-    scheduled.update(_POLICY)
+    for key, value in _POLICY.items():
+        scheduled.setdefault(key, value)
     payload["scheduled_ingestion"] = scheduled
-    destination = state_directory / "policy-evidence" / "ingestion-config.json"
-    destination.parent.mkdir(parents=True, exist_ok=True)
-    if destination.parent.is_symlink():
-        raise PolicyError("policy state directory is unsafe")
-    temporary = destination.with_name(f".{destination.name}.tmp.{os.getpid()}")
-    try:
-        with temporary.open("x", encoding="utf-8") as handle:
-            handle.write(json.dumps(payload, indent=2, sort_keys=True) + "\n")
-            handle.flush()
-            os.fsync(handle.fileno())
-        os.replace(temporary, destination)
-    except OSError as error:
-        temporary.unlink(missing_ok=True)
-        raise PolicyError("could not atomically record deployment policy evidence") from error
-    persisted = _policy(_read_json(destination))
-    expected = (config.enabled, "Asia/Singapore", "09:00", "23:00", 900)
-    if persisted != expected:
-        raise PolicyError("deployment policy evidence did not read back exactly")
-    return destination
+    _atomic_replace(config.path, payload)
+    persisted = _read_json(config.path)
+    enabled, timezone, opening, cutoff, reserve, needs_migration = _policy(
+        persisted,
+        require_explicit=True,
+    )
+    if needs_migration:
+        raise PolicyError("effective ingestion config migration did not read back")
+    return EffectiveConfig(
+        config.path,
+        enabled,
+        timezone,
+        opening,
+        cutoff,
+        reserve,
+        False,
+        persisted,
+    )
 
 
 def _admitted(config: EffectiveConfig, now: datetime) -> bool:
@@ -393,7 +475,7 @@ def _admitted(config: EffectiveConfig, now: datetime) -> bool:
 def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(description=__doc__)
     commands = parser.add_subparsers(dest="command", required=True)
-    for name in ("inspect", "prepare", "admit"):
+    for name in ("probe", "inspect", "prepare", "admit"):
         command = commands.add_parser(name)
         source = command.add_mutually_exclusive_group(required=True)
         source.add_argument("--compose-json")
@@ -401,7 +483,7 @@ def _parser() -> argparse.ArgumentParser:
         command.add_argument("--compose-directory", default=".")
         command.add_argument("--compose-project", default="hyperp-ada-asia")
         if name == "prepare":
-            command.add_argument("--state-directory", required=True)
+            command.add_argument("--repository-root", required=True)
         if name == "admit":
             command.add_argument("--now")
     return parser
@@ -412,14 +494,18 @@ def main(arguments: list[str] | None = None) -> int:
     try:
         document, directory = _document(args)
         _validate_resources(document)
-        config = resolve_effective_config(document, directory)
-        if args.command == "inspect":
+        require_explicit = args.command == "inspect"
+        config = resolve_effective_config(
+            document,
+            directory,
+            require_explicit=require_explicit,
+        )
+        if args.command in {"probe", "inspect"}:
             _emit(config)
             return 0
         if args.command == "prepare":
-            destination = _prepare(config, Path(args.state_directory))
-            _emit(config)
-            _shell("SCHEDULE_POLICY_EVIDENCE_PATH", str(destination))
+            prepared = _prepare(config, Path(args.repository_root))
+            _emit(prepared)
             return 0
         now = (
             datetime.fromisoformat(args.now)
