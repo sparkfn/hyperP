@@ -5,9 +5,9 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import Any, TypeVar
+from typing import Any, TypeVar, cast
 
-from neo4j import Driver, GraphDatabase, ManagedTransaction, Session
+from neo4j import Driver, GraphDatabase, ManagedTransaction, Session, unit_of_work
 
 from src.config import Settings
 
@@ -51,11 +51,19 @@ class Neo4jClient:
     def execute_write(
         self,
         work: Callable[[ManagedTransaction], T],
+        *,
+        transaction_timeout_seconds: float | None = None,
         **session_kwargs: Any,
     ) -> T:
-        """Run *work* inside a write transaction and return its result."""
+        """Run *work* in a write transaction with an optional server timeout."""
+        transaction_work = work
+        if transaction_timeout_seconds is not None:
+            if transaction_timeout_seconds <= 0:
+                raise ValueError("transaction timeout must be positive")
+            decorated = unit_of_work(timeout=transaction_timeout_seconds)(work)
+            transaction_work = cast(Callable[[ManagedTransaction], T], decorated)
         with self.session(**session_kwargs) as sess:
-            return sess.execute_write(work)
+            return sess.execute_write(transaction_work)
 
     def execute_read(
         self,

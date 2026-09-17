@@ -6,7 +6,11 @@ import pytest
 from fastapi import HTTPException, Request
 from neo4j import AsyncManagedTransaction
 from src.auth.models import AuthUser
-from src.graph.queries.ingestion import CREATE_SOURCE_RECORD
+from src.graph.queries.ingestion import (
+    CREATE_SOURCE_RECORD,
+    UPDATE_INGEST_RUN,
+    UPDATE_INGEST_RUN_COUNTERS,
+)
 from src.repositories.neo4j.ingest import _persist_records
 from src.repositories.protocols.ingest import IngestRecordsResponse, IngestRepository
 from src.routes.ingest import ingest_records
@@ -138,3 +142,12 @@ async def test_unknown_entity_record_is_rejected_instead_of_reported_accepted() 
     assert [(item.source_record_id, item.status) for item in results] == [
         ("chat-77-person-1", "rejected")
     ]
+
+
+def test_direct_ingest_queries_cannot_mutate_runner_owned_attempts() -> None:
+    for query in (
+        CREATE_SOURCE_RECORD,
+        UPDATE_INGEST_RUN_COUNTERS,
+        UPDATE_INGEST_RUN,
+    ):
+        assert "ir.logical_run_id IS NULL" in query

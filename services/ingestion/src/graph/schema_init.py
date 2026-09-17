@@ -12,6 +12,7 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from src.graph.bounded_ingestion_schema import CREATE_BOUNDED_INGESTION_SCHEMA
 from src.graph.client import Neo4jClient
 from src.graph.identifier_scope_schema import apply_identifier_scope_schema_transition
 from src.graph.queries.bitrix_backfill import CREATE_BITRIX_BACKFILL_CONSTRAINTS
@@ -72,6 +73,7 @@ ON (sr.source_version_key)""",
     *CREATE_STANDALONE_CRM_CENSUS_CONSTRAINTS,
     *CREATE_STANDALONE_CRM_LANE_A_CONSTRAINTS,
     *CREATE_IDENTITY_LINK_SCHEMA,
+    *CREATE_BOUNDED_INGESTION_SCHEMA,
 )
 
 DEFERRED_SOURCE_RECORD_CONSTRAINTS: tuple[str, ...] = (

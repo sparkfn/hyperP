@@ -91,6 +91,7 @@ MATCH (ss:SourceSystem {source_key: $source_key})
 MATCH (ir:IngestRun {
   ingest_run_id: $ingest_run_id, control_instance_id: 'legacy-default'
 })
+WHERE ir.logical_run_id IS NULL
 OPTIONAL MATCH (entity:Entity {entity_key: $entity_key})
 WITH ss, ir, entity
 WHERE $entity_key IS NULL OR entity IS NOT NULL
@@ -124,6 +125,7 @@ UPDATE_INGEST_RUN_COUNTERS = """
 MATCH (ir:IngestRun {
   ingest_run_id: $ingest_run_id, control_instance_id: 'legacy-default'
 })
+WHERE ir.logical_run_id IS NULL
 SET ir.record_count = ir.record_count + $accepted,
     ir.rejected_count = ir.rejected_count + $rejected
 """
@@ -193,6 +195,7 @@ UPDATE_INGEST_RUN = """
 MATCH (ir:IngestRun {
   ingest_run_id: $ingest_run_id, control_instance_id: 'legacy-default'
 })-[:FROM_SOURCE]->(ss:SourceSystem {source_key: $source_key})
+WHERE ir.logical_run_id IS NULL
 SET ir.status = $status,
     ir.finished_at = CASE WHEN $finished_at IS NOT NULL THEN datetime($finished_at) ELSE ir.finished_at END,
     ir.metadata = CASE WHEN $metadata IS NOT NULL THEN $metadata ELSE ir.metadata END

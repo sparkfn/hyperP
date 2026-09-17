@@ -52,6 +52,17 @@
     "local_cutoff": "23:00",
     "drain_reserve_seconds": 900
   },
+  "bounded_ingestion": {
+    "max_records": 5000,
+    "max_source_requests": 500,
+    "max_pages": 500,
+    "max_bytes": 50000000,
+    "max_extraction_calls": 500,
+    "max_unit_seconds": 120.0,
+    "max_graph_transaction_seconds": 30.0,
+    "drain_reserve_seconds": 300.0,
+    "max_graph_writers": 1
+  },
   "stage_history_ingestion": {
     "enabled": false,
     "authorization_reference": "",

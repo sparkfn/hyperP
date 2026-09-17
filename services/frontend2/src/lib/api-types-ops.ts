@@ -410,3 +410,44 @@ export const OAUTH_CLIENT_SCOPES: readonly string[] = [
   "ingest:write",
   "admin",
 ] as const;
+
+export interface BoundedLogicalRunUsage {
+  records: number;
+  source_requests: number;
+  pages: number;
+  bytes_read: number;
+  extraction_calls: number;
+}
+
+export interface BoundedLogicalRunStatus {
+  logical_run_id: string;
+  source_key: string;
+  control_instance_id: string;
+  entity_key: string | null;
+  status: string;
+  pause_reason: string | null;
+  occurrence_id: string | null;
+  timezone: string | null;
+  starts_at: string | null;
+  drain_starts_at: string | null;
+  cutoff_at: string | null;
+  next_eligible_at: string | null;
+  usage: BoundedLogicalRunUsage;
+  phase: string | null;
+  checkpointed_at: string | null;
+  retry_backlog: number;
+  failure_category: string | null;
+}
+
+export interface BoundedRunPauseRequest {
+  source_key: string;
+  control_instance_id: string;
+  reset_generation: number;
+  reason: string;
+}
+
+export interface BoundedRunResumeRequest {
+  source_key: string;
+  control_instance_id: string;
+  reset_generation: number;
+}

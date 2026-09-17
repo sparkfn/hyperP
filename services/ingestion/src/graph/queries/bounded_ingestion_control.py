@@ -1,0 +1,647 @@
+"""Cypher for graph-authoritative bounded ingestion control."""
+
+from __future__ import annotations
+
+ENSURE_BOUNDED_LOGICAL_RUN = """
+MATCH (source:SourceSystem {source_key: $source_key, is_active: true})
+MATCH (reset:IngestionResetGeneration {
+  environment: $environment,
+  generation: $reset_generation,
+  status: 'active'
+})
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {
+  source_key: $source_key,
+  control_instance_id: $control_instance_id
+})
+WITH source, reset, dispatch
+WHERE dispatch IS NULL OR coalesce(dispatch.blocked, false) = false
+MERGE (scope:BoundedIngestionScope {scope_key: $scope_key})
+ON CREATE SET scope.created_at = datetime(),
+  scope.environment = $environment,
+  scope.reset_generation = $reset_generation,
+  scope.source_key = $source_key,
+  scope.control_instance_id = $control_instance_id,
+  scope.entity_key = $entity_key,
+  scope.stream_key = $stream_key,
+  scope.mode = $mode,
+  scope.configuration_fingerprint = $configuration_fingerprint,
+  scope.connector_version = $connector_version,
+  scope.checkpoint_schema_version = $checkpoint_schema_version
+WITH source, scope
+WHERE scope.environment = $environment
+  AND scope.reset_generation = $reset_generation
+  AND scope.source_key = $source_key
+  AND scope.control_instance_id = $control_instance_id
+  AND coalesce(scope.entity_key, '') = coalesce($entity_key, '')
+  AND coalesce(scope.stream_key, '') = coalesce($stream_key, '')
+  AND scope.mode = $mode
+  AND scope.configuration_fingerprint = $configuration_fingerprint
+  AND scope.connector_version = $connector_version
+  AND scope.checkpoint_schema_version = $checkpoint_schema_version
+MERGE (logical:IngestionLogicalRun {bounded_logical_key: $logical_key})
+ON CREATE SET logical.logical_run_id = randomUUID(),
+  logical.bounded_scope_key = $scope_key,
+  logical.environment = $environment,
+  logical.source_key = $source_key,
+  logical.control_instance_id = $control_instance_id,
+  logical.entity_key = $entity_key,
+  logical.execution_stream = $stream_key,
+  logical.mode = $mode,
+  logical.status = 'queued',
+  logical.bounded_status = 'queued',
+  logical.active_generation = 0,
+  logical.bounded_fencing_token = 0,
+  logical.reset_generation = $reset_generation,
+  logical.configuration_fingerprint = $configuration_fingerprint,
+  logical.connector_version = $connector_version,
+  logical.checkpoint_schema_version = $checkpoint_schema_version,
+  logical.current_phase = $phase,
+  logical.occurrence_id = $occurrence_id,
+  logical.occurrence_timezone = $timezone,
+  logical.occurrence_scheduled = $scheduled,
+  logical.occurrence_starts_at = datetime($starts_at),
+  logical.drain_starts_at = datetime($drain_starts_at),
+  logical.cutoff_at = datetime($cutoff_at),
+  logical.next_occurrence_at = datetime($next_eligible_at),
+  logical.next_eligible_at = datetime($starts_at),
+  logical.manual_pause = false,
+  logical.usage_records = 0,
+  logical.usage_source_requests = 0,
+  logical.usage_pages = 0,
+  logical.usage_bytes = 0,
+  logical.usage_extraction_calls = 0,
+  logical.reserved_records = 0,
+  logical.reserved_source_requests = 0,
+  logical.reserved_pages = 0,
+  logical.reserved_bytes = 0,
+  logical.reserved_extraction_calls = 0,
+  logical.retry_backlog = 0,
+  logical.created_at = datetime(),
+  logical.updated_at = datetime()
+WITH source, scope, logical
+WHERE logical.bounded_scope_key = $scope_key
+  AND logical.reset_generation = $reset_generation
+  AND logical.configuration_fingerprint = $configuration_fingerprint
+  AND logical.connector_version = $connector_version
+  AND logical.checkpoint_schema_version = $checkpoint_schema_version
+MERGE (scope)-[:OWNS]->(logical)
+MERGE (logical)-[:FOR_SOURCE]->(source)
+MERGE (checkpoint:IngestionCheckpoint {
+  control_instance_id: $control_instance_id,
+  logical_run_id: logical.logical_run_id,
+  phase: $phase
+})
+ON CREATE SET checkpoint.generation = 0,
+  checkpoint.status = 'paused',
+  checkpoint.cursor_json = $cursor_json,
+  checkpoint.source_window_json = $source_window_json,
+  checkpoint.connector_version = $connector_version,
+  checkpoint.schema_version = $checkpoint_schema_version,
+  checkpoint.replay_boundary = $replay_boundary,
+  checkpoint.committed_count = 0,
+  checkpoint.duplicate_count = 0,
+  checkpoint.excluded_count = 0,
+  checkpoint.retry_count = 0,
+  checkpoint.created_at = datetime(),
+  checkpoint.updated_at = datetime()
+MERGE (checkpoint)-[:CHECKPOINT_FOR]->(logical)
+RETURN logical.logical_run_id AS logical_run_id,
+  logical.bounded_status AS status,
+  logical.manual_pause AS manual_pause,
+  toString(logical.next_eligible_at) AS next_eligible_at,
+  logical.occurrence_id AS occurrence_id
+"""
+
+REBIND_BOUNDED_OCCURRENCE = """
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id,
+  reset_generation: $reset_generation,
+  bounded_status: 'paused_with_checkpoint'
+})
+WHERE coalesce(logical.manual_pause, false) = false
+  AND datetime($now) >= logical.next_eligible_at
+  AND datetime($now) >= datetime($starts_at)
+  AND datetime($now) < datetime($drain_starts_at)
+SET logical.occurrence_id = $occurrence_id,
+  logical.occurrence_timezone = $timezone,
+  logical.occurrence_scheduled = $scheduled,
+  logical.occurrence_starts_at = datetime($starts_at),
+  logical.drain_starts_at = datetime($drain_starts_at),
+  logical.cutoff_at = datetime($cutoff_at),
+  logical.next_occurrence_at = datetime($next_eligible_at),
+  logical.next_eligible_at = datetime($starts_at),
+  logical.reserved_records = 0,
+  logical.reserved_source_requests = 0,
+  logical.reserved_pages = 0,
+  logical.reserved_bytes = 0,
+  logical.reserved_extraction_calls = 0,
+  logical.updated_at = datetime()
+RETURN logical.logical_run_id AS logical_run_id
+"""
+
+CLAIM_BOUNDED_ATTEMPT = """
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id,
+  reset_generation: $reset_generation
+})
+MATCH (logical)-[:FOR_SOURCE]->(:SourceSystem {source_key: $source_key, is_active: true})
+MATCH (reset:IngestionResetGeneration {
+  environment: $environment,
+  generation: $reset_generation,
+  status: 'active'
+})
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {
+  source_key: $source_key,
+  control_instance_id: $control_instance_id
+})
+WITH logical, reset, dispatch
+WHERE dispatch IS NULL OR coalesce(dispatch.blocked, false) = false
+MATCH (checkpoint:IngestionCheckpoint {
+  control_instance_id: $control_instance_id,
+  logical_run_id: $logical_run_id,
+  phase: logical.current_phase
+})
+WITH logical, checkpoint,
+  logical.bounded_status = 'running'
+    AND logical.worker_task_id = $worker_task_id
+    AND logical.lease_token = $lease_token AS same_claim
+WHERE same_claim OR (
+  coalesce(logical.manual_pause, false) = false
+  AND datetime($now) >= logical.next_eligible_at
+  AND datetime($now) >= logical.occurrence_starts_at
+  AND datetime($now) < logical.drain_starts_at
+  AND (
+    logical.bounded_status IN ['queued', 'paused_with_checkpoint', 'failed']
+    OR (
+      logical.bounded_status = 'running'
+      AND datetime($now) >= logical.lease_expires_at
+    )
+  )
+)
+WITH logical, checkpoint, same_claim,
+  CASE WHEN same_claim THEN logical.active_generation ELSE logical.active_generation + 1 END
+    AS generation,
+  CASE WHEN same_claim THEN logical.bounded_fencing_token
+       ELSE logical.bounded_fencing_token + 1 END AS fencing_token
+OPTIONAL MATCH (logical)-[old_active:ACTIVE_ATTEMPT]->(old_attempt:IngestRun)
+FOREACH (_ IN CASE WHEN same_claim OR old_active IS NULL THEN [] ELSE [1] END |
+  SET old_attempt.status = CASE
+    WHEN old_attempt.status IN ['queued', 'started'] THEN 'superseded'
+    ELSE old_attempt.status END,
+    old_attempt.finished_at = CASE
+      WHEN old_attempt.status IN ['queued', 'started'] THEN datetime()
+      ELSE old_attempt.finished_at END
+  DELETE old_active
+)
+FOREACH (_ IN CASE WHEN same_claim THEN [] ELSE [1] END |
+  CREATE (attempt:IngestRun {
+    ingest_run_id: randomUUID(),
+    control_instance_id: $control_instance_id,
+    logical_run_id: logical.logical_run_id,
+    generation: generation,
+    worker_task_id: $worker_task_id,
+    lease_token: $lease_token,
+    run_type: 'bounded',
+    mode: logical.mode,
+    entity_key: logical.entity_key,
+    status: 'started',
+    queued_at: datetime(),
+    started_at: datetime(),
+    record_count: 0,
+    rejected_count: 0,
+    metadata: '{}'
+  })
+  CREATE (logical)-[:HAS_ATTEMPT]->(attempt)
+  CREATE (logical)-[:ACTIVE_ATTEMPT]->(attempt)
+)
+WITH logical, checkpoint, same_claim, generation, fencing_token
+OPTIONAL MATCH (logical)-[:ACTIVE_ATTEMPT]->(active_attempt:IngestRun)
+SET logical.active_generation = generation,
+  logical.bounded_fencing_token = fencing_token,
+  logical.bounded_status = 'running',
+  logical.status = 'running',
+  logical.worker_task_id = $worker_task_id,
+  logical.lease_token = $lease_token,
+  logical.lease_expires_at = datetime($lease_expires_at),
+  logical.failure_category = NULL,
+  logical.publication_intent = false,
+  logical.updated_at = datetime(),
+  checkpoint.generation = generation,
+  checkpoint.status = 'active',
+  checkpoint.updated_at = datetime()
+RETURN logical.logical_run_id AS logical_run_id,
+  active_attempt.ingest_run_id AS ingest_run_id,
+  generation AS attempt_generation,
+  fencing_token AS fencing_token,
+  logical.lease_token AS lease_token,
+  checkpoint.phase AS phase,
+  checkpoint.cursor_json AS cursor_json,
+  checkpoint.source_window_json AS source_window_json,
+  checkpoint.last_committed_record_id AS last_committed_record_id,
+  checkpoint.connector_version AS connector_version,
+  checkpoint.schema_version AS checkpoint_schema_version,
+  checkpoint.replay_boundary AS replay_boundary,
+  coalesce(logical.usage_records, 0) AS usage_records,
+  coalesce(logical.usage_source_requests, 0) AS usage_source_requests,
+  coalesce(logical.usage_pages, 0) AS usage_pages,
+  coalesce(logical.usage_bytes, 0) AS usage_bytes_read,
+  coalesce(logical.usage_extraction_calls, 0) AS usage_extraction_calls,
+  coalesce(logical.reserved_records, 0) AS reserved_records,
+  coalesce(logical.reserved_source_requests, 0) AS reserved_source_requests,
+  coalesce(logical.reserved_pages, 0) AS reserved_pages,
+  coalesce(logical.reserved_bytes, 0) AS reserved_bytes_read,
+  coalesce(logical.reserved_extraction_calls, 0) AS reserved_extraction_calls
+"""
+
+RESERVE_BOUNDED_USAGE = """
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id,
+  reset_generation: $reset_generation,
+  active_generation: $attempt_generation,
+  bounded_fencing_token: $fencing_token,
+  bounded_status: 'running',
+  worker_task_id: $worker_task_id,
+  lease_token: $lease_token
+})
+WHERE datetime() < logical.lease_expires_at
+  AND coalesce(logical.reserved_records, 0) + $records <= $max_records
+  AND coalesce(logical.reserved_source_requests, 0) + $source_requests
+    <= $max_source_requests
+  AND coalesce(logical.reserved_pages, 0) + $pages <= $max_pages
+  AND coalesce(logical.reserved_bytes, 0) + $bytes_read <= $max_bytes
+  AND coalesce(logical.reserved_extraction_calls, 0) + $extraction_calls
+    <= $max_extraction_calls
+SET logical.reserved_records = coalesce(logical.reserved_records, 0) + $records,
+  logical.reserved_source_requests =
+    coalesce(logical.reserved_source_requests, 0) + $source_requests,
+  logical.reserved_pages = coalesce(logical.reserved_pages, 0) + $pages,
+  logical.reserved_bytes = coalesce(logical.reserved_bytes, 0) + $bytes_read,
+  logical.reserved_extraction_calls =
+    coalesce(logical.reserved_extraction_calls, 0) + $extraction_calls,
+  logical.updated_at = datetime()
+RETURN logical.logical_run_id AS logical_run_id
+"""
+
+CLAIM_BOUNDED_RECEIPT = """
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id,
+  reset_generation: $reset_generation,
+  active_generation: $attempt_generation,
+  bounded_fencing_token: $fencing_token,
+  bounded_status: 'running',
+  worker_task_id: $worker_task_id,
+  lease_token: $lease_token
+})
+WHERE datetime() < logical.lease_expires_at
+MATCH (checkpoint:IngestionCheckpoint {
+  control_instance_id: logical.control_instance_id,
+  logical_run_id: $logical_run_id,
+  phase: $phase,
+  generation: $attempt_generation,
+  status: 'active'
+})
+WHERE checkpoint.cursor_json = $cursor_before_json
+MERGE (receipt:BoundedIngestionReceipt {
+  logical_run_id: $logical_run_id,
+  replay_id: $replay_id
+})
+ON CREATE SET receipt.creation_token = $creation_token,
+  receipt.status = 'pending',
+  receipt.created_at = datetime()
+WITH receipt, receipt.creation_token = $creation_token AS created
+REMOVE receipt.creation_token
+RETURN created AS created,
+  receipt.status AS status,
+  receipt.dispositions_json AS dispositions_json
+"""
+
+PERSIST_BOUNDED_RETRY = """
+MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
+MERGE (retry:BoundedIngestionRetry {
+  logical_run_id: $logical_run_id,
+  replay_id: $replay_id,
+  source_record_id: $source_record_id
+})
+ON CREATE SET retry.creation_token = $creation_token,
+  retry.created_at = datetime()
+SET retry.source_version = $source_version,
+  retry.category = $category,
+  retry.attempt_count = $attempt_count,
+  retry.eligible_at = $eligible_at,
+  retry.status = 'pending',
+  retry.updated_at = datetime()
+MERGE (retry)-[:RETRY_FOR]->(logical)
+WITH retry, retry.creation_token = $creation_token AS created
+REMOVE retry.creation_token
+RETURN created AS created
+"""
+
+RESOLVE_BOUNDED_RETRY = """
+MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
+MATCH (retry:BoundedIngestionRetry {
+  logical_run_id: $logical_run_id,
+  replay_id: $replay_id,
+  source_record_id: $source_record_id,
+  status: 'pending'
+})-[:RETRY_FOR]->(logical)
+SET retry.status = 'resolved',
+  retry.resolved_at = datetime(),
+  retry.updated_at = datetime()
+RETURN retry.source_record_id AS source_record_id
+"""
+
+FINALIZE_BOUNDED_UNIT = """
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id,
+  reset_generation: $reset_generation,
+  active_generation: $attempt_generation,
+  bounded_fencing_token: $fencing_token,
+  bounded_status: 'running',
+  worker_task_id: $worker_task_id,
+  lease_token: $lease_token
+})
+WHERE datetime() < logical.lease_expires_at
+MATCH (checkpoint:IngestionCheckpoint {
+  control_instance_id: logical.control_instance_id,
+  logical_run_id: $logical_run_id,
+  phase: $phase,
+  generation: $attempt_generation,
+  status: 'active'
+})
+MATCH (receipt:BoundedIngestionReceipt {
+  logical_run_id: $logical_run_id,
+  replay_id: $replay_id,
+  status: 'pending'
+})
+SET receipt.status = 'committed',
+  receipt.dispositions_json = $dispositions_json,
+  receipt.committed_at = datetime(),
+  receipt.records = $records,
+  receipt.source_requests = $source_requests,
+  receipt.pages = $pages,
+  receipt.bytes_read = $bytes_read,
+  receipt.extraction_calls = $extraction_calls,
+  checkpoint.cursor_json = $cursor_after_json,
+  checkpoint.last_committed_record_id = $last_committed_record_id,
+  checkpoint.committed_count = coalesce(checkpoint.committed_count, 0) + $committed_delta,
+  checkpoint.duplicate_count = coalesce(checkpoint.duplicate_count, 0) + $duplicate_delta,
+  checkpoint.excluded_count = coalesce(checkpoint.excluded_count, 0) + $excluded_delta,
+  checkpoint.retry_count = coalesce(checkpoint.retry_count, 0) + $retry_delta,
+  checkpoint.updated_at = datetime(),
+  logical.usage_records = coalesce(logical.usage_records, 0) + $records,
+  logical.usage_source_requests =
+    coalesce(logical.usage_source_requests, 0) + $source_requests,
+  logical.usage_pages = coalesce(logical.usage_pages, 0) + $pages,
+  logical.usage_bytes = coalesce(logical.usage_bytes, 0) + $bytes_read,
+  logical.usage_extraction_calls =
+    coalesce(logical.usage_extraction_calls, 0) + $extraction_calls,
+  logical.retry_backlog = CASE
+    WHEN coalesce(logical.retry_backlog, 0) + $retry_backlog_delta < 0 THEN 0
+    ELSE coalesce(logical.retry_backlog, 0) + $retry_backlog_delta END,
+  logical.current_phase = checkpoint.phase,
+  logical.updated_at = datetime()
+RETURN logical.logical_run_id AS logical_run_id
+"""
+
+PAUSE_BOUNDED_RUN = """
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id,
+  reset_generation: $reset_generation,
+  active_generation: $attempt_generation,
+  bounded_fencing_token: $fencing_token,
+  bounded_status: 'running',
+  worker_task_id: $worker_task_id,
+  lease_token: $lease_token
+})
+WHERE datetime() < logical.lease_expires_at
+OPTIONAL MATCH (logical)-[active:ACTIVE_ATTEMPT]->(attempt:IngestRun)
+SET logical.bounded_status = 'paused_with_checkpoint',
+  logical.status = 'paused_with_checkpoint',
+  logical.pause_reason = $pause_reason,
+  logical.next_eligible_at = datetime($next_eligible_at),
+  logical.worker_task_id = NULL,
+  logical.lease_token = NULL,
+  logical.updated_at = datetime(),
+  attempt.status = 'paused_with_checkpoint',
+  attempt.finished_at = datetime()
+DELETE active
+RETURN logical.logical_run_id AS logical_run_id
+"""
+
+FAIL_BOUNDED_RUN = """
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id,
+  reset_generation: $reset_generation,
+  active_generation: $attempt_generation,
+  bounded_fencing_token: $fencing_token,
+  bounded_status: 'running',
+  worker_task_id: $worker_task_id,
+  lease_token: $lease_token
+})
+WHERE datetime() < logical.lease_expires_at
+OPTIONAL MATCH (logical)-[active:ACTIVE_ATTEMPT]->(attempt:IngestRun)
+SET logical.bounded_status = 'failed',
+  logical.status = 'failed',
+  logical.failure_category = $failure_category,
+  logical.failure_message = $failure_message,
+  logical.next_eligible_at = datetime($next_eligible_at),
+  logical.worker_task_id = NULL,
+  logical.lease_token = NULL,
+  logical.updated_at = datetime(),
+  attempt.status = 'failed',
+  attempt.failure_category = $failure_category,
+  attempt.failure_message = $failure_message,
+  attempt.finished_at = datetime()
+DELETE active
+RETURN logical.logical_run_id AS logical_run_id
+"""
+
+FINALIZE_BOUNDED_RUN = """
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id,
+  reset_generation: $reset_generation,
+  active_generation: $attempt_generation,
+  bounded_fencing_token: $fencing_token,
+  bounded_status: 'running',
+  worker_task_id: $worker_task_id,
+  lease_token: $lease_token
+})
+WHERE datetime() < logical.lease_expires_at
+MATCH (checkpoint:IngestionCheckpoint {
+  logical_run_id: $logical_run_id,
+  phase: logical.current_phase,
+  generation: $attempt_generation,
+  status: 'active'
+})
+OPTIONAL MATCH (logical)-[active:ACTIVE_ATTEMPT]->(attempt:IngestRun)
+WHERE coalesce(logical.retry_backlog, 0) = 0
+SET logical.bounded_status = 'completed',
+  logical.status = 'completed',
+  logical.pause_reason = NULL,
+  logical.worker_task_id = NULL,
+  logical.lease_token = NULL,
+  logical.finished_at = datetime(),
+  logical.updated_at = datetime(),
+  checkpoint.status = 'completed',
+  checkpoint.updated_at = datetime(),
+  attempt.status = 'completed',
+  attempt.finished_at = datetime(),
+  attempt.record_count = coalesce(logical.usage_records, 0),
+  attempt.rejected_count = 0
+DELETE active
+RETURN logical.logical_run_id AS logical_run_id
+"""
+
+GET_BOUNDED_STATUS = """
+MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
+OPTIONAL MATCH (checkpoint:IngestionCheckpoint {
+  logical_run_id: logical.logical_run_id,
+  phase: logical.current_phase,
+  generation: logical.active_generation
+})
+RETURN logical.logical_run_id AS logical_run_id,
+  logical.source_key AS source_key,
+  logical.control_instance_id AS control_instance_id,
+  logical.entity_key AS entity_key,
+  logical.bounded_status AS status,
+  logical.pause_reason AS pause_reason,
+  logical.occurrence_id AS occurrence_id,
+  logical.occurrence_timezone AS timezone,
+  coalesce(logical.occurrence_scheduled, true) AS scheduled,
+  toString(logical.occurrence_starts_at) AS starts_at,
+  toString(logical.drain_starts_at) AS drain_starts_at,
+  toString(logical.cutoff_at) AS cutoff_at,
+  toString(logical.next_eligible_at) AS next_eligible_at,
+  coalesce(logical.usage_records, 0) AS records,
+  coalesce(logical.usage_source_requests, 0) AS source_requests,
+  coalesce(logical.usage_pages, 0) AS pages,
+  coalesce(logical.usage_bytes, 0) AS bytes_read,
+  coalesce(logical.usage_extraction_calls, 0) AS extraction_calls,
+  checkpoint.phase AS phase,
+  toString(checkpoint.updated_at) AS checkpointed_at,
+  coalesce(logical.retry_backlog, 0) AS retry_backlog,
+  logical.failure_category AS failure_category
+LIMIT 1
+"""
+
+REQUEST_MANUAL_PAUSE = """
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id,
+  source_key: $source_key,
+  control_instance_id: $control_instance_id,
+  reset_generation: $reset_generation
+})
+WHERE logical.bounded_status IN ['queued', 'running', 'paused_with_checkpoint']
+SET logical.manual_pause = true,
+  logical.pause_reason = 'manual',
+  logical.bounded_status = 'paused_with_checkpoint',
+  logical.status = 'paused_with_checkpoint',
+  logical.next_eligible_at = datetime('9999-12-31T23:59:59Z'),
+  logical.updated_at = datetime()
+RETURN logical.logical_run_id AS logical_run_id
+"""
+
+RELEASE_MANUAL_PAUSE = """
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id,
+  source_key: $source_key,
+  control_instance_id: $control_instance_id,
+  reset_generation: $reset_generation,
+  bounded_status: 'paused_with_checkpoint'
+})
+MATCH (:IngestionResetGeneration {
+  environment: logical.environment,
+  generation: $reset_generation,
+  status: 'active'
+})
+WHERE coalesce(logical.manual_pause, false) = true
+SET logical.manual_pause = false,
+  logical.pause_reason = NULL,
+  logical.next_eligible_at = logical.occurrence_starts_at,
+  logical.publication_intent = true,
+  logical.publication_requested_at = datetime(),
+  logical.updated_at = datetime()
+RETURN logical.logical_run_id AS logical_run_id
+"""
+GET_BOUNDED_RECOVERY = """
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id,
+  source_key: $source_key,
+  control_instance_id: $control_instance_id,
+  reset_generation: $reset_generation,
+  bounded_status: 'paused_with_checkpoint'
+})
+MATCH (:IngestionResetGeneration {
+  environment: logical.environment,
+  generation: $reset_generation,
+  status: 'active'
+})
+MATCH (checkpoint:IngestionCheckpoint {
+  control_instance_id: logical.control_instance_id,
+  logical_run_id: logical.logical_run_id,
+  phase: logical.current_phase,
+  generation: logical.active_generation
+})
+WHERE coalesce(logical.manual_pause, false) = false
+  AND coalesce(logical.publication_intent, false) = true
+RETURN logical.environment AS environment,
+  logical.source_key AS source_key,
+  logical.control_instance_id AS control_instance_id,
+  logical.entity_key AS entity_key,
+  logical.execution_stream AS stream_key,
+  logical.mode AS mode,
+  logical.configuration_fingerprint AS configuration_fingerprint,
+  logical.connector_version AS connector_version,
+  logical.checkpoint_schema_version AS checkpoint_schema_version,
+  checkpoint.source_window_json AS source_window_json,
+  logical.occurrence_id AS occurrence_id,
+  logical.occurrence_timezone AS timezone,
+  coalesce(logical.occurrence_scheduled, true) AS scheduled,
+  toString(logical.occurrence_starts_at) AS starts_at,
+  toString(logical.drain_starts_at) AS drain_starts_at,
+  toString(logical.cutoff_at) AS cutoff_at,
+  toString(logical.next_occurrence_at) AS next_eligible_at
+LIMIT 1
+"""
+GET_ACTIVE_RESET_GENERATION = """
+MATCH (reset:IngestionResetGeneration {environment: $environment, status: 'active'})
+RETURN reset.generation AS generation
+ORDER BY reset.generation DESC
+LIMIT 1
+"""
+
+COMPARE_AND_ADVANCE_RESET_GENERATION = """
+MATCH (current:IngestionResetGeneration {
+  environment: $environment,
+  generation: $expected_generation,
+  status: 'active'
+})
+SET current.status = 'retired',
+  current.retired_at = datetime(),
+  current.retired_by = $actor,
+  current.retirement_reference = $reference
+CREATE (next:IngestionResetGeneration {
+  environment: $environment,
+  generation: $expected_generation + 1,
+  status: 'active',
+  created_at: datetime(),
+  created_by: $actor,
+  authorization_reference: $reference
+})
+RETURN next.generation AS generation
+"""
+PAUSE_BOUNDED_UNCLAIMED = """
+MATCH (logical:IngestionLogicalRun {
+  logical_run_id: $logical_run_id,
+  source_key: $source_key,
+  control_instance_id: $control_instance_id,
+  reset_generation: $reset_generation
+})
+WHERE logical.bounded_status IN ['queued', 'paused_with_checkpoint', 'failed']
+  AND coalesce(logical.manual_pause, false) = false
+SET logical.bounded_status = 'paused_with_checkpoint',
+  logical.status = 'paused_with_checkpoint',
+  logical.pause_reason = $pause_reason,
+  logical.updated_at = datetime()
+RETURN logical.logical_run_id AS logical_run_id
+"""
