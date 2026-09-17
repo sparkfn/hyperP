@@ -1593,7 +1593,10 @@ def run_ingestion_task(
             raise Reject(str(exc), requeue=False) from exc
         return _bounded_task_outcome(bounded)
 
-    reset_generation = active_reset_generation(get_settings().deployment_environment)
+    environment = getattr(get_settings(), deployment_environment, None)
+    reset_generation = (
+        active_reset_generation(environment) if isinstance(environment, str) else None
+    )
     if reset_generation is not None:
         raise Reject(
             "generation-bound ingestion context is required after reset",
