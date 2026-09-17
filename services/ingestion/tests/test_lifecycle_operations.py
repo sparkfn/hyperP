@@ -28,6 +28,9 @@ printf '%s|%s\\n' "$PWD" "$*" >> "$DOCKER_LOG"
 if [[ ${FAIL_DOCKER:-false} == true ]]; then
   exit 42
 fi
+if [[ "$*" == *"ps -q lifecycle-worker"* ]] && [[ ${FAIL_PS:-false} == true ]]; then
+  exit 43
+fi
 if [[ "$*" == *"up -d --no-deps lifecycle-worker"* ]]; then
   : > "$CONSUMER_STATE"
 fi
@@ -54,6 +57,7 @@ def _run_control(
     consumer_running: bool = False,
     schedule_enabled: bool = False,
     deny_admission: bool = False,
+    fail_ps: bool = False,
 ) -> subprocess.CompletedProcess[str]:
     repo_dir = tmp_path / "staging-checkout"
     repo_dir.mkdir(exist_ok=True)
@@ -65,7 +69,8 @@ def _run_control(
     python = bin_dir / "python3"
     python.write_text(
         "#!/usr/bin/env bash\nset -euo pipefail\n"
-        "if [[ \"$*\" == *\" inspect\"* ]]; then\n"
+        "if [[ \"$*\" == *\" probe\"* || \"$*\" == *\" prepare\"* || "
+        "\"$*\" == *\" inspect\"* ]]; then\n"
         "  printf 'SCHEDULE_POLICY_ENABLED=%s\\n' \"${SCHEDULE_ENABLED:-false}\"\n"
         "  exit 0\n"
         "fi\n"
@@ -86,6 +91,7 @@ def _run_control(
         "CONSUMER_RUNNING": str(consumer_running).lower(),
         "SCHEDULE_ENABLED": str(schedule_enabled).lower(),
         "DENY_ADMISSION": str(deny_admission).lower(),
+        "FAIL_PS": str(fail_ps).lower(),
     }
     return subprocess.run(
         ["bash", str(_CONTROL_SCRIPT), command, "lifecycle-worker"],
@@ -141,6 +147,15 @@ def test_successful_resume_removes_marker(tmp_path: Path) -> None:
     assert not marker.exists()
 
 
+def test_resume_requires_an_existing_safe_pause_marker(tmp_path: Path) -> None:
+    result = _run_control(tmp_path, "resume")
+
+    assert result.returncode != 0
+    assert "up -d --no-deps lifecycle-worker" not in (
+        tmp_path / "docker.log"
+    ).read_text(encoding="utf-8")
+
+
 def test_schedule_enabled_resume_denial_preserves_marker(tmp_path: Path) -> None:
     marker = tmp_path / "staging-checkout/.docker/staging/data/worker-pauses/lifecycle-worker"
     marker.parent.mkdir(parents=True)
@@ -177,6 +192,14 @@ def test_status_does_not_misreport_compose_failure_as_stopped(tmp_path: Path) ->
 
     assert result.returncode != 0
     assert "consumer_running=false" not in result.stdout
+
+
+def test_pause_retains_marker_when_stop_succeeds_but_inspection_fails(tmp_path: Path) -> None:
+    result = _run_control(tmp_path, "pause", fail_ps=True)
+    marker = tmp_path / "staging-checkout/.docker/staging/data/worker-pauses/lifecycle-worker"
+
+    assert result.returncode != 0
+    assert marker.is_file()
 
 
 def test_woodpecker_staging_deploy_uses_testable_lifecycle_guard() -> None:
@@ -225,8 +248,11 @@ def test_woodpecker_staging_deploy_uses_testable_lifecycle_guard() -> None:
     assert deploy.count("python -m src.crm_deal_count_control check") == 2
     assert "python -m src.person_completeness_control backfill" not in deploy
     assert "python -m src.crm_deal_count_control backfill" not in deploy
-    assert 'create --no-deps --force-recreate' in deploy
+    assert 'up --no-start --no-deps --force-recreate' in deploy
+    assert "lacks required --no-start support" in deploy
     assert "lacks required --no-deps support" in deploy
+    capability = deploy.rindex("assert_stopped_recreation_supported", 0, build)
+    assert capability < build
     assert "lifecycle-worker-deploy-guard.sh" in deploy
     assert 'plan "${PAUSED_CSV}" "${RECREATE_SERVICE_INPUT[@]}"' in deploy
     assert 'verify-paused "${COMPOSE_FILE}"' in deploy
