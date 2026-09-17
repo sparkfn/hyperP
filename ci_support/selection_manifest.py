@@ -149,7 +149,7 @@ ACTIVE_NODE_SENTINELS: Final[dict[str, tuple[str, ...]]] = {
         "services/ingestion/tests/test_active_relationship_reader_contract.py::"
         "test_active_materializers_remain_classified_and_current_filtered",
         "services/ingestion/tests/test_active_reader_classifier_discovery.py::"
-        "test_clause_boundary_discovery_after_create_fails_closed",
+        "test_clause_boundaries_discover_pattern_expressions_after_create",
         "services/ingestion/tests/test_bitrix_backfill_tasks.py::"
         "test_live_canvas_allows_deal_only_when_activities_are_reviewed_excluded",
         "services/ingestion/tests/test_scheduled_ingestion_tasks.py::"
