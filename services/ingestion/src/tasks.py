@@ -1180,14 +1180,6 @@ def _reject_unadmitted_bounded_maintenance(
     bounded_occurrence: dict[str, str] | None,
     bounded_logical_run_id: str | None,
 ) -> None:
-    settings = get_settings()
-    scheduling_enabled = get_ingestion_config().scheduled_ingestion.enabled
-    policy_active = scheduling_enabled or (
-        settings.deployment_environment != "development"
-        and active_reset_generation(settings.deployment_environment) is not None
-    )
-    if not policy_active:
-        return
     if bounded_occurrence is None or bounded_logical_run_id is None:
         raise Reject("bounded maintenance context is required", requeue=False)
     occurrence = occurrence_from_payload(bounded_occurrence)

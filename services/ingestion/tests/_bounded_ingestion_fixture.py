@@ -67,9 +67,11 @@ class FixtureConnector:
     def fetch_one_unit(
         self,
         checkpoint: CheckpointDescriptor,
-        _context: AttemptContext,
+        context: AttemptContext,
     ) -> BoundedUnit:
         self._descriptor.fetch_calls += 1
+        self._descriptor.seen_deadline = context.operation_deadline_at
+        self._descriptor.seen_cancellation = context.cancellation
         if self._descriptor.fetch_failure is not None:
             raise self._descriptor.fetch_failure
         if self._descriptor.on_fetch is not None:
@@ -81,6 +83,9 @@ class FixtureConnector:
             return self._descriptor.units[page]
         except KeyError as exc:
             raise AssertionError(f"no fixture unit exists at page {page}") from exc
+
+    def cancel(self) -> None:
+        self._descriptor.cancel_calls += 1
 
     def close(self) -> None:
         self._descriptor.close_calls += 1
@@ -103,7 +108,7 @@ class FixtureDescriptor:
     max_bytes_per_unit = 1_000
     max_extraction_calls_per_unit = 1
     max_close_seconds = 5.0
-    max_retry_backoff_seconds = 30.0
+    max_retry_backoff_seconds = 600.0
     supports_deadline = True
     supports_cancellation = True
     writer = _NoopWriter()
@@ -125,7 +130,10 @@ class FixtureDescriptor:
         self.create_calls = 0
         self.fetch_calls = 0
         self.close_calls = 0
+        self.cancel_calls = 0
         self.initial_checkpoint_calls = 0
+        self.seen_deadline: datetime | None = None
+        self.seen_cancellation: object | None = None
 
     def initial_checkpoint(
         self,
@@ -145,6 +153,7 @@ class MemoryControl:
     """A graph-control fake with receipts, output versions, retries, and watermarks."""
 
     reserve_allowed: bool = True
+    on_reserve: Callable[[], None] | None = None
     commit_allowed: bool = True
     crash_after_writer: bool = False
     retry_by_replay: dict[str, tuple[RetryObligation, ...]] = field(default_factory=dict)
@@ -165,6 +174,8 @@ class MemoryControl:
         _budget: BoundedIngestionBudget,
     ) -> bool:
         self.reservations.append(requested)
+        if self.on_reserve is not None:
+            self.on_reserve()
         return self.reserve_allowed
 
     def commit_unit(

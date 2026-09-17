@@ -7,7 +7,21 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+import pytest
 from pytest import LogCaptureFixture, MonkeyPatch
+
+
+@pytest.fixture(autouse=True)
+def _allow_legacy_unbounded_maintenance_in_unit_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src import tasks
+
+    monkeypatch.setattr(
+        tasks,
+        "_reject_unadmitted_bounded_maintenance",
+        lambda **_kwargs: None,
+    )
 
 
 class _FakeInitRedis:

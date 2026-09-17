@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import importlib
+import math
 import pkgutil
 from types import ModuleType
 from typing import cast
@@ -44,8 +45,8 @@ class BoundedConnectorRegistry:
             descriptor.max_close_seconds,
             descriptor.max_retry_backoff_seconds,
         )
-        if any(value <= 0 for value in durations):
-            raise ValueError("bounded descriptor durations must be positive")
+        if any(value <= 0 or not math.isfinite(value) for value in durations):
+            raise ValueError("bounded descriptor durations must be positive and finite")
         if not descriptor.supports_deadline or not descriptor.supports_cancellation:
             raise ValueError("bounded descriptor lacks deadline/cancellation support")
         if not any(

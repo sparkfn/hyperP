@@ -465,7 +465,7 @@ def test_upgrade_validation_failure_stays_blocked(
     _seed(neo4j_driver)
     with neo4j_driver.session() as session:
         session.run(seed_statement).consume()
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ValueError, match="Bitrix stream admission did not return a record"):
         _migrate(neo4j_driver)
     with neo4j_driver.session() as session:
         marker = session.run(_BLOCKED_MARKER).single(strict=True)
@@ -678,7 +678,7 @@ def test_readiness_fails_closed_without_exact_registry_constraint(
         session.run(_MIGRATION_CONSTRAINT).consume()
         if registry_statement is not None:
             session.run(registry_statement).consume()
-    with pytest.raises(RuntimeError):
+    with pytest.raises(ValueError, match="Bitrix stream admission did not return a record"):
         _migrate(neo4j_driver)
 
 
@@ -951,15 +951,14 @@ def _bounded_scope(source_key: str, window: str = "window-1") -> RunScope:
 
 
 def _bounded_occurrence(week: int = 0) -> OccurrenceContext:
-    start = (datetime.now(UTC) + timedelta(days=1 + 7 * week)).replace(
-        hour=1, minute=0, second=0, microsecond=0
-    )
+    start = datetime.now(UTC) - timedelta(seconds=1) + timedelta(days=7 * week)
     return OccurrenceContext(
         occurrence_id=f"week-{week}",
         starts_at=start,
         drain_starts_at=start + timedelta(hours=13, minutes=55),
         cutoff_at=start + timedelta(hours=14),
         next_eligible_at=start + timedelta(days=7),
+        scheduled=False,
     )
 
 
@@ -1317,3 +1316,171 @@ def test_queued_run_from_slot_contention_rebinds_next_week(
     )
     assert isinstance(resumed, AttemptContext)
     assert resumed.attempt_generation == 1
+
+
+def test_bounded_bitrix_successor_retires_only_its_own_active_predecessor(
+    neo4j_driver: Driver,
+) -> None:
+    from src.graph.queries.bounded_ingestion_control import RETIRE_OWNED_BITRIX_PREDECESSOR
+
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE (owned:BitrixIngestionStream {source_key: 'bitrix_chat', "
+            "control_instance_id: 'bounded-control', stream_key: 'crm_deals', "
+            "logical_run_id: 'logical-owned', attempt_generation: 1, status: 'active'}), "
+            "(unrelated:BitrixIngestionStream {source_key: 'bitrix_chat', "
+            "control_instance_id: 'other-control', stream_key: 'crm_deals', "
+            "logical_run_id: 'logical-other', attempt_generation: 1, status: 'active'})"
+        ).consume()
+        retired = session.run(
+            RETIRE_OWNED_BITRIX_PREDECESSOR,
+            control_instance_id="bounded-control",
+            stream_key="crm_deals",
+            logical_run_id="logical-owned",
+            attempt_generation=2,
+        ).single(strict=True)
+        states = session.run(
+            "MATCH (stream:BitrixIngestionStream) "
+            "RETURN stream.control_instance_id AS control_instance_id, stream.status AS status "
+            "ORDER BY control_instance_id"
+        ).data()
+
+    assert retired["logical_run_id"] == "logical-owned"
+    assert states == [
+        {"control_instance_id": "bounded-control", "status": "superseded"},
+        {"control_instance_id": "other-control", "status": "active"},
+    ]
+
+
+def test_queued_slot_contended_run_is_recoverable_without_lease_metadata(
+    neo4j_driver: Driver,
+) -> None:
+    _prepare_bounded_graph(neo4j_driver, "fixture-a", "fixture-b")
+    control = BoundedIngestionControl(cast(Neo4jClient, _Client(neo4j_driver)))
+    occurrence = _bounded_occurrence()
+    owner = control.admit_or_resume(
+        scope=_bounded_scope("fixture-a"),
+        occurrence=occurrence,
+        initial_checkpoint=_bounded_checkpoint(),
+        worker_task_id="slot-owner",
+        now=occurrence.starts_at,
+        max_graph_writers=1,
+    )
+    assert isinstance(owner, AttemptContext)
+    blocked = control.admit_or_resume(
+        scope=_bounded_scope("fixture-b"),
+        occurrence=occurrence,
+        initial_checkpoint=_bounded_checkpoint(),
+        worker_task_id="queued-recovery",
+        now=occurrence.starts_at,
+        max_graph_writers=1,
+    )
+    assert blocked is None
+    with neo4j_driver.session() as session:
+        row = session.run(
+            "MATCH (logical:IngestionLogicalRun {source_key: 'fixture-b'}) "
+            "SET logical.recovery_authorized = true, logical.publication_intent = true "
+            "RETURN logical.logical_run_id AS logical_run_id, logical.lease_expires_at AS lease"
+        ).single(strict=True)
+    assert row["lease"] is None
+    recovery = control.recovery_state(
+        row["logical_run_id"],
+        "fixture-b",
+        "bounded-control",
+        1,
+        occurrence.starts_at,
+    )
+    assert recovery is not None
+    assert recovery != "completed"
+    assert not isinstance(recovery, datetime)
+
+
+def test_bounded_bitrix_conflict_fails_attempt_without_mutating_unrelated_stream(
+    neo4j_driver: Driver,
+) -> None:
+    _prepare_bounded_graph(neo4j_driver, "bitrix_chat")
+    control = BoundedIngestionControl(cast(Neo4jClient, _Client(neo4j_driver)))
+    first_occurrence = _bounded_occurrence()
+    scope = RunScope(
+        environment="test",
+        reset_generation=1,
+        source_key="bitrix_chat",
+        control_instance_id="bounded-control",
+        entity_key=None,
+        stream_key="crm_deals",
+        mode="delta",
+        configuration_fingerprint="sha256:bitrix-fixture",
+        connector_version="fixture-v1",
+        checkpoint_schema_version=1,
+        source_window={"window": "bitrix"},
+    )
+    first = control.admit_or_resume(
+        scope=scope,
+        occurrence=first_occurrence,
+        initial_checkpoint=_bounded_checkpoint(),
+        worker_task_id="bitrix-first",
+        now=first_occurrence.starts_at,
+    )
+    assert isinstance(first, AttemptContext)
+    assert control.pause(first, "budget", first_occurrence.next_eligible_at) is True
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (stream:BitrixIngestionStream {source_key: 'bitrix_chat', "
+            "control_instance_id: 'bounded-control', stream_key: 'crm_deals'}) "
+            "SET stream.logical_run_id = 'unrelated-logical', "
+            "stream.ingest_run_id = 'unrelated-run', "
+            "stream.attempt_generation = 1, stream.stream_generation = 41, "
+            "stream.fencing_token = 43, "
+            "stream.worker_task_id = 'unrelated-worker', "
+            "stream.status = 'active', "
+            "stream.bounded_takeover_lock_version = 47"
+        ).consume()
+    next_occurrence = _bounded_occurrence(week=1)
+    with pytest.raises(ValueError, match="Bitrix stream admission did not return a record"):
+        control.admit_or_resume(
+            scope=scope,
+            occurrence=next_occurrence,
+            initial_checkpoint=_bounded_checkpoint(),
+            worker_task_id="bitrix-second",
+            now=next_occurrence.starts_at,
+        )
+    with neo4j_driver.session() as session:
+        stream = session.run(
+            "MATCH (stream:BitrixIngestionStream {source_key: 'bitrix_chat', "
+            "control_instance_id: 'bounded-control', stream_key: 'crm_deals'}) "
+            "RETURN stream.logical_run_id AS logical_run_id, "
+            "stream.ingest_run_id AS ingest_run_id, "
+            "stream.attempt_generation AS attempt_generation, "
+            "stream.stream_generation AS stream_generation, "
+            "stream.fencing_token AS fencing_token, "
+            "stream.worker_task_id AS worker_task_id, stream.status AS status, "
+            "stream.bounded_takeover_lock_version AS lock_version"
+        ).single(strict=True)
+        logical = session.run(
+            "MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id}) "
+            "OPTIONAL MATCH (logical)-[:ACTIVE_ATTEMPT]->(attempt:IngestRun) "
+            "OPTIONAL MATCH (slot:BoundedIngestionGlobalSlot {"
+            "owner_logical_run_id: logical.logical_run_id}) "
+            "RETURN logical.bounded_status AS status, "
+            "logical.failure_category AS failure_category, "
+            "logical.failure_message AS failure_message, "
+            "count(attempt) AS active_attempts, count(slot) AS owned_slots",
+            logical_run_id=first.logical_run_id,
+        ).single(strict=True)
+    assert dict(stream) == {
+        "logical_run_id": "unrelated-logical",
+        "ingest_run_id": "unrelated-run",
+        "attempt_generation": 1,
+        "stream_generation": 41,
+        "fencing_token": 43,
+        "worker_task_id": "unrelated-worker",
+        "status": "active",
+        "lock_version": 47,
+    }
+    assert dict(logical) == {
+        "status": "failed",
+        "failure_category": "lease",
+        "failure_message": "bitrix_stream_admission_conflict",
+        "active_attempts": 0,
+        "owned_slots": 0,
+    }

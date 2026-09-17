@@ -5,10 +5,24 @@ from __future__ import annotations
 from collections.abc import Iterator
 from contextlib import contextmanager
 
+import pytest
 from celery import Task
 from celery.exceptions import Reject, Retry
 from celery.result import AsyncResult
 from pytest import MonkeyPatch, raises
+
+
+@pytest.fixture(autouse=True)
+def _allow_legacy_unbounded_maintenance_in_unit_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src import tasks
+
+    monkeypatch.setattr(
+        tasks,
+        "_reject_unadmitted_bounded_maintenance",
+        lambda **_kwargs: None,
+    )
 
 
 class _FakeRedis:

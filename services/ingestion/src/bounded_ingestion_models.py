@@ -194,6 +194,10 @@ class Usage:
         )
 
 
+class CancellationSignal(Protocol):
+    def requested(self) -> bool: ...
+
+
 @dataclass(frozen=True)
 class AttemptContext:
     logical_run_id: str
@@ -213,6 +217,8 @@ class AttemptContext:
     terminal_observed: bool = False
     terminal_checkpoint_committed: bool = False
     bitrix_fence_context: FenceContext | None = None
+    operation_deadline_at: datetime | None = None
+    cancellation: CancellationSignal | None = None
 
     def __post_init__(self) -> None:
         identifiers = (
@@ -234,13 +240,16 @@ class AttemptContext:
             raise ValueError("retry backlog must be non-negative")
 
     def remaining_seconds(self, now: datetime) -> float | None:
-        if self.occurrence is None:
+        deadline = self.operation_deadline_at
+        if deadline is None and self.occurrence is not None:
+            deadline = self.occurrence.cutoff_at
+        if deadline is None:
             return None
-        return max((self.occurrence.cutoff_at - now).total_seconds(), 0.0)
+        return max((deadline - now).total_seconds(), 0.0)
 
     def require_operation_budget(self, now: datetime, worst_case_seconds: float) -> None:
         remaining = self.remaining_seconds(now)
-        if remaining is not None and remaining <= worst_case_seconds:
+        if remaining is not None and remaining < worst_case_seconds:
             raise TimeoutError("bounded operation cannot finish before cutoff")
 
 
@@ -320,6 +329,8 @@ class BoundedConnector(Protocol):
         checkpoint: CheckpointDescriptor,
         context: AttemptContext,
     ) -> BoundedUnit: ...
+
+    def cancel(self) -> None: ...
 
     def close(self) -> None: ...
 

@@ -93,6 +93,7 @@ from src.graph.queries.bounded_ingestion_control import (
     REQUEST_MANUAL_PAUSE,
     RESERVE_BOUNDED_USAGE,
     RESOLVE_BOUNDED_RETRY,
+    RETIRE_OWNED_BITRIX_PREDECESSOR,
 )
 from src.graph.queries.ingestion_control import SET_FENCED_BITRIX_STREAM_STATUS
 from src.resumable import CheckpointDescriptor
@@ -186,16 +187,52 @@ class BoundedIngestionControl:
         }:
             raise ValueError("bounded Bitrix run requires an active supported stream")
         stream_key = cast(BitrixStreamKey, scope.stream_key)
-        admission = BitrixStreamControl(self._client).admit_or_coalesce(
-            stream_key=stream_key,
-            logical_run_id=context.logical_run_id,
-            ingest_run_id=context.ingest_run_id,
-            attempt_generation=context.attempt_generation,
-            worker_task_id=context.worker_task_id,
-            control_instance_id=scope.control_instance_id,
-            replace_active=context.attempt_generation > 1,
-        )
+        if context.attempt_generation > 1:
+            self._retire_owned_bitrix_predecessor(context, stream_key)
+        try:
+            admission = BitrixStreamControl(self._client).admit_or_coalesce(
+                stream_key=stream_key,
+                logical_run_id=context.logical_run_id,
+                ingest_run_id=context.ingest_run_id,
+                attempt_generation=context.attempt_generation,
+                worker_task_id=context.worker_task_id,
+                control_instance_id=scope.control_instance_id,
+                replace_active=False,
+            )
+        except Exception:
+            self.fail(
+                context,
+                "lease",
+                "bitrix_stream_admission_conflict",
+                occurrence.next_eligible_at,
+            )
+            raise
         return replace(context, bitrix_fence_context=admission.fence_context)
+
+    def _retire_owned_bitrix_predecessor(
+        self,
+        context: AttemptContext,
+        stream_key: BitrixStreamKey,
+    ) -> None:
+        def work(tx: ManagedTransaction) -> None:
+            record = _run(
+                tx,
+                RETIRE_OWNED_BITRIX_PREDECESSOR,
+                control_instance_id=context.scope.control_instance_id,
+                stream_key=stream_key,
+                logical_run_id=context.logical_run_id,
+                attempt_generation=context.attempt_generation,
+            ).single()
+            if record is None:
+                raise _BoundedAdmissionRejectedError()
+
+        try:
+            self._client.execute_write(
+                work,
+                transaction_timeout_seconds=self._transaction_timeout_seconds,
+            )
+        except _BoundedAdmissionRejectedError:
+            return
 
     def reserve_usage(
         self,
@@ -419,9 +456,10 @@ class BoundedIngestionControl:
             recovery_status = _required_text(record, "recovery_status")
             if recovery_status == "completed":
                 return "completed"
-            lease_expires_at = _record_datetime(record, "lease_expires_at")
-            if recovery_status == "running" and now < lease_expires_at:
-                return lease_expires_at
+            if recovery_status == "running":
+                lease_expires_at = _record_datetime(record, "lease_expires_at")
+                if now < lease_expires_at:
+                    return lease_expires_at
             if recovery_status not in {"running", "paused_with_checkpoint", "failed", "queued"}:
                 return None
             return _recovery_state(record, reset_generation)

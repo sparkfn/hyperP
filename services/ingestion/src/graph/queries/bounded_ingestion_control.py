@@ -853,7 +853,7 @@ RETURN logical.logical_run_id AS logical_run_id,
   coalesce(logical.reserved_extraction_calls, 0) AS reserved_extraction_calls,
   coalesce(logical.active_generation, 0) AS attempt_generation,
   logical.source_window_fingerprint AS source_window_fingerprint,
-  checkpoint.cursor_json IS NOT NULL AS checkpoint_cursor_present,
+  checkpoint IS NOT NULL AS checkpoint_cursor_present,
   checkpoint.phase AS phase,
   toString(checkpoint.updated_at) AS checkpointed_at,
   coalesce(logical.retry_backlog, 0) AS retry_backlog,
@@ -988,4 +988,22 @@ SET logical.bounded_status = 'paused_with_checkpoint',
     ELSE datetime($next_eligible_at) END,
   logical.updated_at = datetime()
 RETURN logical.logical_run_id AS logical_run_id
+"""
+
+RETIRE_OWNED_BITRIX_PREDECESSOR = """
+MATCH (stream:BitrixIngestionStream {
+  source_key: 'bitrix_chat',
+  control_instance_id: $control_instance_id,
+  stream_key: $stream_key
+})
+SET stream.bounded_takeover_lock_version =
+  coalesce(stream.bounded_takeover_lock_version, 0) + 1
+WITH stream
+WHERE stream.logical_run_id = $logical_run_id
+  AND stream.attempt_generation < $attempt_generation
+  AND stream.status = 'active'
+SET stream.status = 'superseded',
+  stream.finished_at = datetime(),
+  stream.updated_at = datetime()
+RETURN stream.logical_run_id AS logical_run_id
 """

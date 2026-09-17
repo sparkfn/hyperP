@@ -6,10 +6,24 @@ import threading
 from collections.abc import Iterator
 from contextlib import contextmanager, nullcontext
 
+import pytest
 from celery import Task
 from celery.exceptions import Reject, Retry
 from celery.result import AsyncResult
 from pytest import MonkeyPatch, raises
+
+
+@pytest.fixture(autouse=True)
+def _allow_legacy_unbounded_maintenance_in_unit_tests(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src import tasks
+
+    monkeypatch.setattr(
+        tasks,
+        "_reject_unadmitted_bounded_maintenance",
+        lambda **_kwargs: None,
+    )
 
 
 def test_periodic_reconciliation_is_registered_once_hourly() -> None:

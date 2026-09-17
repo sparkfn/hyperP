@@ -217,3 +217,77 @@ def test_live_clock_fences_a_source_or_close_that_crosses_cutoff() -> None:
     assert result.failure_category == "overrun"
     assert control.writer_invocations == 0
     assert control.terminal_watermark is False
+
+
+def test_connector_receives_executable_deadline_and_cancellation_signal() -> None:
+    now = datetime(2026, 9, 17, 1, tzinfo=UTC)
+    shutdown = FakeShutdown(False)
+    descriptor = FixtureDescriptor({0: unit(0, (("identity-1", "v1"),), terminal=True)})
+    control = MemoryControl()
+
+    result = _runner(FakeClock(now), shutdown).run_one(descriptor, context(), control)
+
+    assert result.status == "completed"
+    assert descriptor.seen_deadline == now + timedelta(seconds=65)
+    assert descriptor.seen_cancellation is shutdown
+
+
+def test_reservation_elapsed_time_rebases_connector_lifecycle_deadline() -> None:
+    now = datetime(2026, 9, 17, 1, tzinfo=UTC)
+    clock = FakeClock(now)
+
+    def advance_after_reservation() -> None:
+        clock.now += timedelta(seconds=7)
+
+    descriptor = FixtureDescriptor({0: unit(0, (("identity-1", "v1"),), terminal=True)})
+    control = MemoryControl(on_reserve=advance_after_reservation)
+
+    result = _runner(clock).run_one(descriptor, context(), control)
+
+    assert result.status == "completed"
+    assert descriptor.create_calls == 1
+    assert descriptor.seen_deadline == now + timedelta(seconds=72)
+
+
+def test_unscheduled_lifecycle_overrun_cancels_and_fails_without_commit() -> None:
+    now = datetime(2026, 9, 17, 1, tzinfo=UTC)
+    clock = FakeClock(now)
+
+    def cross_lifecycle_deadline() -> None:
+        clock.now += timedelta(seconds=66)
+
+    shutdown = FakeShutdown(False)
+    descriptor = FixtureDescriptor(
+        {0: unit(0, (("identity-1", "v1"),), terminal=True)},
+        on_close=cross_lifecycle_deadline,
+    )
+    control = MemoryControl()
+
+    result = _runner(clock, shutdown).run_one(descriptor, context(), control)
+
+    assert result.status == "failed"
+    assert result.failure_category == "overrun"
+    assert descriptor.close_calls == 1
+    assert control.writer_invocations == 0
+
+
+def test_insufficient_close_reserve_cancels_and_never_commits() -> None:
+    now = datetime(2026, 9, 17, 1, tzinfo=UTC)
+    clock = FakeClock(now)
+
+    def consume_lifecycle_budget() -> None:
+        clock.now += timedelta(seconds=61)
+
+    descriptor = FixtureDescriptor(
+        {0: unit(0, (("identity-1", "v1"),), terminal=True)},
+        on_fetch=consume_lifecycle_budget,
+    )
+    control = MemoryControl()
+
+    result = _runner(clock).run_one(descriptor, context(), control)
+
+    assert result.status == "failed"
+    assert result.failure_category == "overrun"
+    assert descriptor.cancel_calls == 1
+    assert descriptor.close_calls == 1
+    assert control.writer_invocations == 0
