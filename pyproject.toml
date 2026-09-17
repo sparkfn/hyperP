@@ -143,6 +143,7 @@ module = [
     "src.types_sales",
     "src.types_requests",
     "src.types_profile_analysis",
+    "src.types_ingestion_control",
     "src.http_utils",
     "src.routes.*",
     "src.graph.converters",

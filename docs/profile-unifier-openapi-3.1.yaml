@@ -131,6 +131,96 @@ paths:
           $ref: '#/components/responses/BadRequest'
         '404':
           $ref: '#/components/responses/NotFound'
+  /v1/ingest/logical-runs/{logical_run_id}:
+    get:
+      tags: [Ingestion]
+      summary: Get bounded logical-run status
+      description: >-
+        Human administrators only. Returns redacted, bounded progress and never
+        returns cursors, source boundaries, payloads, replay tokens, fence
+        tokens, raw failures, or secrets.
+      operationId: get_bounded_logical_run
+      parameters:
+        - $ref: '#/components/parameters/LogicalRunId'
+        - $ref: '#/components/parameters/RequestId'
+      responses:
+        '200':
+          description: Redacted bounded logical-run status
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BoundedLogicalRunStatusEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+  /v1/ingest/logical-runs/{logical_run_id}/pause:
+    post:
+      tags: [Ingestion]
+      summary: Pause a bounded logical run
+      description: >-
+        Human administrators only. Persists a durable manual pause intent for
+        the exact source, control instance, and reset generation identity.
+      operationId: pause_bounded_logical_run
+      parameters:
+        - $ref: '#/components/parameters/LogicalRunId'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BoundedRunPauseRequest'
+      responses:
+        '200':
+          description: Manual pause intent persisted
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BoundedLogicalRunStatusEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
+  /v1/ingest/logical-runs/{logical_run_id}/resume:
+    post:
+      tags: [Ingestion]
+      summary: Release a bounded logical-run manual pause
+      description: >-
+        Human administrators only. Persists manual-release and recovery
+        publication intent, but cannot override disabled, window, reset, or
+        capability admission gates.
+      operationId: resume_bounded_logical_run
+      parameters:
+        - $ref: '#/components/parameters/LogicalRunId'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BoundedRunResumeRequest'
+      responses:
+        '200':
+          description: Manual pause released and recovery publication requested
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BoundedLogicalRunStatusEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
+        '409':
+          $ref: '#/components/responses/Conflict'
   /v1/persons:
     get:
       tags: [Persons]
@@ -2108,6 +2198,14 @@ components:
       schema:
         type: string
         format: uuid
+    LogicalRunId:
+      name: logical_run_id
+      in: path
+      required: true
+      schema:
+        type: string
+        minLength: 1
+        maxLength: 255
     LockId:
       name: lock_id
       in: path
@@ -3594,6 +3692,112 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/IngestRunData'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    BoundedRunPauseRequest:
+      type: object
+      properties:
+        source_key:
+          type: string
+          minLength: 1
+          maxLength: 255
+        control_instance_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+        reset_generation:
+          type: integer
+          minimum: 1
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 200
+      required: [source_key, control_instance_id, reset_generation, reason]
+      additionalProperties: false
+    BoundedRunResumeRequest:
+      type: object
+      properties:
+        source_key:
+          type: string
+          minLength: 1
+          maxLength: 255
+        control_instance_id:
+          type: string
+          minLength: 1
+          maxLength: 255
+        reset_generation:
+          type: integer
+          minimum: 1
+      required: [source_key, control_instance_id, reset_generation]
+      additionalProperties: false
+    BoundedLogicalRunUsage:
+      type: object
+      properties:
+        records: {type: integer, minimum: 0}
+        source_requests: {type: integer, minimum: 0}
+        pages: {type: integer, minimum: 0}
+        bytes_read: {type: integer, minimum: 0}
+        extraction_calls: {type: integer, minimum: 0}
+      required: [records, source_requests, pages, bytes_read, extraction_calls]
+      additionalProperties: false
+    BoundedLogicalRunStatus:
+      type: object
+      properties:
+        logical_run_id: {type: string}
+        source_key: {type: string}
+        control_instance_id: {type: string}
+        entity_key: {type: [string, 'null']}
+        status: {type: string}
+        pause_reason: {type: [string, 'null']}
+        occurrence_id: {type: [string, 'null']}
+        timezone: {type: [string, 'null']}
+        starts_at: {type: [string, 'null'], format: date-time}
+        drain_starts_at: {type: [string, 'null'], format: date-time}
+        cutoff_at: {type: [string, 'null'], format: date-time}
+        next_eligible_at: {type: [string, 'null'], format: date-time}
+        usage:
+          $ref: '#/components/schemas/BoundedLogicalRunUsage'
+        reserved_usage:
+          $ref: '#/components/schemas/BoundedLogicalRunUsage'
+        attempt_generation: {type: integer, minimum: 0}
+        source_window_fingerprint: {type: string}
+        checkpoint_cursor_present: {type: boolean}
+        phase: {type: [string, 'null']}
+        checkpointed_at: {type: [string, 'null'], format: date-time}
+        retry_backlog: {type: integer, minimum: 0}
+        retry_oldest_at: {type: [string, 'null'], format: date-time}
+        failure_category: {type: [string, 'null']}
+      required:
+        - logical_run_id
+        - source_key
+        - control_instance_id
+        - entity_key
+        - status
+        - pause_reason
+        - occurrence_id
+        - timezone
+        - starts_at
+        - drain_starts_at
+        - cutoff_at
+        - next_eligible_at
+        - usage
+        - reserved_usage
+        - attempt_generation
+        - source_window_fingerprint
+        - checkpoint_cursor_present
+        - phase
+        - checkpointed_at
+        - retry_backlog
+        - retry_oldest_at
+        - failure_category
+      additionalProperties: false
+    BoundedLogicalRunStatusEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/BoundedLogicalRunStatus'
         meta:
           $ref: '#/components/schemas/Meta'
       required: [data, meta]

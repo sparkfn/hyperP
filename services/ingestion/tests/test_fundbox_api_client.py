@@ -386,6 +386,7 @@ def test_run_ingestion_task_warns_when_source_not_configured(
     # on the cron doesn't flood the logs or crash-loop the worker.
     from src import tasks
 
+    monkeypatch.setattr(tasks, "active_reset_generation", lambda _environment: None)
     monkeypatch.setattr(tasks, "setup_logging", lambda level: None)
     monkeypatch.setattr(tasks, "get_settings", lambda: TaskSettings())
     monkeypatch.setattr(tasks, "initialize_ingestion_graph", lambda: None)

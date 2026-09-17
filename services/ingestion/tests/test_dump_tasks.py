@@ -34,6 +34,12 @@ def _admit_legacy_bitrix_control(monkeypatch: MonkeyPatch) -> None:
     monkeypatch.setattr(tasks, "BitrixSourceInstanceRepository", Registry)
 
 
+def _disable_active_reset_generation(monkeypatch: MonkeyPatch) -> None:
+    from src import tasks
+
+    monkeypatch.setattr(tasks, "active_reset_generation", lambda _environment: None)
+
+
 class _IngestionStub(Protocol):
     def __call__(
         self,
@@ -75,6 +81,7 @@ def _successful_ingestion_stub(
 
 
 def test_run_ingestion_task_passes_dump_path(monkeypatch: MonkeyPatch) -> None:
+    _disable_active_reset_generation(monkeypatch)
     monkeypatch.setenv("NEO4J_PASSWORD", "test")
     from src import tasks
 
@@ -96,6 +103,7 @@ def test_run_ingestion_task_passes_dump_path(monkeypatch: MonkeyPatch) -> None:
 
 
 def test_run_ingestion_task_passes_sggov_dump_paths(monkeypatch: MonkeyPatch) -> None:
+    _disable_active_reset_generation(monkeypatch)
     monkeypatch.setenv("NEO4J_PASSWORD", "test")
     from src import tasks
 
@@ -132,6 +140,7 @@ def test_run_ingestion_task_passes_sggov_dump_paths(monkeypatch: MonkeyPatch) ->
 def test_run_ingestion_task_passes_sgbankruptcy_api_mode(
     monkeypatch: MonkeyPatch,
 ) -> None:
+    _disable_active_reset_generation(monkeypatch)
     monkeypatch.setenv("NEO4J_PASSWORD", "test")
     from src import tasks
 
@@ -154,6 +163,7 @@ def test_run_ingestion_task_passes_sgbankruptcy_api_mode(
 def test_run_ingestion_task_reuses_api_created_ingest_run(
     monkeypatch: MonkeyPatch,
 ) -> None:
+    _disable_active_reset_generation(monkeypatch)
     monkeypatch.setenv("NEO4J_PASSWORD", "test")
     from src import tasks
 
@@ -215,6 +225,7 @@ def test_run_ingestion_task_reuses_api_created_ingest_run(
 def test_run_ingestion_task_retries_distinct_dispatched_run_when_source_is_busy(
     monkeypatch: MonkeyPatch,
 ) -> None:
+    _disable_active_reset_generation(monkeypatch)
     monkeypatch.setenv("NEO4J_PASSWORD", "test")
     from src import tasks
 
@@ -254,6 +265,7 @@ def test_run_ingestion_task_retries_distinct_dispatched_run_when_source_is_busy(
 def test_worker_loss_redelivery_retries_its_own_stale_source_lock(
     monkeypatch: MonkeyPatch,
 ) -> None:
+    _disable_active_reset_generation(monkeypatch)
     monkeypatch.setenv("NEO4J_PASSWORD", "test")
     from src import tasks
 
@@ -295,6 +307,7 @@ def test_worker_loss_redelivery_retries_its_own_stale_source_lock(
 def test_separate_duplicate_task_remains_safely_deduplicated(
     monkeypatch: MonkeyPatch,
 ) -> None:
+    _disable_active_reset_generation(monkeypatch)
     monkeypatch.setenv("NEO4J_PASSWORD", "test")
     from src import tasks
 
@@ -325,6 +338,7 @@ def test_separate_duplicate_task_remains_safely_deduplicated(
 def test_terminal_dispatched_run_redelivery_is_idempotent_noop(
     monkeypatch: MonkeyPatch,
 ) -> None:
+    _disable_active_reset_generation(monkeypatch)
     monkeypatch.setenv("NEO4J_PASSWORD", "test")
     from src import tasks
 
@@ -370,6 +384,7 @@ def test_terminal_dispatched_run_redelivery_is_idempotent_noop(
 def test_run_ingestion_task_finalizes_api_created_run_when_setup_fails(
     monkeypatch: MonkeyPatch,
 ) -> None:
+    _disable_active_reset_generation(monkeypatch)
     monkeypatch.setenv("NEO4J_PASSWORD", "test")
     from src import tasks
 
@@ -428,6 +443,7 @@ def test_rejected_task_does_not_overwrite_structured_terminal_failure(
 def test_split_bitrix_failure_requires_explicit_control_plane_resume(
     monkeypatch: MonkeyPatch,
 ) -> None:
+    _disable_active_reset_generation(monkeypatch)
     monkeypatch.setenv("NEO4J_PASSWORD", "test")
     from src import tasks
 

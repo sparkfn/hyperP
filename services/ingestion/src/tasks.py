@@ -1,6 +1,6 @@
 """Celery tasks for the ingestion service.
 
-A single task — :func:`run_ingestion_task` — wraps :func:`src.main.run_ingestion`
+A single task Ã¢â‚¬â€ :func:`run_ingestion_task` Ã¢â‚¬â€ wraps :func:`src.main.run_ingestion`
 and enforces a fixed cluster-wide cap on the number of ingestion runs in flight
 via a Redis-backed semaphore.
 """
@@ -19,11 +19,12 @@ from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import replace
-from typing import Final, Literal, NoReturn, TypedDict, cast
+from datetime import UTC, datetime
+from typing import Literal, NoReturn, TypedDict, cast
 
 import redis
 from celery import Task
-from celery.exceptions import Reject, Retry
+from celery.exceptions import Ignore, Reject, Retry
 from neo4j import ManagedTransaction
 from pydantic.types import JsonValue
 
@@ -42,6 +43,15 @@ from src.bitrix_ingestion_models import (
     ExecutionContext,
     FenceContext,
 )
+from src.bounded_ingestion_models import BoundedMode, BoundedRecoveryLeasedError
+from src.bounded_ingestion_task_runtime import (
+    BoundedTaskSummary,
+    active_reset_generation,
+    bounded_shutdown_signal,
+    recover_bounded_logical_run,
+    run_registered_bounded_unit,
+)
+from src.bounded_ingestion_window import occurrence_from_payload
 from src.celery_app import LIFECYCLE_QUEUE, celery_app
 from src.config import get_settings
 from src.connectors.whatsadmin_api.credentials import WHATSADMIN_ENTITIES
@@ -96,7 +106,6 @@ LegacyBitrixExecutionStream = Literal["crm_deals", "crm_activities", "openlines_
 logger = logging.getLogger(__name__)
 
 _INGEST_SEMAPHORE_KEY = "profile_unifier:ingestion:active"
-MAX_CONCURRENT_INGESTIONS: Final[int] = 2
 _SOURCE_LOCK_PREFIX = "profile_unifier:ingestion:source"
 _INIT_LOCK_KEY = "profile_unifier:ingestion:init"
 _INIT_SOURCE_WAITER_ORDER_KEY = "profile_unifier:ingestion:init:source-waiters:order"
@@ -108,6 +117,7 @@ _INIT_LOCK_RELEASE_ATTEMPTS = 3
 _INIT_LOCK_RELEASE_RETRY_SECONDS = 0.2
 _INIT_REQUESTER_CLASS: ContextVar[str] = ContextVar("init_requester_class", default="unknown")
 _LEGACY_SOURCE_LOCK_MODES = ("api", "backfill", "batch", "dump")
+_ONE_TIME_BOUNDED_SOURCE_KEYS = frozenset({"onediver", "onediver:sales"})
 # Leases are renewed while ingestion is running. Keeping the base TTL modest
 # bounds the unavailable period after a worker crashes.
 _LOCK_LEASE_SECONDS = 60 * 60
@@ -1165,6 +1175,23 @@ class _SourceAlreadyRunningError(Exception):
         self.held_by_same_task = held_by_same_task
 
 
+def _reject_unadmitted_bounded_maintenance(
+    *,
+    bounded_occurrence: dict[str, str] | None,
+    bounded_logical_run_id: str | None,
+) -> None:
+    if bounded_occurrence is None or bounded_logical_run_id is None:
+        raise Reject("bounded maintenance context is required", requeue=False)
+    occurrence = occurrence_from_payload(bounded_occurrence)
+    now = datetime.now(UTC)
+    if not occurrence.can_start(now):
+        raise Reject("bounded maintenance is outside its occurrence window", requeue=False)
+    raise Reject(
+        "bounded maintenance continuation awaits scheduler admission",
+        requeue=False,
+    )
+
+
 class LifecycleReconciliationSummary(TypedDict):
     status: str
     source_records: int
@@ -1205,6 +1232,28 @@ def _retry_lifecycle_or_requeue(self: Task, exc: Exception, countdown: int) -> N
         logger.exception("Lifecycle retry publication failed; requeueing current delivery")
         raise Reject(str(publication_exc), requeue=True) from publication_exc
     raise retry_exception
+
+
+def _bounded_task_outcome(bounded: BoundedTaskSummary) -> IngestionSummary:
+    summary: IngestionSummary = {
+        "ingest_run_id": bounded["ingest_run_id"],
+        "status": bounded["status"],
+        "succeeded": bounded["succeeded"],
+        "errors": bounded["errors"],
+        "skipped": bounded["skipped"],
+        "source_key": bounded["source_key"],
+        "mode": bounded["mode"],
+        "dump_path": None,
+        "entity_key": bounded["entity_key"],
+    }
+    if bounded["status"] == "completed":
+        return summary
+    if bounded["status"] == "paused_with_checkpoint":
+        raise Ignore()
+    raise Reject(
+        bounded["failure_category"] or "bounded ingestion was blocked",
+        requeue=False,
+    )
 
 
 def _terminal_run_summary(
@@ -1286,8 +1335,14 @@ def materialize_knows_task(
     phase: KnowsMaterializationPhase,
     cursor: str = "",
     predecessor_task_id: str | None = None,
+    bounded_occurrence: dict[str, str] | None = None,
+    bounded_logical_run_id: str | None = None,
 ) -> KnowsMaterializationSummary:
     """Process one bounded, locked KNOWS batch and continue from its cursor."""
+    _reject_unadmitted_bounded_maintenance(
+        bounded_occurrence=bounded_occurrence,
+        bounded_logical_run_id=bounded_logical_run_id,
+    )
     settings = get_settings()
     setup_logging(settings.log_level)
     started = time.monotonic()
@@ -1400,7 +1455,7 @@ def materialize_knows_task(
     retry_backoff=True,
     retry_backoff_max=300,
     retry_jitter=True,
-    max_retries=None,  # keep retrying — eventually a slot frees up
+    max_retries=None,  # keep retrying Ã¢â‚¬â€ eventually a slot frees up
 )
 def run_ingestion_task(
     self: Task,
@@ -1422,6 +1477,16 @@ def run_ingestion_task(
     bitrix_max_rows: int | None = None,
     bitrix_max_runtime_seconds: int | None = None,
     scheduled_dispatch: bool = False,
+    bounded_environment: str | None = None,
+    bounded_reset_generation: int | None = None,
+    bounded_mode: BoundedMode | None = None,
+    bounded_configuration_fingerprint: str | None = None,
+    bounded_connector_version: str | None = None,
+    bounded_configuration_version: str | None = None,
+    bounded_checkpoint_schema_version: int | None = None,
+    bounded_source_window: dict[str, JsonValue] | None = None,
+    bounded_occurrence: dict[str, str] | None = None,
+    bounded_stream_key: str | None = None,
     control_instance_id: str | None = None,
 ) -> IngestionSummary:
     """Run a single ingestion under the cluster-wide concurrency cap."""
@@ -1443,7 +1508,11 @@ def run_ingestion_task(
         and idempotency_key.startswith("bitrix-live:")
         and task_id == idempotency_key
     )
-    if (scheduled_dispatch or legacy_live_delivery) and not (
+    bounded_scheduled = (
+        bounded_occurrence is not None
+        and bounded_occurrence.get("scheduled", "true").lower() == "true"
+    )
+    if (scheduled_dispatch or legacy_live_delivery or bounded_scheduled) and not (
         get_ingestion_config().scheduled_ingestion.enabled
     ):
         logger.info(
@@ -1461,6 +1530,79 @@ def run_ingestion_task(
             "dump_path": dump_path,
             "entity_key": entity_key,
         }
+    bounded_presence = (
+        bounded_environment is not None,
+        bounded_reset_generation is not None,
+        bounded_mode is not None,
+        bounded_configuration_fingerprint is not None,
+        bounded_connector_version is not None,
+        bounded_configuration_version is not None,
+        bounded_checkpoint_schema_version is not None,
+        bounded_source_window is not None,
+        bounded_occurrence is not None,
+    )
+    if all(bounded_presence):
+        assert bounded_mode is not None
+        assert bounded_occurrence is not None
+        occurrence_scheduled = bounded_occurrence.get("scheduled", "true").lower() == "true"
+        if bounded_mode in {"bootstrap", "delta"} and not occurrence_scheduled:
+            raise Reject("recurring bounded modes require scheduled authority", requeue=False)
+        if bounded_mode == "one_time" and occurrence_scheduled:
+            raise Reject("one-time bounded mode cannot claim scheduled authority", requeue=False)
+        if bounded_mode == "one_time" and source_key not in _ONE_TIME_BOUNDED_SOURCE_KEYS:
+            raise Reject("source is not authorized for one-time bounded execution", requeue=False)
+    bounded_delivery = any(bounded_presence)
+    if scheduled_dispatch or bounded_delivery:
+        if not all(bounded_presence):
+            raise Reject("complete bounded ingestion context is required", requeue=False)
+        if task_id is None:
+            raise Reject("bounded ingestion requires a Celery task ID", requeue=False)
+        assert bounded_environment is not None
+        assert bounded_reset_generation is not None
+        assert bounded_mode is not None
+        assert bounded_configuration_fingerprint is not None
+        assert bounded_connector_version is not None
+        assert bounded_configuration_version is not None
+        assert bounded_checkpoint_schema_version is not None
+        assert bounded_source_window is not None
+        assert bounded_occurrence is not None
+        budget = get_ingestion_config().bounded_ingestion
+        try:
+            with (
+                _acquire_ingestion_slot(budget.max_graph_writers) as slot_id,
+                _renew_ingestion_leases((), slot_id),
+                bounded_shutdown_signal(),
+            ):
+                bounded = run_registered_bounded_unit(
+                    source_key=source_key,
+                    entity_key=entity_key,
+                    control_instance_id=control_instance_id,
+                    worker_task_id=task_id,
+                    environment=bounded_environment,
+                    reset_generation=bounded_reset_generation,
+                    bounded_mode=bounded_mode,
+                    configuration_fingerprint=bounded_configuration_fingerprint,
+                    connector_version=bounded_connector_version,
+                    configuration_version=bounded_configuration_version,
+                    checkpoint_schema_version=bounded_checkpoint_schema_version,
+                    source_window=bounded_source_window,
+                    occurrence_payload=bounded_occurrence,
+                    stream_key=bounded_stream_key,
+                )
+        except LookupError as exc:
+            raise Reject(str(exc), requeue=False) from exc
+        return _bounded_task_outcome(bounded)
+
+    environment = getattr(get_settings(), "deployment_environment", None)
+    reset_generation = (
+        active_reset_generation(environment) if isinstance(environment, str) else None
+    )
+    if reset_generation is not None:
+        raise Reject(
+            "generation-bound ingestion context is required after reset",
+            requeue=False,
+        )
+
     # PR #62 introduced ``entity_key`` as the fourth positional task argument.
     # PR #63's API producer used that position for its Bitrix ingest-run ID.
     # Keep existing WhatsAdmin task messages valid while interpreting the
@@ -1548,7 +1690,9 @@ def run_ingestion_task(
                         entity_key,
                     )
             with (
-                _acquire_ingestion_slot(MAX_CONCURRENT_INGESTIONS) as slot_id,
+                _acquire_ingestion_slot(
+                    get_ingestion_config().bounded_ingestion.max_graph_writers
+                ) as slot_id,
                 _renew_ingestion_leases(source_lock_leases, slot_id),
             ):
                 if split_bitrix:
@@ -1692,15 +1836,56 @@ def run_ingestion_task(
         logger.warning("Ingestion source %s not configured: %s", source_key, exc)
         _finalize_rejected_dispatched_run(ingest_run_id)
         raise Reject(str(exc), requeue=False) from exc
-    except Reject:
+    except (Reject, Ignore):
         raise
     except Exception as exc:
         logger.exception("Ingestion task failed for %s", source_key)
         if split_bitrix:
             raise Reject(str(exc), requeue=False) from exc
-        # Don't retry on real errors — surface them to the caller.
+        # Don't retry on real errors Ã¢â‚¬â€ surface them to the caller.
         _finalize_rejected_dispatched_run(ingest_run_id)
         raise Reject(str(exc), requeue=False) from exc
+
+
+@celery_app.task(
+    name="src.tasks.recover_bounded_logical_run_task",
+    bind=True,
+    acks_late=True,
+    autoretry_for=(_SlotUnavailableError,),
+    retry_backoff=True,
+    retry_backoff_max=300,
+    retry_jitter=True,
+    max_retries=None,
+)
+def recover_bounded_logical_run_task(
+    self: Task,
+    logical_run_id: str,
+    source_key: str,
+    control_instance_id: str,
+    reset_generation: int,
+) -> IngestionSummary:
+    """Recover one persisted bounded run from operator publication intent."""
+    task_id = str(self.request.id) if self.request.id is not None else None
+    if task_id is None:
+        raise Reject("bounded recovery requires a Celery task ID", requeue=False)
+    budget = get_ingestion_config().bounded_ingestion
+    with (
+        _acquire_ingestion_slot(budget.max_graph_writers) as slot_id,
+        _renew_ingestion_leases((), slot_id),
+        bounded_shutdown_signal(),
+    ):
+        try:
+            bounded = recover_bounded_logical_run(
+                logical_run_id=logical_run_id,
+                source_key=source_key,
+                control_instance_id=control_instance_id,
+                reset_generation=reset_generation,
+                worker_task_id=task_id,
+            )
+        except BoundedRecoveryLeasedError as exc:
+            countdown = max(1, int((exc.retry_at - datetime.now(UTC)).total_seconds()))
+            raise self.retry(exc=exc, countdown=countdown) from exc
+    return _bounded_task_outcome(bounded)
 
 
 @celery_app.task(
@@ -1709,8 +1894,16 @@ def run_ingestion_task(
     base=LifecycleReconciliationTask,
     max_retries=None,
 )
-def reconcile_lifecycle_task(self: Task) -> LifecycleReconciliationSummary:
+def reconcile_lifecycle_task(
+    self: Task,
+    bounded_occurrence: dict[str, str] | None = None,
+    bounded_logical_run_id: str | None = None,
+) -> LifecycleReconciliationSummary:
     """Periodically repair lifecycle state for late-arriving legacy records."""
+    _reject_unadmitted_bounded_maintenance(
+        bounded_occurrence=bounded_occurrence,
+        bounded_logical_run_id=bounded_logical_run_id,
+    )
     settings = get_settings()
     setup_logging(settings.log_level)
     celery_task_id = self.request.id

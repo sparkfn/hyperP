@@ -511,6 +511,39 @@ Update run status after completion or failure.
 }
 ```
 
+## Bounded logical-run operator APIs
+
+The following human-admin-only endpoints expose a bounded, redacted operational
+view of the durable scheduled-ingestion control plane. OAuth client credentials
+are not accepted. They return the standard `ApiResponse` envelope and expose
+only the logical-run identity, source/control identity, status, pause reason,
+occurrence timing, cumulative usage, phase/checkpoint timing, retry backlog, and
+safe failure category. They never return a cursor, source boundary, payload,
+replay token, fence token, raw failure, or secret.
+
+## GET /v1/ingest/logical-runs/{logical_run_id}
+
+Returns one bounded logical run. Unknown IDs and non-bounded logical runs return
+404.
+
+## POST /v1/ingest/logical-runs/{logical_run_id}/pause
+
+Requires `source_key`, `control_instance_id`, `reset_generation >= 1`, and a
+bounded single-line manual reason. The exact persisted identity must match; an
+unknown or mismatched identity returns 404, while a terminal or otherwise
+ineligible run returns 409. A successful call durably records the manual latch;
+it does not expose the private operator note in the status response.
+
+## POST /v1/ingest/logical-runs/{logical_run_id}/resume
+
+Requires the same exact persisted identity fields except a reason. It releases a
+manual latch only and persists an idempotent recovery-publication intent before
+the API makes a best-effort Celery publication. Resume never overrides a disabled
+source, schedule-window closure, reset mismatch, or connector capability gate;
+the worker re-reads and enforces those durable admission controls. Repeated
+publication attempts are safe because the recovery delivery contains only the
+logical-run/source/control/reset identity, not a cursor or source payload.
+
 ## Search and Person Read APIs
 
 ## GET /v1/persons

@@ -52,6 +52,7 @@ class Neo4jCheckpointRedis:
         fence_context: FenceContext | None = None,
         control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
         defer_terminal_updates: bool = True,
+        reset_generation: int | None = None,
     ) -> None:
         self._client = client
         self._source_key = source_key
@@ -61,6 +62,9 @@ class Neo4jCheckpointRedis:
         self._control_instance_id = effective_control_instance_id(
             fence_context.control_instance_id if fence_context is not None else control_instance_id
         )
+        if reset_generation is not None and reset_generation < 1:
+            raise ValueError("reset generation must be positive")
+        self._reset_generation = reset_generation
         self._defer_terminal_updates = defer_terminal_updates
         self._staged: dict[str, _Operation] = {}
 
@@ -72,11 +76,13 @@ class Neo4jCheckpointRedis:
         return False
 
     def get(self, name: str) -> str | None:
+        checkpoint_key = self._checkpoint_key(name)
+
         def _read(tx: ManagedTransaction) -> str | None:
             record = tx.run(
                 LOAD_INCREMENTAL_CHECKPOINT,
                 control_instance_id=self._control_instance_id,
-                checkpoint_key=name,
+                checkpoint_key=checkpoint_key,
             ).single()
             if record is None:
                 return None
@@ -91,7 +97,7 @@ class Neo4jCheckpointRedis:
                 name,
             )
             return value
-        if self._legacy is None:
+        if self._legacy is None or self._reset_generation is not None:
             logger.info(
                 "Incremental checkpoint source=%s key=%s mode=durable found=false",
                 self._source_key,
@@ -108,7 +114,10 @@ class Neo4jCheckpointRedis:
                 name,
             )
             return None
-        self._write(_Operation(name, legacy_value, "migrated"), ingest_run_id=None)
+        self._write(
+            _Operation(checkpoint_key, legacy_value, "migrated"),
+            ingest_run_id=None,
+        )
         logger.info(
             "Incremental checkpoint source=%s key=%s mode=redis_migrated found=true",
             self._source_key,
@@ -118,7 +127,7 @@ class Neo4jCheckpointRedis:
 
     def set(self, name: str, value: str) -> None:
         status = "resume" if name.endswith((":page", ":retries")) else "completed"
-        operation = _Operation(name, value, status)
+        operation = _Operation(self._checkpoint_key(name), value, status)
         if self._defer_set(name):
             self._staged[name] = operation
         else:
@@ -126,7 +135,7 @@ class Neo4jCheckpointRedis:
 
     def delete(self, *names: str) -> None:
         for name in names:
-            operation = _Operation(name, None, "completed")
+            operation = _Operation(self._checkpoint_key(name), None, "completed")
             if self._defer_delete(name):
                 self._staged[name] = operation
             else:
@@ -146,6 +155,11 @@ class Neo4jCheckpointRedis:
             self._legacy = None
 
     def flush(self, tx: ManagedTransaction, ingest_run_id: str, run_status: str) -> None:
+        if self._reset_generation is not None and run_status not in {
+            "completed",
+            "completed_with_errors",
+        }:
+            raise ValueError("bounded watermarks require terminal completion")
         for operation in self._staged.values():
             successful = _Operation(operation.key, operation.value, run_status)
             self._write_in_transaction(tx, successful, ingest_run_id)
@@ -184,6 +198,11 @@ class Neo4jCheckpointRedis:
             status=operation.status,
             ingest_run_id=ingest_run_id,
         )
+
+    def _checkpoint_key(self, name: str) -> str:
+        if self._reset_generation is None:
+            return name
+        return f"generation:{self._reset_generation}:{name}"
 
     def _defer_set(self, key: str) -> bool:
         return self._defer_terminal_updates and (

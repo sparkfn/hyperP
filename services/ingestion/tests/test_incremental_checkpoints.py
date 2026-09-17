@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections.abc import Callable
 from typing import TypeVar, cast
 
+import pytest
 from neo4j import ManagedTransaction
 from src.graph.client import Neo4jClient
 from src.graph.incremental_checkpoints import Neo4jCheckpointRedis
@@ -46,8 +47,10 @@ class _LegacyClient:
     def __init__(self, values: dict[str, str]) -> None:
         self.values = values
         self.closed = False
+        self.get_calls: list[str] = []
 
     def get(self, name: str) -> object:
+        self.get_calls.append(name)
         return self.values.get(name)
 
     def close(self) -> None:
@@ -59,6 +62,7 @@ def _store(
     *,
     legacy: _LegacyClient | None = None,
     active_ingest_run_id: str | None = None,
+    reset_generation: int | None = None,
 ) -> tuple[Neo4jCheckpointRedis, _Client]:
     client = _Client(tx)
     store = Neo4jCheckpointRedis(
@@ -66,6 +70,7 @@ def _store(
         "fundbox",
         legacy=legacy,
         active_ingest_run_id=active_ingest_run_id,
+        reset_generation=reset_generation,
     )
     return store, client
 
@@ -145,3 +150,38 @@ def test_closing_store_closes_only_the_legacy_client() -> None:
     store.close()
 
     assert legacy.closed is True
+
+
+def test_generation_scoped_checkpoint_never_imports_a_legacy_redis_value() -> None:
+    tx = _Transaction()
+    legacy = _LegacyClient({"profile_unifier:fundbox:watermark": "legacy"})
+    store, client = _store(tx, legacy=legacy, reset_generation=7)
+
+    assert store.get("profile_unifier:fundbox:watermark") is None
+    assert legacy.get_calls == []
+    assert client.write_count == 0
+    _, parameters = tx.calls[-1]
+    assert parameters["checkpoint_key"] == "generation:7:profile_unifier:fundbox:watermark"
+
+
+def test_generation_scoped_watermark_requires_terminal_completion_but_page_state_is_durable() -> (
+    None
+):
+    tx = _Transaction()
+    store, client = _store(tx, active_ingest_run_id="run-7", reset_generation=7)
+    watermark = "profile_unifier:fundbox:watermark"
+    page = "profile_unifier:fundbox:page"
+
+    store.set(watermark, "2026-09-17T01:00:00+00:00")
+    store.set(page, "page-7")
+
+    assert client.write_count == 1
+    _, immediate = tx.calls[-1]
+    assert immediate["checkpoint_key"] == "generation:7:profile_unifier:fundbox:page"
+    assert immediate["status"] == "resume"
+    with pytest.raises(ValueError, match="terminal completion"):
+        store.flush(cast(ManagedTransaction, tx), "run-7", "paused_with_checkpoint")
+    store.flush(cast(ManagedTransaction, tx), "run-7", "completed")
+    _, terminal = tx.calls[-1]
+    assert terminal["checkpoint_key"] == "generation:7:profile_unifier:fundbox:watermark"
+    assert terminal["status"] == "completed"

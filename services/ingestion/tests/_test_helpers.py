@@ -18,6 +18,7 @@ class TaskSettings:
     """
 
     log_level: str = "INFO"
+    deployment_environment: str = "development"
 
 
 class NullContext:
