@@ -22,9 +22,13 @@ REQUIRE (
   reservation.attempt_generation,
   reservation.reservation_key
 ) IS UNIQUE""",
-    """CREATE CONSTRAINT bounded_ingestion_receipt_identity_unique IF NOT EXISTS
+    """CREATE CONSTRAINT bounded_ingestion_receipt_attempt_identity_unique IF NOT EXISTS
 FOR (receipt:BoundedIngestionReceipt)
-REQUIRE (receipt.logical_run_id, receipt.replay_id) IS UNIQUE""",
+REQUIRE (
+  receipt.logical_run_id,
+  receipt.attempt_generation,
+  receipt.replay_id
+) IS UNIQUE""",
     """CREATE CONSTRAINT bounded_ingestion_retry_identity_unique IF NOT EXISTS
 FOR (retry:BoundedIngestionRetry)
 REQUIRE (retry.logical_run_id, retry.replay_id, retry.source_record_id) IS UNIQUE""",

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 
@@ -71,6 +72,8 @@ class FixtureConnector:
         self._descriptor.fetch_calls += 1
         if self._descriptor.fetch_failure is not None:
             raise self._descriptor.fetch_failure
+        if self._descriptor.on_fetch is not None:
+            self._descriptor.on_fetch()
         page = checkpoint.cursor.get("page")
         if not isinstance(page, int):
             raise AssertionError("fixture checkpoint page must be an integer")
@@ -81,6 +84,8 @@ class FixtureConnector:
 
     def close(self) -> None:
         self._descriptor.close_calls += 1
+        if self._descriptor.on_close is not None:
+            self._descriptor.on_close()
 
 
 class FixtureDescriptor:
@@ -97,6 +102,10 @@ class FixtureDescriptor:
     max_source_requests_per_unit = 1
     max_bytes_per_unit = 1_000
     max_extraction_calls_per_unit = 1
+    max_close_seconds = 5.0
+    max_retry_backoff_seconds = 30.0
+    supports_deadline = True
+    supports_cancellation = True
     writer = _NoopWriter()
 
     def __init__(
@@ -105,10 +114,14 @@ class FixtureDescriptor:
         *,
         compatibility: str = "compatible",
         fetch_failure: Exception | None = None,
+        on_fetch: Callable[[], None] | None = None,
+        on_close: Callable[[], None] | None = None,
     ) -> None:
         self.units = units
         self.compatibility = compatibility
         self.fetch_failure = fetch_failure
+        self.on_fetch = on_fetch
+        self.on_close = on_close
         self.create_calls = 0
         self.fetch_calls = 0
         self.close_calls = 0

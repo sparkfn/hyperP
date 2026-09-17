@@ -1,6 +1,6 @@
 """Celery tasks for the ingestion service.
 
-A single task — :func:`run_ingestion_task` — wraps :func:`src.main.run_ingestion`
+A single task Ã¢â‚¬â€ :func:`run_ingestion_task` Ã¢â‚¬â€ wraps :func:`src.main.run_ingestion`
 and enforces a fixed cluster-wide cap on the number of ingestion runs in flight
 via a Redis-backed semaphore.
 """
@@ -43,7 +43,7 @@ from src.bitrix_ingestion_models import (
     ExecutionContext,
     FenceContext,
 )
-from src.bounded_ingestion_models import BoundedMode
+from src.bounded_ingestion_models import BoundedMode, BoundedRecoveryLeasedError
 from src.bounded_ingestion_task_runtime import (
     BoundedTaskSummary,
     active_reset_generation,
@@ -117,6 +117,7 @@ _INIT_LOCK_RELEASE_ATTEMPTS = 3
 _INIT_LOCK_RELEASE_RETRY_SECONDS = 0.2
 _INIT_REQUESTER_CLASS: ContextVar[str] = ContextVar("init_requester_class", default="unknown")
 _LEGACY_SOURCE_LOCK_MODES = ("api", "backfill", "batch", "dump")
+_ONE_TIME_BOUNDED_SOURCE_KEYS = frozenset({"onediver", "onediver:sales"})
 # Leases are renewed while ingestion is running. Keeping the base TTL modest
 # bounds the unavailable period after a worker crashes.
 _LOCK_LEASE_SECONDS = 60 * 60
@@ -1179,7 +1180,13 @@ def _reject_unadmitted_bounded_maintenance(
     bounded_occurrence: dict[str, str] | None,
     bounded_logical_run_id: str | None,
 ) -> None:
-    if not get_ingestion_config().scheduled_ingestion.enabled:
+    settings = get_settings()
+    scheduling_enabled = get_ingestion_config().scheduled_ingestion.enabled
+    policy_active = scheduling_enabled or (
+        settings.deployment_environment != "development"
+        and active_reset_generation(settings.deployment_environment) is not None
+    )
+    if not policy_active:
         return
     if bounded_occurrence is None or bounded_logical_run_id is None:
         raise Reject("bounded maintenance context is required", requeue=False)
@@ -1456,7 +1463,7 @@ def materialize_knows_task(
     retry_backoff=True,
     retry_backoff_max=300,
     retry_jitter=True,
-    max_retries=None,  # keep retrying — eventually a slot frees up
+    max_retries=None,  # keep retrying Ã¢â‚¬â€ eventually a slot frees up
 )
 def run_ingestion_task(
     self: Task,
@@ -1542,6 +1549,16 @@ def run_ingestion_task(
         bounded_source_window is not None,
         bounded_occurrence is not None,
     )
+    if all(bounded_presence):
+        assert bounded_mode is not None
+        assert bounded_occurrence is not None
+        occurrence_scheduled = bounded_occurrence.get("scheduled", "true").lower() == "true"
+        if bounded_mode in {"bootstrap", "delta"} and not occurrence_scheduled:
+            raise Reject("recurring bounded modes require scheduled authority", requeue=False)
+        if bounded_mode == "one_time" and occurrence_scheduled:
+            raise Reject("one-time bounded mode cannot claim scheduled authority", requeue=False)
+        if bounded_mode == "one_time" and source_key not in _ONE_TIME_BOUNDED_SOURCE_KEYS:
+            raise Reject("source is not authorized for one-time bounded execution", requeue=False)
     bounded_delivery = any(bounded_presence)
     if scheduled_dispatch or bounded_delivery:
         if not all(bounded_presence):
@@ -1830,7 +1847,7 @@ def run_ingestion_task(
         logger.exception("Ingestion task failed for %s", source_key)
         if split_bitrix:
             raise Reject(str(exc), requeue=False) from exc
-        # Don't retry on real errors — surface them to the caller.
+        # Don't retry on real errors Ã¢â‚¬â€ surface them to the caller.
         _finalize_rejected_dispatched_run(ingest_run_id)
         raise Reject(str(exc), requeue=False) from exc
 
@@ -1862,13 +1879,17 @@ def recover_bounded_logical_run_task(
         _renew_ingestion_leases((), slot_id),
         bounded_shutdown_signal(),
     ):
-        bounded = recover_bounded_logical_run(
-            logical_run_id=logical_run_id,
-            source_key=source_key,
-            control_instance_id=control_instance_id,
-            reset_generation=reset_generation,
-            worker_task_id=task_id,
-        )
+        try:
+            bounded = recover_bounded_logical_run(
+                logical_run_id=logical_run_id,
+                source_key=source_key,
+                control_instance_id=control_instance_id,
+                reset_generation=reset_generation,
+                worker_task_id=task_id,
+            )
+        except BoundedRecoveryLeasedError as exc:
+            countdown = max(1, int((exc.retry_at - datetime.now(UTC)).total_seconds()))
+            raise self.retry(exc=exc, countdown=countdown) from exc
     return _bounded_task_outcome(bounded)
 
 

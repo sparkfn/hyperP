@@ -112,7 +112,7 @@ def test_control_schema_and_queries_persist_receipts_retries_and_exact_fences() 
         "BoundedIngestionScope",
         "bounded_logical_key",
         "BoundedIngestionReceipt",
-        "(receipt.logical_run_id, receipt.replay_id) IS UNIQUE",
+        "receipt.attempt_generation",
         "BoundedIngestionRetry",
         "(retry.logical_run_id, retry.replay_id, retry.source_record_id) IS UNIQUE",
     ):

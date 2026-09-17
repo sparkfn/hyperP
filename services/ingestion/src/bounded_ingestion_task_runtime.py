@@ -16,6 +16,7 @@ from pydantic.types import JsonValue
 from src.bounded_ingestion_dispatch import dispatch_one
 from src.bounded_ingestion_models import (
     BoundedMode,
+    BoundedRecoveryLeasedError,
     BoundedRunResult,
     RunScope,
     utc_now,
@@ -23,10 +24,11 @@ from src.bounded_ingestion_models import (
 from src.bounded_ingestion_window import occurrence_from_payload
 from src.config import get_settings
 from src.connectors.registry import BoundedConnectorRegistry, registry
+from src.graph.bitrix_source_instances import BitrixSourceInstanceRepository
 from src.graph.bounded_ingestion_control import BoundedIngestionControl
 from src.graph.client import Neo4jClient
 from src.ingestion_config import get_ingestion_config
-from src.source_instances import effective_control_instance_id
+from src.source_instances import effective_control_instance_id, effective_source_instance_id
 
 _shutdown_requested = threading.Event()
 
@@ -148,6 +150,14 @@ def run_registered_bounded_unit(
     budget = get_ingestion_config().bounded_ingestion
     client = Neo4jClient(get_settings())
     try:
+        if source_key == "bitrix_chat":
+            source_instance_id = effective_source_instance_id(
+                get_ingestion_config().bitrix_openlines.source_instance_id
+            )
+            BitrixSourceInstanceRepository(client).admit(
+                control_instance_id=scope.control_instance_id,
+                source_instance_id=source_instance_id,
+            )
         result = dispatch_one(
             registry=descriptor_registry,
             control=BoundedIngestionControl(
@@ -228,6 +238,10 @@ def recover_bounded_logical_run(
         )
         if recovery is None:
             return _blocked_summary(source_key, None, "recovery_not_eligible")
+        if recovery == "completed":
+            return _completed_recovery_summary(source_key)
+        if isinstance(recovery, datetime):
+            raise BoundedRecoveryLeasedError(recovery)
         if (
             recovery.scope.mode != "one_time"
             and not get_ingestion_config().scheduled_ingestion.enabled
@@ -262,6 +276,14 @@ def recover_bounded_logical_run(
                 source_key,
                 recovery.scope.entity_key,
                 "configuration_mismatch",
+            )
+        if source_key == "bitrix_chat":
+            source_instance_id = effective_source_instance_id(
+                get_ingestion_config().bitrix_openlines.source_instance_id
+            )
+            BitrixSourceInstanceRepository(client).admit(
+                control_instance_id=recovery.scope.control_instance_id,
+                source_instance_id=source_instance_id,
             )
         result = dispatch_one(
             registry=descriptor_registry,
@@ -339,6 +361,23 @@ def _scope(
         checkpoint_schema_version=checkpoint_schema_version,
         source_window=dict(source_window),
     )
+
+
+def _completed_recovery_summary(source_key: str) -> BoundedTaskSummary:
+    return {
+        "ingest_run_id": "",
+        "logical_run_id": "",
+        "status": "completed",
+        "succeeded": 0,
+        "errors": 0,
+        "skipped": 1,
+        "source_key": source_key,
+        "mode": "delta",
+        "dump_path": None,
+        "entity_key": None,
+        "pause_reason": None,
+        "failure_category": None,
+    }
 
 
 def _blocked_summary(

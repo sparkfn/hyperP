@@ -8,14 +8,14 @@ from datetime import datetime, timedelta
 from typing import Protocol, cast
 from uuid import uuid4
 
-from neo4j import ManagedTransaction, Result
+from neo4j import ManagedTransaction, Record, Result
 
 from src.bitrix_ingestion_models import BitrixStreamKey
 from src.bounded_ingestion_budget import BoundedIngestionBudget
 from src.bounded_ingestion_models import (
     AttemptContext,
     BoundedAdmissionResult,
-    BoundedRecoveryState,
+    BoundedRecoveryResult,
     BoundedStatus,
     BoundedUnit,
     BoundedUnitWriter,
@@ -84,6 +84,7 @@ from src.graph.queries.bounded_ingestion_control import (
     GET_ACTIVE_RESET_GENERATION,
     GET_BOUNDED_RECOVERY,
     GET_BOUNDED_STATUS,
+    LOAD_BOUNDED_RETRIES,
     PAUSE_BOUNDED_RUN,
     PAUSE_BOUNDED_UNCLAIMED,
     PERSIST_BOUNDED_RETRY,
@@ -161,7 +162,7 @@ class BoundedIngestionControl:
                 next_eligible,
             )
             return None
-        if status in {"paused_with_checkpoint", "failed", "running"} and (
+        if status in {"queued", "paused_with_checkpoint", "failed", "running"} and (
             occurrence_id != occurrence.occurrence_id
         ):
             if not self._rebind(logical_run_id, scope, occurrence, now):
@@ -192,7 +193,7 @@ class BoundedIngestionControl:
             attempt_generation=context.attempt_generation,
             worker_task_id=context.worker_task_id,
             control_instance_id=scope.control_instance_id,
-            replace_active=True,
+            replace_active=context.attempt_generation > 1,
         )
         return replace(context, bitrix_fence_context=admission.fence_context)
 
@@ -252,6 +253,13 @@ class BoundedIngestionControl:
             _assert_bitrix_fence(tx, context)
             if receipt["created"] is not True and receipt["status"] == "committed":
                 return _committed_receipt_result(receipt)
+            if receipt["created"] is not True and receipt["status"] == "retry_pending":
+                return _retry_pending_receipt_result(
+                    tx,
+                    context.logical_run_id,
+                    unit.replay_id,
+                    receipt,
+                )
             if receipt["status"] not in {"pending", "retry_pending"}:
                 raise RuntimeError("bounded receipt has an invalid state")
             result = writer.apply(tx, context, unit)
@@ -395,8 +403,8 @@ class BoundedIngestionControl:
         control_instance_id: str,
         reset_generation: int,
         now: datetime,
-    ) -> BoundedRecoveryState | None:
-        def work(tx: ManagedTransaction) -> BoundedRecoveryState | None:
+    ) -> BoundedRecoveryResult:
+        def work(tx: ManagedTransaction) -> BoundedRecoveryResult:
             record = _run(
                 tx,
                 GET_BOUNDED_RECOVERY,
@@ -406,7 +414,17 @@ class BoundedIngestionControl:
                 reset_generation=reset_generation,
                 now=now.isoformat(),
             ).single()
-            return _recovery_state(record, reset_generation) if record else None
+            if record is None:
+                return None
+            recovery_status = _required_text(record, "recovery_status")
+            if recovery_status == "completed":
+                return "completed"
+            lease_expires_at = _record_datetime(record, "lease_expires_at")
+            if recovery_status == "running" and now < lease_expires_at:
+                return lease_expires_at
+            if recovery_status not in {"running", "paused_with_checkpoint", "failed", "queued"}:
+                return None
+            return _recovery_state(record, reset_generation)
 
         return self._client.execute_read(work)
 
@@ -684,3 +702,63 @@ def _bitrix_parameters(context: AttemptContext) -> dict[str, object]:
         "stream_generation": fence.stream_generation,
         "fencing_token": fence.fencing_token,
     }
+
+
+def _retry_pending_receipt_result(
+    tx: ManagedTransaction,
+    logical_run_id: str,
+    replay_id: str,
+    receipt: Record,
+) -> UnitApplyResult:
+    base = _committed_receipt_result(receipt)
+    retries: list[RetryObligation] = []
+    for row in _run(
+        tx,
+        LOAD_BOUNDED_RETRIES,
+        logical_run_id=logical_run_id,
+        replay_id=replay_id,
+    ):
+        eligible_raw: object = row["eligible_at"]
+        eligible = (
+            datetime.fromisoformat(eligible_raw.replace("Z", "+00:00"))
+            if isinstance(eligible_raw, str) and eligible_raw
+            else None
+        )
+        retries.append(
+            RetryObligation(
+                replay_id=replay_id,
+                source_record_id=_record_text(row, "source_record_id"),
+                source_version=_record_text(row, "source_version"),
+                category=_record_text(row, "category"),
+                attempt_count=_record_positive_int(row, "attempt_count"),
+                eligible_at=eligible,
+            )
+        )
+    return UnitApplyResult(
+        dispositions=base.dispositions,
+        retry_obligations=tuple(retries),
+    )
+
+
+def _record_text(record: Record, key: str) -> str:
+    value: object = record[key]
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"bounded retry returned invalid {key}")
+    return value
+
+
+def _record_positive_int(record: Record, key: str) -> int:
+    value: object = record[key]
+    if isinstance(value, bool) or not isinstance(value, int) or value < 1:
+        raise ValueError(f"bounded retry returned invalid {key}")
+    return value
+
+
+def _record_datetime(record: Record, key: str) -> datetime:
+    value: object = record[key]
+    if not isinstance(value, str) or not value:
+        raise ValueError(f"bounded recovery returned invalid {key}")
+    parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    if parsed.tzinfo is None or parsed.utcoffset() is None:
+        raise ValueError(f"bounded recovery returned naive {key}")
+    return parsed

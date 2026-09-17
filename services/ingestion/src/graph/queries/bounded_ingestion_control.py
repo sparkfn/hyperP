@@ -38,6 +38,13 @@ WHERE scope.environment = $environment
   AND scope.configuration_fingerprint = $configuration_fingerprint
   AND scope.connector_version = $connector_version
   AND scope.checkpoint_schema_version = $checkpoint_schema_version
+SET scope.run_lock_version = coalesce(scope.run_lock_version, 0) + 1
+WITH source, scope
+OPTIONAL MATCH (scope)-[:OWNS]->(unfinished:IngestionLogicalRun)
+WHERE unfinished.bounded_status <> 'completed'
+WITH source, scope, collect(unfinished) AS unfinished_runs
+WHERE size(unfinished_runs) = 0
+  OR all(run IN unfinished_runs WHERE run.bounded_logical_key = $logical_key)
 MERGE (logical:IngestionLogicalRun {bounded_logical_key: $logical_key})
 ON CREATE SET logical.logical_run_id = randomUUID(),
   logical.bounded_scope_key = $scope_key,
@@ -139,7 +146,7 @@ WHERE (dispatch IS NULL OR coalesce(dispatch.blocked, false) = false)
   AND datetime($now) >= datetime($starts_at)
   AND datetime($now) < datetime($drain_starts_at)
   AND (
-    logical.bounded_status IN ['paused_with_checkpoint', 'failed']
+    logical.bounded_status IN ['queued', 'paused_with_checkpoint', 'failed']
     OR (
       logical.bounded_status = 'running'
       AND datetime($now) >= logical.lease_expires_at
@@ -468,6 +475,7 @@ MATCH (checkpoint:IngestionCheckpoint {
 WHERE checkpoint.cursor_json = $cursor_before_json
 MERGE (receipt:BoundedIngestionReceipt {
   logical_run_id: $logical_run_id,
+  attempt_generation: $attempt_generation,
   replay_id: $replay_id
 })
 ON CREATE SET receipt.creation_token = $creation_token,
@@ -480,6 +488,21 @@ RETURN created AS created,
   receipt.dispositions_json AS dispositions_json
 """
 )
+
+
+LOAD_BOUNDED_RETRIES = """
+MATCH (retry:BoundedIngestionRetry {
+  logical_run_id: $logical_run_id,
+  replay_id: $replay_id,
+  status: 'pending'
+})
+RETURN retry.source_record_id AS source_record_id,
+  retry.source_version AS source_version,
+  retry.category AS category,
+  retry.attempt_count AS attempt_count,
+  toString(retry.eligible_at) AS eligible_at
+ORDER BY retry.source_record_id
+"""
 
 PERSIST_BOUNDED_RETRY = """
 MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
@@ -539,6 +562,7 @@ MATCH (checkpoint:IngestionCheckpoint {
 })
 MATCH (receipt:BoundedIngestionReceipt {
   logical_run_id: $logical_run_id,
+  attempt_generation: $attempt_generation,
   replay_id: $replay_id
 })
 WHERE receipt.status IN ['pending', 'retry_pending']
@@ -776,7 +800,6 @@ SET logical.bounded_status = 'completed',
   logical.worker_task_id = NULL,
   logical.lease_token = NULL,
   logical.publication_intent = false,
-  logical.recovery_authorized = false,
   logical.finished_at = datetime(),
   logical.updated_at = datetime(),
   checkpoint.status = 'completed',
@@ -898,14 +921,9 @@ MATCH (checkpoint:IngestionCheckpoint {
 })
 WHERE coalesce(logical.manual_pause, false) = false
   AND coalesce(logical.recovery_authorized, false) = true
-  AND (
-    logical.bounded_status = 'paused_with_checkpoint'
-    OR (
-      logical.bounded_status = 'running'
-      AND datetime($now) >= logical.lease_expires_at
-    )
-  )
-RETURN logical.environment AS environment,
+RETURN logical.bounded_status AS recovery_status,
+  toString(logical.lease_expires_at) AS lease_expires_at,
+  logical.environment AS environment,
   logical.source_key AS source_key,
   logical.control_instance_id AS control_instance_id,
   logical.entity_key AS entity_key,

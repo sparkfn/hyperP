@@ -2,6 +2,12 @@
 
 from __future__ import annotations
 
+CHECK_ACTIVE_RESET_GENERATION = """
+MATCH (reset:IngestionResetGeneration {status: 'active'})
+RETURN reset.generation AS generation
+LIMIT 1
+"""
+
 CHECK_SOURCE_SYSTEM = """
 MATCH (ss:SourceSystem {source_key: $source_key, is_active: true})
 WHERE NOT EXISTS {
@@ -144,6 +150,9 @@ SET ir.record_count = ir.record_count + $accepted,
 
 CREATE_INGEST_RUN = """
 MATCH (ss:SourceSystem {source_key: $source_key, is_active: true})
+WHERE NOT EXISTS {
+  MATCH (:IngestionResetGeneration {status: 'active'})
+}
 OPTIONAL MATCH (migration:DataMigration {migration_key: 'bitrix_control_instance_v1'})
 WITH ss, collect(DISTINCT migration) AS migrations
 OPTIONAL MATCH (instance:BitrixSourceInstance {

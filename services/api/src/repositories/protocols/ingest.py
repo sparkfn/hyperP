@@ -12,6 +12,10 @@ class BitrixApiAdmissionError(RuntimeError):
     """The #272 Bitrix control plane is not ready for API publication."""
 
 
+class BoundedGenerationRequiredError(RuntimeError):
+    """Legacy API publication is disabled after reset-generation activation."""
+
+
 @dataclass
 class IngestRecordResult:
     source_record_id: str

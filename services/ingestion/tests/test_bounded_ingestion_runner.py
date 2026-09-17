@@ -196,3 +196,24 @@ def test_terminal_unit_with_a_repeated_cursor_is_rejected_before_completion() ->
     assert result.safe_message == "repeated_cursor"
     assert control.writer_invocations == 0
     assert control.terminal_watermark is False
+
+
+def test_live_clock_fences_a_source_or_close_that_crosses_cutoff() -> None:
+    scheduled = occurrence()
+    clock = FakeClock(scheduled.starts_at)
+
+    def cross_cutoff() -> None:
+        clock.now = scheduled.cutoff_at + timedelta(seconds=1)
+
+    descriptor = FixtureDescriptor(
+        {0: unit(0, (("identity-1", "v1"),), terminal=True)},
+        on_close=cross_cutoff,
+    )
+    control = MemoryControl()
+
+    result = _runner(clock).run_one(descriptor, context(), control)
+
+    assert result.status == "failed"
+    assert result.failure_category == "overrun"
+    assert control.writer_invocations == 0
+    assert control.terminal_watermark is False

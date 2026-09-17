@@ -40,6 +40,14 @@ class BoundedConnectorRegistry:
         )
         if any(value < 1 for value in limits):
             raise ValueError("bounded descriptor limits must be positive")
+        durations = (
+            descriptor.max_close_seconds,
+            descriptor.max_retry_backoff_seconds,
+        )
+        if any(value <= 0 for value in durations):
+            raise ValueError("bounded descriptor durations must be positive")
+        if not descriptor.supports_deadline or not descriptor.supports_cancellation:
+            raise ValueError("bounded descriptor lacks deadline/cancellation support")
         if not any(
             (
                 descriptor.supports_bootstrap,

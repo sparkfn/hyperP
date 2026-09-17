@@ -9,6 +9,7 @@ from neo4j import AsyncManagedTransaction
 from src.graph.client import get_session
 from src.graph.converters import to_str
 from src.graph.queries import (
+    CHECK_ACTIVE_RESET_GENERATION,
     CHECK_BITRIX_API_ADMISSION,
     CHECK_SOURCE_SYSTEM,
     CREATE_INGEST_RUN,
@@ -21,6 +22,7 @@ from src.graph.queries import (
 from src.repositories.neo4j.ingestion_control_schema import assert_bitrix_control_schema_ready
 from src.repositories.protocols.ingest import (
     BitrixApiAdmissionError,
+    BoundedGenerationRequiredError,
     IngestRecordResult,
     IngestRecordsResponse,
     IngestRunCreationResult,
@@ -208,6 +210,11 @@ async def _create_run_tx(
     )
     record = await result.single()
     if record is None:
+        active_reset = await tx.run(CHECK_ACTIVE_RESET_GENERATION)
+        if await active_reset.single() is not None:
+            raise BoundedGenerationRequiredError(
+                "legacy ingest-run creation is disabled after reset activation"
+            )
         return None
     return IngestRunCreationResult(
         run=IngestRunResponse(

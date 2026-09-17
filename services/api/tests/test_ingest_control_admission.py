@@ -12,6 +12,7 @@ from neo4j import AsyncManagedTransaction
 from src.repositories.neo4j.ingest import _create_run_tx, _ingest_records_tx
 from src.repositories.protocols.ingest import (
     BitrixApiAdmissionError,
+    BoundedGenerationRequiredError,
     IngestRepository,
     IngestRunCreationResult,
     IngestRunResponse,
@@ -338,3 +339,23 @@ async def test_alternate_name_for_retired_identity_blocks_api_run_before_admissi
 
     assert transaction.queries == [transaction.queries[0]]
     assert transaction.queries[0].startswith("SHOW CONSTRAINTS")
+
+
+@pytest.mark.asyncio
+async def test_active_reset_generation_rejects_legacy_run_creation() -> None:
+    transaction = _Transaction([None, {"generation": 2}])
+
+    with pytest.raises(BoundedGenerationRequiredError):
+        await _create_run_tx(
+            cast(AsyncManagedTransaction, transaction),
+            "fundbox",
+            "manual",
+            "batch",
+            None,
+            {},
+            "legacy-after-reset",
+        )
+
+    assert "IngestionResetGeneration" in transaction.queries[0]
+    assert "CHECK_ACTIVE_RESET_GENERATION" not in transaction.queries[1]
+    assert "IngestionResetGeneration" in transaction.queries[1]

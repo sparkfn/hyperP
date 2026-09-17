@@ -50,7 +50,12 @@ class BoundedIngestionRunner:
         control: BoundedCommitStore,
     ) -> BoundedRunResult:
         now = self._clock()
-        early = self._early_pause(context, control, now)
+        worst_case_seconds = (
+            self._budget.max_unit_seconds
+            + self._budget.max_graph_transaction_seconds
+            + descriptor.max_close_seconds
+        )
+        early = self._early_pause(context, control, now, worst_case_seconds)
         if early is not None:
             return early
         reservation = _reservation(descriptor)
@@ -65,6 +70,7 @@ class BoundedIngestionRunner:
         context: AttemptContext,
         control: BoundedCommitStore,
         now: datetime,
+        worst_case_seconds: float,
     ) -> BoundedRunResult | None:
         if self._shutdown.requested():
             return self._pause_at(context, control, "shutdown", now)
@@ -77,7 +83,7 @@ class BoundedIngestionRunner:
                 control,
                 "schedule_window_closed",
             )
-        if not occurrence.can_finish(now, self._budget.max_unit_seconds):
+        if not occurrence.can_finish(now, worst_case_seconds):
             return self._pause_next_occurrence(
                 context,
                 control,
@@ -93,6 +99,10 @@ class BoundedIngestionRunner:
     ) -> BoundedRunResult:
         connector: BoundedConnector | None = None
         try:
+            context.require_operation_budget(
+                self._clock(),
+                self._budget.max_unit_seconds + descriptor.max_close_seconds,
+            )
             connector = descriptor.create(context)
             compatibility = connector.validate_checkpoint(context.checkpoint)
             if compatibility != "compatible":
@@ -104,6 +114,15 @@ class BoundedIngestionRunner:
                 )
             unit = connector.fetch_one_unit(context.checkpoint, context)
         except SourceBackoffError as exc:
+            if (exc.retry_at - self._clock()).total_seconds() > (
+                descriptor.max_retry_backoff_seconds
+            ):
+                return self._fail(
+                    context,
+                    control,
+                    "source",
+                    "source_backoff_limit_exceeded",
+                )
             next_eligible = _backoff_eligibility(context, exc.retry_at)
             paused = self._pause_at(
                 context,

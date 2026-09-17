@@ -171,3 +171,22 @@ def test_descriptor_discovery_supports_multiple_adapter_local_descriptors(
     assert discovered.registered_sources() == ("fixture", "fixture-second")
     assert first.create_calls == 0
     assert second.create_calls == 0
+
+
+def test_disabled_scheduling_still_blocks_unadmitted_maintenance_after_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src import tasks
+
+    class _Settings:
+        deployment_environment = "staging"
+
+    monkeypatch.setattr(tasks, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(tasks, "active_reset_generation", lambda _environment: 4)
+    monkeypatch.setattr(
+        tasks,
+        "get_ingestion_config",
+        lambda: IngestionConfig(scheduled_ingestion=ScheduledIngestionConfig(enabled=False)),
+    )
+    with pytest.raises(Reject, match="bounded maintenance context"):
+        tasks.reconcile_lifecycle_task.run()

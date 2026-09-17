@@ -14,6 +14,7 @@ from src.http_utils import envelope, http_error
 from src.repositories.deps import get_ingest_repo
 from src.repositories.protocols.ingest import (
     BitrixApiAdmissionError,
+    BoundedGenerationRequiredError,
     IngestRecordsResponse,
     IngestRepository,
     IngestRunDetailResponse,
@@ -125,6 +126,13 @@ async def create_ingest_run(
             409,
             "control_not_ready",
             "Bitrix ingestion control is not ready for publication.",
+            request,
+        ) from None
+    except BoundedGenerationRequiredError:
+        raise http_error(
+            409,
+            "bounded_generation_required",
+            "Legacy ingest-run creation is disabled after reset activation.",
             request,
         ) from None
     if creation is None:

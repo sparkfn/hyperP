@@ -233,6 +233,16 @@ class AttemptContext:
         if self.retry_backlog < 0:
             raise ValueError("retry backlog must be non-negative")
 
+    def remaining_seconds(self, now: datetime) -> float | None:
+        if self.occurrence is None:
+            return None
+        return max((self.occurrence.cutoff_at - now).total_seconds(), 0.0)
+
+    def require_operation_budget(self, now: datetime, worst_case_seconds: float) -> None:
+        remaining = self.remaining_seconds(now)
+        if remaining is not None and remaining <= worst_case_seconds:
+            raise TimeoutError("bounded operation cannot finish before cutoff")
+
 
 BoundedAdmissionResult = AttemptContext | Literal["completed"] | None
 
@@ -326,6 +336,10 @@ class BoundedConnectorDescriptor(Protocol):
     max_source_requests_per_unit: int
     max_bytes_per_unit: int
     max_extraction_calls_per_unit: int
+    max_close_seconds: float
+    max_retry_backoff_seconds: float
+    supports_deadline: bool
+    supports_cancellation: bool
     writer: BoundedUnitWriter
 
     def initial_checkpoint(
@@ -367,6 +381,15 @@ class BoundedStatus:
 class BoundedRecoveryState:
     scope: RunScope
     occurrence: OccurrenceContext
+
+
+BoundedRecoveryResult = BoundedRecoveryState | Literal["completed"] | datetime | None
+
+
+class BoundedRecoveryLeasedError(RuntimeError):
+    def __init__(self, retry_at: datetime) -> None:
+        super().__init__("bounded recovery lease is still active")
+        self.retry_at = retry_at
 
 
 @dataclass(frozen=True)

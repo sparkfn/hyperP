@@ -142,7 +142,7 @@ def recovery_from_record(
 
 
 def committed_receipt_result(record: Record) -> UnitApplyResult:
-    if record["status"] != "committed":
+    if record["status"] not in {"committed", "retry_pending"}:
         raise RuntimeError("bounded receipt is not committed")
     raw = record["dispositions_json"]
     if not isinstance(raw, str):
