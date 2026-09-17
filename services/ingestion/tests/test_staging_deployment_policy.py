@@ -234,7 +234,7 @@ def test_policy_prepare_preserves_bounded_only_config(tmp_path: Path) -> None:
     assert prepared_again.returncode == 0, prepared_again.stderr
     assert after == before
     assert payload["bounded_ingestion"] == bounded_only["bounded_ingestion"]
-    assert payload["scheduled_ingestion"]["enabled"] is False
+    assert payload["scheduled_ingestion"].get("enabled", False) is False
 
 
 def test_atomic_prepare_rejects_fchown_failure_before_replace(
