@@ -219,6 +219,7 @@ class AttemptContext:
     bitrix_fence_context: FenceContext | None = None
     operation_deadline_at: datetime | None = None
     cancellation: CancellationSignal | None = None
+    lease_expires_at: datetime | None = None
 
     def __post_init__(self) -> None:
         identifiers = (
@@ -234,6 +235,10 @@ class AttemptContext:
             self.fencing_token,
             self.global_slot_fencing_token,
         )
+        if self.lease_expires_at is not None and (
+            self.lease_expires_at.tzinfo is None or self.lease_expires_at.utcoffset() is None
+        ):
+            raise ValueError("lease expiry must be timezone-aware")
         if any(value < 1 for value in fences) or self.global_slot_index < 0:
             raise ValueError("attempt fences must be positive")
         if self.retry_backlog < 0:

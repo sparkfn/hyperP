@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import replace
-from datetime import datetime, timedelta
+from datetime import datetime
 from typing import Protocol, cast
 from uuid import uuid4
 
@@ -174,7 +174,7 @@ class BoundedIngestionControl:
             occurrence=occurrence,
             worker_task_id=worker_task_id,
             lease_token=lease_token or uuid4().hex,
-            lease_expires_at=now + timedelta(seconds=lease_seconds),
+            lease_seconds=lease_seconds,
             max_graph_writers=max_graph_writers,
             now=now,
         )
@@ -593,7 +593,7 @@ class BoundedIngestionControl:
         occurrence: OccurrenceContext,
         worker_task_id: str,
         lease_token: str,
-        lease_expires_at: datetime,
+        lease_seconds: float,
         max_graph_writers: int,
         now: datetime,
     ) -> AttemptContext | None:
@@ -608,7 +608,7 @@ class BoundedIngestionControl:
                 control_instance_id=scope.control_instance_id,
                 worker_task_id=worker_task_id,
                 lease_token=lease_token,
-                lease_expires_at=lease_expires_at.isoformat(),
+                lease_seconds=lease_seconds,
                 max_graph_writers=max_graph_writers,
                 now=now.isoformat(),
             ).single()

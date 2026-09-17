@@ -90,6 +90,15 @@ class BoundedIngestionRunner:
         if delayed is not None:
             return delayed
         deadline = lifecycle_start + timedelta(seconds=self._budget.max_unit_seconds)
+        if context.lease_expires_at is not None:
+            deadline = min(
+                deadline,
+                context.lease_expires_at
+                - timedelta(
+                    seconds=descriptor.max_close_seconds
+                    + (2 * self._budget.max_graph_transaction_seconds)
+                ),
+            )
         if context.occurrence is not None:
             deadline = min(
                 deadline,

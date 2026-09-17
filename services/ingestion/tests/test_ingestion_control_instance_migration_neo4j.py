@@ -1163,7 +1163,6 @@ def test_expired_recovery_claim_uses_durable_identity_and_terminal_evidence(
     control = BoundedIngestionControl(cast(Neo4jClient, _Client(neo4j_driver)))
     occurrence = _bounded_occurrence()
     initial_lease_seconds = 300
-    lease_expires_at = occurrence.starts_at + timedelta(seconds=initial_lease_seconds)
     first = control.admit_or_resume(
         scope=_bounded_scope("fixture"),
         occurrence=occurrence,
@@ -1173,6 +1172,8 @@ def test_expired_recovery_claim_uses_durable_identity_and_terminal_evidence(
         lease_seconds=initial_lease_seconds,
     )
     assert isinstance(first, AttemptContext)
+    assert first.lease_expires_at is not None
+    lease_expires_at = first.lease_expires_at
     with neo4j_driver.session() as session:
         session.run(
             "MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id}) "

@@ -53,6 +53,7 @@ def attempt_from_record(
         attempt_generation=required_positive_int(record, "attempt_generation"),
         fencing_token=required_positive_int(record, "fencing_token"),
         lease_token=required_text(record, "lease_token"),
+        lease_expires_at=required_datetime(record, "lease_expires_at"),
         global_slot_index=non_negative_int(record, "global_slot_index"),
         global_slot_fencing_token=required_positive_int(
             record,
