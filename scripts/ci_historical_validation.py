@@ -70,6 +70,8 @@ def _commands(mypy_config: str) -> tuple[HistoricalCommand, ...]:
                 "--group",
                 "training",
                 "--package",
+                "profile-unifier-api",
+                "--package",
                 ingestion,
             ),
             "ingestion",

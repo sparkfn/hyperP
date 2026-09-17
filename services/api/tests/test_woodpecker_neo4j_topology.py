@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import copy
 import runpy
 import tomllib
 from pathlib import Path
@@ -15,6 +16,7 @@ from ci_support.selection_manifest import (
     ACTIVE_SHARED_SOURCE_PATHS,
     HISTORICAL_SOURCE_PATHS,
     HISTORICAL_TEST_MODULES,
+    validate_active_node_sentinel_definitions,
     validate_default_query_manifest,
 )
 
@@ -71,6 +73,8 @@ _EXPECTED_HISTORICAL_TRAINING_SYNC = (
     "--group",
     "training",
     "--package",
+    "profile-unifier-api",
+    "--package",
     "profile-unifier-ingestion",
 )
 _HISTORICAL_DORMANT_SOURCE_PATHS = frozenset(
@@ -105,7 +109,7 @@ _EXPECTED_ACTIVE_NODE_SENTINELS = {
         "services/api/tests/test_mcp_app.py::"
         "test_mcp_tools_match_every_canonical_api_operation",
         "services/api/tests/test_ci_selection_gate.py::"
-        "test_active_profile_rejects_explicit_historical_path_and_node_before_import",
+        "test_root_plugin_rejects_explicit_historical_targets_before_import",
         "services/api/tests/test_person_crm_metrics_neo4j.py::"
         "test_deal_metrics_query_uses_projected_stage_and_excludes_live_activity_records",
     ),
@@ -115,7 +119,9 @@ _EXPECTED_ACTIVE_NODE_SENTINELS = {
         "services/ingestion/tests/test_active_publication_fencing_neo4j.py::"
         "test_stale_publication_confirmation_fails_closed",
         "services/ingestion/tests/test_active_relationship_reader_contract.py::"
-        "test_active_materializers_are_classified_and_filter_current_relationships",
+        "test_active_materializers_remain_classified_and_current_filtered",
+        "services/ingestion/tests/test_active_reader_classifier_discovery.py::"
+        "test_clause_boundary_discovery_after_create_fails_closed",
         "services/ingestion/tests/test_bitrix_backfill_tasks.py::"
         "test_live_canvas_allows_deal_only_when_activities_are_reviewed_excluded",
         "services/ingestion/tests/test_scheduled_ingestion_tasks.py::"
@@ -291,7 +297,14 @@ def test_neo4j_services_are_isolated_and_each_has_retained_consumers() -> None:
         )
         for step_name in _SHARDS:
             commands = _commands(steps[step_name])
-            assert commands[0].startswith("uv sync --frozen --group dev --package")
+            expected_sync = (
+                "uv sync --frozen --group dev --package profile-unifier-api "
+                "--package profile-unifier-ingestion"
+                if step_name == "neo4j-census-migration-api-checks"
+                else "uv sync --frozen --package profile-unifier-api "
+                "--package profile-unifier-ingestion"
+            )
+            assert commands[0] == expected_sync
             assert "scripts/wait_for_neo4j.py" in "\n".join(commands)
 
 
@@ -309,10 +322,13 @@ def test_selection_manifest_is_exact_pre_import_and_defaults_new_tests_to_active
         "services/ingestion/tests/test_crm_deal_identity_repair_reader_contract.py"
     }
     conftest = (_ROOT / "conftest.py").read_text(encoding="utf-8")
-    assert "pytest_ignore_collect" in conftest
-    assert "is_historical_test(Path(collection_path))" in conftest
-    assert "glob" not in conftest and "crm*" not in conftest
+    gate = (_ROOT / "ci_support/pytest_selection_gate.py").read_text(encoding="utf-8")
+    assert "pytest_selection_gate" in conftest
+    assert "pytest_cmdline_main" in gate
+    assert "explicit_historical_targets" in gate
+    assert "glob" not in gate and "crm*" not in gate
     assert ACTIVE_NODE_SENTINELS == _EXPECTED_ACTIVE_NODE_SENTINELS
+    validate_active_node_sentinel_definitions()
     assert _HISTORICAL_DORMANT_SOURCE_PATHS <= set(HISTORICAL_SOURCE_PATHS)
     assert _SHARED_ACTIVE_SOURCE_PATHS <= ACTIVE_SHARED_SOURCE_PATHS
     assert ACTIVE_SHARED_SOURCE_PATHS.isdisjoint(HISTORICAL_SOURCE_PATHS)
@@ -553,13 +569,80 @@ def test_historical_runner_isolated_enforces_numpy_and_requires_both_neo4j_famil
 
 
 def test_preimport_gate_and_behavioral_coverage_reject_explicit_historical_targets() -> None:
-    gate = (_ROOT / "conftest.py").read_text(encoding="utf-8")
+    gate = (_ROOT / "ci_support/pytest_selection_gate.py").read_text(encoding="utf-8")
     behavior = (_ROOT / "services/api/tests/test_ci_selection_gate.py").read_text(
         encoding="utf-8"
     )
     assert "pytest_cmdline_main" in gate
-    assert "_reject_explicit_historical_targets" in gate
+    assert "reject_explicit_historical_targets" in gate
+    assert "invocation_dir" in gate
     assert "active profile refuses direct historical test selection before import" in gate
+    assert "subprocess.run" in behavior
     assert "test_recursive_active_collection_ignores_exact_historical_module" in behavior
-    assert "test_active_profile_rejects_explicit_historical_path_and_node_before_import" in behavior
+    assert "test_root_plugin_rejects_explicit_historical_targets_before_import" in behavior
     assert "test_historical_profile_requires_acknowledgment_before_selection" in behavior
+
+
+def _assert_query_service_bindings(document: dict[str, object]) -> None:
+    services = document["services"]
+    assert isinstance(services, list)
+    passwords = {
+        str(service["name"]): str(service["environment"]["NEO4J_AUTH"]).split("/", 1)[1]
+        for service in services
+        if isinstance(service, dict)
+    }
+    steps = _steps(document)
+    expected_services = {
+        "neo4j-projection-checks": "neo4j-projection",
+        "neo4j-census-migration-api-checks": "neo4j-census-migration-api",
+        "neo4j-tenant-mapping-checks": "neo4j-tenant-mapping",
+    }
+    for step_name, service_name in expected_services.items():
+        environment = _environment(steps[step_name])
+        for key, value in environment.items():
+            if not key.startswith("HYPERP_NEO4J_") or not key.endswith("_URI"):
+                continue
+            family = key.removesuffix("_URI")
+            assert value == f"bolt://{service_name}:7687"
+            assert environment[f"{family}_USER"] == "neo4j"
+            assert environment[f"{family}_PASSWORD"] == passwords[service_name]
+            assert environment[f"{family}_SERVICE_HOST"] == service_name
+    census_commands = _commands(steps["neo4j-census-migration-api-checks"])
+    schema_index = census_commands.index(
+        "uv run --package profile-unifier-ingestion pytest "
+        "services/ingestion/tests/test_identifier_scope_schema_neo4j.py -q"
+    )
+    api_query_index = next(
+        index
+        for index, command in enumerate(census_commands)
+        if "profile-unifier-api pytest" in command
+    )
+    assert schema_index < api_query_index
+
+
+def test_query_service_bindings_and_pristine_identifier_schema_order_fail_closed() -> None:
+    document = _workflow("pr.yaml")
+    _assert_query_service_bindings(document)
+
+    redirected = copy.deepcopy(document)
+    redirected_steps = _steps(redirected)
+    redirected_environment = _environment(redirected_steps["neo4j-census-migration-api-checks"])
+    redirected_environment["HYPERP_NEO4J_CRM_METRICS_TEST_URI"] = "bolt://neo4j-projection:7687"
+    try:
+        _assert_query_service_bindings(redirected)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("cross-service query target redirection was accepted")
+
+    reordered = copy.deepcopy(document)
+    reordered_steps = _steps(reordered)
+    commands = reordered_steps["neo4j-census-migration-api-checks"]["commands"]
+    assert isinstance(commands, list)
+    commands[2], commands[3] = commands[3], commands[2]
+    try:
+        _assert_query_service_bindings(reordered)
+    except AssertionError:
+        pass
+    else:
+        raise AssertionError("identifier-schema-first ordering was accepted after reordering")
