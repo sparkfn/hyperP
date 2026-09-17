@@ -419,7 +419,7 @@ def _atomic_replace(path: Path, payload: dict[str, object]) -> None:
         descriptor = os.open(
             temporary,
             os.O_WRONLY | os.O_CREAT | os.O_EXCL,
-            mode,
+            0o600,
         )
         remaining = memoryview(serialized)
         while remaining:

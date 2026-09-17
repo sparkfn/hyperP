@@ -232,6 +232,42 @@ def test_atomic_prepare_rejects_fchown_failure_before_replace(
     assert source_path.read_text(encoding="utf-8") == before
 
 
+def test_atomic_prepare_creates_owner_only_temp_before_final_metadata(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    module_name = "scheduled_ingestion_policy_creation_mode_test_module"
+    specification = spec_from_file_location(module_name, _POLICY_HELPER)
+    assert specification is not None and specification.loader is not None
+    module = module_from_spec(specification)
+    sys.modules[module_name] = module
+    specification.loader.exec_module(module)
+    source_path = tmp_path / "ingestion-config.json"
+    source_path.write_text('{"scheduled_ingestion": {}}\n', encoding="utf-8")
+    os.chmod(source_path, 0o640)
+    source_metadata = source_path.stat()
+    observed_create_modes: list[int] = []
+    real_open = module.os.open
+
+    def observe_open(path: object, flags: int, mode: int = 0o777) -> int:
+        if flags & module.os.O_CREAT:
+            observed_create_modes.append(mode)
+        return real_open(path, flags, mode)
+
+    monkeypatch.setattr(module.os, "open", observe_open)
+    prior_umask = os.umask(0o000)
+    try:
+        module._atomic_replace(source_path, {"scheduled_ingestion": {"enabled": False}})
+    finally:
+        os.umask(prior_umask)
+    replaced_metadata = source_path.stat()
+
+    assert observed_create_modes == [0o600]
+    assert replaced_metadata.st_mode & 0o777 == 0o640
+    assert replaced_metadata.st_uid == source_metadata.st_uid
+    assert replaced_metadata.st_gid == source_metadata.st_gid
+
+
 def test_policy_prepare_refuses_tracked_effective_config_before_write(tmp_path: Path) -> None:
     subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
     config = {
