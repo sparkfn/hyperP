@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal, Protocol
@@ -10,6 +12,7 @@ from zoneinfo import ZoneInfo
 from neo4j import ManagedTransaction
 from pydantic.types import JsonValue
 
+from src.bitrix_ingestion_models import FenceContext
 from src.resumable import CheckpointCompatibility, CheckpointDescriptor, IngestionUnit
 
 SCHEDULE_TIMEZONE = "Asia/Singapore"
@@ -90,6 +93,16 @@ class RunScope:
                 self.mode,
             )
         )
+
+    @property
+    def source_window_fingerprint(self) -> str:
+        encoded = json.dumps(
+            self.source_window,
+            sort_keys=True,
+            separators=(",", ":"),
+            allow_nan=False,
+        ).encode("utf-8")
+        return "sha256:" + hashlib.sha256(encoded).hexdigest()
 
 
 @dataclass(frozen=True)
@@ -189,11 +202,17 @@ class AttemptContext:
     attempt_generation: int
     fencing_token: int
     lease_token: str
+    global_slot_index: int
+    global_slot_fencing_token: int
     scope: RunScope
     occurrence: OccurrenceContext | None
     checkpoint: CheckpointDescriptor
     usage: Usage
     reserved_usage: Usage
+    retry_backlog: int = 0
+    terminal_observed: bool = False
+    terminal_checkpoint_committed: bool = False
+    bitrix_fence_context: FenceContext | None = None
 
     def __post_init__(self) -> None:
         identifiers = (
@@ -204,8 +223,18 @@ class AttemptContext:
         )
         if not all(value.strip() for value in identifiers):
             raise ValueError("attempt identity must be non-empty")
-        if self.attempt_generation < 1 or self.fencing_token < 1:
+        fences = (
+            self.attempt_generation,
+            self.fencing_token,
+            self.global_slot_fencing_token,
+        )
+        if any(value < 1 for value in fences) or self.global_slot_index < 0:
             raise ValueError("attempt fences must be positive")
+        if self.retry_backlog < 0:
+            raise ValueError("retry backlog must be non-negative")
+
+
+BoundedAdmissionResult = AttemptContext | Literal["completed"] | None
 
 
 @dataclass(frozen=True)
@@ -323,9 +352,14 @@ class BoundedStatus:
     cutoff_at: str | None
     next_eligible_at: str | None
     usage: Usage
+    reserved_usage: Usage
+    attempt_generation: int
+    source_window_fingerprint: str
+    checkpoint_cursor_present: bool
     phase: str | None
     checkpointed_at: str | None
     retry_backlog: int
+    retry_oldest_at: str | None
     failure_category: FailureCategory | None
 
 

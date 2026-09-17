@@ -87,7 +87,6 @@ def bounded_configuration_fingerprint(
     connector_version: str,
     configuration_version: str,
     checkpoint_schema_version: int,
-    source_window: dict[str, JsonValue],
 ) -> str:
     payload = {
         "environment": environment,
@@ -100,7 +99,6 @@ def bounded_configuration_fingerprint(
         "connector_version": connector_version,
         "configuration_version": configuration_version,
         "checkpoint_schema_version": checkpoint_schema_version,
-        "source_window": source_window,
     }
     encoded = json.dumps(
         payload,
@@ -146,7 +144,7 @@ def run_registered_bounded_unit(
         stream_key=stream_key,
         descriptor_registry=descriptor_registry,
     )
-    clock_value = now or utc_now()
+    clock = (lambda: now) if now is not None else utc_now
     budget = get_ingestion_config().bounded_ingestion
     client = Neo4jClient(get_settings())
     try:
@@ -160,12 +158,24 @@ def run_registered_bounded_unit(
             occurrence=occurrence,
             worker_task_id=worker_task_id,
             budget=budget,
-            clock=lambda: clock_value,
+            clock=clock,
             shutdown=WorkerShutdownSignal(),
         )
     finally:
         client.close()
     return _summary(result, source_key, entity_key, bounded_mode)
+
+
+def active_reset_generation(environment: str) -> int | None:
+    budget = get_ingestion_config().bounded_ingestion
+    client = Neo4jClient(get_settings())
+    try:
+        return BoundedIngestionControl(
+            client,
+            transaction_timeout_seconds=budget.max_graph_transaction_seconds,
+        ).active_reset_generation(environment)
+    finally:
+        client.close()
 
 
 def pause_bounded_run_disabled(
@@ -214,9 +224,26 @@ def recover_bounded_logical_run(
             source_key,
             control_instance_id,
             reset_generation,
+            now or utc_now(),
         )
         if recovery is None:
             return _blocked_summary(source_key, None, "recovery_not_eligible")
+        if (
+            recovery.scope.mode != "one_time"
+            and not get_ingestion_config().scheduled_ingestion.enabled
+        ):
+            control.pause_unclaimed(
+                logical_run_id,
+                source_key,
+                control_instance_id,
+                reset_generation,
+                "disabled",
+            )
+            return _blocked_summary(
+                source_key,
+                recovery.scope.entity_key,
+                "scheduled_ingestion_disabled",
+            )
         descriptor = descriptor_registry.require(source_key, recovery.scope.mode)
         expected = bounded_configuration_fingerprint(
             environment=recovery.scope.environment,
@@ -229,7 +256,6 @@ def recover_bounded_logical_run(
             connector_version=descriptor.connector_version,
             configuration_version=descriptor.configuration_version,
             checkpoint_schema_version=descriptor.checkpoint_schema_version,
-            source_window=recovery.scope.source_window,
         )
         if expected != recovery.scope.configuration_fingerprint:
             return _blocked_summary(
@@ -244,7 +270,7 @@ def recover_bounded_logical_run(
             occurrence=recovery.occurrence,
             worker_task_id=worker_task_id,
             budget=budget,
-            clock=lambda: now or utc_now(),
+            clock=(lambda: now) if now is not None else utc_now,
             shutdown=WorkerShutdownSignal(),
         )
         return _summary(
@@ -297,7 +323,6 @@ def _scope(
         connector_version=connector_version,
         configuration_version=configuration_version,
         checkpoint_schema_version=checkpoint_schema_version,
-        source_window=source_window,
     )
     if configuration_fingerprint != expected:
         raise ValueError("bounded configuration fingerprint mismatch")

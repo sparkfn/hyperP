@@ -19,6 +19,7 @@ from collections.abc import Iterator
 from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import replace
+from datetime import UTC, datetime
 from typing import Literal, NoReturn, TypedDict, cast
 
 import redis
@@ -45,11 +46,12 @@ from src.bitrix_ingestion_models import (
 from src.bounded_ingestion_models import BoundedMode
 from src.bounded_ingestion_task_runtime import (
     BoundedTaskSummary,
+    active_reset_generation,
     bounded_shutdown_signal,
-    pause_bounded_run_disabled,
     recover_bounded_logical_run,
     run_registered_bounded_unit,
 )
+from src.bounded_ingestion_window import occurrence_from_payload
 from src.celery_app import LIFECYCLE_QUEUE, celery_app
 from src.config import get_settings
 from src.connectors.whatsadmin_api.credentials import WHATSADMIN_ENTITIES
@@ -1172,6 +1174,25 @@ class _SourceAlreadyRunningError(Exception):
         self.held_by_same_task = held_by_same_task
 
 
+def _reject_unadmitted_bounded_maintenance(
+    *,
+    bounded_occurrence: dict[str, str] | None,
+    bounded_logical_run_id: str | None,
+) -> None:
+    if not get_ingestion_config().scheduled_ingestion.enabled:
+        return
+    if bounded_occurrence is None or bounded_logical_run_id is None:
+        raise Reject("bounded maintenance context is required", requeue=False)
+    occurrence = occurrence_from_payload(bounded_occurrence)
+    now = datetime.now(UTC)
+    if not occurrence.can_start(now):
+        raise Reject("bounded maintenance is outside its occurrence window", requeue=False)
+    raise Reject(
+        "bounded maintenance continuation awaits scheduler admission",
+        requeue=False,
+    )
+
+
 class LifecycleReconciliationSummary(TypedDict):
     status: str
     source_records: int
@@ -1315,8 +1336,14 @@ def materialize_knows_task(
     phase: KnowsMaterializationPhase,
     cursor: str = "",
     predecessor_task_id: str | None = None,
+    bounded_occurrence: dict[str, str] | None = None,
+    bounded_logical_run_id: str | None = None,
 ) -> KnowsMaterializationSummary:
     """Process one bounded, locked KNOWS batch and continue from its cursor."""
+    _reject_unadmitted_bounded_maintenance(
+        bounded_occurrence=bounded_occurrence,
+        bounded_logical_run_id=bounded_logical_run_id,
+    )
     settings = get_settings()
     setup_logging(settings.log_level)
     started = time.monotonic()
@@ -1482,7 +1509,11 @@ def run_ingestion_task(
         and idempotency_key.startswith("bitrix-live:")
         and task_id == idempotency_key
     )
-    if (scheduled_dispatch or legacy_live_delivery) and not (
+    bounded_scheduled = (
+        bounded_occurrence is not None
+        and bounded_occurrence.get("scheduled", "true").lower() == "true"
+    )
+    if (scheduled_dispatch or legacy_live_delivery or bounded_scheduled) and not (
         get_ingestion_config().scheduled_ingestion.enabled
     ):
         logger.info(
@@ -1552,6 +1583,13 @@ def run_ingestion_task(
         except LookupError as exc:
             raise Reject(str(exc), requeue=False) from exc
         return _bounded_task_outcome(bounded)
+
+    reset_generation = active_reset_generation(get_settings().deployment_environment)
+    if reset_generation is not None:
+        raise Reject(
+            "generation-bound ingestion context is required after reset",
+            requeue=False,
+        )
 
     # PR #62 introduced ``entity_key`` as the fourth positional task argument.
     # PR #63's API producer used that position for its Bitrix ingest-run ID.
@@ -1815,14 +1853,6 @@ def recover_bounded_logical_run_task(
     reset_generation: int,
 ) -> IngestionSummary:
     """Recover one persisted bounded run from operator publication intent."""
-    if not get_ingestion_config().scheduled_ingestion.enabled:
-        pause_bounded_run_disabled(
-            logical_run_id=logical_run_id,
-            source_key=source_key,
-            control_instance_id=control_instance_id,
-            reset_generation=reset_generation,
-        )
-        raise Reject("scheduled ingestion is disabled", requeue=False)
     task_id = str(self.request.id) if self.request.id is not None else None
     if task_id is None:
         raise Reject("bounded recovery requires a Celery task ID", requeue=False)
@@ -1848,8 +1878,16 @@ def recover_bounded_logical_run_task(
     base=LifecycleReconciliationTask,
     max_retries=None,
 )
-def reconcile_lifecycle_task(self: Task) -> LifecycleReconciliationSummary:
+def reconcile_lifecycle_task(
+    self: Task,
+    bounded_occurrence: dict[str, str] | None = None,
+    bounded_logical_run_id: str | None = None,
+) -> LifecycleReconciliationSummary:
     """Periodically repair lifecycle state for late-arriving legacy records."""
+    _reject_unadmitted_bounded_maintenance(
+        bounded_occurrence=bounded_occurrence,
+        bounded_logical_run_id=bounded_logical_run_id,
+    )
     settings = get_settings()
     setup_logging(settings.log_level)
     celery_task_id = self.request.id

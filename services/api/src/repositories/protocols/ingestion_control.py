@@ -34,9 +34,14 @@ class BoundedLogicalRunStatusRecord:
     cutoff_at: str | None
     next_eligible_at: str | None
     usage: BoundedLogicalRunUsageRecord
+    reserved_usage: BoundedLogicalRunUsageRecord
+    attempt_generation: int
+    source_window_fingerprint: str
+    checkpoint_cursor_present: bool
     phase: str | None
     checkpointed_at: str | None
     retry_backlog: int
+    retry_oldest_at: str | None
     failure_category: str | None
 
 

@@ -151,3 +151,4 @@ def test_direct_ingest_queries_cannot_mutate_runner_owned_attempts() -> None:
         UPDATE_INGEST_RUN,
     ):
         assert "ir.logical_run_id IS NULL" in query
+        assert "IngestionResetGeneration {status: 'active'}" in query

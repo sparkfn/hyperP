@@ -62,9 +62,20 @@ def _status() -> BoundedLogicalRunStatusRecord:
             bytes_read=400,
             extraction_calls=1,
         ),
+        reserved_usage=BoundedLogicalRunUsageRecord(
+            records=20,
+            source_requests=5,
+            pages=3,
+            bytes_read=500,
+            extraction_calls=2,
+        ),
+        attempt_generation=3,
+        source_window_fingerprint="sha256:window",
+        checkpoint_cursor_present=True,
         phase="delta",
         checkpointed_at="2026-09-17T10:00:00+08:00",
         retry_backlog=2,
+        retry_oldest_at="2026-09-17T09:30:00+08:00",
         failure_category=None,
     )
 
@@ -146,9 +157,14 @@ def test_status_response_has_exact_redacted_contract_fields() -> None:
         "cutoff_at",
         "next_eligible_at",
         "usage",
+        "reserved_usage",
+        "attempt_generation",
+        "source_window_fingerprint",
+        "checkpoint_cursor_present",
         "phase",
         "checkpointed_at",
         "retry_backlog",
+        "retry_oldest_at",
         "failure_category",
     }
     assert set(BoundedLogicalRunStatus.model_fields["usage"].annotation.model_fields) == {
@@ -195,6 +211,13 @@ def test_get_returns_only_the_redacted_status_projection() -> None:
         "pages": 2,
         "bytes_read": 400,
         "extraction_calls": 1,
+    }
+    assert data["reserved_usage"] == {
+        "records": 20,
+        "source_requests": 5,
+        "pages": 3,
+        "bytes_read": 500,
+        "extraction_calls": 2,
     }
     forbidden = {"cursor", "source_boundary", "payload", "replay_token", "fence_token"}
     assert forbidden.isdisjoint(data)

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
+from dataclasses import replace
 from datetime import datetime
 from typing import Protocol
 
@@ -66,8 +67,7 @@ class BoundedIngestionRunner:
         now: datetime,
     ) -> BoundedRunResult | None:
         if self._shutdown.requested():
-            control.pause(context, "shutdown", now)
-            return BoundedRunResult("paused_with_checkpoint", context, "shutdown")
+            return self._pause_at(context, control, "shutdown", now)
         occurrence = context.occurrence
         if occurrence is None:
             return None
@@ -105,13 +105,13 @@ class BoundedIngestionRunner:
             unit = connector.fetch_one_unit(context.checkpoint, context)
         except SourceBackoffError as exc:
             next_eligible = _backoff_eligibility(context, exc.retry_at)
-            control.pause(context, "source_backoff", next_eligible)
-            return BoundedRunResult(
-                "paused_with_checkpoint",
+            paused = self._pause_at(
                 context,
+                control,
                 "source_backoff",
-                safe_message=exc.safe_message,
+                next_eligible,
             )
+            return replace(paused, safe_message=exc.safe_message)
         except Exception as exc:
             return self._fail(context, control, "source", type(exc).__name__)
         finally:
@@ -119,39 +119,30 @@ class BoundedIngestionRunner:
                 connector.close()
         after_fetch = self._clock()
         if self._shutdown.requested():
-            control.pause(context, "shutdown", after_fetch)
-            return BoundedRunResult("paused_with_checkpoint", context, "shutdown")
+            return self._pause_at(context, control, "shutdown", after_fetch)
         occurrence = context.occurrence
         if occurrence is not None and after_fetch >= occurrence.cutoff_at:
-            control.fail(
+            return self._fail(
                 context,
+                control,
                 "overrun",
                 "bounded unit crossed its absolute cutoff",
-                occurrence.next_eligible_at,
             )
-            return BoundedRunResult(
-                "failed",
-                context,
-                failure_category="overrun",
-                safe_message="bounded unit crossed its absolute cutoff",
-            )
+        if occurrence is not None and not occurrence.can_finish(
+            after_fetch, self._budget.max_graph_transaction_seconds
+        ):
+            return self._fail(context, control, "overrun", "transaction_deadline_exceeded")
         validation = _validate_unit(descriptor, context, unit)
         if validation is not None:
             return self._fail(context, control, "source", validation)
         try:
             result = control.commit_unit(context, unit, descriptor.writer)
         except Exception as exc:
-            control.fail(
+            return self._fail(
                 context,
+                control,
                 "writer",
                 type(exc).__name__,
-                _next_occurrence(context),
-            )
-            return BoundedRunResult(
-                "failed",
-                context,
-                failure_category="writer",
-                safe_message=type(exc).__name__,
             )
         if result is None:
             return BoundedRunResult(
@@ -171,13 +162,8 @@ class BoundedIngestionRunner:
             return BoundedRunResult("completed", context, unit_usage=unit.usage)
         reason: PauseReason = "source_backoff" if result.retry_obligations else "budget"
         next_eligible = _result_eligibility(context, result.retry_obligations)
-        control.pause(context, reason, next_eligible)
-        return BoundedRunResult(
-            "paused_with_checkpoint",
-            context,
-            reason,
-            unit_usage=unit.usage,
-        )
+        paused = self._pause_at(context, control, reason, next_eligible)
+        return replace(paused, unit_usage=unit.usage)
 
     def _pause_next_occurrence(
         self,
@@ -185,7 +171,27 @@ class BoundedIngestionRunner:
         control: BoundedCommitStore,
         reason: PauseReason,
     ) -> BoundedRunResult:
-        control.pause(context, reason, _next_occurrence(context))
+        return self._pause_at(
+            context,
+            control,
+            reason,
+            _next_occurrence(context),
+        )
+
+    def _pause_at(
+        self,
+        context: AttemptContext,
+        control: BoundedCommitStore,
+        reason: PauseReason,
+        next_eligible_at: datetime,
+    ) -> BoundedRunResult:
+        if not control.pause(context, reason, next_eligible_at):
+            return BoundedRunResult(
+                "failed",
+                context,
+                failure_category="lease",
+                safe_message="bounded pause state was not persisted",
+            )
         return BoundedRunResult("paused_with_checkpoint", context, reason)
 
     def _fail(
@@ -196,12 +202,18 @@ class BoundedIngestionRunner:
         safe_message: str,
     ) -> BoundedRunResult:
         failure = category
-        control.fail(
+        if not control.fail(
             context,
             failure,
             safe_message,
             _next_occurrence(context),
-        )
+        ):
+            return BoundedRunResult(
+                "failed",
+                context,
+                failure_category="lease",
+                safe_message="bounded failure state was not persisted",
+            )
         return BoundedRunResult(
             "failed",
             context,

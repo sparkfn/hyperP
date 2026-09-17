@@ -12,6 +12,7 @@ from src.bounded_ingestion_models import BoundedConnectorDescriptor, BoundedMode
 
 _DESCRIPTOR_MODULE_SUFFIX = ".bounded_descriptor"
 _DESCRIPTOR_EXPORT = "DESCRIPTOR"
+_DESCRIPTORS_EXPORT = "DESCRIPTORS"
 
 
 class BoundedConnectorRegistry:
@@ -60,7 +61,9 @@ class BoundedConnectorRegistry:
             prefix=prefix,
         ):
             if module_info.name.endswith(_DESCRIPTOR_MODULE_SUFFIX):
-                self.register(_descriptor_from_module(importlib.import_module(module_info.name)))
+                module = importlib.import_module(module_info.name)
+                for descriptor in _descriptors_from_module(module):
+                    self.register(descriptor)
 
     def require(
         self,
@@ -93,11 +96,16 @@ class BoundedConnectorRegistry:
             self.discover()
 
 
-def _descriptor_from_module(module: ModuleType) -> BoundedConnectorDescriptor:
-    descriptor: object = getattr(module, _DESCRIPTOR_EXPORT, None)
-    if descriptor is None:
-        raise ValueError(f"{module.__name__} must export {_DESCRIPTOR_EXPORT}")
-    return cast(BoundedConnectorDescriptor, descriptor)
+def _descriptors_from_module(module: ModuleType) -> tuple[BoundedConnectorDescriptor, ...]:
+    single: object = getattr(module, _DESCRIPTOR_EXPORT, None)
+    multiple: object = getattr(module, _DESCRIPTORS_EXPORT, None)
+    if single is not None and multiple is not None:
+        raise ValueError(f"{module.__name__} cannot export both descriptor conventions")
+    if single is not None:
+        return (cast(BoundedConnectorDescriptor, single),)
+    if isinstance(multiple, tuple) and multiple:
+        return tuple(cast(BoundedConnectorDescriptor, item) for item in multiple)
+    raise ValueError(f"{module.__name__} must export {_DESCRIPTOR_EXPORT} or {_DESCRIPTORS_EXPORT}")
 
 
 registry = BoundedConnectorRegistry(auto_discover=True)

@@ -9,17 +9,30 @@ import os
 import time
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
+from datetime import UTC, datetime, timedelta
 from typing import TypeVar, cast
 from urllib.parse import urlparse
 
 import pytest
 from neo4j import Driver, GraphDatabase, ManagedTransaction, Session
+from src.bounded_ingestion_models import (
+    AttemptContext,
+    BoundedUnit,
+    OccurrenceContext,
+    RetryObligation,
+    RetryResolution,
+    RunScope,
+    UnitApplyResult,
+    Usage,
+)
 from src.graph.bitrix_source_instances import (
     BitrixControlAdmissionError,
     BitrixSourceInstanceConflictError,
     BitrixSourceInstanceRepository,
 )
 from src.graph.bootstrap import bootstrap_legacy_bitrix_source_instance
+from src.graph.bounded_ingestion_control import BoundedIngestionControl
+from src.graph.bounded_ingestion_schema import CREATE_BOUNDED_INGESTION_SCHEMA
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control_instance_migration import (
     assert_ingestion_control_ready,
@@ -49,6 +62,7 @@ from src.pipeline_writes import (
     persist_source_record,
     upsert_nodes,
 )
+from src.resumable import CheckpointDescriptor, IngestionUnit
 
 T = TypeVar("T")
 
@@ -118,6 +132,13 @@ _SUITE_CONSTRAINT_NAMES = (
     "unexpected_control_identity",
     "unexpected_legacy_ingest_run_identity",
     "identifier_identity_scope_unique",
+    "ingestion_reset_generation_unique",
+    "bounded_ingestion_scope_key_unique",
+    "bounded_ingestion_logical_key_unique",
+    "bounded_ingestion_global_slot_unique",
+    "bounded_ingestion_reservation_identity_unique",
+    "bounded_ingestion_receipt_identity_unique",
+    "bounded_ingestion_retry_identity_unique",
 )
 
 
@@ -140,7 +161,13 @@ class _Client:
         with self._driver.session() as session:
             return session.execute_read(work)
 
-    def execute_write(self, work: Callable[[ManagedTransaction], T]) -> T:
+    def execute_write(
+        self,
+        work: Callable[[ManagedTransaction], T],
+        *,
+        transaction_timeout_seconds: float | None = None,
+    ) -> T:
+        _ = transaction_timeout_seconds
         with self._driver.session() as session:
             return session.execute_write(work)
 
@@ -858,3 +885,345 @@ def test_disable_ignores_work_bound_to_a_different_registered_portal(neo4j_drive
             "source_instance_id: 'portal-a'}) RETURN instance.status AS status"
         ).single(strict=True)
     assert status["status"] == "disabled"
+
+
+class _BoundedWriter:
+    def __init__(self, *, retry: bool = False, resolve: bool = False) -> None:
+        self.retry = retry
+        self.resolve = resolve
+        self.calls = 0
+
+    def apply(
+        self,
+        tx: ManagedTransaction,
+        _context: AttemptContext,
+        bounded_unit: BoundedUnit,
+    ) -> UnitApplyResult:
+        self.calls += 1
+        if not self.retry:
+            for record in bounded_unit.unit.records:
+                tx.run(
+                    "MERGE (output:BoundedTestOutput {record_id: $record_id}) "
+                    "SET output.version = $version",
+                    record_id=record["id"],
+                    version=record["version"],
+                ).consume()
+        if self.retry:
+            return UnitApplyResult(
+                dispositions=("durable_retry",),
+                retry_obligations=(
+                    RetryObligation(
+                        replay_id=bounded_unit.replay_id,
+                        source_record_id="record-1",
+                        source_version="v1",
+                        category="fixture",
+                        attempt_count=1,
+                        eligible_at=datetime(2026, 9, 24, 1, tzinfo=UTC),
+                    ),
+                ),
+            )
+        if self.resolve:
+            return UnitApplyResult(
+                dispositions=("committed",),
+                resolved_retries=(
+                    RetryResolution(replay_id="page-0", source_record_id="record-1"),
+                ),
+            )
+        return UnitApplyResult(dispositions=("committed",))
+
+
+def _bounded_scope(source_key: str, window: str = "window-1") -> RunScope:
+    return RunScope(
+        environment="test",
+        reset_generation=1,
+        source_key=source_key,
+        control_instance_id="bounded-control",
+        entity_key=None,
+        stream_key=None,
+        mode="delta",
+        configuration_fingerprint="sha256:stable-config",
+        connector_version="fixture-v1",
+        checkpoint_schema_version=1,
+        source_window={"window": window},
+    )
+
+
+def _bounded_occurrence(week: int = 0) -> OccurrenceContext:
+    start = datetime(2026, 9, 17, 1, tzinfo=UTC) + timedelta(days=7 * week)
+    return OccurrenceContext(
+        occurrence_id=f"week-{week}",
+        starts_at=start,
+        drain_starts_at=start + timedelta(hours=13, minutes=55),
+        cutoff_at=start + timedelta(hours=14),
+        next_eligible_at=start + timedelta(days=7),
+    )
+
+
+def _bounded_checkpoint(window: str = "window-1", page: int = 0) -> CheckpointDescriptor:
+    return CheckpointDescriptor(
+        phase="records",
+        cursor={"page": page},
+        source_window={"window": window},
+        last_committed_record_id=None,
+        connector_version="fixture-v1",
+        schema_version=1,
+        replay_boundary="page",
+    )
+
+
+def _bounded_unit(*, terminal: bool = True) -> BoundedUnit:
+    before = _bounded_checkpoint()
+    after = _bounded_checkpoint(page=1)
+    return BoundedUnit(
+        unit=IngestionUnit(
+            before,
+            after,
+            ({"id": "record-1", "version": "v1"},),
+        ),
+        replay_id="page-0",
+        usage=Usage(records=1, source_requests=1, pages=1, bytes_read=32),
+        terminal=terminal,
+    )
+
+
+def _prepare_bounded_graph(driver: Driver, *source_keys: str) -> None:
+    with driver.session() as session:
+        for query in CREATE_BOUNDED_INGESTION_SCHEMA:
+            session.run(query).consume()
+        for source_key in source_keys:
+            session.run(
+                "MERGE (:SourceSystem {source_key: $source_key, is_active: true})",
+                source_key=source_key,
+            ).consume()
+        session.run(
+            "CREATE (:IngestionResetGeneration {environment: 'test', generation: 1, "
+            "status: 'active'})"
+        ).consume()
+
+
+def test_bounded_queries_commit_and_finalize_against_disposable_neo4j(
+    neo4j_driver: Driver,
+) -> None:
+    _prepare_bounded_graph(neo4j_driver, "fixture")
+    control = BoundedIngestionControl(cast(Neo4jClient, _Client(neo4j_driver)))
+    occurrence = _bounded_occurrence()
+    context = control.admit_or_resume(
+        scope=_bounded_scope("fixture"),
+        occurrence=occurrence,
+        initial_checkpoint=_bounded_checkpoint(),
+        worker_task_id="task-1",
+        now=occurrence.starts_at,
+        max_graph_writers=1,
+    )
+    assert isinstance(context, AttemptContext)
+    writer = _BoundedWriter()
+    result = control.commit_unit(context, _bounded_unit(), writer)
+    assert result is not None
+    assert control.finalize(context) is True
+    status = control.status(context.logical_run_id)
+    assert status is not None
+    assert status.status == "completed"
+    assert status.checkpoint_cursor_present is True
+    assert status.attempt_generation == 1
+    with neo4j_driver.session() as session:
+        row = session.run(
+            "MATCH (output:BoundedTestOutput) "
+            "MATCH (receipt:BoundedIngestionReceipt {status: 'committed'}) "
+            "RETURN count(output) AS outputs, count(receipt) AS receipts"
+        ).single(strict=True)
+    assert dict(row) == {"outputs": 1, "receipts": 1}
+    assert writer.calls == 1
+
+    second_scope = _bounded_scope("fixture", window="window-2")
+    second = control.admit_or_resume(
+        scope=second_scope,
+        occurrence=_bounded_occurrence(week=1),
+        initial_checkpoint=_bounded_checkpoint(window="window-2"),
+        worker_task_id="task-2",
+        now=_bounded_occurrence(week=1).starts_at,
+        max_graph_writers=1,
+    )
+    assert isinstance(second, AttemptContext)
+    assert second.logical_run_id != context.logical_run_id
+
+
+def test_bounded_retry_backlog_blocks_terminal_completion_in_neo4j(
+    neo4j_driver: Driver,
+) -> None:
+    _prepare_bounded_graph(neo4j_driver, "fixture")
+    control = BoundedIngestionControl(cast(Neo4jClient, _Client(neo4j_driver)))
+    occurrence = _bounded_occurrence()
+    context = control.admit_or_resume(
+        scope=_bounded_scope("fixture"),
+        occurrence=occurrence,
+        initial_checkpoint=_bounded_checkpoint(),
+        worker_task_id="task-retry",
+        now=occurrence.starts_at,
+    )
+    assert isinstance(context, AttemptContext)
+    result = control.commit_unit(context, _bounded_unit(), _BoundedWriter(retry=True))
+    assert result is not None
+    assert control.finalize(context) is False
+    status = control.status(context.logical_run_id)
+    assert status is not None
+    assert status.status == "running"
+    assert status.retry_backlog == 1
+    assert status.checkpoint_cursor_present is True
+    with neo4j_driver.session() as session:
+        checkpoint = session.run(
+            "MATCH (checkpoint:IngestionCheckpoint {logical_run_id: $logical_run_id}) "
+            "RETURN checkpoint.cursor_json AS cursor, checkpoint.terminal_committed AS terminal",
+            logical_run_id=context.logical_run_id,
+        ).single(strict=True)
+    assert '"page":0' in checkpoint["cursor"]
+    assert checkpoint["terminal"] is False
+    assert control.pause(context, "source_backoff", occurrence.next_eligible_at) is True
+
+    next_occurrence = _bounded_occurrence(week=1)
+    resumed = control.admit_or_resume(
+        scope=_bounded_scope("fixture"),
+        occurrence=next_occurrence,
+        initial_checkpoint=_bounded_checkpoint(),
+        worker_task_id="task-retry-resolved",
+        now=next_occurrence.starts_at,
+    )
+    assert isinstance(resumed, AttemptContext)
+    resolved = control.commit_unit(
+        resumed,
+        _bounded_unit(),
+        _BoundedWriter(resolve=True),
+    )
+    assert resolved is not None
+    assert control.finalize(resumed) is True
+    final_status = control.status(resumed.logical_run_id)
+    assert final_status is not None
+    assert final_status.status == "completed"
+    assert final_status.retry_backlog == 0
+
+
+def test_active_reset_and_global_slot_fence_other_bounded_writers(
+    neo4j_driver: Driver,
+) -> None:
+    _prepare_bounded_graph(neo4j_driver, "fixture-a", "fixture-b")
+    control = BoundedIngestionControl(cast(Neo4jClient, _Client(neo4j_driver)))
+    occurrence = _bounded_occurrence()
+    first = control.admit_or_resume(
+        scope=_bounded_scope("fixture-a"),
+        occurrence=occurrence,
+        initial_checkpoint=_bounded_checkpoint(),
+        worker_task_id="task-a",
+        now=occurrence.starts_at,
+        max_graph_writers=1,
+    )
+    assert isinstance(first, AttemptContext)
+    second = control.admit_or_resume(
+        scope=_bounded_scope("fixture-b"),
+        occurrence=occurrence,
+        initial_checkpoint=_bounded_checkpoint(),
+        worker_task_id="task-b",
+        now=occurrence.starts_at,
+        max_graph_writers=1,
+    )
+    assert second is None
+    assert (
+        control.compare_and_advance_reset_generation(
+            environment="test",
+            expected_generation=1,
+            actor="test",
+            authorization_reference="issue-430",
+        )
+        == 2
+    )
+    writer = _BoundedWriter()
+    assert control.commit_unit(first, _bounded_unit(), writer) is None
+    assert writer.calls == 0
+    assert (
+        control.compare_and_advance_reset_generation(
+            environment="test",
+            expected_generation=1,
+            actor="test",
+            authorization_reference="issue-430",
+        )
+        is None
+    )
+
+
+def test_expired_recovery_claim_uses_durable_identity_and_terminal_evidence(
+    neo4j_driver: Driver,
+) -> None:
+    _prepare_bounded_graph(neo4j_driver, "fixture")
+    control = BoundedIngestionControl(cast(Neo4jClient, _Client(neo4j_driver)))
+    occurrence = _bounded_occurrence()
+    first = control.admit_or_resume(
+        scope=_bounded_scope("fixture"),
+        occurrence=occurrence,
+        initial_checkpoint=_bounded_checkpoint(),
+        worker_task_id="recovery-first",
+        now=occurrence.starts_at,
+        lease_seconds=1,
+    )
+    assert isinstance(first, AttemptContext)
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id}) "
+            "SET logical.publication_intent = true, logical.recovery_authorized = true",
+            logical_run_id=first.logical_run_id,
+        ).consume()
+    assert control.commit_unit(first, _bounded_unit(), _BoundedWriter()) is not None
+    recovered = control.recovery_state(
+        first.logical_run_id,
+        "fixture",
+        "bounded-control",
+        1,
+        occurrence.starts_at + timedelta(seconds=2),
+    )
+    assert recovered is not None
+    second = control.admit_or_resume(
+        scope=recovered.scope,
+        occurrence=recovered.occurrence,
+        initial_checkpoint=_bounded_checkpoint(),
+        worker_task_id="recovery-second",
+        now=occurrence.starts_at + timedelta(seconds=2),
+        lease_seconds=60,
+    )
+    assert isinstance(second, AttemptContext)
+    assert second.attempt_generation == 2
+    assert second.terminal_observed is True
+    assert second.terminal_checkpoint_committed is True
+    assert control.finalize(second) is True
+
+
+def test_failed_run_rebinds_only_to_the_next_weekly_occurrence(
+    neo4j_driver: Driver,
+) -> None:
+    _prepare_bounded_graph(neo4j_driver, "fixture")
+    control = BoundedIngestionControl(cast(Neo4jClient, _Client(neo4j_driver)))
+    first_occurrence = _bounded_occurrence()
+    first = control.admit_or_resume(
+        scope=_bounded_scope("fixture"),
+        occurrence=first_occurrence,
+        initial_checkpoint=_bounded_checkpoint(),
+        worker_task_id="failed-first",
+        now=first_occurrence.starts_at,
+    )
+    assert isinstance(first, AttemptContext)
+    assert (
+        control.fail(
+            first,
+            "source",
+            "fixture failure",
+            first_occurrence.next_eligible_at,
+        )
+        is True
+    )
+    next_occurrence = _bounded_occurrence(week=1)
+    resumed = control.admit_or_resume(
+        scope=_bounded_scope("fixture"),
+        occurrence=next_occurrence,
+        initial_checkpoint=_bounded_checkpoint(),
+        worker_task_id="failed-next-week",
+        now=next_occurrence.starts_at,
+    )
+    assert isinstance(resumed, AttemptContext)
+    assert resumed.logical_run_id == first.logical_run_id
+    assert resumed.attempt_generation == 2

@@ -163,9 +163,20 @@ def _status_from_record(record: GraphRecord) -> BoundedLogicalRunStatusRecord:
             bytes_read=_nonnegative_int(record.get("bytes_read")),
             extraction_calls=_nonnegative_int(record.get("extraction_calls")),
         ),
+        reserved_usage=BoundedLogicalRunUsageRecord(
+            records=_nonnegative_int(record.get("reserved_records")),
+            source_requests=_nonnegative_int(record.get("reserved_source_requests")),
+            pages=_nonnegative_int(record.get("reserved_pages")),
+            bytes_read=_nonnegative_int(record.get("reserved_bytes_read")),
+            extraction_calls=_nonnegative_int(record.get("reserved_extraction_calls")),
+        ),
+        attempt_generation=_nonnegative_int(record.get("attempt_generation")),
+        source_window_fingerprint=_required_text(record, "source_window_fingerprint"),
+        checkpoint_cursor_present=record.get("checkpoint_cursor_present") is True,
         phase=to_optional_str(record.get("phase")),
         checkpointed_at=to_iso_or_none(record.get("checkpointed_at")),
         retry_backlog=_nonnegative_int(record.get("retry_backlog")),
+        retry_oldest_at=to_iso_or_none(record.get("retry_oldest_at")),
         failure_category=to_optional_str(record.get("failure_category")),
     )
 

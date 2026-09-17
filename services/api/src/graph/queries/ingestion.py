@@ -4,6 +4,9 @@ from __future__ import annotations
 
 CHECK_SOURCE_SYSTEM = """
 MATCH (ss:SourceSystem {source_key: $source_key, is_active: true})
+WHERE NOT EXISTS {
+  MATCH (:IngestionResetGeneration {status: 'active'})
+}
 OPTIONAL MATCH (migration:DataMigration {migration_key: 'bitrix_control_instance_v1'})
 WITH ss, collect(DISTINCT migration) AS migrations
 OPTIONAL MATCH (instance:BitrixSourceInstance {
@@ -72,6 +75,9 @@ RETURN instances[0].source_instance_id AS control_instance_id
 
 CREATE_INGEST_RUN_INLINE = """
 MATCH (ss:SourceSystem {source_key: $source_key})
+WHERE NOT EXISTS {
+  MATCH (:IngestionResetGeneration {status: 'active'})
+}
 CREATE (ir:IngestRun {
   ingest_run_id: randomUUID(),
   control_instance_id: 'legacy-default',
@@ -92,6 +98,9 @@ MATCH (ir:IngestRun {
   ingest_run_id: $ingest_run_id, control_instance_id: 'legacy-default'
 })
 WHERE ir.logical_run_id IS NULL
+  AND NOT EXISTS {
+    MATCH (:IngestionResetGeneration {status: 'active'})
+  }
 OPTIONAL MATCH (entity:Entity {entity_key: $entity_key})
 WITH ss, ir, entity
 WHERE $entity_key IS NULL OR entity IS NOT NULL
@@ -126,6 +135,9 @@ MATCH (ir:IngestRun {
   ingest_run_id: $ingest_run_id, control_instance_id: 'legacy-default'
 })
 WHERE ir.logical_run_id IS NULL
+  AND NOT EXISTS {
+    MATCH (:IngestionResetGeneration {status: 'active'})
+  }
 SET ir.record_count = ir.record_count + $accepted,
     ir.rejected_count = ir.rejected_count + $rejected
 """
@@ -196,6 +208,9 @@ MATCH (ir:IngestRun {
   ingest_run_id: $ingest_run_id, control_instance_id: 'legacy-default'
 })-[:FROM_SOURCE]->(ss:SourceSystem {source_key: $source_key})
 WHERE ir.logical_run_id IS NULL
+  AND NOT EXISTS {
+    MATCH (:IngestionResetGeneration {status: 'active'})
+  }
 SET ir.status = $status,
     ir.finished_at = CASE WHEN $finished_at IS NOT NULL THEN datetime($finished_at) ELSE ir.finished_at END,
     ir.metadata = CASE WHEN $metadata IS NOT NULL THEN $metadata ELSE ir.metadata END

@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 from _bounded_ingestion_fixture import FixtureDescriptor, unit
 from celery.exceptions import Reject
@@ -106,3 +108,66 @@ def test_bitrix_fence_contract_retains_all_attempt_and_stream_identity_dimension
         "fencing_token: $fencing_token",
     ):
         assert fragment in LOCK_AND_ASSERT_ACTIVE_BITRIX_FENCE
+
+
+def test_generationless_legacy_task_rejects_before_initialization_after_reset(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src import tasks
+
+    class _Settings:
+        deployment_environment = "staging"
+
+    monkeypatch.setattr(tasks, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(tasks, "active_reset_generation", lambda _environment: 3)
+    monkeypatch.setattr(
+        tasks,
+        "_initialize_graph_under_lock",
+        lambda _kind: pytest.fail("stale task must reject before initialization"),
+    )
+
+    with pytest.raises(Reject, match="generation-bound ingestion context"):
+        tasks.run_ingestion_task.run("fundbox", "batch")
+
+
+def test_scheduled_heavy_maintenance_fails_closed_without_bounded_context(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from src import tasks
+
+    monkeypatch.setattr(
+        tasks,
+        "get_ingestion_config",
+        lambda: IngestionConfig(scheduled_ingestion=ScheduledIngestionConfig(enabled=True)),
+    )
+    with pytest.raises(Reject, match="bounded maintenance context"):
+        tasks.materialize_knows_task.run("contacts")
+    with pytest.raises(Reject, match="bounded maintenance context"):
+        tasks.reconcile_lifecycle_task.run()
+
+
+def test_descriptor_discovery_supports_multiple_adapter_local_descriptors(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.connectors.registry as registry_module
+
+    first = FixtureDescriptor({0: unit(0, (("identity-1", "v1"),))})
+    second = FixtureDescriptor({0: unit(0, (("identity-2", "v1"),))})
+    second.source_key = "fixture-second"
+    module = SimpleNamespace(DESCRIPTORS=(first, second), __name__="fixture.bounded_descriptor")
+    module_info = SimpleNamespace(name="src.connectors.fixture.bounded_descriptor")
+    monkeypatch.setattr(
+        registry_module.pkgutil,
+        "walk_packages",
+        lambda *_args, **_kwargs: (module_info,),
+    )
+    monkeypatch.setattr(
+        registry_module.importlib,
+        "import_module",
+        lambda _name: module,
+    )
+    discovered = BoundedConnectorRegistry(auto_discover=True)
+
+    assert discovered.registered_sources() == ("fixture", "fixture-second")
+    assert first.create_calls == 0
+    assert second.create_calls == 0

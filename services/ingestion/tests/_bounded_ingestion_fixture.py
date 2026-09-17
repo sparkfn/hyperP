@@ -321,6 +321,8 @@ def context(
         attempt_generation=attempt_generation,
         fencing_token=fence,
         lease_token=f"lease-{attempt_generation}",
+        global_slot_index=0,
+        global_slot_fencing_token=fence,
         scope=selected_scope,
         occurrence=occurrence_context or occurrence(),
         checkpoint=checkpoint(page, source_window=selected_scope.source_window),

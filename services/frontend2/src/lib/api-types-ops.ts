@@ -433,9 +433,14 @@ export interface BoundedLogicalRunStatus {
   cutoff_at: string | null;
   next_eligible_at: string | null;
   usage: BoundedLogicalRunUsage;
+  reserved_usage: BoundedLogicalRunUsage;
+  attempt_generation: number;
+  source_window_fingerprint: string;
+  checkpoint_cursor_present: boolean;
   phase: string | null;
   checkpointed_at: string | null;
   retry_backlog: number;
+  retry_oldest_at: string | null;
   failure_category: string | null;
 }
 

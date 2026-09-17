@@ -3,12 +3,12 @@
 from __future__ import annotations
 
 import hashlib
+import json
 from datetime import datetime
 from typing import cast
 
 from neo4j import Record
 from pydantic import TypeAdapter
-from pydantic.types import JsonValue
 
 from src.bounded_ingestion_models import (
     AttemptContext,
@@ -53,11 +53,22 @@ def attempt_from_record(
         attempt_generation=required_positive_int(record, "attempt_generation"),
         fencing_token=required_positive_int(record, "fencing_token"),
         lease_token=required_text(record, "lease_token"),
+        global_slot_index=non_negative_int(record, "global_slot_index"),
+        global_slot_fencing_token=required_positive_int(
+            record,
+            "global_slot_fencing_token",
+        ),
         scope=scope,
         occurrence=occurrence,
         checkpoint=checkpoint,
         usage=usage_from_record(record, "usage"),
         reserved_usage=usage_from_record(record, "reserved"),
+        retry_backlog=non_negative_int(record, "retry_backlog"),
+        terminal_observed=required_bool(record, "terminal_observed"),
+        terminal_checkpoint_committed=required_bool(
+            record,
+            "terminal_checkpoint_committed",
+        ),
     )
 
 
@@ -76,9 +87,20 @@ def status_from_record(record: Record) -> BoundedStatus:
         cutoff_at=optional_text(record["cutoff_at"]),
         next_eligible_at=optional_text(record["next_eligible_at"]),
         usage=usage_from_record(record, ""),
+        reserved_usage=usage_from_record(record, "reserved"),
+        attempt_generation=non_negative_int(record, "attempt_generation"),
+        source_window_fingerprint=required_text(
+            record,
+            "source_window_fingerprint",
+        ),
+        checkpoint_cursor_present=required_bool(
+            record,
+            "checkpoint_cursor_present",
+        ),
         phase=optional_text(record["phase"]),
         checkpointed_at=optional_text(record["checkpointed_at"]),
         retry_backlog=non_negative_int(record, "retry_backlog"),
+        retry_oldest_at=optional_text(record["retry_oldest_at"]),
         failure_category=cast(
             FailureCategory | None,
             optional_text(record["failure_category"]),
@@ -142,7 +164,7 @@ def logical_key(scope: RunScope, checkpoint: CheckpointDescriptor) -> str:
     return f"{scope.scope_key}|{digest.hexdigest()}"
 
 
-def scope_parameters(scope: RunScope) -> dict[str, JsonValue]:
+def scope_parameters(scope: RunScope) -> dict[str, object]:
     return {
         "environment": scope.environment,
         "reset_generation": scope.reset_generation,
@@ -155,10 +177,11 @@ def scope_parameters(scope: RunScope) -> dict[str, JsonValue]:
         "configuration_fingerprint": scope.configuration_fingerprint,
         "connector_version": scope.connector_version,
         "checkpoint_schema_version": scope.checkpoint_schema_version,
+        "source_window_fingerprint": scope.source_window_fingerprint,
     }
 
 
-def occurrence_parameters(occurrence: OccurrenceContext) -> dict[str, JsonValue]:
+def occurrence_parameters(occurrence: OccurrenceContext) -> dict[str, object]:
     return {
         "occurrence_id": occurrence.occurrence_id,
         "timezone": occurrence.timezone,
@@ -170,7 +193,7 @@ def occurrence_parameters(occurrence: OccurrenceContext) -> dict[str, JsonValue]
     }
 
 
-def fence_parameters(context: AttemptContext) -> dict[str, JsonValue]:
+def fence_parameters(context: AttemptContext) -> dict[str, object]:
     return {
         "logical_run_id": context.logical_run_id,
         "reset_generation": context.scope.reset_generation,
@@ -178,10 +201,29 @@ def fence_parameters(context: AttemptContext) -> dict[str, JsonValue]:
         "fencing_token": context.fencing_token,
         "worker_task_id": context.worker_task_id,
         "lease_token": context.lease_token,
+        "global_slot_index": context.global_slot_index,
+        "global_slot_fencing_token": context.global_slot_fencing_token,
     }
 
 
-def usage_parameters(usage: Usage) -> dict[str, int]:
+def reservation_key(context: AttemptContext, usage: Usage) -> str:
+    payload = {
+        "logical_run_id": context.logical_run_id,
+        "attempt_generation": context.attempt_generation,
+        "phase": context.checkpoint.phase,
+        "cursor": context.checkpoint.cursor,
+        "usage": usage.values(),
+    }
+    encoded = json.dumps(
+        payload,
+        sort_keys=True,
+        separators=(",", ":"),
+        allow_nan=False,
+    ).encode("utf-8")
+    return "sha256:" + hashlib.sha256(encoded).hexdigest()
+
+
+def usage_parameters(usage: Usage) -> dict[str, object]:
     return {
         "records": usage.records,
         "source_requests": usage.source_requests,
@@ -214,14 +256,14 @@ def optional_text(value: object) -> str | None:
 
 
 def required_positive_int(record: Record, key: str) -> int:
-    value = record[key]
+    value: object = record[key]
     if isinstance(value, bool) or not isinstance(value, int) or value < 1:
         raise ValueError(f"bounded control returned invalid {key}")
     return value
 
 
 def non_negative_int(record: Record, key: str) -> int:
-    value = record[key]
+    value: object = record[key]
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise ValueError(f"bounded control returned invalid {key}")
     return value

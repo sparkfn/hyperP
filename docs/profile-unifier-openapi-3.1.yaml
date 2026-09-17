@@ -3759,9 +3759,15 @@ components:
         next_eligible_at: {type: [string, 'null'], format: date-time}
         usage:
           $ref: '#/components/schemas/BoundedLogicalRunUsage'
+        reserved_usage:
+          $ref: '#/components/schemas/BoundedLogicalRunUsage'
+        attempt_generation: {type: integer, minimum: 0}
+        source_window_fingerprint: {type: string}
+        checkpoint_cursor_present: {type: boolean}
         phase: {type: [string, 'null']}
         checkpointed_at: {type: [string, 'null'], format: date-time}
         retry_backlog: {type: integer, minimum: 0}
+        retry_oldest_at: {type: [string, 'null'], format: date-time}
         failure_category: {type: [string, 'null']}
       required:
         - logical_run_id
@@ -3777,9 +3783,14 @@ components:
         - cutoff_at
         - next_eligible_at
         - usage
+        - reserved_usage
+        - attempt_generation
+        - source_window_fingerprint
+        - checkpoint_cursor_present
         - phase
         - checkpointed_at
         - retry_backlog
+        - retry_oldest_at
         - failure_category
       additionalProperties: false
     BoundedLogicalRunStatusEnvelope:

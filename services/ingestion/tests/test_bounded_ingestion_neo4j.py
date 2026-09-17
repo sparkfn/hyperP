@@ -143,7 +143,7 @@ def test_control_schema_and_queries_persist_receipts_retries_and_exact_fences() 
         assert fragment in CLAIM_BOUNDED_ATTEMPT
 
     assert "creation_token" in CLAIM_BOUNDED_RECEIPT
-    assert "receipt.status = 'pending'" in FINALIZE_BOUNDED_UNIT
+    assert "receipt.status IN ['pending', 'retry_pending']" in FINALIZE_BOUNDED_UNIT
     assert "receipt.status = 'committed'" in FINALIZE_BOUNDED_UNIT
     assert "checkpoint.cursor_json = $cursor_after_json" in FINALIZE_BOUNDED_UNIT
     assert "retry.status = 'pending'" in PERSIST_BOUNDED_RETRY
@@ -153,7 +153,7 @@ def test_control_schema_and_queries_persist_receipts_retries_and_exact_fences() 
 
 def test_bounded_status_projection_is_redacted_to_allowlisted_progress_fields() -> None:
     forbidden = (
-        "cursor_json",
+        "checkpoint.cursor_json AS",
         "source_window_json",
         "replay_boundary",
         "lease_token",
@@ -164,6 +164,9 @@ def test_bounded_status_projection_is_redacted_to_allowlisted_progress_fields() 
         "usage_records",
         "retry_backlog",
         "failure_category",
+        "checkpoint.cursor_json IS NOT NULL AS checkpoint_cursor_present",
+        "source_window_fingerprint",
+        "reserved_source_requests",
         "LIMIT 1",
     )
 

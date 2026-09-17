@@ -55,6 +55,7 @@ ON CREATE SET logical.logical_run_id = randomUUID(),
   logical.configuration_fingerprint = $configuration_fingerprint,
   logical.connector_version = $connector_version,
   logical.checkpoint_schema_version = $checkpoint_schema_version,
+  logical.source_window_fingerprint = $source_window_fingerprint,
   logical.current_phase = $phase,
   logical.occurrence_id = $occurrence_id,
   logical.occurrence_timezone = $timezone,
@@ -115,13 +116,42 @@ RETURN logical.logical_run_id AS logical_run_id,
 REBIND_BOUNDED_OCCURRENCE = """
 MATCH (logical:IngestionLogicalRun {
   logical_run_id: $logical_run_id,
-  reset_generation: $reset_generation,
-  bounded_status: 'paused_with_checkpoint'
+  reset_generation: $reset_generation
 })
-WHERE coalesce(logical.manual_pause, false) = false
-  AND datetime($now) >= logical.next_eligible_at
+SET logical.rebind_lock_version = coalesce(logical.rebind_lock_version, 0) + 1
+WITH logical
+MATCH (source:SourceSystem {source_key: logical.source_key, is_active: true})
+MATCH (:IngestionResetGeneration {
+  environment: logical.environment,
+  generation: $reset_generation,
+  status: 'active'
+})
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {
+  source_key: logical.source_key,
+  control_instance_id: logical.control_instance_id
+})
+WITH logical, source, dispatch
+WHERE (dispatch IS NULL OR coalesce(dispatch.blocked, false) = false)
+  AND coalesce(logical.manual_pause, false) = false
+  AND $occurrence_id <> logical.occurrence_id
+  AND datetime($starts_at) > logical.occurrence_starts_at
+  AND datetime($starts_at) >= logical.next_occurrence_at
   AND datetime($now) >= datetime($starts_at)
   AND datetime($now) < datetime($drain_starts_at)
+  AND (
+    logical.bounded_status IN ['paused_with_checkpoint', 'failed']
+    OR (
+      logical.bounded_status = 'running'
+      AND datetime($now) >= logical.lease_expires_at
+    )
+  )
+OPTIONAL MATCH (logical)-[active:ACTIVE_ATTEMPT]->(attempt:IngestRun)
+OPTIONAL MATCH (slot:BoundedIngestionGlobalSlot {
+  environment: logical.environment,
+  reset_generation: $reset_generation,
+  slot_index: logical.global_slot_index,
+  owner_logical_run_id: logical.logical_run_id
+})
 SET logical.occurrence_id = $occurrence_id,
   logical.occurrence_timezone = $timezone,
   logical.occurrence_scheduled = $scheduled,
@@ -130,12 +160,29 @@ SET logical.occurrence_id = $occurrence_id,
   logical.cutoff_at = datetime($cutoff_at),
   logical.next_occurrence_at = datetime($next_eligible_at),
   logical.next_eligible_at = datetime($starts_at),
+  logical.bounded_status = 'paused_with_checkpoint',
+  logical.status = 'paused_with_checkpoint',
+  logical.pause_reason = 'schedule_window_closed',
+  logical.worker_task_id = NULL,
+  logical.lease_token = NULL,
   logical.reserved_records = 0,
   logical.reserved_source_requests = 0,
   logical.reserved_pages = 0,
   logical.reserved_bytes = 0,
   logical.reserved_extraction_calls = 0,
-  logical.updated_at = datetime()
+  logical.updated_at = datetime(),
+  attempt.status = CASE
+    WHEN attempt.status IN ['queued', 'started'] THEN 'superseded'
+    ELSE attempt.status END,
+  attempt.finished_at = CASE
+    WHEN attempt.status IN ['queued', 'started'] THEN datetime()
+    ELSE attempt.finished_at END,
+  slot.owner_logical_run_id = NULL,
+  slot.owner_attempt_generation = NULL,
+  slot.owner_lease_token = NULL,
+  slot.lease_expires_at = NULL,
+  slot.updated_at = datetime()
+FOREACH (_ IN CASE WHEN active IS NULL THEN [] ELSE [1] END | DELETE active)
 RETURN logical.logical_run_id AS logical_run_id
 """
 
@@ -144,7 +191,9 @@ MATCH (logical:IngestionLogicalRun {
   logical_run_id: $logical_run_id,
   reset_generation: $reset_generation
 })
-MATCH (logical)-[:FOR_SOURCE]->(:SourceSystem {source_key: $source_key, is_active: true})
+SET logical.claim_lock_version = coalesce(logical.claim_lock_version, 0) + 1
+WITH logical
+MATCH (source:SourceSystem {source_key: $source_key, is_active: true})
 MATCH (reset:IngestionResetGeneration {
   environment: $environment,
   generation: $reset_generation,
@@ -154,7 +203,7 @@ OPTIONAL MATCH (dispatch:BitrixDispatchControl {
   source_key: $source_key,
   control_instance_id: $control_instance_id
 })
-WITH logical, reset, dispatch
+WITH logical, source, reset, dispatch
 WHERE dispatch IS NULL OR coalesce(dispatch.blocked, false) = false
 MATCH (checkpoint:IngestionCheckpoint {
   control_instance_id: $control_instance_id,
@@ -164,7 +213,8 @@ MATCH (checkpoint:IngestionCheckpoint {
 WITH logical, checkpoint,
   logical.bounded_status = 'running'
     AND logical.worker_task_id = $worker_task_id
-    AND logical.lease_token = $lease_token AS same_claim
+    AND logical.lease_token = $lease_token
+    AND datetime($now) < logical.lease_expires_at AS same_claim
 WHERE same_claim OR (
   coalesce(logical.manual_pause, false) = false
   AND datetime($now) >= logical.next_eligible_at
@@ -183,6 +233,34 @@ WITH logical, checkpoint, same_claim,
     AS generation,
   CASE WHEN same_claim THEN logical.bounded_fencing_token
        ELSE logical.bounded_fencing_token + 1 END AS fencing_token
+UNWIND range(0, $max_graph_writers - 1) AS slot_index
+MERGE (slot:BoundedIngestionGlobalSlot {
+  environment: $environment,
+  reset_generation: $reset_generation,
+  slot_index: slot_index
+})
+ON CREATE SET slot.fencing_token = 0,
+  slot.created_at = datetime()
+SET slot.lock_version = coalesce(slot.lock_version, 0) + 1
+WITH logical, checkpoint, same_claim, generation, fencing_token, slot
+WHERE (
+  same_claim
+  AND slot.slot_index = logical.global_slot_index
+  AND slot.owner_logical_run_id = logical.logical_run_id
+  AND slot.owner_attempt_generation = logical.active_generation
+  AND slot.owner_lease_token = logical.lease_token
+  AND datetime($now) < slot.lease_expires_at
+) OR (
+  NOT same_claim
+  AND (
+    slot.owner_logical_run_id IS NULL
+    OR datetime($now) >= slot.lease_expires_at
+  )
+)
+ORDER BY slot.slot_index
+WITH logical, checkpoint, same_claim, generation, fencing_token,
+  head(collect(slot)) AS slot
+WHERE slot IS NOT NULL
 OPTIONAL MATCH (logical)-[old_active:ACTIVE_ATTEMPT]->(old_attempt:IngestRun)
 FOREACH (_ IN CASE WHEN same_claim OR old_active IS NULL THEN [] ELSE [1] END |
   SET old_attempt.status = CASE
@@ -214,10 +292,21 @@ FOREACH (_ IN CASE WHEN same_claim THEN [] ELSE [1] END |
   CREATE (logical)-[:HAS_ATTEMPT]->(attempt)
   CREATE (logical)-[:ACTIVE_ATTEMPT]->(attempt)
 )
-WITH logical, checkpoint, same_claim, generation, fencing_token
+WITH logical, checkpoint, same_claim, generation, fencing_token, slot
 OPTIONAL MATCH (logical)-[:ACTIVE_ATTEMPT]->(active_attempt:IngestRun)
-SET logical.active_generation = generation,
+WITH logical, checkpoint, same_claim, generation, fencing_token, slot, active_attempt,
+  CASE WHEN same_claim THEN slot.fencing_token ELSE slot.fencing_token + 1 END
+    AS global_slot_fencing_token
+SET slot.owner_logical_run_id = logical.logical_run_id,
+  slot.owner_attempt_generation = generation,
+  slot.owner_lease_token = $lease_token,
+  slot.fencing_token = global_slot_fencing_token,
+  slot.lease_expires_at = datetime($lease_expires_at),
+  slot.updated_at = datetime(),
+  logical.active_generation = generation,
   logical.bounded_fencing_token = fencing_token,
+  logical.global_slot_index = slot.slot_index,
+  logical.global_slot_fencing_token = global_slot_fencing_token,
   logical.bounded_status = 'running',
   logical.status = 'running',
   logical.worker_task_id = $worker_task_id,
@@ -234,6 +323,8 @@ RETURN logical.logical_run_id AS logical_run_id,
   generation AS attempt_generation,
   fencing_token AS fencing_token,
   logical.lease_token AS lease_token,
+  slot.slot_index AS global_slot_index,
+  global_slot_fencing_token AS global_slot_fencing_token,
   checkpoint.phase AS phase,
   checkpoint.cursor_json AS cursor_json,
   checkpoint.source_window_json AS source_window_json,
@@ -250,10 +341,52 @@ RETURN logical.logical_run_id AS logical_run_id,
   coalesce(logical.reserved_source_requests, 0) AS reserved_source_requests,
   coalesce(logical.reserved_pages, 0) AS reserved_pages,
   coalesce(logical.reserved_bytes, 0) AS reserved_bytes_read,
-  coalesce(logical.reserved_extraction_calls, 0) AS reserved_extraction_calls
+  coalesce(logical.reserved_extraction_calls, 0) AS reserved_extraction_calls,
+  coalesce(logical.retry_backlog, 0) AS retry_backlog,
+  coalesce(logical.terminal_observed, false) AS terminal_observed,
+  coalesce(checkpoint.terminal_committed, false) AS terminal_checkpoint_committed
 """
 
-RESERVE_BOUNDED_USAGE = """
+_BOUNDED_WRITE_AUTHORITY = """
+MATCH (source:SourceSystem {source_key: logical.source_key})
+MATCH (reset:IngestionResetGeneration {
+  environment: logical.environment,
+  generation: $reset_generation
+})
+MATCH (slot:BoundedIngestionGlobalSlot {
+  environment: logical.environment,
+  reset_generation: $reset_generation,
+  slot_index: $global_slot_index
+})
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {
+  source_key: logical.source_key,
+  control_instance_id: logical.control_instance_id
+})
+SET source.bounded_write_lock_version =
+    coalesce(source.bounded_write_lock_version, 0) + 1,
+  reset.bounded_write_lock_version =
+    coalesce(reset.bounded_write_lock_version, 0) + 1,
+  slot.bounded_write_lock_version =
+    coalesce(slot.bounded_write_lock_version, 0) + 1
+FOREACH (_ IN CASE WHEN dispatch IS NULL THEN [] ELSE [1] END |
+  SET dispatch.bounded_write_lock_version =
+    coalesce(dispatch.bounded_write_lock_version, 0) + 1
+)
+WITH logical, source, reset, slot, dispatch
+WHERE source.is_active = true
+  AND reset.status = 'active'
+  AND slot.owner_logical_run_id = logical.logical_run_id
+  AND slot.owner_attempt_generation = $attempt_generation
+  AND slot.owner_lease_token = $lease_token
+  AND slot.fencing_token = $global_slot_fencing_token
+  AND datetime() < logical.lease_expires_at
+  AND datetime() < logical.cutoff_at
+  AND datetime() < slot.lease_expires_at
+  AND (dispatch IS NULL OR coalesce(dispatch.blocked, false) = false)
+"""
+
+RESERVE_BOUNDED_USAGE = (
+    """
 MATCH (logical:IngestionLogicalRun {
   logical_run_id: $logical_run_id,
   reset_generation: $reset_generation,
@@ -263,26 +396,56 @@ MATCH (logical:IngestionLogicalRun {
   worker_task_id: $worker_task_id,
   lease_token: $lease_token
 })
-WHERE datetime() < logical.lease_expires_at
-  AND coalesce(logical.reserved_records, 0) + $records <= $max_records
+"""
+    + _BOUNDED_WRITE_AUTHORITY
+    + """
+OPTIONAL MATCH (existing:BoundedUsageReservation {
+  logical_run_id: $logical_run_id,
+  attempt_generation: $attempt_generation,
+  reservation_key: $reservation_key
+})
+WITH logical, slot, existing
+WHERE existing IS NOT NULL OR (
+  coalesce(logical.reserved_records, 0) + $records <= $max_records
   AND coalesce(logical.reserved_source_requests, 0) + $source_requests
     <= $max_source_requests
   AND coalesce(logical.reserved_pages, 0) + $pages <= $max_pages
   AND coalesce(logical.reserved_bytes, 0) + $bytes_read <= $max_bytes
   AND coalesce(logical.reserved_extraction_calls, 0) + $extraction_calls
     <= $max_extraction_calls
-SET logical.reserved_records = coalesce(logical.reserved_records, 0) + $records,
-  logical.reserved_source_requests =
-    coalesce(logical.reserved_source_requests, 0) + $source_requests,
-  logical.reserved_pages = coalesce(logical.reserved_pages, 0) + $pages,
-  logical.reserved_bytes = coalesce(logical.reserved_bytes, 0) + $bytes_read,
-  logical.reserved_extraction_calls =
-    coalesce(logical.reserved_extraction_calls, 0) + $extraction_calls,
-  logical.updated_at = datetime()
-RETURN logical.logical_run_id AS logical_run_id
+)
+MERGE (reservation:BoundedUsageReservation {
+  logical_run_id: $logical_run_id,
+  attempt_generation: $attempt_generation,
+  reservation_key: $reservation_key
+})
+ON CREATE SET reservation.creation_token = $creation_token,
+  reservation.created_at = datetime(),
+  reservation.records = $records,
+  reservation.source_requests = $source_requests,
+  reservation.pages = $pages,
+  reservation.bytes_read = $bytes_read,
+  reservation.extraction_calls = $extraction_calls
+WITH logical, reservation,
+  reservation.creation_token = $creation_token AS created
+REMOVE reservation.creation_token
+FOREACH (_ IN CASE WHEN created THEN [1] ELSE [] END |
+  SET logical.reserved_records = coalesce(logical.reserved_records, 0) + $records,
+    logical.reserved_source_requests =
+      coalesce(logical.reserved_source_requests, 0) + $source_requests,
+    logical.reserved_pages = coalesce(logical.reserved_pages, 0) + $pages,
+    logical.reserved_bytes = coalesce(logical.reserved_bytes, 0) + $bytes_read,
+    logical.reserved_extraction_calls =
+      coalesce(logical.reserved_extraction_calls, 0) + $extraction_calls,
+    logical.updated_at = datetime()
+)
+RETURN logical.logical_run_id AS logical_run_id,
+  created AS created
 """
+)
 
-CLAIM_BOUNDED_RECEIPT = """
+CLAIM_BOUNDED_RECEIPT = (
+    """
 MATCH (logical:IngestionLogicalRun {
   logical_run_id: $logical_run_id,
   reset_generation: $reset_generation,
@@ -292,7 +455,9 @@ MATCH (logical:IngestionLogicalRun {
   worker_task_id: $worker_task_id,
   lease_token: $lease_token
 })
-WHERE datetime() < logical.lease_expires_at
+"""
+    + _BOUNDED_WRITE_AUTHORITY
+    + """
 MATCH (checkpoint:IngestionCheckpoint {
   control_instance_id: logical.control_instance_id,
   logical_run_id: $logical_run_id,
@@ -314,6 +479,7 @@ RETURN created AS created,
   receipt.status AS status,
   receipt.dispositions_json AS dispositions_json
 """
+)
 
 PERSIST_BOUNDED_RETRY = """
 MATCH (logical:IngestionLogicalRun {logical_run_id: $logical_run_id})
@@ -350,7 +516,8 @@ SET retry.status = 'resolved',
 RETURN retry.source_record_id AS source_record_id
 """
 
-FINALIZE_BOUNDED_UNIT = """
+FINALIZE_BOUNDED_UNIT = (
+    """
 MATCH (logical:IngestionLogicalRun {
   logical_run_id: $logical_run_id,
   reset_generation: $reset_generation,
@@ -360,7 +527,9 @@ MATCH (logical:IngestionLogicalRun {
   worker_task_id: $worker_task_id,
   lease_token: $lease_token
 })
-WHERE datetime() < logical.lease_expires_at
+"""
+    + _BOUNDED_WRITE_AUTHORITY
+    + """
 MATCH (checkpoint:IngestionCheckpoint {
   control_instance_id: logical.control_instance_id,
   logical_run_id: $logical_run_id,
@@ -370,19 +539,30 @@ MATCH (checkpoint:IngestionCheckpoint {
 })
 MATCH (receipt:BoundedIngestionReceipt {
   logical_run_id: $logical_run_id,
-  replay_id: $replay_id,
-  status: 'pending'
+  replay_id: $replay_id
 })
-SET receipt.status = 'committed',
+WHERE receipt.status IN ['pending', 'retry_pending']
+SET receipt.status = CASE
+    WHEN $checkpoint_can_advance THEN 'committed'
+    ELSE 'retry_pending' END,
   receipt.dispositions_json = $dispositions_json,
+  receipt.terminal = $terminal,
   receipt.committed_at = datetime(),
   receipt.records = $records,
   receipt.source_requests = $source_requests,
   receipt.pages = $pages,
   receipt.bytes_read = $bytes_read,
   receipt.extraction_calls = $extraction_calls,
-  checkpoint.cursor_json = $cursor_after_json,
-  checkpoint.last_committed_record_id = $last_committed_record_id,
+  checkpoint.cursor_json = CASE
+    WHEN $checkpoint_can_advance THEN $cursor_after_json
+    ELSE checkpoint.cursor_json END,
+  checkpoint.last_committed_record_id = CASE
+    WHEN $checkpoint_can_advance THEN $last_committed_record_id
+    ELSE checkpoint.last_committed_record_id END,
+  checkpoint.terminal_observed = coalesce(checkpoint.terminal_observed, false) OR $terminal,
+  checkpoint.terminal_committed = CASE
+    WHEN $terminal AND $checkpoint_can_advance THEN true
+    ELSE coalesce(checkpoint.terminal_committed, false) END,
   checkpoint.committed_count = coalesce(checkpoint.committed_count, 0) + $committed_delta,
   checkpoint.duplicate_count = coalesce(checkpoint.duplicate_count, 0) + $duplicate_delta,
   checkpoint.excluded_count = coalesce(checkpoint.excluded_count, 0) + $excluded_delta,
@@ -398,10 +578,12 @@ SET receipt.status = 'committed',
   logical.retry_backlog = CASE
     WHEN coalesce(logical.retry_backlog, 0) + $retry_backlog_delta < 0 THEN 0
     ELSE coalesce(logical.retry_backlog, 0) + $retry_backlog_delta END,
+  logical.terminal_observed = coalesce(logical.terminal_observed, false) OR $terminal,
   logical.current_phase = checkpoint.phase,
   logical.updated_at = datetime()
 RETURN logical.logical_run_id AS logical_run_id
 """
+)
 
 PAUSE_BOUNDED_RUN = """
 MATCH (logical:IngestionLogicalRun {
@@ -413,7 +595,41 @@ MATCH (logical:IngestionLogicalRun {
   worker_task_id: $worker_task_id,
   lease_token: $lease_token
 })
-WHERE datetime() < logical.lease_expires_at
+
+MATCH (source:SourceSystem {source_key: logical.source_key})
+MATCH (reset:IngestionResetGeneration {
+  environment: logical.environment,
+  generation: $reset_generation
+})
+MATCH (slot:BoundedIngestionGlobalSlot {
+  environment: logical.environment,
+  reset_generation: $reset_generation,
+  slot_index: $global_slot_index
+})
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {
+  source_key: logical.source_key,
+  control_instance_id: logical.control_instance_id
+})
+SET source.bounded_state_lock_version =
+    coalesce(source.bounded_state_lock_version, 0) + 1,
+  reset.bounded_state_lock_version =
+    coalesce(reset.bounded_state_lock_version, 0) + 1,
+  slot.bounded_state_lock_version =
+    coalesce(slot.bounded_state_lock_version, 0) + 1
+FOREACH (_ IN CASE WHEN dispatch IS NULL THEN [] ELSE [1] END |
+  SET dispatch.bounded_state_lock_version =
+    coalesce(dispatch.bounded_state_lock_version, 0) + 1
+)
+WITH logical, source, reset, slot, dispatch
+WHERE source.is_active = true
+  AND reset.status = 'active'
+  AND slot.owner_logical_run_id = logical.logical_run_id
+  AND slot.owner_attempt_generation = $attempt_generation
+  AND slot.owner_lease_token = $lease_token
+  AND slot.fencing_token = $global_slot_fencing_token
+  AND datetime() < logical.lease_expires_at
+  AND datetime() < slot.lease_expires_at
+  AND (dispatch IS NULL OR coalesce(dispatch.blocked, false) = false)
 OPTIONAL MATCH (logical)-[active:ACTIVE_ATTEMPT]->(attempt:IngestRun)
 SET logical.bounded_status = 'paused_with_checkpoint',
   logical.status = 'paused_with_checkpoint',
@@ -423,8 +639,13 @@ SET logical.bounded_status = 'paused_with_checkpoint',
   logical.lease_token = NULL,
   logical.updated_at = datetime(),
   attempt.status = 'paused_with_checkpoint',
-  attempt.finished_at = datetime()
-DELETE active
+  attempt.finished_at = datetime(),
+  slot.owner_logical_run_id = NULL,
+  slot.owner_attempt_generation = NULL,
+  slot.owner_lease_token = NULL,
+  slot.lease_expires_at = NULL,
+  slot.updated_at = datetime()
+FOREACH (_ IN CASE WHEN active IS NULL THEN [] ELSE [1] END | DELETE active)
 RETURN logical.logical_run_id AS logical_run_id
 """
 
@@ -438,7 +659,41 @@ MATCH (logical:IngestionLogicalRun {
   worker_task_id: $worker_task_id,
   lease_token: $lease_token
 })
-WHERE datetime() < logical.lease_expires_at
+
+MATCH (source:SourceSystem {source_key: logical.source_key})
+MATCH (reset:IngestionResetGeneration {
+  environment: logical.environment,
+  generation: $reset_generation
+})
+MATCH (slot:BoundedIngestionGlobalSlot {
+  environment: logical.environment,
+  reset_generation: $reset_generation,
+  slot_index: $global_slot_index
+})
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {
+  source_key: logical.source_key,
+  control_instance_id: logical.control_instance_id
+})
+SET source.bounded_state_lock_version =
+    coalesce(source.bounded_state_lock_version, 0) + 1,
+  reset.bounded_state_lock_version =
+    coalesce(reset.bounded_state_lock_version, 0) + 1,
+  slot.bounded_state_lock_version =
+    coalesce(slot.bounded_state_lock_version, 0) + 1
+FOREACH (_ IN CASE WHEN dispatch IS NULL THEN [] ELSE [1] END |
+  SET dispatch.bounded_state_lock_version =
+    coalesce(dispatch.bounded_state_lock_version, 0) + 1
+)
+WITH logical, source, reset, slot, dispatch
+WHERE source.is_active = true
+  AND reset.status = 'active'
+  AND slot.owner_logical_run_id = logical.logical_run_id
+  AND slot.owner_attempt_generation = $attempt_generation
+  AND slot.owner_lease_token = $lease_token
+  AND slot.fencing_token = $global_slot_fencing_token
+  AND datetime() < logical.lease_expires_at
+  AND datetime() < slot.lease_expires_at
+  AND (dispatch IS NULL OR coalesce(dispatch.blocked, false) = false)
 OPTIONAL MATCH (logical)-[active:ACTIVE_ATTEMPT]->(attempt:IngestRun)
 SET logical.bounded_status = 'failed',
   logical.status = 'failed',
@@ -451,8 +706,13 @@ SET logical.bounded_status = 'failed',
   attempt.status = 'failed',
   attempt.failure_category = $failure_category,
   attempt.failure_message = $failure_message,
-  attempt.finished_at = datetime()
-DELETE active
+  attempt.finished_at = datetime(),
+  slot.owner_logical_run_id = NULL,
+  slot.owner_attempt_generation = NULL,
+  slot.owner_lease_token = NULL,
+  slot.lease_expires_at = NULL,
+  slot.updated_at = datetime()
+FOREACH (_ IN CASE WHEN active IS NULL THEN [] ELSE [1] END | DELETE active)
 RETURN logical.logical_run_id AS logical_run_id
 """
 
@@ -466,20 +726,57 @@ MATCH (logical:IngestionLogicalRun {
   worker_task_id: $worker_task_id,
   lease_token: $lease_token
 })
-WHERE datetime() < logical.lease_expires_at
+
+MATCH (source:SourceSystem {source_key: logical.source_key})
+MATCH (reset:IngestionResetGeneration {
+  environment: logical.environment,
+  generation: $reset_generation
+})
+MATCH (slot:BoundedIngestionGlobalSlot {
+  environment: logical.environment,
+  reset_generation: $reset_generation,
+  slot_index: $global_slot_index
+})
+OPTIONAL MATCH (dispatch:BitrixDispatchControl {
+  source_key: logical.source_key,
+  control_instance_id: logical.control_instance_id
+})
+SET source.bounded_state_lock_version =
+    coalesce(source.bounded_state_lock_version, 0) + 1,
+  reset.bounded_state_lock_version =
+    coalesce(reset.bounded_state_lock_version, 0) + 1,
+  slot.bounded_state_lock_version =
+    coalesce(slot.bounded_state_lock_version, 0) + 1
+FOREACH (_ IN CASE WHEN dispatch IS NULL THEN [] ELSE [1] END |
+  SET dispatch.bounded_state_lock_version =
+    coalesce(dispatch.bounded_state_lock_version, 0) + 1
+)
+WITH logical, source, reset, slot, dispatch
+WHERE source.is_active = true
+  AND reset.status = 'active'
+  AND slot.owner_logical_run_id = logical.logical_run_id
+  AND slot.owner_attempt_generation = $attempt_generation
+  AND slot.owner_lease_token = $lease_token
+  AND slot.fencing_token = $global_slot_fencing_token
+  AND datetime() < logical.lease_expires_at
+  AND datetime() < slot.lease_expires_at
+  AND (dispatch IS NULL OR coalesce(dispatch.blocked, false) = false)
 MATCH (checkpoint:IngestionCheckpoint {
   logical_run_id: $logical_run_id,
   phase: logical.current_phase,
   generation: $attempt_generation,
-  status: 'active'
+  status: 'active',
+  terminal_committed: true
 })
-OPTIONAL MATCH (logical)-[active:ACTIVE_ATTEMPT]->(attempt:IngestRun)
 WHERE coalesce(logical.retry_backlog, 0) = 0
+OPTIONAL MATCH (logical)-[active:ACTIVE_ATTEMPT]->(attempt:IngestRun)
 SET logical.bounded_status = 'completed',
   logical.status = 'completed',
   logical.pause_reason = NULL,
   logical.worker_task_id = NULL,
   logical.lease_token = NULL,
+  logical.publication_intent = false,
+  logical.recovery_authorized = false,
   logical.finished_at = datetime(),
   logical.updated_at = datetime(),
   checkpoint.status = 'completed',
@@ -487,8 +784,13 @@ SET logical.bounded_status = 'completed',
   attempt.status = 'completed',
   attempt.finished_at = datetime(),
   attempt.record_count = coalesce(logical.usage_records, 0),
-  attempt.rejected_count = 0
-DELETE active
+  attempt.rejected_count = 0,
+  slot.owner_logical_run_id = NULL,
+  slot.owner_attempt_generation = NULL,
+  slot.owner_lease_token = NULL,
+  slot.lease_expires_at = NULL,
+  slot.updated_at = datetime()
+FOREACH (_ IN CASE WHEN active IS NULL THEN [] ELSE [1] END | DELETE active)
 RETURN logical.logical_run_id AS logical_run_id
 """
 
@@ -499,6 +801,11 @@ OPTIONAL MATCH (checkpoint:IngestionCheckpoint {
   phase: logical.current_phase,
   generation: logical.active_generation
 })
+OPTIONAL MATCH (retry:BoundedIngestionRetry {
+  logical_run_id: logical.logical_run_id,
+  status: 'pending'
+})
+WITH logical, checkpoint, min(retry.created_at) AS retry_oldest_at
 RETURN logical.logical_run_id AS logical_run_id,
   logical.source_key AS source_key,
   logical.control_instance_id AS control_instance_id,
@@ -507,7 +814,6 @@ RETURN logical.logical_run_id AS logical_run_id,
   logical.pause_reason AS pause_reason,
   logical.occurrence_id AS occurrence_id,
   logical.occurrence_timezone AS timezone,
-  coalesce(logical.occurrence_scheduled, true) AS scheduled,
   toString(logical.occurrence_starts_at) AS starts_at,
   toString(logical.drain_starts_at) AS drain_starts_at,
   toString(logical.cutoff_at) AS cutoff_at,
@@ -517,9 +823,18 @@ RETURN logical.logical_run_id AS logical_run_id,
   coalesce(logical.usage_pages, 0) AS pages,
   coalesce(logical.usage_bytes, 0) AS bytes_read,
   coalesce(logical.usage_extraction_calls, 0) AS extraction_calls,
+  coalesce(logical.reserved_records, 0) AS reserved_records,
+  coalesce(logical.reserved_source_requests, 0) AS reserved_source_requests,
+  coalesce(logical.reserved_pages, 0) AS reserved_pages,
+  coalesce(logical.reserved_bytes, 0) AS reserved_bytes_read,
+  coalesce(logical.reserved_extraction_calls, 0) AS reserved_extraction_calls,
+  coalesce(logical.active_generation, 0) AS attempt_generation,
+  logical.source_window_fingerprint AS source_window_fingerprint,
+  checkpoint.cursor_json IS NOT NULL AS checkpoint_cursor_present,
   checkpoint.phase AS phase,
   toString(checkpoint.updated_at) AS checkpointed_at,
   coalesce(logical.retry_backlog, 0) AS retry_backlog,
+  toString(retry_oldest_at) AS retry_oldest_at,
   logical.failure_category AS failure_category
 LIMIT 1
 """
@@ -568,8 +883,7 @@ MATCH (logical:IngestionLogicalRun {
   logical_run_id: $logical_run_id,
   source_key: $source_key,
   control_instance_id: $control_instance_id,
-  reset_generation: $reset_generation,
-  bounded_status: 'paused_with_checkpoint'
+  reset_generation: $reset_generation
 })
 MATCH (:IngestionResetGeneration {
   environment: logical.environment,
@@ -583,7 +897,14 @@ MATCH (checkpoint:IngestionCheckpoint {
   generation: logical.active_generation
 })
 WHERE coalesce(logical.manual_pause, false) = false
-  AND coalesce(logical.publication_intent, false) = true
+  AND coalesce(logical.recovery_authorized, false) = true
+  AND (
+    logical.bounded_status = 'paused_with_checkpoint'
+    OR (
+      logical.bounded_status = 'running'
+      AND datetime($now) >= logical.lease_expires_at
+    )
+  )
 RETURN logical.environment AS environment,
   logical.source_key AS source_key,
   logical.control_instance_id AS control_instance_id,
@@ -613,9 +934,11 @@ LIMIT 1
 COMPARE_AND_ADVANCE_RESET_GENERATION = """
 MATCH (current:IngestionResetGeneration {
   environment: $environment,
-  generation: $expected_generation,
-  status: 'active'
+  generation: $expected_generation
 })
+SET current.cas_lock_version = coalesce(current.cas_lock_version, 0) + 1
+WITH current
+WHERE current.status = 'active'
 SET current.status = 'retired',
   current.retired_at = datetime(),
   current.retired_by = $actor,
@@ -642,6 +965,9 @@ WHERE logical.bounded_status IN ['queued', 'paused_with_checkpoint', 'failed']
 SET logical.bounded_status = 'paused_with_checkpoint',
   logical.status = 'paused_with_checkpoint',
   logical.pause_reason = $pause_reason,
+  logical.next_eligible_at = CASE
+    WHEN $next_eligible_at IS NULL THEN logical.next_eligible_at
+    ELSE datetime($next_eligible_at) END,
   logical.updated_at = datetime()
 RETURN logical.logical_run_id AS logical_run_id
 """

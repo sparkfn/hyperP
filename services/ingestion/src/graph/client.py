@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
-from typing import Any, TypeVar, cast
+from typing import Any, TypeVar
 
 from neo4j import Driver, GraphDatabase, ManagedTransaction, Session, unit_of_work
 
@@ -61,7 +61,7 @@ class Neo4jClient:
             if transaction_timeout_seconds <= 0:
                 raise ValueError("transaction timeout must be positive")
             decorated = unit_of_work(timeout=transaction_timeout_seconds)(work)
-            transaction_work = cast(Callable[[ManagedTransaction], T], decorated)
+            transaction_work = decorated
         with self.session(**session_kwargs) as sess:
             return sess.execute_write(transaction_work)
 

@@ -9,7 +9,7 @@ from typing import Protocol
 from src.bounded_ingestion_budget import BoundedIngestionBudget
 from src.bounded_ingestion_commit import BoundedCommitStore
 from src.bounded_ingestion_models import (
-    AttemptContext,
+    BoundedAdmissionResult,
     BoundedRunResult,
     OccurrenceContext,
     RunScope,
@@ -31,7 +31,8 @@ class BoundedDispatchControl(BoundedCommitStore, Protocol):
         now: datetime,
         lease_token: str | None = None,
         lease_seconds: float = 300.0,
-    ) -> AttemptContext | None: ...
+        max_graph_writers: int = 1,
+    ) -> BoundedAdmissionResult: ...
 
 
 def dispatch_one(
@@ -75,13 +76,29 @@ def dispatch_one(
         worker_task_id=worker_task_id,
         now=clock(),
         lease_seconds=budget.drain_reserve_seconds,
+        max_graph_writers=budget.max_graph_writers,
     )
+    if context == "completed":
+        return BoundedRunResult("completed", None)
     if context is None:
         return BoundedRunResult(
             "blocked",
             None,
             failure_category="lease",
             safe_message="bounded attempt was not admitted",
+        )
+    if (
+        context.terminal_observed
+        and context.terminal_checkpoint_committed
+        and context.retry_backlog == 0
+    ):
+        if control.finalize(context):
+            return BoundedRunResult("completed", context)
+        return BoundedRunResult(
+            "blocked",
+            context,
+            failure_category="lease",
+            safe_message="terminal bounded run lost its completion fence",
         )
     runner = BoundedIngestionRunner(
         budget,

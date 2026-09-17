@@ -31,7 +31,12 @@ class BoundedLogicalRunStatus(BaseModel):
     cutoff_at: str | None
     next_eligible_at: str | None
     usage: BoundedLogicalRunUsage
+    reserved_usage: BoundedLogicalRunUsage
+    attempt_generation: int = Field(ge=0)
+    source_window_fingerprint: str
+    checkpoint_cursor_present: bool
     phase: str | None
     checkpointed_at: str | None
     retry_backlog: int = Field(ge=0)
+    retry_oldest_at: str | None
     failure_category: str | None

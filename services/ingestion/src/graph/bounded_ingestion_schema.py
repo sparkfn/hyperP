@@ -12,6 +12,16 @@ REQUIRE scope.scope_key IS UNIQUE""",
     """CREATE CONSTRAINT bounded_ingestion_logical_key_unique IF NOT EXISTS
 FOR (run:IngestionLogicalRun)
 REQUIRE run.bounded_logical_key IS UNIQUE""",
+    """CREATE CONSTRAINT bounded_ingestion_global_slot_unique IF NOT EXISTS
+FOR (slot:BoundedIngestionGlobalSlot)
+REQUIRE (slot.environment, slot.reset_generation, slot.slot_index) IS UNIQUE""",
+    """CREATE CONSTRAINT bounded_ingestion_reservation_identity_unique IF NOT EXISTS
+FOR (reservation:BoundedUsageReservation)
+REQUIRE (
+  reservation.logical_run_id,
+  reservation.attempt_generation,
+  reservation.reservation_key
+) IS UNIQUE""",
     """CREATE CONSTRAINT bounded_ingestion_receipt_identity_unique IF NOT EXISTS
 FOR (receipt:BoundedIngestionReceipt)
 REQUIRE (receipt.logical_run_id, receipt.replay_id) IS UNIQUE""",

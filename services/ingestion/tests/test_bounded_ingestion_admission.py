@@ -43,6 +43,7 @@ class _AdmissionControl(MemoryControl):
         now: datetime,
         lease_token: str | None = None,
         lease_seconds: float = 300.0,
+        max_graph_writers: int = 1,
     ) -> AttemptContext | None:
         _ = (
             scope,
@@ -52,6 +53,7 @@ class _AdmissionControl(MemoryControl):
             now,
             lease_token,
             lease_seconds,
+            max_graph_writers,
         )
         self.admissions += 1
         return context() if self.admitted else None
