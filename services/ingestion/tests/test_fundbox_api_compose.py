@@ -38,8 +38,7 @@ def test_staging_deploy_checks_fundbox_env_keys_without_values() -> None:
     assert "must resolve to a non-empty value" not in deploy
     assert '"${COMPOSE[@]}" build "${BUILD_SERVICE_ARRAY[@]}"' in deploy
     assert "docker inspect" in deploy
-    assert "wait_service_stable ingestion-worker" in deploy
-    assert "wait_service_stable lifecycle-worker" in deploy
-    assert "wait_service_stable beat" in deploy
+    assert "for worker_service in ingestion-worker lifecycle-worker beat" in deploy
+    assert 'wait_service_stable "${worker_service}"' in deploy
     assert "stable_checks" in deploy
     assert "did not remain running" in deploy

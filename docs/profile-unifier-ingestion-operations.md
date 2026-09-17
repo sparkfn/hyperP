@@ -11,7 +11,7 @@ then permits only its finite exact exception registry: project metadata; root-on
 deployment and CRM-repair settings; repository-relative build and mount rebases;
 staging web memory, host-port removal, and Traefik attachment; the external
 Traefik network; the ingestion worker's base target and Issue 147 evidence
-inputs; and staging beat resource limits. Any other topology, image, command,
+inputs. Any other topology, image, command,
 queue, environment, mount, network, or resource drift fails the contract test.
 
 When an owning change modifies root `docker-compose.yml`, update the tracked
@@ -134,40 +134,79 @@ pass, then promote that new revert commit to `staging`. Do not force-push or mov
 `staging` behind `main`. The normal staging pipeline then performs the same
 deployment and verification gates for the revert commit.
 
-## Lifecycle worker pause and resume
+## Staging worker pause, resume, and deployment policy
 
-The lifecycle worker consumes reconciliation and deferred KNOWS materialization.
-Run the supported control script on the staging host rather than stopping a
-container or editing Redis directly:
+The three bounded staging worker services have independent, durable pause intent:
+`ingestion-worker`, `beat`, and `lifecycle-worker`. Run the supported control on
+the staging host rather than stopping a container or editing Redis directly:
 
 ```bash
-STAGING_REPO_DIR=/path/to/hyperP scripts/lifecycle-worker-control.sh pause
-STAGING_REPO_DIR=/path/to/hyperP scripts/lifecycle-worker-control.sh status
-STAGING_REPO_DIR=/path/to/hyperP scripts/lifecycle-worker-control.sh resume
+STAGING_REPO_DIR=/path/to/hyperP scripts/worker-control.sh pause ingestion-worker
+STAGING_REPO_DIR=/path/to/hyperP scripts/worker-control.sh status
+STAGING_REPO_DIR=/path/to/hyperP scripts/worker-control.sh resume lifecycle-worker
 ```
 
 `STAGING_COMPOSE_FILE` may override the default
 `.docker/staging/docker-compose.yml`. Relative Compose paths are resolved from
 `STAGING_REPO_DIR`.
 
+`scripts/lifecycle-worker-control.sh pause|status|resume` remains a compatibility
+wrapper for lifecycle-only procedures. Only the three worker names above are accepted.
+
 All staging Compose operations use the canonical `hyperp-ada-asia` project.
 `STAGING_COMPOSE_PROJECT` may override it for an isolated test checkout, but
 operators and deployment automation must not rely on Compose's directory-derived
 default because that can create duplicate workers.
 
-`pause` stops `lifecycle-worker` successfully before atomically creating the
-non-secret `.lifecycle-worker-paused` marker. `resume` starts the worker
-successfully before removing that marker. `status` reports both marker presence
-and whether the consumer is running. Treat either of these combinations as an
-inconsistent state requiring investigation:
+Pause intent is an empty regular marker below ignored
+`.docker/staging/data/worker-pauses/{ingestion-worker,beat,lifecycle-worker}`.
+`pause` atomically creates its marker before attempting to stop a service and
+retains it when stopping or stopped-state verification fails. `resume` inspects
+the effective policy before starting a worker, starts it successfully, then clears
+its marker. `status SERVICE`
+reports one service and `status` reports all three. Docker failures, symlinks,
+tracked markers, malformed marker files, and unsafe legacy migration fail closed.
+The old root `.lifecycle-worker-paused` intent migrates only when it is the sole
+untracked change; unrelated dirty state is rejected.
+
+Treat either of these combinations as an inconsistent state requiring investigation:
 
 - marker present and `consumer_running=true`;
 - marker absent and `consumer_running=false` when lifecycle consumption is expected.
 
-The staging deployment workflow builds an updated lifecycle image while paused,
-but does not recreate or start the lifecycle worker. It also verifies that the
-consumer remains stopped. Beat and completed ingestion tasks can still publish
-lifecycle work; Redis retains the queue until the worker is resumed.
+The staging deployment workflow builds changed worker images even while paused.
+It recreates unpaused eligible services with `up -d --no-deps --force-recreate`,
+and paused services with `create --no-deps --force-recreate`; if the installed
+Compose does not support `create --no-deps`, deployment fails closed. It then verifies
+every paused container remains stopped. Deployment never clears a marker or resumes
+a worker. Beat and completed ingestion tasks can still publish lifecycle work;
+Redis retains it until lifecycle consumption is explicitly resumed.
+Immediately after reading pause intent, the held deployment lock invokes the
+canonical control to stop and verify each marked worker before planning any build
+or recreation; an inconsistent running worker fails the deployment with its marker
+still present.
+
+The deployment-only policy helper discovers the actual host bind backing
+`/app/config`, requires all three workers to agree on it and `INGESTION_CONFIG_FILE`,
+and requires the mounted JSON to explicitly contain the exact approved timezone,
+opening, cutoff, and drain-reserve values. It records a read-back **non-effective
+evidence copy** below ignored `.docker/staging/data/policy-evidence/`; that copy
+does not alter the mounted config or activate scheduling. The helper never assumes
+a staging-local config directory, edits tracked config, logs config values, or
+overwrites unrelated or stronger disabled/manual controls. The approved policy is
+`Asia/Singapore`, opening `09:00`, cutoff `23:00`, and a `900`-second drain reserve.
+
+When scheduling is enabled, deployment admits an unpaused worker start/recreation
+only in `[09:00, 22:45)` Asia/Singapore. It checks before image builds/policy staging
+and immediately before container mutation, so an image build crossing the boundary
+fails closed without starting a worker. Paused workers may be recreated stopped outside
+that interval. This is deployment admission only: #430/#431 own runtime admission,
+absolute deadlines, checkpointing, lease release, and next-week resumption. There is
+no blind cutoff kill.
+
+Worker `resume` applies the same clock admission only when the mounted policy has
+`scheduled_ingestion.enabled=true`; scheduling disabled permits an operator resume.
+An admission, Compose, or verification failure leaves pause intent in place.
 
 ## Queue-gate recovery
 

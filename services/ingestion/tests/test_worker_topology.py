@@ -31,7 +31,7 @@ def test_worker_concurrency_and_task_routes_are_fixed_in_code() -> None:
     assert materialize_knows_task.time_limit == 330
 
 
-def test_compose_workers_are_exclusive_and_use_code_concurrency() -> None:
+def test_compose_workers_are_exclusive_and_use_bounded_command_concurrency() -> None:
     compose = _COMPOSE_PATH.read_text(encoding="utf-8")
     ingestion_worker = compose.split("  ingestion-worker:", 1)[1].split("  lifecycle-worker:", 1)[0]
     lifecycle_worker = compose.split("  lifecycle-worker:", 1)[1].split("  beat:", 1)[0]
@@ -40,12 +40,12 @@ def test_compose_workers_are_exclusive_and_use_code_concurrency() -> None:
     assert "--queues=lifecycle,miscellaneous" in lifecycle_worker
     assert "--queues=celery" not in ingestion_worker
     assert "--queues=celery" not in lifecycle_worker
-    assert "--concurrency" not in ingestion_worker
-    assert "--concurrency" not in lifecycle_worker
+    assert "--concurrency=${INGESTION_WORKER_CONCURRENCY:-1}" in ingestion_worker
+    assert "--concurrency=${LIFECYCLE_WORKER_CONCURRENCY:-1}" in lifecycle_worker
     assert "CELERY_WORKER_CONCURRENCY" not in compose
     assert "MAX_CONCURRENT_INGESTIONS" not in compose
-    assert "stop_grace_period: 5m" in ingestion_worker
-    assert "stop_grace_period: 5m" in lifecycle_worker
+    assert "stop_grace_period: ${INGESTION_WORKER_STOP_GRACE_PERIOD:-300s}" in ingestion_worker
+    assert "stop_grace_period: ${LIFECYCLE_WORKER_STOP_GRACE_PERIOD:-300s}" in lifecycle_worker
 
 
 def test_crm_tenant_operator_commands_are_registered_and_routed() -> None:

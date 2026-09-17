@@ -7,7 +7,14 @@ sidecar, scheduler, database service, dependency on HyperP services, or producti
 
 ## Safe defaults
 
-The container starts idle. `INTELLIGENCE_MUTATIONS_ENABLED=false` is the default and production
+Intelligence is an explicit operator-only Compose profile. With no selected profile it is inactive,
+and normal staging deployment explicitly clears `COMPOSE_PROFILES`; it does not build, start,
+health-check, stop, or remove Intelligence. Its named `intelligence-data` workspace remains intact.
+An operator may explicitly opt in with
+`COMPOSE_PROFILES=intelligence docker compose up -d intelligence`; this is never a deployment
+default and requires separate operational authorization.
+
+When explicitly started, the container starts idle. `INTELLIGENCE_MUTATIONS_ENABLED=false` is the default and production
 registry is empty. Later reviewed code may register bounded reviewed handlers in a parent-supervised
 child process; operators cannot
 supply an executable, shell fragment, environment capture, or plugin path.
@@ -21,6 +28,10 @@ summary. Inspect reports the safe terminal record and accepted-output inventory.
 single safe names, not paths or `.sqlite3` snapshots. A bundle is atomic/no-replace and contains a
 SQLite online snapshot plus checksummed copies of completed-run manifests and accepted outputs;
 verify it before exporting a copy off-volume. There is no restore or pruning command.
+
+No deployment, API import, health check, Beat schedule, or worker startup invokes Intelligence
+archive, training, evaluation, model, repair, cleanup, or another Intelligence command. Retaining
+the source and workspace available does not activate a workflow.
 
 ### CRM deal-reference snapshots
 
