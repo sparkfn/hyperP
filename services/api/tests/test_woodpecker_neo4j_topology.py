@@ -73,6 +73,8 @@ _EXPECTED_HISTORICAL_TRAINING_SYNC = (
     "--group",
     "training",
     "--package",
+    "hyperp-workspace",
+    "--package",
     "profile-unifier-api",
     "--package",
     "profile-unifier-ingestion",
@@ -121,7 +123,7 @@ _EXPECTED_ACTIVE_NODE_SENTINELS = {
         "services/ingestion/tests/test_active_relationship_reader_contract.py::"
         "test_active_materializers_remain_classified_and_current_filtered",
         "services/ingestion/tests/test_active_reader_classifier_discovery.py::"
-        "test_clause_boundary_discovery_after_create_fails_closed",
+        "test_clause_boundaries_discover_pattern_expressions_after_create",
         "services/ingestion/tests/test_bitrix_backfill_tasks.py::"
         "test_live_canvas_allows_deal_only_when_activities_are_reviewed_excluded",
         "services/ingestion/tests/test_scheduled_ingestion_tasks.py::"
@@ -621,28 +623,35 @@ def _assert_query_service_bindings(document: dict[str, object]) -> None:
 
 
 def test_query_service_bindings_and_pristine_identifier_schema_order_fail_closed() -> None:
-    document = _workflow("pr.yaml")
-    _assert_query_service_bindings(document)
+    for workflow_name in _WORKFLOWS:
+        document = _workflow(workflow_name)
+        _assert_query_service_bindings(document)
 
-    redirected = copy.deepcopy(document)
-    redirected_steps = _steps(redirected)
-    redirected_environment = _environment(redirected_steps["neo4j-census-migration-api-checks"])
-    redirected_environment["HYPERP_NEO4J_CRM_METRICS_TEST_URI"] = "bolt://neo4j-projection:7687"
-    try:
-        _assert_query_service_bindings(redirected)
-    except AssertionError:
-        pass
-    else:
-        raise AssertionError("cross-service query target redirection was accepted")
+        redirected = copy.deepcopy(document)
+        redirected_steps = _steps(redirected)
+        redirected_environment = _environment(redirected_steps["neo4j-census-migration-api-checks"])
+        redirected_environment["HYPERP_NEO4J_CRM_METRICS_TEST_URI"] = (
+            "bolt://neo4j-projection:7687"
+        )
+        try:
+            _assert_query_service_bindings(redirected)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(
+                f"{workflow_name} accepted cross-service query target redirection"
+            )
 
-    reordered = copy.deepcopy(document)
-    reordered_steps = _steps(reordered)
-    commands = reordered_steps["neo4j-census-migration-api-checks"]["commands"]
-    assert isinstance(commands, list)
-    commands[2], commands[3] = commands[3], commands[2]
-    try:
-        _assert_query_service_bindings(reordered)
-    except AssertionError:
-        pass
-    else:
-        raise AssertionError("identifier-schema-first ordering was accepted after reordering")
+        reordered = copy.deepcopy(document)
+        reordered_steps = _steps(reordered)
+        commands = reordered_steps["neo4j-census-migration-api-checks"]["commands"]
+        assert isinstance(commands, list)
+        commands[2], commands[3] = commands[3], commands[2]
+        try:
+            _assert_query_service_bindings(reordered)
+        except AssertionError:
+            pass
+        else:
+            raise AssertionError(
+                f"{workflow_name} accepted identifier-schema command reordering"
+            )
