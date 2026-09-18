@@ -137,6 +137,41 @@ def test_run_ingestion_task_passes_sggov_dump_paths(monkeypatch: MonkeyPatch) ->
     assert rental_flats["dump_path"] == "limited-100/sgrentalflats_100.sql"
 
 
+def test_run_ingestion_task_passes_onediver_dump_paths(monkeypatch: MonkeyPatch) -> None:
+    _disable_active_reset_generation(monkeypatch)
+    monkeypatch.setenv("NEO4J_PASSWORD", "test")
+    from src import tasks
+
+    calls: list[tuple[str, str, str | None, bool]] = []
+
+    monkeypatch.setattr(tasks, "setup_logging", lambda level: None)
+    monkeypatch.setattr(tasks, "get_settings", lambda: _Settings())
+    monkeypatch.setattr(tasks, "initialize_ingestion_graph", lambda: None)
+    monkeypatch.setattr(tasks, "_acquire_init_lock", lambda: _NullContext())
+    monkeypatch.setattr(tasks, "_acquire_source_lock", lambda source_key: _NullContext())
+    monkeypatch.setattr(tasks, "_acquire_ingestion_slot", lambda max_slots: _NullContext())
+    monkeypatch.setattr(tasks.reconcile_lifecycle_task, "apply_async", lambda **_options: None)
+    monkeypatch.setattr(tasks, "run_ingestion", _successful_ingestion_stub(calls))
+
+    onediver = tasks.run_ingestion_task.run(
+        "onediver",
+        "dump",
+        "limited-100/onediver_100.sql",
+    )
+    onediver_sales = tasks.run_ingestion_task.run(
+        "onediver:sales",
+        "dump",
+        "limited-100/onediver_sales_100.sql",
+    )
+
+    assert calls == [
+        ("onediver", "dump", "limited-100/onediver_100.sql", False),
+        ("onediver:sales", "dump", "limited-100/onediver_sales_100.sql", False),
+    ]
+    assert onediver["dump_path"] == "limited-100/onediver_100.sql"
+    assert onediver_sales["dump_path"] == "limited-100/onediver_sales_100.sql"
+
+
 def test_run_ingestion_task_passes_sgbankruptcy_api_mode(
     monkeypatch: MonkeyPatch,
 ) -> None:
