@@ -12,8 +12,10 @@ from urllib.parse import urlparse
 
 import httpx
 
+from src.config import get_settings
 from src.connectors.fundbox_api.models import (
     IngestionPage,
+    PageMeta,
     validate_source_records,
 )
 from src.errors import SourceNotConfiguredError
@@ -93,6 +95,25 @@ class FundboxApiClient:
                 break
             cursor = next_cursor
 
+    def fetch_page(
+        self,
+        resource: str,
+        *,
+        cursor: str | None = None,
+        updated_since: str | None = None,
+    ) -> tuple[list[dict[str, JsonValue]], PageMeta]:
+        if resource not in _RESOURCES:
+            raise ValueError(f"Unsupported Fundbox API resource: {resource!r}")
+        params: dict[str, str | int] = {"limit": self._credentials.page_size}
+        if cursor is not None:
+            params["cursor"] = cursor
+        elif updated_since is not None:
+            params["updated_since"] = updated_since
+        response = self._request(resource, params)
+        page = IngestionPage.model_validate(response.json())
+        records = validate_source_records(resource, page.data)
+        return records, page.meta
+
     def close(self) -> None:
         self._http.close()
 
@@ -148,3 +169,20 @@ class FundboxApiClient:
     @staticmethod
     def _exponential_delay(attempt: int) -> float:
         return min(_MAX_RETRY_DELAY_SECONDS, float(2 ** (attempt - 1)))
+
+
+def create_fundbox_api_client() -> FundboxApiClient:
+    settings = get_settings()
+    # Strip surrounding whitespace so a padded env value (e.g. " https://x ") is
+    # tolerated end-to-end rather than tripping a misleading "must use HTTPS"
+    # check or failing at request time.
+    return FundboxApiClient(
+        FundboxApiCredentials(
+            base_url=settings.fundbox_api_base_url.strip(),
+            username=settings.fundbox_api_username.strip(),
+            password=settings.fundbox_api_password.get_secret_value(),
+            page_size=settings.fundbox_api_page_size,
+        ),
+        http=httpx.Client(timeout=settings.fundbox_api_timeout_seconds),
+        max_attempts=settings.fundbox_api_max_attempts,
+    )
