@@ -28,6 +28,16 @@ class RentalFlatRow(BaseModel):
     last_seen_at: datetime
     is_active: bool
     town: RentalFlatTown
+    updated_at: datetime | None = None
+
+
+class RentalFlatCursorPage(BaseModel):
+    """Cursor-based page for the incremental export endpoint."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    items: list[RentalFlatRow]
+    next_cursor: str | None
 
 
 class RentalFlatPage(BaseModel):
