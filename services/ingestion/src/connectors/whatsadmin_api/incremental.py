@@ -6,8 +6,8 @@ import dataclasses
 import logging
 from collections.abc import Iterator
 from datetime import UTC, datetime
+from typing import TYPE_CHECKING
 
-from src.connectors.chat_helpers import ExtractionFailure
 from src.connectors.whatsadmin_api.connector import WhatsAdminClient
 from src.connectors.whatsadmin_api.credentials import WhatsAdminEntity
 from src.connectors.whatsadmin_api.models import ChatPage, SessionRow
@@ -22,6 +22,9 @@ from src.connectors.whatsapp.connector import (
 )
 from src.incremental_connector import IncrementalPage
 from src.models import JsonValue
+
+if TYPE_CHECKING:
+    from src.connectors.chat_helpers import ExtractionFailure
 
 logger = logging.getLogger(__name__)
 
