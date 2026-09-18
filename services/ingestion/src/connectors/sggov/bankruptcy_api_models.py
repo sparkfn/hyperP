@@ -27,6 +27,7 @@ class BankruptcyExportItem(BaseModel):
     document_date: date | None
     first_seen_at: datetime
     last_seen_at: datetime
+    updated_at: datetime | None = None
 
 
 class BankruptcyExportPage(BaseModel):
