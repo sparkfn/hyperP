@@ -5,6 +5,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
+from src.bounded_ingestion_models import BoundedMode
+
 Weekday = Literal["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
 
 
@@ -15,6 +17,19 @@ class ScheduledIngestionSpec:
     source_key: str
     entity_key: str | None = None
     supports_incremental: bool = True
+
+    @property
+    def child_key(self) -> str:
+        """Return a stable scheduler identity without leaking source credentials."""
+        return f"{self.source_key}|{self.entity_key or '-'}"
+
+    def mode_for(self, incremental: bool) -> BoundedMode:
+        """Select the bounded mode for one recurring weekly run.
+
+        A source without incremental capability keeps its cadence by repeating a
+        full bootstrap snapshot instead of being silently withheld.
+        """
+        return "delta" if incremental and self.supports_incremental else "bootstrap"
 
 
 @dataclass(frozen=True)
@@ -80,3 +95,8 @@ def scheduled_ingestion_group(key: str) -> ScheduledIngestionGroup:
         return _GROUPS_BY_KEY[key]
     except KeyError as exc:
         raise ValueError(f"Unknown scheduled ingestion group {key!r}") from exc
+
+
+def scheduled_ingestion_group_for_weekday(weekday: Weekday) -> ScheduledIngestionGroup | None:
+    """Return the one source group whose configured day is ``weekday``."""
+    return next((group for group in SCHEDULED_INGESTION_GROUPS if group.weekday == weekday), None)
