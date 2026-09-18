@@ -294,12 +294,13 @@ def test_graph_clear_query_excludes_preserved() -> None:
     assert STAGING_RESET_CLEAR_GRAPH == (
         "MATCH (n) "
         "WHERE NOT n:Entity AND NOT n:SourceSystem "
+        "AND NOT n:User "
         "AND NOT n:OAuthClient AND NOT n:OAuthClientSecret "
         "WITH n LIMIT $batch_size "
         "DETACH DELETE n "
         "RETURN count(*) AS deleted"
     )
-    for label in ("Entity", "SourceSystem", "OAuthClient", "OAuthClientSecret"):
+    for label in ("Entity", "SourceSystem", "User", "OAuthClient", "OAuthClientSecret"):
         assert f"NOT n:{label}" in STAGING_RESET_CLEAR_GRAPH
     assert STAGING_RESET_CLEAR_GRAPH.count("$") == 1
 
