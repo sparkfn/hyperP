@@ -2043,10 +2043,42 @@ def _parse_feature_snapshot(raw: str) -> dict[str, JsonValue]:
 # Incremental (watermark) ingestion
 # ---------------------------------------------------------------------------
 
+def _create_eko_customer_incremental() -> object:
+    from src.connectors.phppos_api.connectors import EkoApiConnector
+    from src.main import create_phppos_api_client
+
+    return EkoApiConnector(create_phppos_api_client("eko_phppos"))
+
+
+def _create_eko_sales_incremental() -> object:
+    from src.connectors.phppos_api.connectors import EkoSalesApiConnector
+    from src.main import create_phppos_api_client
+
+    return EkoSalesApiConnector(create_phppos_api_client("eko_phppos:sales"))
+
+
+def _create_speedzone_customer_incremental() -> object:
+    from src.connectors.phppos_api.connectors import SpeedZoneApiConnector
+    from src.main import create_phppos_api_client
+
+    return SpeedZoneApiConnector(create_phppos_api_client("speedzone_phppos"))
+
+
+def _create_speedzone_sales_incremental() -> object:
+    from src.connectors.phppos_api.connectors import SpeedZoneSalesApiConnector
+    from src.main import create_phppos_api_client
+
+    return SpeedZoneSalesApiConnector(create_phppos_api_client("speedzone_phppos:sales"))
+
+
 INCREMENTAL_CONNECTORS: dict[str, object] = {
     "fundbox": create_fundbox_users_incremental,
     "fundbox:contacts": create_fundbox_contacts_incremental,
     "fundbox:sales": create_fundbox_sales_incremental,
+    "eko_phppos": _create_eko_customer_incremental,
+    "eko_phppos:sales": _create_eko_sales_incremental,
+    "speedzone_phppos": _create_speedzone_customer_incremental,
+    "speedzone_phppos:sales": _create_speedzone_sales_incremental,
 }
 
 
