@@ -30,7 +30,7 @@ def _redis_key(source_key: str, entity_key: str | None) -> str:
 
 
 def load_watermark(
-    client: redis.Redis[bytes],
+    client: redis.Redis,
     source_key: str,
     entity_key: str | None = None,
 ) -> IngestionWatermark:
@@ -39,13 +39,18 @@ def load_watermark(
     raw = client.get(key)
     if raw is None:
         return IngestionWatermark(updated_at=None, source_key=source_key, entity_key=entity_key)
-    text = raw.decode("utf-8") if isinstance(raw, bytes) else raw
+    if isinstance(raw, bytes):
+        text = raw.decode("utf-8")
+    elif isinstance(raw, str):
+        text = raw
+    else:
+        return IngestionWatermark(updated_at=None, source_key=source_key, entity_key=entity_key)
     data: dict[str, str] = json.loads(text)
     updated_at = datetime.fromisoformat(data["updated_at"])
     return IngestionWatermark(updated_at=updated_at, source_key=source_key, entity_key=entity_key)
 
 
-def save_watermark(client: redis.Redis[bytes], watermark: IngestionWatermark) -> None:
+def save_watermark(client: redis.Redis, watermark: IngestionWatermark) -> None:
     """Persist a watermark after a successful full drain."""
     if watermark.updated_at is None:
         raise ValueError("Cannot save a watermark with updated_at=None")
@@ -54,7 +59,7 @@ def save_watermark(client: redis.Redis[bytes], watermark: IngestionWatermark) ->
 
 
 def reset_watermark(
-    client: redis.Redis[bytes],
+    client: redis.Redis,
     source_key: str,
     entity_key: str | None = None,
 ) -> None:
