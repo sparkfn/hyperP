@@ -31,17 +31,22 @@ def test_periodic_reconciliation_is_registered_once_hourly() -> None:
     from src.lifecycle_reconciliation_queue import LifecycleReconciliationTask
 
     entries = [
-        entry
-        for entry in _beat_schedule.values()
-        if entry["task"] == "src.tasks.reconcile_lifecycle_task"
+        (name, entry)
+        for name, entry in _beat_schedule.items()
+        if entry["task"] == "src.scheduled_ingestion_tasks.dispatch_scheduled_maintenance_task"
+        and entry["args"] == ("lifecycle",)
     ]
 
     assert entries == [
-        {
-            "task": "src.tasks.reconcile_lifecycle_task",
-            "schedule": 3600.0,
-            "options": {"queue": "lifecycle"},
-        }
+        (
+            "lifecycle-reconciliation",
+            {
+                "task": "src.scheduled_ingestion_tasks.dispatch_scheduled_maintenance_task",
+                "schedule": 3600.0,
+                "args": ("lifecycle",),
+                "options": {"queue": "ingestion"},
+            },
+        )
     ]
     celery_app.loader.import_default_modules()
     registered_task = celery_app.tasks["src.tasks.reconcile_lifecycle_task"]
