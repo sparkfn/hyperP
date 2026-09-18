@@ -168,8 +168,12 @@ def test_chat_extraction_retries_only_the_unresolved_conversation(
 
     calls: list[list[str]] = []
 
-    async def extract(texts: list[str], max_tokens: int) -> str:
-        _ = max_tokens
+    async def extract(
+        texts: list[str],
+        max_tokens: int,
+        control: object = None,
+    ) -> str:
+        _ = max_tokens, control
         calls.append(texts)
         if len(texts) == 2:
             return json.dumps({"conversations": [_conversation_object(0)]})
@@ -193,9 +197,13 @@ def test_chat_extraction_reports_bounded_malformed_response_failure(
 
     calls = 0
 
-    async def extract(texts: list[str], max_tokens: int) -> str:
+    async def extract(
+        texts: list[str],
+        max_tokens: int,
+        control: object = None,
+    ) -> str:
         nonlocal calls
-        _ = (texts, max_tokens)
+        _ = texts, max_tokens, control
         calls += 1
         return "not json"
 
@@ -219,8 +227,12 @@ def test_chat_extraction_reports_initial_failure_when_retries_disabled(
 ) -> None:
     from src.connectors import chat_helpers
 
-    async def extract(texts: list[str], max_tokens: int) -> str:
-        _ = (texts, max_tokens)
+    async def extract(
+        texts: list[str],
+        max_tokens: int,
+        control: object = None,
+    ) -> str:
+        _ = texts, max_tokens, control
         return "not json"
 
     config = IngestionConfig(

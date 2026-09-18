@@ -7,7 +7,12 @@ import logging
 
 from src.ingestion_config import get_ingestion_config
 from src.llm.anthropic import AnthropicService
-from src.llm.base import ChatMessage, LLMService
+from src.llm.base import (
+    ChatMessage,
+    LlmAttemptControl,
+    LlmCallCancelledError,
+    LLMService,
+)
 from src.llm.gpt import GPTService
 from src.llm.openai import OpenAIService
 from src.llm.proclaude import ProclaudeService
@@ -19,6 +24,8 @@ __all__ = [
     "ChatMessage",
     "GPTService",
     "LLMService",
+    "LlmAttemptControl",
+    "LlmCallCancelledError",
     "OpenAIService",
     "ProclaudeService",
     "get_chat_extraction_service",

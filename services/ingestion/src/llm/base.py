@@ -5,7 +5,7 @@ from __future__ import annotations
 import asyncio
 import random
 from abc import ABC, abstractmethod
-from typing import Literal
+from typing import Literal, Protocol
 
 import httpx
 from pydantic import BaseModel, ConfigDict
@@ -18,6 +18,32 @@ class ChatMessage(BaseModel):
 
     role: Literal["system", "user", "assistant"]
     content: str
+
+
+class LlmCallCancelledError(RuntimeError):
+    """A bounded caller's deadline, cancellation, or attempt budget forbids a call."""
+
+
+class LlmAttemptControl(Protocol):
+    """Optional per-request authority over attempt count, timeout, and backoff.
+
+    A bounded caller supplies one control per extraction so every provider
+    attempt — transport retry, malformed-result retry, or summary call — is
+    reserved before it starts and cannot outlive the caller's deadline.
+    """
+
+    def before_attempt(self) -> float | None:
+        """Reserve one provider attempt.
+
+        Returns the seconds this attempt may run for, or ``None`` when the
+        attempt has no bounded duration. Implementations raise
+        ``LlmCallCancelledError`` instead of returning a non-positive duration.
+        """
+        ...
+
+    def backoff_seconds(self, requested_seconds: float) -> float:
+        """Return the bounded, cancellation-aware delay before the next attempt."""
+        ...
 
 
 class LLMService(ABC):
@@ -56,6 +82,7 @@ class LLMService(ABC):
         model: str | None = None,
         temperature: float = 0.0,
         max_tokens: int | None = None,
+        control: LlmAttemptControl | None = None,
     ) -> str:
         """Return a JSON-mode assistant response for ``messages``."""
         return await self._chat(
@@ -64,6 +91,7 @@ class LLMService(ABC):
             temperature=temperature,
             max_tokens=max_tokens,
             json_mode=True,
+            control=control,
         )
 
     async def chat_text(
@@ -74,6 +102,7 @@ class LLMService(ABC):
         temperature: float = 0.0,
         max_tokens: int | None = None,
         preserve_output_format: bool = False,
+        control: LlmAttemptControl | None = None,
     ) -> str:
         """Return a plain-text assistant response for ``messages``."""
         return await self._chat(
@@ -83,6 +112,7 @@ class LLMService(ABC):
             max_tokens=max_tokens,
             json_mode=False,
             preserve_output_format=preserve_output_format,
+            control=control,
         )
 
     async def _chat(
@@ -94,12 +124,16 @@ class LLMService(ABC):
         max_tokens: int | None,
         json_mode: bool,
         preserve_output_format: bool = False,
+        control: LlmAttemptControl | None = None,
     ) -> str:
         """Execute one chat request with shared retry and response handling.
 
         A fresh ``httpx.AsyncClient`` is opened per call: ingestion drives these
         via ``asyncio.run`` (one event loop per batch), so a reused client would
         be bound to an already-closed loop on the next batch.
+
+        A supplied ``control`` reserves every attempt before it is sent, caps the
+        request timeout to its remaining budget, and bounds each retry delay.
         """
         payload = self._build_payload(
             messages, model or self._default_model_value, temperature, max_tokens
@@ -112,21 +146,29 @@ class LLMService(ABC):
             base_url=self._base, timeout=self._config.timeout_seconds
         ) as client:
             for attempt in range(max_retries + 1):
+                remaining = control.before_attempt() if control is not None else None
                 try:
-                    response = await client.post(self._endpoint_path, json=payload, headers=headers)
+                    response = await client.post(
+                        self._endpoint_path,
+                        json=payload,
+                        headers=headers,
+                        timeout=(
+                            remaining if remaining is not None else self._config.timeout_seconds
+                        ),
+                    )
                 except (httpx.TimeoutException, httpx.TransportError):
                     # A slow/incomplete response or transient network error is
                     # retryable; only give up once retries are exhausted.
                     if attempt == max_retries:
                         raise
-                    await asyncio.sleep(self._backoff_delay(attempt))
+                    await asyncio.sleep(_bounded_delay(control, self._backoff_delay(attempt)))
                     continue
                 if response.status_code < 400:
                     text = self._parse_text(response.json())
                     return text if preserve_output_format else _strip_code_fences(text)
                 if not self._is_retryable(response) or attempt == max_retries:
                     _raise_http_status(response)
-                await asyncio.sleep(self._retry_after(response, attempt))
+                await asyncio.sleep(_bounded_delay(control, self._retry_after(response, attempt)))
         raise RuntimeError("unreachable LLM retry state")
 
     def _backoff_delay(self, attempt: int) -> float:
@@ -168,6 +210,13 @@ class LLMService(ABC):
 
     @abstractmethod
     def _is_retryable(self, response: httpx.Response) -> bool: ...
+
+
+def _bounded_delay(control: LlmAttemptControl | None, requested_seconds: float) -> float:
+    """Return the delay to wait before another attempt under a bounded control."""
+    if control is None:
+        return requested_seconds
+    return control.backoff_seconds(requested_seconds)
 
 
 def _strip_code_fences(text: str) -> str:

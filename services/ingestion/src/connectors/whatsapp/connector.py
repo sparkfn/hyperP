@@ -48,6 +48,7 @@ from src.connectors.whatsapp.schema import chats, contacts, messages, orgs, sess
 from src.exclusion_config import ExclusionFile
 from src.exclusions import build_exclusion_context, filter_extraction
 from src.ingestion_config import get_ingestion_config
+from src.llm import LlmAttemptControl
 from src.models import JsonValue
 
 logger = logging.getLogger(__name__)
@@ -74,6 +75,9 @@ class _ChatBundle:
     message_endpoints: list[JsonValue]
     session_phone: str | None
     source_id_scope: str | None = None
+    #: Immutable content identity of this chat version; ``None`` when the source
+    #: cannot state one and retry identity must fall back to ``observed_at``.
+    source_version: str | None = None
 
 
 #: Map org name → entity_key (from graph bootstrap).
@@ -275,8 +279,13 @@ def process_whatsapp_bundles(
     *,
     fail_on_extraction_error: bool = False,
     on_extraction_failure: Callable[[_ChatBundle, ExtractionFailure], None] | None = None,
+    call_control: LlmAttemptControl | None = None,
 ) -> Iterator[dict[str, JsonValue]]:
-    """Run shared LLM extraction and envelope building for chat bundles."""
+    """Run shared LLM extraction and envelope building for chat bundles.
+
+    A bounded caller passes ``call_control`` so every provider attempt is
+    reserved against its remaining budget; its cancellation propagates.
+    """
     try:
         settings = get_settings()
         company_mobile_numbers = list(settings.company_mobile_numbers)
@@ -293,7 +302,7 @@ def process_whatsapp_bundles(
     extraction_cache: dict[tuple[str, str], ExtractionResult] = {}
     for start, end in iter_char_batches(texts, chat_batch_max_chars(), chat_batch_size()):
         batch = bundles[start:end]
-        outcome = run_extraction_batch_detailed(texts[start:end])
+        outcome = run_extraction_batch_detailed(texts[start:end], control=call_control)
         batch_results = outcome.results
         logger.info("LLM batch %d-%d/%d done", start, end, len(bundles))
         for bundle, result, failure in zip(batch, batch_results, outcome.failures, strict=True):

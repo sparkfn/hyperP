@@ -2,13 +2,53 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol, runtime_checkable
+from typing import Literal, Protocol, runtime_checkable
 
 from src.connectors.whatsadmin_api.credentials import WhatsAdminEntity
 from src.models import JsonValue
+
+#: Namespace shared by every durable WhatsAdmin chat key.
+_KEY_NAMESPACE = "profile_unifier:whatsadmin-api:whatsapp_chat"
+
+#: Durable bounded entries: stored chat pages and prepared extraction output.
+BoundedEntryKind = Literal["bundles", "prepared"]
+
+
+def session_watermark_key(entity_key: WhatsAdminEntity, session_id: str) -> str:
+    """Return the completed-window watermark key for one entity session."""
+    return _session_key(entity_key, session_id, "watermark")
+
+
+def committed_version_key(
+    entity_key: WhatsAdminEntity,
+    session_id: str,
+    chat_id: str,
+) -> str:
+    """Return the committed content-version key for one chat."""
+    return _session_key(entity_key, session_id, f"version:{chat_id}")
+
+
+def bounded_entry_key(
+    kind: BoundedEntryKind,
+    entity_key: WhatsAdminEntity,
+    session_id: str,
+    digest: str,
+) -> str:
+    """Return the durable key holding one bounded adapter entry."""
+    return _session_key(entity_key, session_id, f"{kind}:{digest}")
+
+
+def bounded_digest(*parts: str) -> str:
+    """Return a stable hex digest for the bounded entry identity of ``parts``."""
+    return hashlib.sha256("|".join(parts).encode("utf-8")).hexdigest()
+
+
+def _session_key(entity_key: WhatsAdminEntity, session_id: str, suffix: str) -> str:
+    return f"{_KEY_NAMESPACE}:{entity_key}:{session_id}:{suffix}"
 
 
 class WatermarkStore(Protocol):
@@ -196,16 +236,16 @@ class RedisWatermarkStore:
 
     @staticmethod
     def _key(entity_key: WhatsAdminEntity, session_id: str) -> str:
-        return f"profile_unifier:whatsadmin-api:whatsapp_chat:{entity_key}:{session_id}:watermark"
+        return session_watermark_key(entity_key, session_id)
 
     @staticmethod
     def _legacy_key(session_id: str) -> str:
-        return f"profile_unifier:whatsadmin-api:whatsapp_chat:{session_id}:watermark"
+        return f"{_KEY_NAMESPACE}:{session_id}:watermark"
 
     @staticmethod
     def _checkpoint_key(entity_key: WhatsAdminEntity, session_id: str) -> str:
-        return f"profile_unifier:whatsadmin-api:whatsapp_chat:{entity_key}:{session_id}:page"
+        return _session_key(entity_key, session_id, "page")
 
     @staticmethod
     def _retry_key(entity_key: WhatsAdminEntity, session_id: str) -> str:
-        return f"profile_unifier:whatsadmin-api:whatsapp_chat:{entity_key}:{session_id}:retries"
+        return _session_key(entity_key, session_id, "retries")

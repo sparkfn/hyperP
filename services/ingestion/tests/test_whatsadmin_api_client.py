@@ -1,11 +1,15 @@
 from __future__ import annotations
 
 import json
+import time
 
 import httpx
 import pytest
 from pydantic import SecretStr
-from src.connectors.whatsadmin_api.client import WhatsAdminApiClient
+from src.connectors.whatsadmin_api.client import (
+    WhatsAdminApiClient,
+    WhatsAdminDeadlineError,
+)
 from src.connectors.whatsadmin_api.credentials import WhatsAdminCredential, WhatsAdminEntity
 
 
@@ -199,3 +203,85 @@ def test_chat_page_read_timeout_stops_at_configured_attempt_limit() -> None:
     latency = context["upstream_latency_seconds"]
     assert isinstance(latency, float)
     assert latency >= 0
+
+
+def test_one_page_reads_bind_the_requested_as_of_snapshot() -> None:
+    payloads: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        payloads.append(json.loads(request.content))
+        return httpx.Response(
+            200,
+            json=_response([], snapshot_at="2026-07-17T06:00:00Z"),
+        )
+
+    client = WhatsAdminApiClient(
+        credential=_credential("eko", "hk_eko_secret"),
+        page_size=25,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    page = client.read_chat_page(
+        session_id="ses_1",
+        changed_since="2026-07-16T00:00:00Z",
+        snapshot_at="2026-07-17T06:00:00+00:00",
+        cursor="opaque-1",
+    )
+
+    assert page.meta.pagination.has_more is False
+    assert payloads == [
+        {
+            "sessionId": "ses_1",
+            "changedSince": "2026-07-16T00:00:00Z",
+            "snapshotAt": "2026-07-17T06:00:00+00:00",
+            "cursor": "opaque-1",
+            "limit": 25,
+        }
+    ]
+
+
+def test_single_page_reads_never_follow_the_next_cursor() -> None:
+    bodies: list[dict[str, object]] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        bodies.append(json.loads(request.content))
+        response = _response([])
+        response_meta = response["meta"]
+        assert isinstance(response_meta, dict)
+        response_meta["pagination"] = {"hasMore": True, "nextCursor": "opaque-next"}
+        return httpx.Response(200, json=response)
+
+    client = WhatsAdminApiClient(
+        credential=_credential("eko", "hk_eko_secret"),
+        page_size=50,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    first = client.read_session_page(cursor=None)
+    second = client.read_session_page(cursor="opaque-next")
+
+    assert first.meta.pagination.has_more is True
+    assert second.meta.pagination.next_cursor == "opaque-next"
+    assert bodies == [{"limit": 50}, {"limit": 50, "cursor": "opaque-next"}]
+
+
+def test_bounded_deadline_stops_before_another_request() -> None:
+    calls = 0
+
+    def handler(_request: httpx.Request) -> httpx.Response:
+        nonlocal calls
+        calls += 1
+        return httpx.Response(200, json=_response([]))
+
+    client = WhatsAdminApiClient(
+        credential=_credential("eko", "hk_eko_secret"),
+        page_size=50,
+        max_attempts=3,
+        retry_base_delay_seconds=0,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    with pytest.raises(WhatsAdminDeadlineError):
+        client.read_session_page(cursor=None, deadline_monotonic=time.monotonic() - 1)
+
+    assert calls == 0

@@ -168,48 +168,59 @@ class IngestPipeline:
     ) -> IngestResult:
         """Ingest a single source record.  Returns an ``IngestResult``."""
 
-        # Lock, idempotency classification, version assignment, and all writes
-        # share one transaction so concurrent updates cannot allocate one version.
-        active_exclusion_context = (
-            exclusion_context if exclusion_context is not None else ExclusionContext()
-        )
-
-        # Steps 3-13 run inside a single write transaction
         def _work(tx: ManagedTransaction) -> IngestResult:
-            if self._fence_context is not None:
-                assert_active_bitrix_fence(tx, self._fence_context)
-            state = load_locked_source_state(
-                tx,
-                envelope.source_system,
-                envelope.source_record_id,
-                envelope.source_instance_id,
-            )
-            plan = plan_incoming_version(state, envelope.record_hash)
-            if isinstance(plan, DuplicateVersion):
-                result = IngestResult(
-                    source_record_id=envelope.source_record_id,
-                    source_record_pk=plan.source_record_pk,
-                    skipped_duplicate=True,
-                    ingest_run_id=ingest_run_id,
-                )
-                self._finalize_bitrix_unit(tx, envelope, result)
-                return result
-            envelope.source_record_version = str(plan.version)
-            result = self._execute_ingest(
+            return self.ingest_in_transaction(
                 tx,
                 envelope,
-                normalize_envelope_identifiers(envelope),
-                normalize_envelope_addresses(envelope),
-                normalize_envelope_attributes(envelope),
                 ingest_run_id=ingest_run_id,
-                lifecycle_plan=plan,
-                exclusion_context=active_exclusion_context,
+                exclusion_context=exclusion_context,
             )
-            self._finalize_bitrix_unit(tx, envelope, result)
-            return result
 
         with self._client.session() as session:
             return session.execute_write(_work)
+
+    def ingest_in_transaction(
+        self,
+        tx: ManagedTransaction,
+        envelope: SourceRecordEnvelope,
+        ingest_run_id: str | None = None,
+        exclusion_context: ExclusionContext | None = None,
+    ) -> IngestResult:
+        """Ingest one fresh envelope through an already-open write transaction."""
+        active_exclusion_context = (
+            exclusion_context if exclusion_context is not None else ExclusionContext()
+        )
+        if self._fence_context is not None:
+            assert_active_bitrix_fence(tx, self._fence_context)
+        state = load_locked_source_state(
+            tx,
+            envelope.source_system,
+            envelope.source_record_id,
+            envelope.source_instance_id,
+        )
+        plan = plan_incoming_version(state, envelope.record_hash)
+        if isinstance(plan, DuplicateVersion):
+            result = IngestResult(
+                source_record_id=envelope.source_record_id,
+                source_record_pk=plan.source_record_pk,
+                skipped_duplicate=True,
+                ingest_run_id=ingest_run_id,
+            )
+            self._finalize_bitrix_unit(tx, envelope, result)
+            return result
+        envelope.source_record_version = str(plan.version)
+        result = self._execute_ingest(
+            tx,
+            envelope,
+            normalize_envelope_identifiers(envelope),
+            normalize_envelope_addresses(envelope),
+            normalize_envelope_attributes(envelope),
+            ingest_run_id=ingest_run_id,
+            lifecycle_plan=plan,
+            exclusion_context=active_exclusion_context,
+        )
+        self._finalize_bitrix_unit(tx, envelope, result)
+        return result
 
     def _finalize_bitrix_unit(
         self,

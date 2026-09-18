@@ -6,7 +6,7 @@ import hashlib
 import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
-from typing import Literal, Protocol
+from typing import Literal, Protocol, runtime_checkable
 from zoneinfo import ZoneInfo
 
 from neo4j import ManagedTransaction
@@ -338,6 +338,15 @@ class BoundedConnector(Protocol):
     def cancel(self) -> None: ...
 
     def close(self) -> None: ...
+
+
+@runtime_checkable
+class BoundedReadinessCheck(Protocol):
+    """Optional descriptor capability gating dispatch on proven source readiness."""
+
+    def readiness_block(self) -> str | None:
+        """Return a safe blocked reason while this source cannot be dispatched yet."""
+        ...
 
 
 class BoundedConnectorDescriptor(Protocol):

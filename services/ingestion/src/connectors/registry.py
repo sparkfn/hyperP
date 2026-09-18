@@ -9,7 +9,11 @@ from types import ModuleType
 from typing import cast
 
 import src.connectors as connectors_package
-from src.bounded_ingestion_models import BoundedConnectorDescriptor, BoundedMode
+from src.bounded_ingestion_models import (
+    BoundedConnectorDescriptor,
+    BoundedMode,
+    BoundedReadinessCheck,
+)
 
 _DESCRIPTOR_MODULE_SUFFIX = ".bounded_descriptor"
 _DESCRIPTOR_EXPORT = "DESCRIPTOR"
@@ -90,6 +94,9 @@ class BoundedConnectorRegistry:
         }
         if not supported[mode]:
             raise LookupError("bounded descriptor does not support requested mode")
+        blocked = _readiness_block(descriptor)
+        if blocked is not None:
+            raise LookupError(blocked)
         return descriptor
 
     def get(self, source_key: str) -> BoundedConnectorDescriptor | None:
@@ -103,6 +110,21 @@ class BoundedConnectorRegistry:
     def _maybe_discover(self) -> None:
         if self._auto_discover:
             self.discover()
+
+
+def _readiness_block(descriptor: BoundedConnectorDescriptor) -> str | None:
+    """Return a safe blocked reason for a descriptor that cannot run yet."""
+    if not isinstance(descriptor, BoundedReadinessCheck):
+        return None
+    try:
+        reason = descriptor.readiness_block()
+    except Exception:  # noqa: BLE001 - an unreadable gate must block, never dispatch
+        return "bounded descriptor readiness check failed"
+    if reason is None:
+        return None
+    if not reason.strip():
+        return "bounded descriptor readiness check returned an empty reason"
+    return reason
 
 
 def _descriptors_from_module(module: ModuleType) -> tuple[BoundedConnectorDescriptor, ...]:

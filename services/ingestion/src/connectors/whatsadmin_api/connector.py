@@ -13,6 +13,7 @@ from src.connectors.whatsadmin_api.credentials import WhatsAdminEntity
 from src.connectors.whatsadmin_api.models import ChatPage, SessionRow
 from src.connectors.whatsadmin_api.retry_queue import (
     bundle_entity_key,
+    chat_source_version,
     deserialize_retry_bundle,
     retry_matches_bundle,
     serialize_retry_bundle,
@@ -315,40 +316,67 @@ class WhatsAdminChatApiConnector(SourceConnector):
         tenant: WhatsAdminEntity,
         page: ChatPage,
     ) -> list[_ChatBundle]:
-        result: list[_ChatBundle] = []
-        for chat in page.data:
-            messages: list[dict[str, object]] = [
-                {
-                    "from_id": message.from_id,
-                    "to_id": message.to_id,
-                    "author_id": message.author_id,
-                    "body": message.body,
-                    "timestamp": message.timestamp,
-                    "from_me": message.from_me,
-                }
-                for message in chat.messages
-            ]
-            if not messages:
-                continue
-            participants = [
-                _Participant(item.jid, item.phone, item.name, item.role)
-                for item in chat.participants
-            ]
-            result.append(
-                _ChatBundle(
+        return build_chat_bundles(
+            tenant=tenant,
+            page=page,
+            session_id=session.id,
+            whatsapp_user_id=session.whatsapp_user_id,
+            expected_phone_number=session.expected_phone_number,
+            legacy_entity=self._legacy_entity,
+        )
+
+
+def build_chat_bundles(
+    *,
+    tenant: WhatsAdminEntity,
+    page: ChatPage,
+    session_id: str,
+    whatsapp_user_id: str,
+    expected_phone_number: str | None,
+    legacy_entity: WhatsAdminEntity | None,
+) -> list[_ChatBundle]:
+    """Convert one chat page into shared chat bundles with content identities."""
+    result: list[_ChatBundle] = []
+    for chat in page.data:
+        messages: list[dict[str, object]] = [
+            {
+                "from_id": message.from_id,
+                "to_id": message.to_id,
+                "author_id": message.author_id,
+                "body": message.body,
+                "timestamp": message.timestamp,
+                "from_me": message.from_me,
+            }
+            for message in chat.messages
+        ]
+        if not messages:
+            continue
+        participants = [
+            _Participant(item.jid, item.phone, item.name, item.role) for item in chat.participants
+        ]
+        msg_text = _format_messages(messages, participants, chat.chat_name)
+        result.append(
+            _ChatBundle(
+                chat_id=chat.chat_id,
+                chat_name=chat.chat_name,
+                session_id=session_id,
+                whatsapp_user_id=whatsapp_user_id,
+                tenant=tenant,
+                msg_text=msg_text,
+                observed_at=_latest_message_timestamp(messages),
+                participants=participants,
+                message_endpoints=_message_endpoints(messages),
+                session_phone=expected_phone_number,
+                source_id_scope=(
+                    session_id if tenant == legacy_entity else f"{tenant}-{session_id}"
+                ),
+                source_version=chat_source_version(
                     chat_id=chat.chat_id,
                     chat_name=chat.chat_name,
-                    session_id=session.id,
-                    whatsapp_user_id=session.whatsapp_user_id,
-                    tenant=tenant,
-                    msg_text=_format_messages(messages, participants, chat.chat_name),
-                    observed_at=_latest_message_timestamp(messages),
+                    session_id=session_id,
+                    msg_text=msg_text,
                     participants=participants,
-                    message_endpoints=_message_endpoints(messages),
-                    session_phone=session.expected_phone_number,
-                    source_id_scope=(
-                        session.id if tenant == self._legacy_entity else f"{tenant}-{session.id}"
-                    ),
-                )
+                ),
             )
-        return result
+        )
+    return result

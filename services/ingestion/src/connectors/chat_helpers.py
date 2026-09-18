@@ -13,7 +13,13 @@ from typing import Literal, TypedDict
 
 from src.connectors.fundbox.builders import IdentifierBag, to_iso
 from src.ingestion_config import get_ingestion_config
-from src.llm import ChatMessage, get_chat_extraction_service, get_chat_summary_service
+from src.llm import (
+    ChatMessage,
+    LlmAttemptControl,
+    LlmCallCancelledError,
+    get_chat_extraction_service,
+    get_chat_summary_service,
+)
 from src.llm_prompts import (
     EXTRACTION_SYSTEM,
     SUMMARY_SYSTEM,
@@ -148,7 +154,11 @@ class ExtractionBatchOutcome:
     failures: list[ExtractionFailure | None]
 
 
-async def _extract_structured(texts: list[str], max_tokens: int) -> str:
+async def _extract_structured(
+    texts: list[str],
+    max_tokens: int,
+    control: LlmAttemptControl | None = None,
+) -> str:
     """ProClaude JSON-mode call for structured identity/transaction extraction."""
     svc = get_chat_extraction_service()
     return await svc.chat_json(
@@ -157,10 +167,15 @@ async def _extract_structured(texts: list[str], max_tokens: int) -> str:
             ChatMessage(role="user", content=build_batch_extraction_prompt(texts)),
         ],
         max_tokens=max_tokens,
+        control=control,
     )
 
 
-async def _summarize_batch(texts: list[str], max_tokens: int) -> str:
+async def _summarize_batch(
+    texts: list[str],
+    max_tokens: int,
+    control: LlmAttemptControl | None = None,
+) -> str:
     """ProClaude call for narrative per-conversation summaries."""
     svc = get_chat_summary_service()
     return await svc.chat_text(
@@ -169,6 +184,7 @@ async def _summarize_batch(texts: list[str], max_tokens: int) -> str:
             ChatMessage(role="user", content=build_batch_summary_prompt(texts)),
         ],
         max_tokens=max_tokens,
+        control=control,
     )
 
 
@@ -210,7 +226,11 @@ def iter_char_batches(
         start = end
 
 
-def run_extraction_batch(texts: list[str]) -> list[ExtractionResult | None]:
+def run_extraction_batch(
+    texts: list[str],
+    *,
+    control: LlmAttemptControl | None = None,
+) -> list[ExtractionResult | None]:
     """Extract every conversation through ProClaude.
 
     Returns one ``ExtractionResult | None`` per input, aligned to input order.
@@ -219,17 +239,25 @@ def run_extraction_batch(texts: list[str]) -> list[ExtractionResult | None]:
     returned at that index.
     Summaries are a best-effort second pass — a failed summary call leaves
     ``summary`` ``None`` but keeps the structured data.
+    A supplied ``control`` bounds every attempt; its cancellation propagates.
     """
-    return run_extraction_batch_detailed(texts).results
+    return run_extraction_batch_detailed(texts, control=control).results
 
 
-def run_extraction_batch_detailed(texts: list[str]) -> ExtractionBatchOutcome:
+def run_extraction_batch_detailed(
+    texts: list[str],
+    *,
+    control: LlmAttemptControl | None = None,
+) -> ExtractionBatchOutcome:
     """Extract chats while isolating malformed responses to individual chats.
 
     Transport and retryable HTTP failures are retried by ``LLMService``. This
     layer additionally retries a syntactically invalid or incomplete successful
     response, once per unresolved conversation, so a bad multi-chat response
     cannot discard otherwise processable chats or abort the caller's run.
+
+    A bounded caller's cancellation is never converted into a per-chat failure:
+    the caller must be able to persist its own durable retry obligation.
     """
     if not texts:
         return ExtractionBatchOutcome([], [])
@@ -239,7 +267,9 @@ def run_extraction_batch_detailed(texts: list[str]) -> ExtractionBatchOutcome:
     failures: list[ExtractionFailure | None] = [None] * len(texts)
     initial_failure_code: ExtractionFailureCode = "missing_conversation"
     try:
-        raw = asyncio.run(_extract_structured(texts, max_tokens))
+        raw = asyncio.run(_extract_structured(texts, max_tokens, control))
+    except LlmCallCancelledError:
+        raise
     except Exception as exc:  # noqa: BLE001 - one bad batch must not abort the run
         logger.warning("LLM extraction call failed (%d conversations): %r", len(texts), exc)
         raw = ""
@@ -255,11 +285,11 @@ def run_extraction_batch_detailed(texts: list[str]) -> ExtractionBatchOutcome:
         if result is not None:
             continue
         retry_result, failure = _retry_single_extraction(
-            texts[index], max_tokens, retry_attempts, initial_failure_code
+            texts[index], max_tokens, retry_attempts, initial_failure_code, control
         )
         results[index] = retry_result
         failures[index] = failure
-    _attach_summaries(texts, results, max_tokens)
+    _attach_summaries(texts, results, max_tokens, control)
     return ExtractionBatchOutcome(results, failures)
 
 
@@ -268,12 +298,15 @@ def _retry_single_extraction(
     max_tokens: int,
     retry_attempts: int,
     initial_failure_code: ExtractionFailureCode,
+    control: LlmAttemptControl | None = None,
 ) -> tuple[ExtractionResult | None, ExtractionFailure | None]:
     """Retry a previously unresolved chat as a one-conversation request."""
     last_code: ExtractionFailureCode = initial_failure_code
     for attempt in range(1, retry_attempts + 1):
         try:
-            raw = asyncio.run(_extract_structured([text], max_tokens))
+            raw = asyncio.run(_extract_structured([text], max_tokens, control))
+        except LlmCallCancelledError:
+            raise
         except Exception as exc:  # noqa: BLE001 - keep one failed chat isolated
             logger.warning("LLM extraction retry %d/%d failed: %r", attempt, retry_attempts, exc)
             last_code = "provider_error"
@@ -288,13 +321,23 @@ def _retry_single_extraction(
 
 
 def _attach_summaries(
-    texts: list[str], results: list[ExtractionResult | None], max_tokens: int
+    texts: list[str],
+    results: list[ExtractionResult | None],
+    max_tokens: int,
+    control: LlmAttemptControl | None = None,
 ) -> None:
-    """Best-effort: fill each result's ``summary`` from a ProClaude summary call."""
+    """Best-effort: fill each result's ``summary`` from a ProClaude summary call.
+
+    A summary starts only when the bounded caller can still fund another
+    attempt; when it cannot, the structured result stands without a summary.
+    """
     if not any(result is not None for result in results):
         return
     try:
-        raw = asyncio.run(_summarize_batch(texts, max_tokens))
+        raw = asyncio.run(_summarize_batch(texts, max_tokens, control))
+    except LlmCallCancelledError:
+        logger.warning("LLM summary call skipped: bounded attempt budget exhausted")
+        return
     except Exception as exc:  # noqa: BLE001 - summaries are best-effort, never fatal
         logger.warning("LLM summary call failed (%d conversations): %r", len(texts), exc)
         return

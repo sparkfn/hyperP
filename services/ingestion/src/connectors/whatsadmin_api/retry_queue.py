@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
+from collections.abc import Sequence
+
 from src.connectors.whatsadmin_api.credentials import WhatsAdminEntity
 from src.connectors.whatsapp.connector import _ChatBundle, _Participant
 from src.models import JsonValue
@@ -14,6 +18,34 @@ def bundle_entity_key(bundle: _ChatBundle) -> WhatsAdminEntity:
     if bundle.tenant == "speedzone":
         return "speedzone"
     raise RuntimeError("WhatsAdmin retry bundle has invalid entity key")
+
+
+def chat_source_version(
+    *,
+    chat_id: str,
+    chat_name: str,
+    session_id: str,
+    msg_text: str,
+    participants: Sequence[_Participant],
+) -> str:
+    """Return the immutable content identity of one chat version.
+
+    The transcript and participant set are the extraction input, so hashing them
+    gives an identity that changes on message edits, deletions, and participant
+    changes instead of only on the latest-message timestamp.
+    """
+    payload = {
+        "chat_id": chat_id,
+        "chat_name": chat_name,
+        "session_id": session_id,
+        "msg_text": msg_text,
+        "participants": [
+            [participant.jid, participant.phone, participant.name, participant.role]
+            for participant in participants
+        ],
+    }
+    encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"), ensure_ascii=False)
+    return "sha256:" + hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
 
 def serialize_retry_bundle(
@@ -40,6 +72,7 @@ def serialize_retry_bundle(
         "message_endpoints": bundle.message_endpoints,
         "session_phone": bundle.session_phone,
         "source_id_scope": bundle.source_id_scope,
+        "source_version": bundle.source_version,
     }
 
 
@@ -63,6 +96,7 @@ def deserialize_retry_bundle(retry: dict[str, JsonValue]) -> _ChatBundle:
     retry_entity = _retry_entity(retry["entity_key"])
     session_phone = retry.get("session_phone")
     source_id_scope = retry.get("source_id_scope")
+    source_version = retry.get("source_version")
     return _ChatBundle(
         chat_id=str(retry["chat_id"]),
         chat_name=str(retry["chat_name"]),
@@ -75,6 +109,9 @@ def deserialize_retry_bundle(retry: dict[str, JsonValue]) -> _ChatBundle:
         message_endpoints=endpoints,
         session_phone=session_phone if isinstance(session_phone, str) else None,
         source_id_scope=source_id_scope if isinstance(source_id_scope, str) else None,
+        source_version=(
+            source_version if isinstance(source_version, str) and source_version else None
+        ),
     )
 
 
@@ -111,5 +148,15 @@ def _retry_entity(raw: JsonValue) -> WhatsAdminEntity:
 
 
 def retry_matches_bundle(retry: dict[str, JsonValue], bundle: _ChatBundle) -> bool:
-    """Return whether a queued entry is the same immutable chat version."""
-    return retry.get("chat_id") == bundle.chat_id and retry.get("observed_at") == bundle.observed_at
+    """Return whether a queued entry is the same immutable chat version.
+
+    A queued entry that carries a content identity is compared on that identity;
+    an entry written before content identity existed still matches on the
+    observed timestamp.
+    """
+    if retry.get("chat_id") != bundle.chat_id:
+        return False
+    queued_version = retry.get("source_version")
+    if isinstance(queued_version, str) and queued_version and bundle.source_version:
+        return queued_version == bundle.source_version
+    return retry.get("observed_at") == bundle.observed_at
