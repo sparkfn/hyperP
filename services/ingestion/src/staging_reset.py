@@ -132,11 +132,10 @@ def _clear_redis(broker_url: str) -> int:
             cursor = 0
             while True:
                 raw_scan = cast(
-                    tuple[object, list[object]],
+                    tuple[int, list[str | bytes]],
                     client.scan(cursor, match=pattern, count=_REDIS_SCAN_COUNT),
                 )
-                raw_cursor, keys = raw_scan
-                cursor = int(raw_cursor)
+                cursor, keys = raw_scan
                 if keys:
                     pattern_count += cast(int, client.delete(*keys))
                 if cursor == 0:
