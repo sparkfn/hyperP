@@ -368,6 +368,9 @@ _THURSDAY_OPEN = datetime(2026, 9, 17, 1, 0, tzinfo=UTC)
 
 
 def test_drive_defers_bitrix_to_an_active_successor_schedule(monkeypatch: MonkeyPatch) -> None:
+    """An active successor schedule owns the cadence."""
+    # Cadence guardrail: an active successor must not publish legacy Bitrix.
+    # The assertions below pin zero child publications and one durable block reason.
     from src.scheduled_ingestion_tasks import _drive_group
 
     recording = _patch(monkeypatch, _Recording(), readiness=_Ready(), successor="split-workflow")
@@ -506,6 +509,12 @@ def test_drive_withholds_before_the_opening_without_blocking(monkeypatch: Monkey
 def test_drive_persists_a_disabled_latch_for_the_next_occurrence(
     monkeypatch: MonkeyPatch,
 ) -> None:
+    """A disabled schedule latches durably and publishes nothing.
+
+    Group resolution now only names the occurrence for that latch, so the legacy
+    guardrail "disabled dispatch must not resolve a group" is asserted here as
+    zero publications plus a durable disabled reason.
+    """
     from src.scheduled_ingestion_tasks import _drive_group
 
     recording = _patch(monkeypatch, _Recording(), readiness=_Ready(), enabled=False)
