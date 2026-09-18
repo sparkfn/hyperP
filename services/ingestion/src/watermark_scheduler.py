@@ -7,9 +7,10 @@ from datetime import datetime
 from typing import Literal, TypedDict
 from zoneinfo import ZoneInfo
 
+import redis
+
 from src.ingestion_config import get_ingestion_config
 from src.scheduled_ingestion_groups import ScheduledIngestionGroup, Weekday
-from src.watermark_store import _RedisLike
 
 logger = logging.getLogger(__name__)
 
@@ -35,7 +36,7 @@ class ScheduledGroupDispatchSummary(TypedDict):
 
 
 def _source_is_locked(
-    redis_client: _RedisLike,
+    redis_client: redis.Redis[bytes],
     source_key: str,
     entity_key: str | None,
 ) -> bool:
@@ -47,7 +48,7 @@ def _source_is_locked(
 def dispatch_incremental_group(
     group: ScheduledIngestionGroup,
     now: datetime,
-    redis_client: _RedisLike,
+    redis_client: redis.Redis[bytes],
     dispatch_fn: object | None = None,
 ) -> ScheduledGroupDispatchSummary:
     """Dispatch incremental tasks for a scheduled group.

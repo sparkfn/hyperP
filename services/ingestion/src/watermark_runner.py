@@ -6,6 +6,7 @@ import logging
 from collections.abc import Callable
 from typing import TypedDict
 
+import redis
 from neo4j import ManagedTransaction
 
 from src.exclusions import ExclusionContext, build_exclusion_context
@@ -18,7 +19,6 @@ from src.pipeline import IngestPipeline
 from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID
 from src.watermark_store import (
     IngestionWatermark,
-    _RedisLike,
     load_watermark,
     save_watermark,
 )
@@ -144,7 +144,7 @@ def _process_page_records(
 
 def run_incremental(
     connector: IncrementalConnector,
-    redis_client: _RedisLike,
+    redis_client: redis.Redis[bytes],
     graph_client: Neo4jClient,
     *,
     entity_key: str | None = None,
