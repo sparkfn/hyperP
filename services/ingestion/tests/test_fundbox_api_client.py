@@ -10,10 +10,14 @@ from _test_helpers import NullContext, TaskSettings
 from celery.exceptions import Reject
 from pydantic import ValidationError
 from src.config import Settings
-from src.connectors.fundbox_api.client import FundboxApiClient, FundboxApiCredentials
+from src.connectors.fundbox_api.client import (
+    FundboxApiClient,
+    FundboxApiCredentials,
+    create_fundbox_api_client,
+)
 from src.connectors.fundbox_api.models import SalesOrderItem, validate_source_records
 from src.errors import SourceNotConfiguredError
-from src.main import create_fundbox_api_client, run_ingestion
+from src.main import run_ingestion
 
 
 def test_iter_source_uses_basic_auth_watermark_and_cursor() -> None:
@@ -334,7 +338,7 @@ def test_create_fundbox_api_client_raises_when_not_configured(
     # API ingestion). It must surface the same actionable error as the
     # credentials guard, not a raw httpx/secret failure.
     settings = Settings(neo4j_password="test", _env_file=None)
-    monkeypatch.setattr("src.main.get_settings", lambda: settings)
+    monkeypatch.setattr("src.connectors.fundbox_api.client.get_settings", lambda: settings)
 
     with pytest.raises(SourceNotConfiguredError, match="not configured"):
         create_fundbox_api_client()
@@ -354,7 +358,7 @@ def test_create_fundbox_api_client_strips_base_url_whitespace(
         fundbox_api_password="secret",
         _env_file=None,
     )
-    monkeypatch.setattr("src.main.get_settings", lambda: settings)
+    monkeypatch.setattr("src.connectors.fundbox_api.client.get_settings", lambda: settings)
 
     recorded: dict[str, str] = {}
     real_credentials = FundboxApiCredentials
@@ -370,7 +374,9 @@ def test_create_fundbox_api_client_strips_base_url_whitespace(
             page_size=page_size,
         )
 
-    monkeypatch.setattr("src.main.FundboxApiCredentials", _capture_credentials)
+    monkeypatch.setattr(
+        "src.connectors.fundbox_api.client.FundboxApiCredentials", _capture_credentials
+    )
 
     create_fundbox_api_client()
 
@@ -469,6 +475,7 @@ def test_run_ingestion_records_failed_run_when_fundbox_api_not_configured(
             return None
 
     monkeypatch.setattr("src.main.get_settings", lambda: settings)
+    monkeypatch.setattr("src.connectors.fundbox_api.client.get_settings", lambda: settings)
     monkeypatch.setattr("src.main.Neo4jClient", lambda _s: _GraphClient())
     monkeypatch.setattr("src.main.IngestPipeline", lambda _client, **_kwargs: object())
     monkeypatch.setattr("src.main.Redis", _NoRedis)
