@@ -5,8 +5,6 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Literal
 
-from src.bounded_ingestion_models import BoundedMode
-
 Weekday = Literal["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
 
 
@@ -23,7 +21,7 @@ class ScheduledIngestionSpec:
         """Return a stable scheduler identity without leaking source credentials."""
         return f"{self.source_key}|{self.entity_key or '-'}"
 
-    def mode_for(self, incremental: bool) -> BoundedMode:
+    def mode_for(self, incremental: bool) -> Literal["bootstrap", "delta"]:
         """Select the bounded mode for one recurring weekly run.
 
         A source without incremental capability keeps its cadence by repeating a

@@ -2029,3 +2029,120 @@ def _parse_feature_snapshot(raw: str) -> dict[str, JsonValue]:
     except json.JSONDecodeError:
         logger.warning("Failed to decode feature snapshot: %r", raw)
     return {}
+
+
+# ---------------------------------------------------------------------------
+# Incremental (watermark) ingestion
+# ---------------------------------------------------------------------------
+
+INCREMENTAL_CONNECTORS: dict[str, object] = {}
+
+_incremental_shutdown = threading.Event()
+
+
+def _time_window_closing() -> bool:
+    from zoneinfo import ZoneInfo
+
+    return datetime.now(tz=ZoneInfo("Asia/Singapore")).hour >= 23
+
+
+@celery_app.task(
+    name="src.tasks.run_incremental_task",
+    bind=True,
+    acks_late=True,
+    autoretry_for=(_SlotUnavailableError,),
+    retry_backoff=True,
+    retry_backoff_max=300,
+    retry_jitter=True,
+    max_retries=None,
+)
+def run_incremental_task(
+    self: Task,
+    source_key: str,
+    entity_key: str | None = None,
+) -> dict[str, object]:
+    """Run one watermark-driven ingestion cycle for a registered source."""
+    from src.watermark_runner import IncrementalRunSummary, run_incremental
+
+    if source_key not in INCREMENTAL_CONNECTORS:
+        raise Reject(
+            f"Source {source_key!r} has no registered IncrementalConnector",
+            requeue=False,
+        )
+    connector_factory = INCREMENTAL_CONNECTORS[source_key]
+    if not callable(connector_factory):
+        raise Reject(
+            f"Connector factory for {source_key!r} is not callable",
+            requeue=False,
+        )
+    connector = connector_factory()
+    settings = get_settings()
+    setup_logging(settings.log_level)
+    _initialize_graph_under_lock("incremental_ingestion")
+    resolved_control_instance_id = effective_control_instance_id(None)
+    source_lock_keys = _source_lock_keys(
+        source_key, "delta", entity_key, resolved_control_instance_id
+    )
+    try:
+        celery_task_id = self.request.id
+        source_lock_owner = str(celery_task_id) if celery_task_id is not None else None
+        with _acquire_source_locks(source_lock_keys, source_lock_owner) as source_lock_leases:
+            with (
+                _acquire_ingestion_slot(
+                    get_ingestion_config().bounded_ingestion.max_graph_writers
+                ) as slot_id,
+                _renew_ingestion_leases(source_lock_leases, slot_id),
+            ):
+                _incremental_shutdown.clear()
+                previous_signal = signal.getsignal(signal.SIGTERM)
+
+                def _request_shutdown(_signum: int, _frame: object) -> None:
+                    _incremental_shutdown.set()
+
+                signal.signal(signal.SIGTERM, _request_shutdown)
+                try:
+                    redis_client = _redis_client()
+                    graph_client = Neo4jClient(settings)
+                    try:
+                        summary: IncrementalRunSummary = run_incremental(
+                            connector,
+                            redis_client,
+                            graph_client,
+                            entity_key=entity_key,
+                            shutdown_signal=_incremental_shutdown.is_set,
+                            time_window_closing=_time_window_closing,
+                            control_instance_id=resolved_control_instance_id,
+                        )
+                    finally:
+                        graph_client.close()
+                finally:
+                    signal.signal(signal.SIGTERM, previous_signal)
+                if summary["status"] in {"caught_up", "yielded"}:
+                    try:
+                        reconcile_lifecycle_task.apply_async(queue=LIFECYCLE_QUEUE)
+                    except Exception:
+                        logger.exception("Could not queue post-ingestion lifecycle reconciliation")
+                    _enqueue_knows_materialization(source_key)
+                return dict(summary)
+    except _SourceAlreadyRunningError as exc:
+        logger.warning(
+            "Ingestion lock %s is already held; skipping incremental run",
+            exc.source_key,
+        )
+        return {
+            "ingest_run_id": "",
+            "status": "already_running",
+            "records_processed": 0,
+            "pages_processed": 0,
+            "watermark_start": None,
+            "watermark_end": None,
+            "source_key": source_key,
+            "entity_key": entity_key,
+        }
+    except _SlotUnavailableError:
+        raise
+    except (Reject, Ignore):
+        raise
+    except Exception as exc:
+        logger.exception("Incremental ingestion task failed for %s", source_key)
+        raise Reject(str(exc), requeue=False) from exc
