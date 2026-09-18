@@ -2113,8 +2113,40 @@ def _create_bitrix_deals_incremental() -> object:
     return BitrixCrmDealIncrementalConnector(client, get_ingestion_config().bitrix_openlines)
 
 
+def _create_whatsadmin_incremental(
+    entity_key: str | None = None,
+) -> object:
+    from src.connectors.whatsadmin_api.client import WhatsAdminApiClient
+    from src.connectors.whatsadmin_api.credentials import WhatsAdminCredentialResolver
+    from src.connectors.whatsadmin_api.incremental import (
+        WhatsAdminIncrementalConnector,
+    )
+
+    settings = get_settings()
+    resolver = WhatsAdminCredentialResolver(
+        base_url=settings.whatsadmin_api_base_url,
+        eko_api_key=settings.whatsadmin_eko_api_key,
+        speedzone_api_key=settings.whatsadmin_speedzone_api_key,
+    )
+    clients = tuple(
+        WhatsAdminApiClient(
+            credential=credential,
+            page_size=settings.whatsadmin_api_page_size,
+            timeout_seconds=settings.whatsadmin_api_timeout_seconds,
+            max_attempts=settings.whatsadmin_api_max_attempts,
+            retry_base_delay_seconds=settings.whatsadmin_api_retry_base_delay_seconds,
+        )
+        for credential in resolver.resolve_job(entity_key)
+    )
+    return WhatsAdminIncrementalConnector(
+        clients,
+        legacy_entity=settings.whatsadmin_legacy_entity,
+    )
+
+
 INCREMENTAL_CONNECTORS["bitrix_chat"] = _create_bitrix_openlines_incremental
 INCREMENTAL_CONNECTORS["bitrix_chat:deals"] = _create_bitrix_deals_incremental
+INCREMENTAL_CONNECTORS["whatsapp_chat"] = _create_whatsadmin_incremental
 
 _incremental_shutdown = threading.Event()
 
@@ -2155,7 +2187,7 @@ def run_incremental_task(
             f"Connector factory for {source_key!r} is not callable",
             requeue=False,
         )
-    connector = connector_factory()
+    connector = connector_factory(entity_key)
     settings = get_settings()
     setup_logging(settings.log_level)
     _initialize_graph_under_lock("incremental_ingestion")
