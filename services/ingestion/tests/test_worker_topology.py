@@ -15,6 +15,7 @@ def test_worker_concurrency_and_task_routes_are_fixed_in_code() -> None:
     assert celery_app.conf.worker_concurrency == 2
     assert celery_app.conf.task_routes == {
         "src.tasks.run_ingestion_task": {"queue": "ingestion"},
+        "src.tasks.run_incremental_task": {"queue": "ingestion"},
         "src.tasks.recover_bounded_logical_run_task": {"queue": "ingestion"},
         "src.ingestion_orchestration_tasks.*": {"queue": "ingestion"},
         "src.scheduled_ingestion_tasks.*": {"queue": "ingestion"},
