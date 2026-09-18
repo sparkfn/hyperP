@@ -2043,6 +2043,7 @@ def _parse_feature_snapshot(raw: str) -> dict[str, JsonValue]:
 # Incremental (watermark) ingestion
 # ---------------------------------------------------------------------------
 
+
 def _create_eko_customer_incremental() -> object:
     from src.connectors.phppos_api.connectors import EkoApiConnector
     from src.main import create_phppos_api_client
