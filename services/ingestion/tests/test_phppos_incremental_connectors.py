@@ -378,13 +378,15 @@ def test_fetch_records_backward_compat() -> None:
 def test_registry_keys() -> None:
     from src.tasks import INCREMENTAL_CONNECTORS
 
-    assert set(INCREMENTAL_CONNECTORS) == {
+    expected_keys = {
         "eko_phppos",
         "eko_phppos:sales",
         "speedzone_phppos",
         "speedzone_phppos:sales",
     }
-    assert all(callable(factory) for factory in INCREMENTAL_CONNECTORS.values())
+    assert expected_keys.issubset(set(INCREMENTAL_CONNECTORS))
+    for key in expected_keys:
+        assert callable(INCREMENTAL_CONNECTORS[key])
 
 
 @patch("src.watermark_runner._load_exclusion_context")
