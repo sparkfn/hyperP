@@ -280,10 +280,22 @@ fixed at 2 in `src/celery_app.py`; it is not environment-configurable.
 
 `eko_phppos`, `bitrix_chat`, and `whatsapp_chat` need an SSH gateway in `batch` mode — without one, use `mode='dump'` with `dump_path`. `bitrix_chat` additionally supports incremental `api` and manual `backfill` modes through the Bitrix Open Lines REST client.
 
-Weekly API-ingestion chain dispatch is disabled by default. Set
+Weekly API-ingestion dispatch is disabled by default. Set
 `scheduled_ingestion.enabled` to `true` in the mounted ingestion-config JSON to allow the
-scheduled dispatcher task to publish its chains. The dispatcher reads this switch at task
-start, before it claims an idempotency marker or publishes any ingestion task.
+scheduled dispatcher to publish work. The dispatcher reads this switch at task start, before it
+touches the durable workflow gate or publishes any ingestion task.
+
+Scheduled progress is owned by a durable scheduler workflow in Neo4j — one per
+environment/reset-generation/group/control-instance scope — not by Redis markers or Celery
+chain state. Each tick resumes the group's unfinished child and publishes only that child with
+the complete bounded context from #430; duplicate or missed ticks, publication crashes,
+redelivery and worker loss therefore neither lose nor duplicate work, and a child advances the
+workflow only on durable completion of its bounded run. Each group runs inside its weekday's
+absolute window (09:00–23:00 Asia/Singapore; opening 01:00 UTC, cutoff 15:00 UTC exclusive) and
+resumes at the same weekday's next opening, and disabled scheduling or a manual pause outranks
+clock eligibility. Hourly lifecycle and KNOWS work is published by
+`dispatch_scheduled_maintenance_task` through scheduler-owned obligations, so duplicate
+publications coalesce and share the occurrence ceiling.
 
 `sgbankruptcy` and `sgrentalflats` are **dump-only by design** — they have no live/batch connector (they exist only in the dump connectors factory), so dispatching them with `mode='batch'` raises `KeyError`/`ValueError` and the Celery task Rejects immediately. Always dispatch them with `mode='dump'` and a `dump_path`.
 

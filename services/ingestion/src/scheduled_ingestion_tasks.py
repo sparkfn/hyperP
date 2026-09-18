@@ -430,6 +430,14 @@ def _drive_group(group_key: str, incremental: bool, now: datetime) -> ScheduledG
                 incremental,
                 workflow.workflow_id,
             )
+        # CRM-deal identity repair serialization is owned by the #430 bounded
+        # admission, not by this driver: an active repair sets
+        # BitrixDispatchControl.blocked for the control instance, and the bounded
+        # admission queries refuse while it is blocked, so a scheduled bitrix_chat
+        # child can never overlap a repair claim. The scheduler therefore holds no
+        # separate repair publication reservation, and only one child intent is in
+        # flight per workflow (pending_publication_id). The successor canvas keeps
+        # its own explicit CrmDealRepairControlRepository reservation.
         publication = control.claim_current_child(
             environment=settings.deployment_environment,
             reset_generation=reset_generation,
