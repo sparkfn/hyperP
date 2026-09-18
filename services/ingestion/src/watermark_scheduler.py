@@ -36,7 +36,7 @@ class ScheduledGroupDispatchSummary(TypedDict):
 
 
 def _source_is_locked(
-    redis_client: redis.Redis[bytes],
+    redis_client: redis.Redis,
     source_key: str,
     entity_key: str | None,
 ) -> bool:
@@ -48,7 +48,7 @@ def _source_is_locked(
 def dispatch_incremental_group(
     group: ScheduledIngestionGroup,
     now: datetime,
-    redis_client: redis.Redis[bytes],
+    redis_client: redis.Redis,
     dispatch_fn: object | None = None,
 ) -> ScheduledGroupDispatchSummary:
     """Dispatch incremental tasks for a scheduled group.

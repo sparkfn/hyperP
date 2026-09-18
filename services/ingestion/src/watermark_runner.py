@@ -144,7 +144,7 @@ def _process_page_records(
 
 def run_incremental(
     connector: IncrementalConnector,
-    redis_client: redis.Redis[bytes],
+    redis_client: redis.Redis,
     graph_client: Neo4jClient,
     *,
     entity_key: str | None = None,
