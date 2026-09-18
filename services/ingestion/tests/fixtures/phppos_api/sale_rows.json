@@ -1,0 +1,86 @@
+[
+  {
+    "sale_id": 90211,
+    "sale_time": "2026-09-02T07:41:12Z",
+    "invoice_date": "2026-09-02",
+    "invoice_number": "INV-90211",
+    "sale_status": "completed",
+    "customer_id": 4021,
+    "customer_nric": "S1234567A",
+    "customer_email": "wei.ming@example.com",
+    "customer_phone": "+65 9123 4567",
+    "customer_custom_field_8": null,
+    "customer_custom_field_10": null,
+    "subtotal": "180.00",
+    "total": "190.80",
+    "tax": "10.80",
+    "profit": "52.40",
+    "points_used": "0",
+    "points_gained": "12",
+    "lines": [
+      {
+        "sale_id": 90211,
+        "line": 1,
+        "item_id": 8801,
+        "item_name": "Full Face Helmet",
+        "item_number": "HLM-FF-01",
+        "product_id": 8801,
+        "category_id": 12,
+        "category_name": "Helmets",
+        "item_unit_price": "95.00",
+        "quantity_purchased": "2",
+        "discount": "9.20",
+        "cost_price": "60.00"
+      },
+      {
+        "sale_id": 90211,
+        "line": 2,
+        "item_id": 8802,
+        "item_name": "Rain Cover",
+        "item_number": "RC-02",
+        "product_id": 8802,
+        "category_id": 13,
+        "category_name": "Accessories",
+        "item_unit_price": "0.00",
+        "quantity_purchased": "1",
+        "discount": "0.00",
+        "cost_price": "0.00"
+      }
+    ]
+  },
+  {
+    "sale_id": 90212,
+    "sale_time": "2026-09-02T08:12:03Z",
+    "invoice_date": "2026-09-02",
+    "invoice_number": "INV-90212",
+    "sale_status": "completed",
+    "customer_id": 4023,
+    "customer_nric": "S7654321B",
+    "customer_email": null,
+    "customer_phone": "+65 9777 1234",
+    "customer_custom_field_8": null,
+    "customer_custom_field_10": null,
+    "subtotal": "310.00",
+    "total": "328.60",
+    "tax": "18.60",
+    "profit": "101.00",
+    "points_used": "200",
+    "points_gained": "0",
+    "lines": [
+      {
+        "sale_id": 90212,
+        "line": 1,
+        "item_id": 8810,
+        "item_name": "Motorcycle Cover",
+        "item_number": "MC-10",
+        "product_id": 8810,
+        "category_id": 13,
+        "category_name": "Accessories",
+        "item_unit_price": "310.00",
+        "quantity_purchased": "1",
+        "discount": "0.00",
+        "cost_price": "209.00"
+      }
+    ]
+  }
+]

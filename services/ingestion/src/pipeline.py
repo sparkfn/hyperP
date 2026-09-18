@@ -140,7 +140,7 @@ class IngestPipeline:
 
     def __init__(
         self,
-        client: Neo4jClient,
+        client: Neo4jClient | None = None,
         *,
         fence_context: FenceContext | None = None,
         execution_context: ExecutionContext | None = None,
@@ -166,7 +166,31 @@ class IngestPipeline:
         ingest_run_id: str | None = None,
         exclusion_context: ExclusionContext | None = None,
     ) -> IngestResult:
-        """Ingest a single source record.  Returns an ``IngestResult``."""
+        """Ingest a single source record in its own transaction."""
+
+        def _work(tx: ManagedTransaction) -> IngestResult:
+            return self.ingest_in_transaction(
+                tx,
+                envelope,
+                ingest_run_id=ingest_run_id,
+                exclusion_context=exclusion_context,
+            )
+
+        with self._require_client().session() as session:
+            return session.execute_write(_work)
+
+    def ingest_in_transaction(
+        self,
+        tx: ManagedTransaction,
+        envelope: SourceRecordEnvelope,
+        ingest_run_id: str | None = None,
+        exclusion_context: ExclusionContext | None = None,
+    ) -> IngestResult:
+        """Ingest a single source record inside a caller-owned transaction.
+
+        The bounded path supplies the atomic unit transaction, so no session is
+        opened here.
+        """
 
         # Lock, idempotency classification, version assignment, and all writes
         # share one transaction so concurrent updates cannot allocate one version.
@@ -174,42 +198,42 @@ class IngestPipeline:
             exclusion_context if exclusion_context is not None else ExclusionContext()
         )
 
-        # Steps 3-13 run inside a single write transaction
-        def _work(tx: ManagedTransaction) -> IngestResult:
-            if self._fence_context is not None:
-                assert_active_bitrix_fence(tx, self._fence_context)
-            state = load_locked_source_state(
-                tx,
-                envelope.source_system,
-                envelope.source_record_id,
-                envelope.source_instance_id,
-            )
-            plan = plan_incoming_version(state, envelope.record_hash)
-            if isinstance(plan, DuplicateVersion):
-                result = IngestResult(
-                    source_record_id=envelope.source_record_id,
-                    source_record_pk=plan.source_record_pk,
-                    skipped_duplicate=True,
-                    ingest_run_id=ingest_run_id,
-                )
-                self._finalize_bitrix_unit(tx, envelope, result)
-                return result
-            envelope.source_record_version = str(plan.version)
-            result = self._execute_ingest(
-                tx,
-                envelope,
-                normalize_envelope_identifiers(envelope),
-                normalize_envelope_addresses(envelope),
-                normalize_envelope_attributes(envelope),
+        if self._fence_context is not None:
+            assert_active_bitrix_fence(tx, self._fence_context)
+        state = load_locked_source_state(
+            tx,
+            envelope.source_system,
+            envelope.source_record_id,
+            envelope.source_instance_id,
+        )
+        plan = plan_incoming_version(state, envelope.record_hash)
+        if isinstance(plan, DuplicateVersion):
+            result = IngestResult(
+                source_record_id=envelope.source_record_id,
+                source_record_pk=plan.source_record_pk,
+                skipped_duplicate=True,
                 ingest_run_id=ingest_run_id,
-                lifecycle_plan=plan,
-                exclusion_context=active_exclusion_context,
             )
             self._finalize_bitrix_unit(tx, envelope, result)
             return result
+        envelope.source_record_version = str(plan.version)
+        result = self._execute_ingest(
+            tx,
+            envelope,
+            normalize_envelope_identifiers(envelope),
+            normalize_envelope_addresses(envelope),
+            normalize_envelope_attributes(envelope),
+            ingest_run_id=ingest_run_id,
+            lifecycle_plan=plan,
+            exclusion_context=active_exclusion_context,
+        )
+        self._finalize_bitrix_unit(tx, envelope, result)
+        return result
 
-        with self._client.session() as session:
-            return session.execute_write(_work)
+    def _require_client(self) -> Neo4jClient:
+        if self._client is None:
+            raise ValueError("this pipeline has no client and must run in a transaction")
+        return self._client
 
     def _finalize_bitrix_unit(
         self,
@@ -285,7 +309,7 @@ class IngestPipeline:
             version = int(record.get("source_record_version", 1))
             return str(record["source_record_pk"]), str(record.get("record_hash", "")), version + 1
 
-        return self._client.execute_read(_read)
+        return self._require_client().execute_read(_read)
 
     def _check_idempotency(self, envelope: SourceRecordEnvelope) -> str | None:
         """Return latest source_record_pk if this exact latest version already exists."""

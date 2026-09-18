@@ -11,6 +11,12 @@ This change applies to `eko_phppos`, `eko_phppos:sales`, `speedzone_phppos`, and
 `speedzone_phppos:sales`. Existing direct-database and dump ingestion remain
 compatible.
 
+The same four scopes also expose a durable **bounded** contract (issue #434) so a
+scheduled delta run can pause, resume, and replay without re-reading a whole
+tenant. The bounded adapter shares the OAuth transport and the canonical
+envelope mappers with the legacy API mode but has its own continuation, retry,
+and writer contract. Legacy traversal is never selected as a bounded fallback.
+
 ## Architecture
 
 The POS OAuth server adds two static custom endpoints:
@@ -135,6 +141,137 @@ POS server. HyperP validates every response at the HTTP boundary with strict
 typed models and reports the endpoint, tenant, page context, and trace ID without
 logging credentials or sensitive row contents.
 
+## Bounded resumable deltas
+
+Everything below is the bounded contract. It is additive: the sections above
+describe the legacy unbounded API mode, which keeps its existing behavior.
+
+### Adapter-local descriptors
+
+`connectors/phppos_api/bounded_descriptor.py` exports `DESCRIPTORS` with one
+descriptor per scope (`eko_phppos`, `eko_phppos:sales`, `speedzone_phppos`,
+`speedzone_phppos:sales`). `connectors.registry` discovers the module by the
+`*.bounded_descriptor` naming convention, so the adapter is registered without a
+central list. Each descriptor owns its connector version (`phppos-bounded-v1`),
+configuration version (`phppos-bounded-config-v1`), checkpoint schema version
+(1), and its own writer instance.
+
+Bootstrap and delta are supported; there is no one-time mode. A bounded run never
+falls back to legacy API, dump, or direct-database traversal — an inadmissible
+window, cursor, or response fails the unit instead.
+
+### Tenant isolation
+
+Each scope resolves a tenant-dedicated credential set and principal. The
+transport refuses to read a tenant with a principal that is not that tenant, and
+the connector refuses any page whose tenant differs from the tenant recorded in
+the durable frozen window, so a run cannot continue another tenant's cursor,
+records, or credentials.
+
+### Frozen window and capabilities
+
+Every request carries `snapshot_id` and `upper_change_version` from the frozen
+window; the bounded path never sends `updated_since`. A window declares
+`contract_version: phppos-bounded-v1`, `snapshot_id`, `upper_change_version`, a
+timezone-aware `retention_until`, and the source capabilities
+`effective_changes`, `tombstones`, `complete_sale_aggregates`, and
+`independent_tenant_principal`, plus `replay_retention_days` (at least 30). All
+four capabilities are required before a run is admitted. A window whose retention
+has lapsed is refused as `expired`.
+
+The same frozen window pins every page of the run, so a replayed unit re-fetches
+an identical page.
+
+### Records and mappings
+
+A page carries discriminated records: `upsert` (a complete row aggregate) and
+`tombstone` (an explicit source removal with a reason). Absence from a page is
+never a tombstone. Page-local `(source_id, effective_change_version)` pairs must
+be unique.
+
+`source_id` is the source row's own identity — `person_id` for customers and
+`sale_id` for sales — and must equal the identity inside the row aggregate. The
+adapter derives the HyperP source record id as
+`{source_key}-customer-{source_id}` or `{source_key}-sale-{source_id}`, exactly
+the ids the canonical mappers produce, so a tombstone retires the record its
+upsert created.
+
+Upserts are mapped with the existing `build_customer_envelope` /
+`build_sales_envelope` helpers, so bounded source facts are identical to
+direct-database and dump facts. Sale aggregates must be complete (every line
+belongs to the sale) and explicitly bounded (at most 200 lines). A tombstone is
+written through the shared retirement path, which retires the source record,
+appends the retired identity-link revision, and recomputes CRM deal counts.
+
+### Cursor and phases
+
+There is exactly one phase per stream: `phppos_api:customers` and
+`phppos_api:sales`. Continuation lives entirely in the typed cursor:
+
+- `page_cursor`: the opaque source cursor, or `null` for the first page;
+- `record_offset`: how many records of the current frozen page are already
+  committed;
+- `page_replay_id`: a deterministic replay identity hashed from the window
+  fingerprint, page cursor, offset, and terminal flag;
+- `terminal` + `terminal_marker`: the stream is complete.
+
+A unit converts at most `max_records_per_unit` (500) records. When a frozen page
+still has unconverted records, the next checkpoint keeps the same page cursor and
+advances the offset; otherwise it moves to the next page cursor at offset `0`, or
+closes the stream with the terminal marker when the source reports no further
+page. Offsets never skip ahead: a page that shrank below a committed offset fails
+the unit.
+
+### Bounded transport
+
+One fetch operation reads exactly one frozen page and streams its bytes. Per unit
+the adapter bounds requests (8, covering three OAuth attempts, three page
+attempts, and one re-authorization pair), bytes (2,000,000), records (500), and
+pages (1). Retry loops are limited by both the attempt policy and the remaining
+allowance, so the declared ceiling is never exceeded.
+
+HTTP 429 becomes a source backoff with the source's `retry_at` (moved to the next
+scheduled occurrence when it lands beyond the drain window); transport errors and
+5xx responses retry with bounded backoff and then fail sanitized; a single 401
+re-authorizes once, and a repeated 401 fails. Every failure message is a fixed
+string — no token, raw payload, tenant secret, trace, or opaque cursor is echoed,
+and cancellation or a passed deadline stops the read before more bytes are
+consumed.
+
+### Unit output and resume
+
+`PhpposBoundedWriter.apply(tx, context, unit)` performs every write of a unit
+inside the transaction the bounded control store already opened for that unit, so
+unit output, the unit receipt, and the checkpoint commit atomically and a
+checkpoint never advances ahead of its output. It calls the canonical pipelines
+inside that transaction (`IngestPipeline.ingest_in_transaction`,
+`ingest_sales_record_in_transaction`, `retire_source_evidence_in_transaction`) —
+those entry points exist only so a caller can supply the transaction; the
+existing session-owning entry points are unchanged.
+
+Each record yields exactly one disposition: `committed`, `duplicate` (an
+idempotent replay or an already-retired record), `excluded` (the shared run-level
+exclusion policy) or `policy_dropped` (a match-only drop). An unsupported record,
+a malformed retirement marker, or any pipeline error fails the whole unit, which
+leaves the checkpoint unadvanced and lets the next attempt replay it.
+
+Because the window is frozen and the replay identity is deterministic, replaying
+a crashed attempt re-fetches the same page, re-slices it at the same offset, and
+produces byte-identical records.
+
+### Legacy versus bounded contract
+
+| Concern | Legacy API mode | Bounded deltas |
+|---|---|---|
+| Continuation | in-memory page loop | durable typed cursor, unit by unit |
+| Selection | `run_ingestion(..., mode="api")` | descriptor registry (`bootstrap`/`delta`) |
+| Deletion | not reported | explicit tombstones retire source records |
+| Resume after a crash | restarts from the beginning | resumes at the committed cursor |
+| Progress watermark | Redis watermark per source | checkpoint `source_window` + cursor |
+| Memory | one page at a time | one page slice at a time |
+| Retry ceiling | client attempts | per-unit request/byte/record allowance |
+| Failure surface | sanitized exception | sanitized exception, `source_backoff`, or a failed unit |
+
 ## Testing
 
 The POS OAuth server tests:
@@ -161,6 +298,21 @@ HyperP tests:
 - Celery task argument forwarding; and
 - CLI mode selection.
 
+Additional bounded-delta tests run without live source credentials, using the
+synthetic fixtures under `services/ingestion/tests/fixtures/phppos_api/`:
+
+- frozen-window capability admission, retention expiry, and source/tenant drift;
+- cursor replay identity, terminal rules, and tampered or malformed state;
+- page discrimination of upserts and tombstones and duplicate-identity rejection;
+- request, row, byte, deadline, and cancellation bounds, and sanitized 429/5xx/401
+  failures that never echo a token, payload, or opaque cursor;
+- in-page continuation, page advance, terminal closure, and deterministic replay
+  of a frozen page;
+- tombstone retirement through the shared path, exclusion dispositions, and
+  fail-closed behavior on unsupported or malformed records; and
+- registry discovery of all four scopes, least-privilege scopes per resource, and
+  refusal to serve a tenant with another tenant's principal or window.
+
 Implementation follows test-driven development: each contract behavior is first
 captured by a focused failing test, then implemented minimally. Final validation
 includes targeted tests, TypeScript build/tests in the POS server, and ingestion
@@ -175,3 +327,9 @@ duplicate records, and schema compatibility.
 - Write access to either POS database.
 - Removal of direct-database or dump connectors.
 - Shared or durable access-token caching across ingestion workers.
+- Bounded-run scheduling, admission, and delivery wiring: this contract defines
+  the adapter the shared bounded runtime drives. Selecting the four scopes for a
+  scheduled occurrence, and deriving each delta run's frozen window from the
+  previous committed `upper_change_version`, remain with the shared dispatcher.
+- Changes to the bounded runner, control store, task runtime, scheduler, or
+  Compose topology.

@@ -123,33 +123,49 @@ def ingest_sales_record(
     exclusion_context: ExclusionContext | None = None,
 ) -> IngestResult:
     """Full sales-record ingestion in a single write transaction."""
-    active_exclusion_context = (
-        exclusion_context if exclusion_context is not None else ExclusionContext()
-    )
 
     def _work(tx: ManagedTransaction) -> IngestResult:
-        state = load_locked_source_state(
-            tx, envelope.source_system, envelope.source_record_id, envelope.source_instance_id
-        )
-        plan = plan_incoming_version(state, envelope.record_hash)
-        if isinstance(plan, DuplicateVersion):
-            return IngestResult(
-                source_record_id=envelope.source_record_id,
-                source_record_pk=plan.source_record_pk,
-                skipped_duplicate=True,
-                ingest_run_id=ingest_run_id,
-            )
-        envelope.source_record_version = str(plan.version)
-        return _execute(
+        return ingest_sales_record_in_transaction(
             tx,
             envelope,
             ingest_run_id=ingest_run_id,
-            lifecycle_plan=plan,
-            exclusion_context=active_exclusion_context,
+            exclusion_context=exclusion_context,
         )
 
     with client.session() as session:
         return session.execute_write(_work)
+
+
+def ingest_sales_record_in_transaction(
+    tx: ManagedTransaction,
+    envelope: SourceRecordEnvelope,
+    *,
+    ingest_run_id: str | None,
+    exclusion_context: ExclusionContext | None = None,
+) -> IngestResult:
+    """Full sales-record ingestion inside a caller-owned transaction."""
+    active_exclusion_context = (
+        exclusion_context if exclusion_context is not None else ExclusionContext()
+    )
+    state = load_locked_source_state(
+        tx, envelope.source_system, envelope.source_record_id, envelope.source_instance_id
+    )
+    plan = plan_incoming_version(state, envelope.record_hash)
+    if isinstance(plan, DuplicateVersion):
+        return IngestResult(
+            source_record_id=envelope.source_record_id,
+            source_record_pk=plan.source_record_pk,
+            skipped_duplicate=True,
+            ingest_run_id=ingest_run_id,
+        )
+    envelope.source_record_version = str(plan.version)
+    return _execute(
+        tx,
+        envelope,
+        ingest_run_id=ingest_run_id,
+        lifecycle_plan=plan,
+        exclusion_context=active_exclusion_context,
+    )
 
 
 def _parse_sales_envelope(

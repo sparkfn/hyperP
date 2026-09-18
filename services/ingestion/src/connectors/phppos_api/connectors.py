@@ -40,6 +40,72 @@ class ApiRow:
             raise AttributeError(name) from exc
 
 
+def build_customer_envelope(source_key: str, values: dict[str, object]) -> dict[str, JsonValue]:
+    """Map one complete PHPPOS customer row through the canonical tenant mapper."""
+    for field in _OPTIONAL_CUSTOMER_FIELDS:
+        values.setdefault(field, None)
+    api_row = ApiRow(values)
+    if source_key == "eko_phppos":
+        return EkoConnector._build_one(api_row)
+    if source_key == "speedzone_phppos":
+        return SpeedZoneConnector._build_envelope_with_customer(api_row)
+    raise ValueError("PHPPOS customer source is unsupported")
+
+
+def build_sales_envelope(source_key: str, row: SaleRow) -> dict[str, JsonValue]:
+    """Map one complete PHPPOS sale aggregate through the existing sales mapper."""
+    if source_key not in {"eko_phppos", "speedzone_phppos"}:
+        raise ValueError("PHPPOS sales source is unsupported")
+    values = row.model_dump()
+    _coerce_decimal_fields(values, {"subtotal", "total", "tax", "profit"})
+    line_values = values.pop("lines")
+    assert isinstance(line_values, list)
+    lines = [line for line in line_values if isinstance(line, dict)]
+    for line in lines:
+        _coerce_decimal_fields(
+            line,
+            {"item_unit_price", "quantity_purchased", "discount", "cost_price"},
+        )
+    items: dict[int, Mapping[str, object]] = {}
+    categories: dict[int, str] = {}
+    for line in lines:
+        item_id = _optional_int(line.get("item_id"))
+        if item_id is not None:
+            items[item_id] = {
+                "item_id": item_id,
+                "name": line.get("item_name"),
+                "item_number": line.get("item_number"),
+                "product_id": line.get("product_id"),
+                "category": line.get("category_id"),
+            }
+        category_id = _optional_int(line.get("category_id"))
+        category_name = line.get("category_name")
+        if category_id is not None and isinstance(category_name, str):
+            categories[category_id] = category_name
+    customer = {
+        "custom_field_1_value": values.get("customer_nric"),
+        "custom_field_8_value": values.get("customer_custom_field_8"),
+        "custom_field_10_value": values.get("customer_custom_field_10"),
+    }
+    person = {
+        "email": values.get("customer_email"),
+        "phone_number": values.get("customer_phone"),
+    }
+    return _build_envelope(
+        sale=cast(RowMapping, values),
+        line_rows=cast(list[RowMapping], lines),
+        items_by_id=cast(dict[int, RowMapping], items),
+        sales_cols=set(values),
+        items_cols={key for line in lines for key in line},
+        item_cols={key for item in items.values() for key in item},
+        source_system_key=source_key,
+        categories=categories,
+        customer_row=cast(RowMapping, customer),
+        people_row=cast(RowMapping, person),
+        extract_bike_plate=source_key == "speedzone_phppos",
+    )
+
+
 class _CustomerApiConnector(SourceConnector):
     source_key: str
 
@@ -71,13 +137,7 @@ class _CustomerApiConnector(SourceConnector):
             for row in rows:
                 values = row.model_dump()
                 self._track_watermark(values.get("last_modified") or values.get("create_date"))
-                for field in _OPTIONAL_CUSTOMER_FIELDS:
-                    values.setdefault(field, None)
-                api_row = ApiRow(values)
-                if self.source_key == "eko_phppos":
-                    yield EkoConnector._build_one(api_row)
-                else:
-                    yield SpeedZoneConnector._build_envelope_with_customer(api_row)
+                yield build_customer_envelope(self.source_key, values)
         finally:
             self._client.close()
 
@@ -142,54 +202,7 @@ class _SalesApiConnector(SourceConnector):
             self._client.close()
 
     def _build_record(self, row: SaleRow) -> dict[str, JsonValue]:
-        values = row.model_dump()
-        _coerce_decimal_fields(values, {"subtotal", "total", "tax", "profit"})
-        line_values = values.pop("lines")
-        assert isinstance(line_values, list)
-        lines = [line for line in line_values if isinstance(line, dict)]
-        for line in lines:
-            _coerce_decimal_fields(
-                line,
-                {"item_unit_price", "quantity_purchased", "discount", "cost_price"},
-            )
-        items: dict[int, Mapping[str, object]] = {}
-        categories: dict[int, str] = {}
-        for line in lines:
-            item_id = _optional_int(line.get("item_id"))
-            if item_id is not None:
-                items[item_id] = {
-                    "item_id": item_id,
-                    "name": line.get("item_name"),
-                    "item_number": line.get("item_number"),
-                    "product_id": line.get("product_id"),
-                    "category": line.get("category_id"),
-                }
-            category_id = _optional_int(line.get("category_id"))
-            category_name = line.get("category_name")
-            if category_id is not None and isinstance(category_name, str):
-                categories[category_id] = category_name
-        customer = {
-            "custom_field_1_value": values.get("customer_nric"),
-            "custom_field_8_value": values.get("customer_custom_field_8"),
-            "custom_field_10_value": values.get("customer_custom_field_10"),
-        }
-        person = {
-            "email": values.get("customer_email"),
-            "phone_number": values.get("customer_phone"),
-        }
-        return _build_envelope(
-            sale=cast(RowMapping, values),
-            line_rows=cast(list[RowMapping], lines),
-            items_by_id=cast(dict[int, RowMapping], items),
-            sales_cols=set(values),
-            items_cols={key for line in lines for key in line},
-            item_cols={key for item in items.values() for key in item},
-            source_system_key=self.source_key,
-            categories=categories,
-            customer_row=cast(RowMapping, customer),
-            people_row=cast(RowMapping, person),
-            extract_bike_plate=self.source_key == "speedzone_phppos",
-        )
+        return build_sales_envelope(self.source_key, row)
 
     def commit_watermark(self) -> None:
         if self._watermark_store is not None and self._latest_updated_at is not None:
