@@ -2040,6 +2040,40 @@ def _parse_feature_snapshot(raw: str) -> dict[str, JsonValue]:
 
 INCREMENTAL_CONNECTORS: dict[str, object] = {}
 
+
+def _create_bitrix_openlines_incremental() -> object:
+    from src.config import get_settings
+    from src.connectors.bitrix_openlines.client import BitrixOpenLinesClient
+    from src.connectors.bitrix_openlines.incremental import BitrixOpenLinesIncrementalConnector
+
+    settings = get_settings()
+    client = BitrixOpenLinesClient(
+        base_url=settings.bitrix_openlines_api_base_url.get_secret_value(),
+        timeout_seconds=settings.bitrix_openlines_api_timeout_seconds,
+        max_attempts=settings.bitrix_openlines_api_max_attempts,
+        request_delay_seconds=settings.bitrix_openlines_api_request_delay_seconds,
+    )
+    return BitrixOpenLinesIncrementalConnector(client, get_ingestion_config().bitrix_openlines)
+
+
+def _create_bitrix_deals_incremental() -> object:
+    from src.config import get_settings
+    from src.connectors.bitrix_crm.incremental import BitrixCrmDealIncrementalConnector
+    from src.connectors.bitrix_openlines.client import BitrixOpenLinesClient
+
+    settings = get_settings()
+    client = BitrixOpenLinesClient(
+        base_url=settings.bitrix_openlines_api_base_url.get_secret_value(),
+        timeout_seconds=settings.bitrix_openlines_api_timeout_seconds,
+        max_attempts=settings.bitrix_openlines_api_max_attempts,
+        request_delay_seconds=settings.bitrix_openlines_api_request_delay_seconds,
+    )
+    return BitrixCrmDealIncrementalConnector(client, get_ingestion_config().bitrix_openlines)
+
+
+INCREMENTAL_CONNECTORS["bitrix_chat"] = _create_bitrix_openlines_incremental
+INCREMENTAL_CONNECTORS["bitrix_chat:deals"] = _create_bitrix_deals_incremental
+
 _incremental_shutdown = threading.Event()
 
 
@@ -2067,12 +2101,13 @@ def run_incremental_task(
     """Run one watermark-driven ingestion cycle for a registered source."""
     from src.watermark_runner import IncrementalRunSummary, run_incremental
 
-    if source_key not in INCREMENTAL_CONNECTORS:
+    lookup_key = f"{source_key}:{entity_key}" if entity_key is not None else source_key
+    if lookup_key not in INCREMENTAL_CONNECTORS and source_key not in INCREMENTAL_CONNECTORS:
         raise Reject(
             f"Source {source_key!r} has no registered IncrementalConnector",
             requeue=False,
         )
-    connector_factory = INCREMENTAL_CONNECTORS[source_key]
+    connector_factory = INCREMENTAL_CONNECTORS.get(lookup_key) or INCREMENTAL_CONNECTORS[source_key]
     if not callable(connector_factory):
         raise Reject(
             f"Connector factory for {source_key!r} is not callable",

@@ -76,7 +76,12 @@ class OpenLinesClient(Protocol):
 class CrmDetailsClient(Protocol):
     """Read-only CRM detail methods used only by API incremental ingestion."""
 
-    def iter_crm_deal_pages(self, category_ids: Collection[str]) -> Iterable[CrmDealPage]: ...
+    def iter_crm_deal_pages(
+        self,
+        category_ids: Collection[str],
+        *,
+        modified_since: datetime | None = None,
+    ) -> Iterable[CrmDealPage]: ...
 
 
 @runtime_checkable
