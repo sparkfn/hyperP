@@ -709,6 +709,8 @@ def _create_ingest_run(
     mode: str,
     *,
     control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    watermark_start: str | None = None,
+    watermark_end: str | None = None,
 ) -> str:
     """Create an IngestRun node and return its ID."""
 
@@ -719,6 +721,8 @@ def _create_ingest_run(
             control_instance_id=control_instance_id,
             run_type=mode,
             mode=mode,
+            watermark_start=watermark_start,
+            watermark_end=watermark_end,
         )
         record = result.single()
         assert record is not None, "CREATE_INGEST_RUN must return a row"
@@ -737,6 +741,8 @@ def _create_or_reuse_worker_ingest_run(
     task_id: str,
     *,
     control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    watermark_start: str | None = None,
+    watermark_end: str | None = None,
 ) -> tuple[str, str, bool]:
     """Return the durable run for one logical Celery task delivery."""
 
@@ -749,6 +755,8 @@ def _create_or_reuse_worker_ingest_run(
             mode=mode,
             worker_task_id=task_id,
             creation_token=uuid.uuid4().hex,
+            watermark_start=watermark_start,
+            watermark_end=watermark_end,
         ).single()
         if record is None:
             raise ValueError(
@@ -778,6 +786,7 @@ def finalize_ingest_run(
     checkpoint_store: Neo4jCheckpointRedis | None = None,
     *,
     control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    watermark_end: str | None = None,
 ) -> None:
     """Update the IngestRun with final status and counts."""
 
@@ -789,6 +798,7 @@ def finalize_ingest_run(
             status=status,
             record_count=record_count,
             rejected_count=rejected_count,
+            watermark_end=watermark_end,
         )
         if checkpoint_store is not None and status in {"completed", "completed_with_errors"}:
             checkpoint_store.flush(tx, ingest_run_id, status)

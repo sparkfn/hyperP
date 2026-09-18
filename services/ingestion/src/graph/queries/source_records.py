@@ -291,7 +291,9 @@ CREATE (ir:IngestRun {
     finished_at: null,
     record_count: 0,
     rejected_count: 0,
-    metadata: '{}'
+    metadata: '{}',
+    watermark_start: $watermark_start,
+    watermark_end: $watermark_end
 })-[:FROM_SOURCE]->(ss)
 RETURN ir.ingest_run_id AS ingest_run_id
 """
@@ -314,7 +316,9 @@ ON CREATE SET
     ir.record_count = 0,
     ir.rejected_count = 0,
     ir.metadata = '{}',
-    ir.creation_token = $creation_token
+    ir.creation_token = $creation_token,
+    ir.watermark_start = $watermark_start,
+    ir.watermark_end = $watermark_end
 WITH ss, ir, coalesce(ir.creation_token = $creation_token, false) AS created,
      ir.source_key = $source_key AND ir.mode = $mode AS is_compatible
 WHERE is_compatible
@@ -332,7 +336,8 @@ MATCH (ir:IngestRun {
 SET ir.status = $status,
     ir.finished_at = datetime(),
     ir.record_count = $record_count,
-    ir.rejected_count = $rejected_count
+    ir.rejected_count = $rejected_count,
+    ir.watermark_end = $watermark_end
 """
 
 MARK_INGEST_RUN_FAILED = """
