@@ -5,14 +5,18 @@ from __future__ import annotations
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from email.utils import parsedate_to_datetime
 from math import isfinite
 from urllib.parse import urlparse
 
 import httpx
 
+from src.bounded_ingestion_models import AttemptContext, SourceBackoffError
 from src.connectors.fundbox_api.models import (
+    MAX_CURSOR_LENGTH,
+    MAX_SNAPSHOT_ID_LENGTH,
+    BoundedIngestionPage,
     IngestionPage,
     validate_source_records,
 )
@@ -46,6 +50,10 @@ class FundboxApiCredentials:
             raise SourceNotConfiguredError("Fundbox API base URL must use HTTPS")
         if not urlparse(self.base_url).netloc:
             raise SourceNotConfiguredError("Fundbox API base URL is missing a host")
+
+
+class FundboxCursorExpiredError(RuntimeError):
+    """The persisted continuation cannot be resumed by the source."""
 
 
 class FundboxApiClient:
@@ -92,6 +100,100 @@ class FundboxApiClient:
             if not page.meta.has_more:
                 break
             cursor = next_cursor
+
+    def fetch_bounded_page(
+        self,
+        resource: str,
+        *,
+        snapshot_id: str,
+        lower_change_version: int,
+        upper_change_version: int,
+        cursor: str | None,
+        context: AttemptContext,
+        max_bytes: int,
+    ) -> BoundedIngestionPage:
+        """Fetch exactly one frozen-window page without iterator prefetch.
+
+        Retriable upstream responses become a durable bounded backoff. The
+        runner, not this client, decides when another admitted attempt may run.
+        """
+        if resource not in _RESOURCES:
+            raise ValueError(f"Unsupported Fundbox API resource: {resource!r}")
+        if not snapshot_id.strip() or len(snapshot_id) > MAX_SNAPSHOT_ID_LENGTH:
+            raise ValueError("Fundbox snapshot ID is missing or oversized")
+        if lower_change_version < 0 or upper_change_version < lower_change_version:
+            raise ValueError("Fundbox frozen change window is invalid")
+        if cursor is not None and (not cursor.strip() or len(cursor) > MAX_CURSOR_LENGTH):
+            raise ValueError("Fundbox continuation cursor is invalid or oversized")
+        if max_bytes < 1:
+            raise ValueError("Fundbox bounded response limit must be positive")
+        self._assert_request_allowed(context)
+        params: dict[str, str | int] = {
+            "limit": self._credentials.page_size,
+            "snapshot_id": snapshot_id,
+            "after_change_version": lower_change_version,
+            "through_change_version": upper_change_version,
+        }
+        if cursor is not None:
+            params["cursor"] = cursor
+        response = self._request_bounded(resource, params, context)
+        if len(response.content) > max_bytes:
+            raise ValueError("Fundbox bounded response exceeds byte limit")
+        self._assert_request_allowed(context)
+        page = BoundedIngestionPage.model_validate(response.json())
+        if page.meta.snapshot_id != snapshot_id:
+            raise ValueError("Fundbox response changed the frozen snapshot")
+        if (
+            page.meta.lower_change_version != lower_change_version
+            or page.meta.upper_change_version != upper_change_version
+        ):
+            raise ValueError("Fundbox response changed the frozen change window")
+        validated = []
+        for change in page.data:
+            if change.composite is None:
+                validated.append(change)
+                continue
+            composite = validate_source_records(resource, [change.composite])[0]
+            validated.append(change.model_copy(update={"composite": composite}))
+        return page.model_copy(update={"data": validated})
+
+    def _request_bounded(
+        self,
+        resource: str,
+        params: dict[str, str | int],
+        context: AttemptContext,
+    ) -> httpx.Response:
+        url = f"{self._credentials.base_url.rstrip('/')}/hyperp/ingestion/{resource}"
+        try:
+            response = self._http.get(
+                url,
+                params=params,
+                auth=(self._credentials.username, self._credentials.password),
+            )
+        except httpx.TransportError as exc:
+            raise SourceBackoffError(
+                datetime.now(UTC) + timedelta(seconds=self._exponential_delay(1)),
+                "fundbox_transport_unavailable",
+            ) from exc
+        if response.status_code == 410:
+            raise FundboxCursorExpiredError("fundbox_cursor_expired")
+        if response.status_code in {401, 403}:
+            raise PermissionError("fundbox_auth_or_scope_rejected")
+        if response.status_code == 429 or response.status_code >= 500:
+            raise SourceBackoffError(
+                datetime.now(UTC) + timedelta(seconds=self._retry_delay(response, 1)),
+                "fundbox_source_backoff",
+            )
+        response.raise_for_status()
+        self._assert_request_allowed(context)
+        return response
+
+    @staticmethod
+    def _assert_request_allowed(context: AttemptContext) -> None:
+        cancellation = context.cancellation
+        if cancellation is not None and cancellation.requested():
+            raise TimeoutError("Fundbox bounded request cancelled")
+        context.require_operation_budget(datetime.now(UTC), 0.001)
 
     def close(self) -> None:
         self._http.close()

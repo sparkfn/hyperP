@@ -4,6 +4,7 @@ from collections.abc import Iterator
 
 import pytest
 from src.connectors.fundbox_api.connectors import (
+    FundboxApiConnector,
     FundboxContactsApiConnector,
     FundboxSalesApiConnector,
     FundboxUsersApiConnector,
@@ -201,7 +202,10 @@ def test_full_api_mode_does_not_load_incremental_fundbox_checkpoints(
     assert client.calls == [("users", None)]
 
 
-def test_connector_reconciles_missing_source_ids_after_full_snapshot() -> None:
+def test_incremental_delta_makes_no_unfiltered_population_pass() -> None:
+    # One-record delta: exactly one filtered call, no population traversal, and
+    # no retirement inferred from a partial page. Bounded scheduling owns the
+    # deletions; the legacy stream must not guess them from an incomplete window.
     client = StubClient(
         [
             {
@@ -218,71 +222,36 @@ def test_connector_reconciles_missing_source_ids_after_full_snapshot() -> None:
 
     records = list(connector.fetch_records())
 
-    assert [record["source_record_id"] for record in records[:-1]] == ["fundbox-contact-2"]
-    assert records[-1]["_retire_source_record_id"] == "fundbox-contact-1"
-    assert isinstance(records[-1]["_reconciliation_snapshot_at"], str)
-    assert client.calls == [
-        ("contacts", "2026-07-16T00:00:00Z"),
-        ("contacts", None),
-    ]
-    assert connector.current_source_ids == {2}
-    assert connector.reconciliation_completed is True
+    assert [record["source_record_id"] for record in records] == ["fundbox-contact-2"]
+    assert client.calls == [("contacts", "2026-07-16T00:00:00Z")]
+    assert connector.current_source_ids is None
+    assert connector.reconciliation_completed is False
+    assert connector.reconciliation_snapshot_at is None
 
 
-def test_first_snapshot_does_not_retire_unobserved_source_ids() -> None:
+def test_first_snapshot_makes_one_unfiltered_pass_only() -> None:
     client = StubClient([])
     connector = FundboxContactsApiConnector(client, previous_source_ids=None)
 
     assert list(connector.fetch_records()) == []
-    assert connector.current_source_ids == set()
-    assert connector.reconciliation_completed is True
+    assert client.calls == [("contacts", None)]
+    assert connector.reconciliation_completed is False
 
 
 @pytest.mark.parametrize(
-    ("connector_type", "expected_source_record_id"),
-    [
-        (FundboxUsersApiConnector, "fundbox-user-8"),
-        (FundboxContactsApiConnector, "fundbox-contact-8"),
-        (FundboxSalesApiConnector, "fundbox-order-8"),
-    ],
+    "connector_type",
+    [FundboxUsersApiConnector, FundboxContactsApiConnector, FundboxSalesApiConnector],
 )
-def test_all_scheduled_sources_retire_roots_missing_from_full_snapshot(
-    connector_type: type[
-        FundboxUsersApiConnector | FundboxContactsApiConnector | FundboxSalesApiConnector
-    ],
-    expected_source_record_id: str,
+def test_scheduled_sources_never_infer_retirement_from_a_partial_page(
+    connector_type: type[FundboxApiConnector],
 ) -> None:
-    connector = connector_type(StubClient([]), previous_source_ids={8})
+    client = StubClient([])
+    connector = connector_type(client, previous_source_ids={8})
 
     records = list(connector.fetch_records())
 
-    assert records[0]["_retire_source_record_id"] == expected_source_record_id
-    assert records[0]["_reconciliation_snapshot_at"] == connector.reconciliation_snapshot_at
-
-
-def test_full_snapshot_reprocesses_records_absent_from_incremental_pass() -> None:
-    class TwoPassClient(StubClient):
-        def iter_source(
-            self, resource: str, *, updated_since: str | None = None
-        ) -> Iterator[dict[str, JsonValue]]:
-            self.calls.append((resource, updated_since))
-            if updated_since is None:
-                yield {
-                    "effective_updated_at": "2026-07-01T00:00:00Z",
-                    "contact": {"id": 4, "user_id": 7},
-                }
-
-    client = TwoPassClient([])
-    connector = FundboxContactsApiConnector(
-        client,
-        updated_since="2026-07-16T00:00:00Z",
-        previous_source_ids=set(),
-    )
-
-    records = list(connector.fetch_records())
-
-    assert [record["source_record_id"] for record in records] == ["fundbox-contact-4"]
-    assert connector.current_source_ids == {4}
+    assert records == []
+    assert client.calls == [(connector.resource, None)]
 
 
 def test_connector_close_releases_client_before_iteration() -> None:

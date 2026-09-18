@@ -123,33 +123,57 @@ def ingest_sales_record(
     exclusion_context: ExclusionContext | None = None,
 ) -> IngestResult:
     """Full sales-record ingestion in a single write transaction."""
-    active_exclusion_context = (
-        exclusion_context if exclusion_context is not None else ExclusionContext()
-    )
-
     def _work(tx: ManagedTransaction) -> IngestResult:
-        state = load_locked_source_state(
-            tx, envelope.source_system, envelope.source_record_id, envelope.source_instance_id
-        )
-        plan = plan_incoming_version(state, envelope.record_hash)
-        if isinstance(plan, DuplicateVersion):
-            return IngestResult(
-                source_record_id=envelope.source_record_id,
-                source_record_pk=plan.source_record_pk,
-                skipped_duplicate=True,
-                ingest_run_id=ingest_run_id,
-            )
-        envelope.source_record_version = str(plan.version)
-        return _execute(
+        return ingest_sales_record_in_transaction(
             tx,
             envelope,
             ingest_run_id=ingest_run_id,
-            lifecycle_plan=plan,
-            exclusion_context=active_exclusion_context,
+            exclusion_context=exclusion_context,
         )
 
     with client.session() as session:
         return session.execute_write(_work)
+
+
+def ingest_sales_record_in_transaction(
+    tx: ManagedTransaction,
+    envelope: SourceRecordEnvelope,
+    *,
+    ingest_run_id: str | None,
+    exclusion_context: ExclusionContext | None = None,
+    control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+) -> IngestResult:
+    """Apply one sales envelope in the caller-owned graph transaction.
+
+    The bounded writer uses this hook to retain canonical sales lifecycle and
+    version locks while committing its receipt and checkpoint atomically.
+    """
+    active_exclusion_context = (
+        exclusion_context if exclusion_context is not None else ExclusionContext()
+    )
+    state = load_locked_source_state(
+        tx,
+        envelope.source_system,
+        envelope.source_record_id,
+        envelope.source_instance_id,
+    )
+    plan = plan_incoming_version(state, envelope.record_hash)
+    if isinstance(plan, DuplicateVersion):
+        return IngestResult(
+            source_record_id=envelope.source_record_id,
+            source_record_pk=plan.source_record_pk,
+            skipped_duplicate=True,
+            ingest_run_id=ingest_run_id,
+        )
+    envelope.source_record_version = str(plan.version)
+    return _execute(
+        tx,
+        envelope,
+        ingest_run_id=ingest_run_id,
+        lifecycle_plan=plan,
+        exclusion_context=active_exclusion_context,
+        control_instance_id=control_instance_id,
+    )
 
 
 def _parse_sales_envelope(
@@ -223,6 +247,7 @@ def _execute(
     ingest_run_id: str | None,
     lifecycle_plan: PlannedVersion,
     exclusion_context: ExclusionContext,
+    control_instance_id: str,
 ) -> IngestResult:
     source_system_key = envelope.source_system
     if lifecycle_plan.pending_to_reject is not None:
@@ -238,7 +263,7 @@ def _execute(
             queries.LINK_SOURCE_RECORD_TO_RUN,
             source_record_pk=source_record_pk,
             ingest_run_id=ingest_run_id,
-            control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+            control_instance_id=control_instance_id,
         )
     try:
         order, line_items, customer_link = _parse_sales_envelope(envelope.raw_payload)

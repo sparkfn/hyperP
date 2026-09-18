@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Iterator, Mapping
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Protocol, cast
 
 from sqlalchemy.engine import RowMapping
@@ -66,7 +66,9 @@ class FundboxApiConnector(SourceConnector):
     ) -> None:
         self._client = client
         self._updated_since = updated_since
-        self._previous_source_ids = previous_source_ids
+        # Kept as a compatibility argument for the legacy API factory. Bounded
+        # scheduling never loads or compares a population-sized root-ID set.
+        _ = previous_source_ids
         self.latest_effective_updated_at: str | None = None
         self.current_source_ids: set[int] | None = None
         self.reconciliation_snapshot_at: str | None = None
@@ -74,55 +76,21 @@ class FundboxApiConnector(SourceConnector):
         self._closed = False
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
+        """Legacy compatibility stream without reconciliation or root-ID state.
+
+        Scheduled Fundbox execution must use the bounded descriptor. This
+        compatibility path deliberately cannot infer deletions from a partial
+        change page and never makes a second unfiltered traversal.
+        """
         try:
-            self.reconciliation_snapshot_at = datetime.now(UTC).isoformat()
-            emitted_ids: set[int] = set()
             for composite in self._client.iter_source(
                 self.resource,
                 updated_since=self._updated_since,
             ):
-                root_id = self._root_id(composite)
-                emitted_ids.add(root_id)
                 self._track_watermark(composite)
                 yield self.build_record(composite)
-
-            if self._previous_source_ids is None:
-                # The initial/full request already enumerated every current
-                # source ID. A second unfiltered pass cannot reconcile
-                # retirements without a prior baseline and only doubles load.
-                self.current_source_ids = emitted_ids
-                self.reconciliation_completed = True
-                return
-
-            current_ids: set[int] = set()
-            for composite in self._client.iter_source(self.resource):
-                root_id = self._root_id(composite)
-                current_ids.add(root_id)
-                self._track_watermark(composite)
-                if root_id not in emitted_ids:
-                    yield self.build_record(composite)
-
-            retired_at = datetime.now(UTC).isoformat()
-            snapshot_at = self.reconciliation_snapshot_at
-            assert snapshot_at is not None
-            missing_ids = self._previous_source_ids - current_ids
-            for root_id in sorted(missing_ids):
-                yield {
-                    "_retire_source_record_id": self.source_record_id(root_id),
-                    "_retired_at": retired_at,
-                    "_reconciliation_snapshot_at": snapshot_at,
-                }
-            self.current_source_ids = current_ids
-            self.reconciliation_completed = True
         finally:
             self.close()
-
-    def _root_id(self, composite: dict[str, JsonValue]) -> int:
-        root = _object(composite.get(self.root_field), self.root_field)
-        root_id = root.get("id")
-        if type(root_id) is not int:
-            raise ValueError(f"Fundbox API field {self.root_field!r}.id must be an integer")
-        return root_id
 
     def _track_watermark(self, composite: dict[str, JsonValue]) -> None:
         effective = composite.get("effective_updated_at")

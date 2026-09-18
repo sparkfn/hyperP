@@ -4,11 +4,16 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import date, datetime
-from typing import cast
+from typing import Final, Literal, cast
 
 from pydantic import AwareDatetime, BaseModel, ConfigDict, StrictInt, model_validator
 
 from src.models import JsonValue
+
+# Bounded-window identity limits, shared by the page models, the bounded client
+# and the change-feed connector so every layer rejects the same oversized input.
+MAX_SNAPSHOT_ID_LENGTH: Final[int] = 256
+MAX_CURSOR_LENGTH: Final[int] = 2048
 
 
 class PageMeta(BaseModel):
@@ -235,6 +240,88 @@ class SalesComposite(_SourceModel):
     merchant: Merchant | None
     items: list[SalesItem]
     customer: Customer | None
+
+
+class BoundedPageMeta(BaseModel):
+    """Immutable bounded-window metadata required by the Fundbox contract."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    snapshot_id: str
+    lower_change_version: StrictInt
+    upper_change_version: StrictInt
+    next_cursor: str | None = None
+    terminal: bool
+    cursor_expires_at: AwareDatetime
+
+    @model_validator(mode="after")
+    def validate_window(self) -> BoundedPageMeta:
+        if not self.snapshot_id.strip() or len(self.snapshot_id) > MAX_SNAPSHOT_ID_LENGTH:
+            raise ValueError("snapshot_id must be a bounded non-empty string")
+        if self.lower_change_version < 0 or self.upper_change_version < 0:
+            raise ValueError("change versions must be non-negative")
+        if self.lower_change_version > self.upper_change_version:
+            raise ValueError("lower_change_version cannot exceed upper_change_version")
+        if self.next_cursor is not None and (
+            not self.next_cursor.strip() or len(self.next_cursor) > MAX_CURSOR_LENGTH
+        ):
+            raise ValueError("next_cursor must be a bounded non-empty string")
+        if self.terminal and self.next_cursor is not None:
+            raise ValueError("terminal bounded page cannot include next_cursor")
+        if not self.terminal and self.next_cursor is None:
+            raise ValueError("non-terminal bounded page requires next_cursor")
+        return self
+
+
+class BoundedChange(BaseModel):
+    """One effective composite upsert or explicit root tombstone."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    kind: Literal["upsert", "tombstone"]
+    change_version: StrictInt
+    root_id: StrictInt
+    effective_updated_at: AwareDatetime
+    composite: dict[str, JsonValue] | None = None
+    tombstone_reason: Literal["deleted", "ineligible"] | None = None
+
+    @model_validator(mode="after")
+    def validate_change(self) -> BoundedChange:
+        if self.change_version < 0 or self.root_id < 1:
+            raise ValueError("change_version and root_id must be positive")
+        if self.kind == "upsert" and self.composite is None:
+            raise ValueError("upsert requires a complete composite")
+        if self.kind == "tombstone" and (
+            self.composite is not None or self.tombstone_reason is None
+        ):
+            raise ValueError("tombstone requires reason and cannot include a composite")
+        if self.kind == "upsert" and self.tombstone_reason is not None:
+            raise ValueError("upsert cannot include tombstone_reason")
+        return self
+
+
+class BoundedIngestionPage(BaseModel):
+    """One source-returned immutable change window page."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    data: list[BoundedChange]
+    meta: BoundedPageMeta
+
+    @model_validator(mode="after")
+    def validate_total_order(self) -> BoundedIngestionPage:
+        positions = [(item.change_version, item.root_id) for item in self.data]
+        if positions != sorted(positions) or len(positions) != len(set(positions)):
+            raise ValueError(
+                "bounded page changes must have strict (change_version, root_id) order"
+            )
+        if any(
+            item.change_version < self.meta.lower_change_version
+            or item.change_version > self.meta.upper_change_version
+            for item in self.data
+        ):
+            raise ValueError("bounded page change falls outside frozen change window")
+        return self
 
 
 _VALIDATORS: dict[str, Callable[[dict[str, JsonValue]], _SourceModel]] = {
