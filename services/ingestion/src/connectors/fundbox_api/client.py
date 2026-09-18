@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import time
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
@@ -25,6 +26,17 @@ from src.models import JsonValue
 
 _RESOURCES: frozenset[str] = frozenset({"users", "contacts", "sales"})
 _MAX_RETRY_DELAY_SECONDS = 60.0
+
+
+def _declared_content_length(response: httpx.Response) -> int | None:
+    """Return the response's declared body length when it is a plain integer."""
+    raw = response.headers.get("content-length")
+    if raw is None:
+        return None
+    try:
+        return int(raw)
+    except ValueError:
+        return None
 
 
 @dataclass(frozen=True)
@@ -116,6 +128,8 @@ class FundboxApiClient:
 
         Retriable upstream responses become a durable bounded backoff. The
         runner, not this client, decides when another admitted attempt may run.
+        The body is streamed and abandoned as soon as it passes ``max_bytes``,
+        so an oversized upstream page is never buffered whole.
         """
         if resource not in _RESOURCES:
             raise ValueError(f"Unsupported Fundbox API resource: {resource!r}")
@@ -136,11 +150,7 @@ class FundboxApiClient:
         }
         if cursor is not None:
             params["cursor"] = cursor
-        response = self._request_bounded(resource, params, context)
-        if len(response.content) > max_bytes:
-            raise ValueError("Fundbox bounded response exceeds byte limit")
-        self._assert_request_allowed(context)
-        page = BoundedIngestionPage.model_validate(response.json())
+        page, response_bytes = self._request_bounded(resource, params, context, max_bytes)
         if page.meta.snapshot_id != snapshot_id:
             raise ValueError("Fundbox response changed the frozen snapshot")
         if (
@@ -155,38 +165,53 @@ class FundboxApiClient:
                 continue
             composite = validate_source_records(resource, [change.composite])[0]
             validated.append(change.model_copy(update={"composite": composite}))
-        return page.model_copy(update={"data": validated})
+        return page.model_copy(update={"data": validated, "response_bytes": response_bytes})
 
     def _request_bounded(
         self,
         resource: str,
         params: dict[str, str | int],
         context: AttemptContext,
-    ) -> httpx.Response:
+        max_bytes: int,
+    ) -> tuple[BoundedIngestionPage, int]:
+        """Read one bounded response page, aborting an oversized streamed body."""
         url = f"{self._credentials.base_url.rstrip('/')}/hyperp/ingestion/{resource}"
         try:
-            response = self._http.get(
+            with self._http.stream(
+                "GET",
                 url,
                 params=params,
                 auth=(self._credentials.username, self._credentials.password),
-            )
+            ) as response:
+                self._raise_for_bounded_status(response)
+                self._assert_request_allowed(context)
+                declared = _declared_content_length(response)
+                if declared is not None and declared > max_bytes:
+                    raise ValueError("Fundbox bounded response exceeds byte limit")
+                body = bytearray()
+                for chunk in response.iter_bytes():
+                    body.extend(chunk)
+                    if len(body) > max_bytes:
+                        raise ValueError("Fundbox bounded response exceeds byte limit")
         except httpx.TransportError as exc:
             raise SourceBackoffError(
                 datetime.now(UTC) + timedelta(seconds=self._exponential_delay(1)),
                 "fundbox_transport_unavailable",
             ) from exc
+        return BoundedIngestionPage.model_validate(json.loads(body)), len(body)
+
+    @staticmethod
+    def _raise_for_bounded_status(response: httpx.Response) -> None:
         if response.status_code == 410:
             raise FundboxCursorExpiredError("fundbox_cursor_expired")
         if response.status_code in {401, 403}:
             raise PermissionError("fundbox_auth_or_scope_rejected")
         if response.status_code == 429 or response.status_code >= 500:
             raise SourceBackoffError(
-                datetime.now(UTC) + timedelta(seconds=self._retry_delay(response, 1)),
+                datetime.now(UTC) + timedelta(seconds=FundboxApiClient._retry_delay(response, 1)),
                 "fundbox_source_backoff",
             )
         response.raise_for_status()
-        self._assert_request_allowed(context)
-        return response
 
     @staticmethod
     def _assert_request_allowed(context: AttemptContext) -> None:

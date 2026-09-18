@@ -129,27 +129,131 @@ required key is absent.
 
 ## Scheduling and checkpoints
 
-The three Fundbox Celery Beat entries switch from `batch` to `api`. Each source
-has an independent durable successful watermark and source-root ID snapshot in
-Neo4j. Redis can provide one-time legacy migration input, but is not an
-authoritative checkpoint store. Every run first reads its watermark, subtracts a small configurable
-overlap, and performs an incremental traversal using `updated_since`. It then
-performs a complete unfiltered traversal for reconciliation. Records returned by
-the full traversal but not the incremental traversal are reprocessed; existing
-record-hash idempotency makes unchanged records inexpensive while detecting
-deleted children and records that leave or re-enter source eligibility.
+The three Fundbox Celery Beat entries switch from `batch` to `api`. Scheduled
+Fundbox execution uses the bounded change window described below: each admitted
+occurrence advances one page and commits its receipt, usage, and resume position
+in the same graph transaction, completing only at a terminal page. Occurrence
+deadlines, leases, backoff, and budget are shared bounded-ingestion concerns
+rather than Fundbox-specific ones.
 
-After the full traversal, HyperP compares its prior root-ID snapshot with the
-current IDs. Missing roots retire only their Fundbox-owned source records and
-provenance-keyed projections; unified people, entities, and audit history remain.
-The first successful run establishes a baseline and retires nothing.
+The legacy `api` delta path remains available for manual runs. It performs a
+single filtered traversal with no reconciliation pass and no inferred
+retirement: a one-record delta never triggers an unfiltered population
+traversal, and deletions are owned exclusively by the bounded tombstone stream
+(root removals and eligibility changes), never inferred from a partial window.
 
-The watermark and current-ID snapshot are stored only after the entire ingestion
-run succeeds, in the same graph transaction that completes the IngestRun.
-Failed, rejected, or partial runs replace neither checkpoint. The
-new watermark is based on the maximum effective timestamp successfully traversed,
-not worker wall-clock time. Existing source locks continue to prevent concurrent
-runs for the same source.
+The watermark and current-ID snapshot remain stored only after the entire legacy
+ingestion run succeeds, in the same graph transaction that completes the
+IngestRun. Failed, rejected, or partial runs replace neither checkpoint. Existing
+source locks continue to prevent concurrent runs for the same source.
+
+## Bounded change window
+
+Status: **required by HyperP, not yet verified against a Fundbox deployment.**
+Everything in this section is exercised against synthetic fixtures only (see
+below). Fixture success is not upstream capability evidence and must never be
+recorded as such.
+
+The bounded request shape is a frozen change window rather than a timestamp
+watermark. `GET /api/v1/hyperp/ingestion/{resource}` accepts, in addition to the
+parameters above:
+
+- `snapshot_id`: opaque identifier of one frozen source snapshot;
+- `after_change_version`: exclusive lower bound of the window;
+- `through_change_version`: inclusive upper bound of the window;
+
+and `cursor` continues the same frozen window. The response repeats the frozen
+window in `meta` and is rejected when it does not match the requested window:
+
+```json
+{
+  "data": [
+    {
+      "kind": "upsert",
+      "change_version": 41,
+      "root_id": 7,
+      "effective_updated_at": "2026-09-17T06:00:00Z",
+      "composite": {}
+    },
+    {
+      "kind": "tombstone",
+      "change_version": 42,
+      "root_id": 9,
+      "effective_updated_at": "2026-09-17T06:05:00Z",
+      "tombstone_reason": "deleted"
+    }
+  ],
+  "meta": {
+    "snapshot_id": "snap-2026-09-17",
+    "lower_change_version": 0,
+    "upper_change_version": 99,
+    "next_cursor": null,
+    "terminal": true,
+    "cursor_expires_at": "2026-09-18T00:00:00Z"
+  }
+}
+```
+
+Changes are ordered strictly by `(change_version, root_id)`. An `upsert` carries
+the complete composite, including joined children and relationship targets, so a
+changed address, contact, or order item appears as a new complete composite for
+the same root. A `tombstone` carries a deletion reason and no composite and is
+the only signal that a root left the source. `terminal: true` with `data: []` is
+a valid empty window and is the normal end of a traversal. `cursor_expires_at`
+bounds how long HyperP may resume the same window; an expired cursor is reported
+as `expired` and the run fails rather than silently rescanning.
+
+Resume position: HyperP commits `continuation`, `last_position`
+(`change_version`, `root_id`), `terminal`, and `cursor_expires_at` in the receipt
+transaction of each page. A paused or crashed run resumes from that position
+inside the same frozen window on the next eligible occurrence without a
+population pass, and only reaches completion on a terminal page.
+`cursor_retention_days` must cover the gap between occurrences (at least 30 days)
+so an intervening period does not force a rescan.
+
+`capability_evidence` inside the frozen window records how the window shape was
+verified. It must equal `verified_upstream_contract`; every other value,
+including self-reported or fixture-derived ones, is rejected as `rejected`, so
+synthetic fixture success can never authorize a scheduled rescan.
+
+Bounding is enforced on the HyperP side: record, nested-child, snapshot-length,
+and cursor-length caps; a response byte cap with the body streamed and abandoned
+as soon as it passes the cap (checked against `Content-Length` when present);
+and the absolute occurrence deadline, which refuses any new upstream call at or
+after the cutoff.
+
+### Synthetic fixture scenarios
+
+`services/ingestion/tests/test_fundbox_api_bounded.py` covers:
+
+- bootstrap and bounded delta: one frozen page becomes exactly one unit, with no
+  unfiltered population pass on either path;
+- continuation: the persisted cursor is sent, and a repeated cursor or
+  non-advancing source position is rejected;
+- empty terminal window: `terminal: true`, `data: []`, checkpoint advances to
+  terminal without error;
+- joined-child-only change: the same root ID re-upserts with changed child data
+  and reconciles in place;
+- root deletion and eligibility loss/re-entry: a tombstone retires only the
+  Fundbox-owned source evidence for that root; a removed child or a re-entered
+  root is expressed as a new complete composite, never inferred from a partial
+  window;
+- expired cursor: reported as `expired`;
+- invalid scope: unknown resource, malformed or foreign frozen window, oversized
+  snapshot or cursor, unverified capability evidence, and response drift fail
+  closed;
+- rate limit and outage: `429`, `5xx`, and transport failures become a durable
+  bounded backoff with no inline retry, while cursor expiry (`410`) and
+  authentication (`401`/`403`) fail immediately;
+- cutoff: no upstream call is made at or after the operation deadline or once
+  cancellation is requested;
+- write path: upserts and tombstones are applied in the caller-owned graph
+  transaction, and the recorded unit usage carries the measured response bytes.
+
+These scenarios exercise the HyperP adapter, its checkpoint arithmetic, and its
+bounding only. They are evidence about this repository, not about a Fundbox
+deployment; the `capability_evidence` marker is the only accepted proof of an
+upstream contract.
 
 ## Error handling and security
 
@@ -171,9 +275,10 @@ composite response schemas.
 
 HyperP tests cover authentication and request parameters, pagination, transient
 retries, terminal errors, strict response validation, user/contact/sales envelope
-parity, API-mode routing, unsupported sources, overlap behavior, full-snapshot
-reconciliation, first-run baselining, source-scoped retirement, checkpoint
-advancement only after success, and Celery schedules selecting API mode.
+parity, API-mode routing, unsupported sources, no-population-pass delta
+behavior, checkpoint advancement only after success, and Celery schedules
+selecting API mode. The bounded change-window contract and its synthetic fixture
+scenarios are listed above; they are repository-level evidence only.
 
 Validation includes targeted PHP and Python tests followed by relevant Fundbox
 tests and HyperP ingestion formatting, lint, strict type, and test checks. Before

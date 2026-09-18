@@ -180,7 +180,12 @@ class FundboxBoundedConnector:
                 records=tuple(records),
             ),
             replay_id=replay_id,
-            usage=Usage(records=len(records), source_requests=1, pages=1, bytes_read=0),
+            usage=Usage(
+                records=len(records),
+                source_requests=1,
+                pages=1,
+                bytes_read=page.response_bytes or 0,
+            ),
             terminal=page.meta.terminal,
         )
 

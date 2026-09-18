@@ -123,6 +123,7 @@ def ingest_sales_record(
     exclusion_context: ExclusionContext | None = None,
 ) -> IngestResult:
     """Full sales-record ingestion in a single write transaction."""
+
     def _work(tx: ManagedTransaction) -> IngestResult:
         return ingest_sales_record_in_transaction(
             tx,

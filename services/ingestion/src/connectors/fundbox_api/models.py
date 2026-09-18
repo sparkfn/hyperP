@@ -307,6 +307,10 @@ class BoundedIngestionPage(BaseModel):
 
     data: list[BoundedChange]
     meta: BoundedPageMeta
+    # Transport measurement, never source evidence: the bounded client always
+    # overwrites it with the byte count it actually streamed, so a wire-supplied
+    # value can never influence recorded usage.
+    response_bytes: int | None = None
 
     @model_validator(mode="after")
     def validate_total_order(self) -> BoundedIngestionPage:

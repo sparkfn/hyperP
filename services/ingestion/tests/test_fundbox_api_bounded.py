@@ -8,6 +8,7 @@ unfiltered population pass.
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Iterator
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
@@ -164,7 +165,17 @@ def _contact_composite(contact_id: int) -> dict[str, JsonValue]:
     )[0]
 
 
-def _user_composite(user_id: int) -> dict[str, JsonValue]:
+def _address_payload(address_line_1: str) -> dict[str, JsonValue]:
+    """Return one joined address child as the source would report it."""
+
+    return {"id": 5, "user_id": 7, "address_type": "home", "address_line_1": address_line_1}
+
+
+def _user_composite(
+    user_id: int,
+    *,
+    addresses: list[dict[str, JsonValue]] | None = None,
+) -> dict[str, JsonValue]:
     """Return one contract-validated user composite as the client emits it."""
 
     return validate_source_records(
@@ -194,7 +205,7 @@ def _user_composite(user_id: int) -> dict[str, JsonValue]:
                     "updated_at": _EFFECTIVE_AT,
                 },
                 "basic_plus_profile": None,
-                "addresses": [],
+                "addresses": addresses if addresses is not None else [],
                 "social_accounts": [],
                 "device_ids": [],
                 "last_login": None,
@@ -271,6 +282,7 @@ def _page(
     lower: int = 0,
     upper: int = 9,
     cursor_expires_at: str = _CURSOR_EXPIRES_AT,
+    response_bytes: int | None = None,
 ) -> BoundedIngestionPage:
     """Return one source page exactly as the bounded client would validate it."""
 
@@ -285,6 +297,7 @@ def _page(
                 "terminal": terminal,
                 "cursor_expires_at": cursor_expires_at,
             },
+            "response_bytes": response_bytes,
         }
     )
 
@@ -590,6 +603,41 @@ def test_bounded_client_turns_retriable_responses_into_durable_backoff(status: i
     assert caught.value.retry_at >= observed_at + timedelta(seconds=5)
 
 
+def test_bounded_client_aborts_a_streamed_body_over_the_byte_limit() -> None:
+    body = json.dumps(_page_payload()).encode("utf-8")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        # A chunked response carries no Content-Length, so the streamed
+        # accumulator is what has to stop the oversized body.
+        return httpx.Response(200, stream=httpx.ByteStream(body))
+
+    client = _http_client(handler)
+
+    with pytest.raises(ValueError, match="byte limit"):
+        _fetch(client, max_bytes=32)
+
+
+def test_bounded_client_rejects_a_declared_body_over_the_byte_limit() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, headers={"Content-Length": "9000000"}, content=b"{}")
+
+    client = _http_client(handler)
+
+    with pytest.raises(ValueError, match="byte limit"):
+        _fetch(client, max_bytes=1024)
+
+
+def test_bounded_client_reports_the_measured_response_size() -> None:
+    body = json.dumps(_page_payload()).encode("utf-8")
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, stream=httpx.ByteStream(body))
+
+    page = _fetch(_http_client(handler))
+
+    assert page.response_bytes == len(body)
+
+
 def test_bounded_client_turns_a_source_outage_into_durable_backoff() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         raise httpx.ConnectError("source is down", request=request)
@@ -642,7 +690,14 @@ def test_bounded_client_makes_no_upstream_call_once_cancellation_is_requested() 
 
 def test_bounded_connector_yields_one_unit_per_page_with_bounded_usage() -> None:
     stub = _StubBoundedClient(
-        [_page([_upsert(3, 7, _contact_composite(7))], terminal=False, next_cursor="cursor-2")]
+        [
+            _page(
+                [_upsert(3, 7, _contact_composite(7))],
+                terminal=False,
+                next_cursor="cursor-2",
+                response_bytes=512,
+            )
+        ]
     )
     connector = _connector(stub, resource="contacts", mapper_type=FundboxContactsApiConnector)
     attempt = _open_attempt()
@@ -655,7 +710,7 @@ def test_bounded_connector_yields_one_unit_per_page_with_bounded_usage() -> None
     assert stub.windows == [(0, 9)]
     assert stub.stream_calls == 0
     assert stub.contexts == [attempt]
-    assert unit.usage == Usage(records=1, source_requests=1, pages=1, bytes_read=0)
+    assert unit.usage == Usage(records=1, source_requests=1, pages=1, bytes_read=512)
     assert unit.terminal is False
     assert unit.unit.records[0]["source_record_id"] == "fundbox-contact-7"
     cursor = unit.unit.checkpoint_after.cursor
@@ -676,6 +731,51 @@ def test_bounded_connector_freezes_the_window_and_forwards_its_source_limits() -
     assert stub.max_bytes == [1_500_000]
     assert unit.unit.checkpoint_after.source_window == _window()
     assert unit.terminal is True
+
+
+def test_bounded_connector_advances_to_terminal_for_an_empty_window() -> None:
+    stub = _StubBoundedClient([_page([], terminal=True)])
+    connector = _connector(stub)
+
+    unit = connector.fetch_one_unit(_checkpoint(window=_window()), _open_attempt())
+
+    assert unit.terminal is True
+    assert unit.unit.records == ()
+    assert unit.usage == Usage(records=0, source_requests=1, pages=1, bytes_read=0)
+    assert unit.unit.checkpoint_after != unit.unit.checkpoint_before
+    assert unit.unit.checkpoint_after.cursor == {
+        "continuation": None,
+        "last_position": None,
+        "cursor_expires_at": "2030-01-01T00:00:00+00:00",
+        "terminal": True,
+    }
+
+
+def test_bounded_connector_upserts_a_joined_child_only_change() -> None:
+    stub = _StubBoundedClient(
+        [
+            _page(
+                [
+                    _upsert(3, 7, _user_composite(7)),
+                    _upsert(4, 7, _user_composite(7, addresses=[_address_payload("12 New Road")])),
+                ],
+                terminal=False,
+                next_cursor="cursor-2",
+            )
+        ]
+    )
+    connector = _connector(stub)
+
+    unit = connector.fetch_one_unit(_checkpoint(window=_window()), _open_attempt())
+
+    assert [record["source_record_id"] for record in unit.unit.records] == [
+        "fundbox-user-7",
+        "fundbox-user-7",
+    ]
+    assert unit.unit.records[1]["raw_payload"]["addresses"][0]["address_line_1"] == "12 New Road"
+    assert unit.unit.records[1]["attributes"]["address"] == "12 New Road"
+    assert unit.unit.checkpoint_after.cursor["last_position"] == [4, 7]
+    assert unit.unit.checkpoint_after.last_committed_record_id == "fundbox-user-7"
 
 
 def test_bounded_connector_rejects_a_repeated_continuation_that_did_not_advance() -> None:
