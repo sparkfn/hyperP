@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 from dataclasses import replace
-from datetime import UTC, datetime
 
 import pytest
 from _phppos_bounded_fixture import (
@@ -31,6 +30,7 @@ from src.connectors.phppos_api.bounded_checkpoint import (
 )
 from src.connectors.phppos_api.models import BoundedPage, BoundedWindow
 from src.models import JsonValue
+from src.resumable import CheckpointDescriptor
 
 
 def _expired_source_window() -> dict[str, JsonValue]:
@@ -301,4 +301,3 @@ def test_capability_mapping_keeps_declared_values() -> None:
         "independent_tenant_principal",
         "replay_retention_days",
     }
-    assert datetime.now(UTC) < datetime(2026, 12, 31, tzinfo=UTC)

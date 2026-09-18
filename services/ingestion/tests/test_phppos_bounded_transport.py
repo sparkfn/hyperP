@@ -321,9 +321,11 @@ def test_budget_accounting_is_monotonic_across_pages() -> None:
 
     assert budget.usage.pages == 2
     assert budget.usage.records == 2
-    assert budget.usage.source_requests == 2
+    # One OAuth request plus one request per page: OAuth requests are counted in
+    # the same allowance as data requests.
+    assert budget.usage.source_requests == 3
     assert second.usage.bytes_read >= first.usage.bytes_read
-    assert budget.remaining_requests() == 4
+    assert budget.remaining_requests() == 3
 
 
 def test_sales_resource_is_fetched_from_the_sales_endpoint() -> None:

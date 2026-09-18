@@ -35,7 +35,10 @@ from src.resumable import CheckpointDescriptor
 FIXTURE_DIRECTORY = Path(__file__).parent / "fixtures" / "phppos_api"
 CONFIGURATION_FINGERPRINT = "phppos-bounded-config-fingerprint-1"
 CONTRACT_VERSION = "phppos-bounded-v1"
-RETENTION_UNTIL = "2026-12-31T00:00:00+00:00"
+# Computed from the current time so the synthetic window never expires: a
+# hardcoded retention date would turn these fixtures into a time bomb.
+RETENTION_DAYS = 90
+RETENTION_UNTIL = (datetime.now(UTC) + timedelta(days=RETENTION_DAYS)).isoformat()
 OBSERVED_AT = datetime(2026, 9, 17, 2, 0, tzinfo=UTC)
 TENANTS = {"eko_phppos": "eko-tenant", "speedzone_phppos": "speedzone-tenant"}
 

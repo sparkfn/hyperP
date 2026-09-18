@@ -226,9 +226,13 @@ the unit.
 
 One fetch operation reads exactly one frozen page and streams its bytes. Per unit
 the adapter bounds requests (8, covering three OAuth attempts, three page
-attempts, and one re-authorization pair), bytes (2,000,000), records (500), and
-pages (1). Retry loops are limited by both the attempt policy and the remaining
-allowance, so the declared ceiling is never exceeded.
+attempts, and one re-authorization pair), bytes (2,000,000), committed records
+(500), and pages (1). The read allowance admits one legal source page — the
+configured page size, which is also the `limit` the adapter requests — and the
+unit then commits at most its 500-record bound by slicing that page; a source
+page larger than the requested limit is refused rather than silently truncated.
+Retry loops are limited by both the attempt policy and the remaining allowance,
+so the declared ceiling is never exceeded.
 
 HTTP 429 becomes a source backoff with the source's `retry_at` (moved to the next
 scheduled occurrence when it lands beyond the drain window); transport errors and

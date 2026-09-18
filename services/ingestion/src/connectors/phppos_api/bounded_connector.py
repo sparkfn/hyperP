@@ -89,7 +89,9 @@ class PhpposBoundedConnector:
             raise PhpposBoundedTransportError("bounded PHPPOS checkpoint is already complete")
         budget = BoundedRequestBudget(
             max_requests=self._max_source_requests,
-            max_rows=self._max_records,
+            # One legal source page is admitted here; the unit still commits at
+            # most ``max_records`` by slicing the page it just read.
+            max_rows=self._client.page_size,
             max_bytes=self._max_bytes,
         )
         result = self._client.fetch_bounded_page(

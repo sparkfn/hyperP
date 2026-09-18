@@ -141,7 +141,10 @@ class PhpposCursor:
         cursor = cls(page_cursor, record_offset, page_replay_id, terminal, terminal_marker)
         expected = _replay_id(window, cursor.page_cursor, cursor.record_offset, cursor.terminal)
         if cursor.page_replay_id != expected:
-            raise PhpposCheckpointError("PHPPOS cursor replay identity is invalid")
+            raise PhpposCheckpointError(
+                "PHPPOS cursor replay identity is invalid",
+                compatibility="corrupted",
+            )
         return cursor
 
     def as_mapping(self) -> dict[str, JsonValue]:
@@ -202,7 +205,10 @@ def parse_checkpoint(
         raise PhpposCheckpointError("PHPPOS checkpoint phase is incompatible")
     cursor = PhpposCursor.from_mapping(checkpoint.cursor, window)
     if checkpoint.replay_boundary != cursor.page_replay_id:
-        raise PhpposCheckpointError("PHPPOS checkpoint replay boundary is incompatible")
+        raise PhpposCheckpointError(
+            "PHPPOS checkpoint replay boundary is incompatible",
+            compatibility="corrupted",
+        )
     return window, cursor
 
 

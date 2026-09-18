@@ -125,6 +125,11 @@ class PhpposApiClient:
         self._closed = True
         self._http.close()
 
+    @property
+    def page_size(self) -> int:
+        """Return the page capacity this client requests and admits per page."""
+        return self._credentials.page_size
+
     def fetch_bounded_page(
         self,
         resource: str,
