@@ -20,7 +20,10 @@ from contextlib import ExitStack, contextmanager
 from contextvars import ContextVar
 from dataclasses import replace
 from datetime import UTC, datetime
-from typing import Literal, NoReturn, TypedDict, cast
+from typing import TYPE_CHECKING, Literal, NoReturn, TypedDict, cast
+
+if TYPE_CHECKING:
+    from src.incremental_connector import IncrementalConnector
 
 import redis
 from celery import Task
@@ -2146,3 +2149,21 @@ def run_incremental_task(
     except Exception as exc:
         logger.exception("Incremental ingestion task failed for %s", source_key)
         raise Reject(str(exc), requeue=False) from exc
+
+
+def _create_sgbankruptcy_incremental() -> IncrementalConnector:
+    from src.connectors.sggov.bankruptcy_incremental import (
+        SGGovernmentBankruptcyIncrementalConnector,
+    )
+
+    settings = get_settings()
+    return SGGovernmentBankruptcyIncrementalConnector(
+        base_url=settings.sgbankruptcy_api_base_url,
+        api_key=settings.sgbankruptcy_api_key.get_secret_value(),
+        page_size=settings.sgbankruptcy_api_page_size,
+        timeout_seconds=settings.sgbankruptcy_api_timeout_seconds,
+        max_attempts=settings.sgbankruptcy_api_max_attempts,
+    )
+
+
+INCREMENTAL_CONNECTORS["sgbankruptcy"] = _create_sgbankruptcy_incremental
