@@ -5,11 +5,13 @@ from __future__ import annotations
 import asyncio
 import random
 from abc import ABC, abstractmethod
+from datetime import UTC, datetime, timedelta
 from typing import Literal
 
 import httpx
 from pydantic import BaseModel, ConfigDict
 
+from src.bounded_ingestion_models import CancellationSignal
 from src.ingestion_config import LlmConfig
 
 
@@ -18,6 +20,10 @@ class ChatMessage(BaseModel):
 
     role: Literal["system", "user", "assistant"]
     content: str
+
+
+class LlmCallAbortedError(RuntimeError):
+    """A bounded LLM call stopped: its deadline passed or it was cancelled."""
 
 
 class LLMService(ABC):
@@ -85,6 +91,33 @@ class LLMService(ABC):
             preserve_output_format=preserve_output_format,
         )
 
+    async def chat_json_bounded(
+        self,
+        messages: list[ChatMessage],
+        *,
+        deadline: datetime,
+        cancellation: CancellationSignal | None = None,
+        model: str | None = None,
+        temperature: float = 0.0,
+        max_tokens: int | None = None,
+    ) -> str:
+        """Return one JSON-mode response from a single attempt inside a deadline.
+
+        A bounded ingestion unit performs at most one extraction call, so the
+        retry loop is bypassed and the deadline/cancellation window is the
+        caller's operation budget.
+        """
+        return await self._chat(
+            messages,
+            model=model,
+            temperature=temperature,
+            max_tokens=max_tokens,
+            json_mode=True,
+            deadline=deadline,
+            cancellation=cancellation,
+            single_attempt=True,
+        )
+
     async def _chat(
         self,
         messages: list[ChatMessage],
@@ -94,6 +127,9 @@ class LLMService(ABC):
         max_tokens: int | None,
         json_mode: bool,
         preserve_output_format: bool = False,
+        deadline: datetime | None = None,
+        cancellation: CancellationSignal | None = None,
+        single_attempt: bool = False,
     ) -> str:
         """Execute one chat request with shared retry and response handling.
 
@@ -108,10 +144,15 @@ class LLMService(ABC):
             payload.pop("response_format", None)
         headers = {**self._headers, **self._extra_headers(payload)}
         max_retries = max(self._config.max_retries, 0)
+        if single_attempt:
+            max_retries = 0
+        _require_call_window(deadline, cancellation)
         async with httpx.AsyncClient(
-            base_url=self._base, timeout=self._config.timeout_seconds
+            base_url=self._base,
+            timeout=_bounded_timeout(self._config.timeout_seconds, deadline),
         ) as client:
             for attempt in range(max_retries + 1):
+                _require_call_window(deadline, cancellation)
                 try:
                     response = await client.post(self._endpoint_path, json=payload, headers=headers)
                 except (httpx.TimeoutException, httpx.TransportError):
@@ -119,14 +160,18 @@ class LLMService(ABC):
                     # retryable; only give up once retries are exhausted.
                     if attempt == max_retries:
                         raise
-                    await asyncio.sleep(self._backoff_delay(attempt))
+                    delay = self._backoff_delay(attempt)
+                    _require_retry_window(deadline, cancellation, delay)
+                    await asyncio.sleep(delay)
                     continue
                 if response.status_code < 400:
                     text = self._parse_text(response.json())
                     return text if preserve_output_format else _strip_code_fences(text)
                 if not self._is_retryable(response) or attempt == max_retries:
                     _raise_http_status(response)
-                await asyncio.sleep(self._retry_after(response, attempt))
+                delay = self._retry_after(response, attempt)
+                _require_retry_window(deadline, cancellation, delay)
+                await asyncio.sleep(delay)
         raise RuntimeError("unreachable LLM retry state")
 
     def _backoff_delay(self, attempt: int) -> float:
@@ -168,6 +213,36 @@ class LLMService(ABC):
 
     @abstractmethod
     def _is_retryable(self, response: httpx.Response) -> bool: ...
+
+
+def _require_call_window(
+    deadline: datetime | None,
+    cancellation: CancellationSignal | None,
+) -> None:
+    """Reject a bounded call that is already cancelled or out of time."""
+    if cancellation is not None and cancellation.requested():
+        raise LlmCallAbortedError("bounded LLM call was cancelled")
+    if deadline is not None and datetime.now(UTC) >= deadline:
+        raise LlmCallAbortedError("bounded LLM call passed its operation deadline")
+
+
+def _require_retry_window(
+    deadline: datetime | None,
+    cancellation: CancellationSignal | None,
+    delay_seconds: float,
+) -> None:
+    """Reject a retry whose backoff cannot finish inside the bounded window."""
+    if deadline is not None and datetime.now(UTC) + timedelta(seconds=delay_seconds) >= deadline:
+        raise LlmCallAbortedError("bounded LLM retry would exceed its operation deadline")
+    if cancellation is not None and cancellation.requested():
+        raise LlmCallAbortedError("bounded LLM call was cancelled")
+
+
+def _bounded_timeout(configured_seconds: float, deadline: datetime | None) -> float:
+    """Clamp the HTTP timeout to the remaining bounded operation window."""
+    if deadline is None:
+        return configured_seconds
+    return min(configured_seconds, (deadline - datetime.now(UTC)).total_seconds())
 
 
 def _strip_code_fences(text: str) -> str:

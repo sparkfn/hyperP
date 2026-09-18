@@ -368,3 +368,37 @@ discovery and `crm_activity_ids` provenance remain supported, but they do not
 write or update historical activity evidence. Deploy #387 before activating
 #388 when activity presentation must be preserved; queue quiescence and
 inspection are separate live work.
+
+## Bounded Bitrix adapter (#432)
+
+The `bitrix_chat` source now has exactly one bounded connector descriptor
+(`connectors/bitrix_openlines/bounded_descriptor.py`, auto-discovered by the
+`*.bounded_descriptor` convention). It supports `bootstrap` and `delta` only —
+`one_time` is not supported, and the legacy API/backfill paths for Open Lines
+and CRM deals are retired.
+
+Operational requirements:
+
+- `HYPERP_BITRIX_BOUNDED_BASE_URL` must point at the bounded proxy. A run is
+  refused before any source call when it is unset.
+- The adapter calls only the frozen proxy transports:
+  `hyperp.capabilities.get` (capability negotiation) and
+  `hyperp.deals.changed.list` (ordered changed-deal feed).
+- One bounded unit performs at most one source call. The capability unit
+  negotiates once; each `crm_deals` unit reads one changed-deal page and is
+  terminal once the feed cursor is exhausted.
+- `crm_activities`, unknown streams, `one_time` mode, a checkpoint whose stream
+  does not match the run scope, unsupported stage authority, and a missing
+  stream capability are all refused before source I/O. `crm.activity.list` and
+  activity-family batch commands are refused inside the HTTP client, so no
+  activity-family request can be issued on any path.
+- Deal upserts reuse `build_crm_deal_envelope`, so source-record IDs, the deal
+  identity policy, and the configured category/entity mapping are unchanged;
+  tombstones retire the corresponding source evidence through
+  `retire_source_evidence_in_transaction`.
+- Standalone CRM contacts, leads, and companies remain default-off.
+
+The `openlines_conversations` and `crm_stage_history` streams pass the
+capability gate but have no approved work transport yet: the frozen contract
+defines no changed-message or stage-artifact endpoint, so the adapter refuses
+their work substage rather than reading them over a legacy path.

@@ -47,20 +47,29 @@ class Neo4jStageHistoryLifecycleReader:
         self._client = client
 
     def classify(self, observation: StageHistoryValidObservation) -> StageHistoryLifecycleSnapshot:
-        def _read(tx: ManagedTransaction) -> StageHistoryLifecycleSnapshot:
-            record = tx.run(
-                CLASSIFY_STAGE_HISTORY_OBSERVATION,
-                event_identity=observation.event_identity,
-                canonical_hash=observation.canonical_hash,
-                logical_parent_source_system=observation.logical_parent_source_system,
-                logical_parent_source_instance_id=LEGACY_DEFAULT_SOURCE_INSTANCE_ID,
-                logical_parent_source_record_id=(observation.logical_parent_source_record_id),
-            ).single()
-            if record is None:
-                raise RuntimeError("stage-history lifecycle classification returned no row")
-            return _snapshot_from_record(record)
+        return self._client.execute_read(lambda tx: classify_in_transaction(tx, observation))
 
-        return self._client.execute_read(_read)
+
+def classify_in_transaction(
+    tx: ManagedTransaction,
+    observation: StageHistoryValidObservation,
+) -> StageHistoryLifecycleSnapshot:
+    """Classify one observation against current graph state in a caller's transaction.
+
+    The writer still rechecks this state under locks; exposing the read for a
+    caller-owned transaction only moves the transaction boundary.
+    """
+    record = tx.run(
+        CLASSIFY_STAGE_HISTORY_OBSERVATION,
+        event_identity=observation.event_identity,
+        canonical_hash=observation.canonical_hash,
+        logical_parent_source_system=observation.logical_parent_source_system,
+        logical_parent_source_instance_id=LEGACY_DEFAULT_SOURCE_INSTANCE_ID,
+        logical_parent_source_record_id=(observation.logical_parent_source_record_id),
+    ).single()
+    if record is None:
+        raise RuntimeError("stage-history lifecycle classification returned no row")
+    return _snapshot_from_record(record)
 
 
 def build_lifecycle_occurrence(

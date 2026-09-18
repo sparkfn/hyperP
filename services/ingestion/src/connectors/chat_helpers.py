@@ -11,9 +11,11 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal, TypedDict
 
+from src.bounded_ingestion_models import CancellationSignal
 from src.connectors.fundbox.builders import IdentifierBag, to_iso
 from src.ingestion_config import get_ingestion_config
 from src.llm import ChatMessage, get_chat_extraction_service, get_chat_summary_service
+from src.llm.base import LlmCallAbortedError
 from src.llm_prompts import (
     EXTRACTION_SYSTEM,
     SUMMARY_SYSTEM,
@@ -148,6 +150,14 @@ class ExtractionBatchOutcome:
     failures: list[ExtractionFailure | None]
 
 
+@dataclass(frozen=True)
+class BoundedExtractionOutcome:
+    """One bounded single-attempt extraction and its LLM call accounting."""
+
+    results: list[ExtractionResult | None]
+    extraction_calls: int
+
+
 async def _extract_structured(texts: list[str], max_tokens: int) -> str:
     """ProClaude JSON-mode call for structured identity/transaction extraction."""
     svc = get_chat_extraction_service()
@@ -156,6 +166,25 @@ async def _extract_structured(texts: list[str], max_tokens: int) -> str:
             ChatMessage(role="system", content=EXTRACTION_SYSTEM),
             ChatMessage(role="user", content=build_batch_extraction_prompt(texts)),
         ],
+        max_tokens=max_tokens,
+    )
+
+
+async def _extract_structured_bounded(
+    texts: list[str],
+    max_tokens: int,
+    deadline: datetime,
+    cancellation: CancellationSignal | None,
+) -> str:
+    """ProClaude single-attempt JSON-mode extraction inside the caller's deadline."""
+    svc = get_chat_extraction_service()
+    return await svc.chat_json_bounded(
+        [
+            ChatMessage(role="system", content=EXTRACTION_SYSTEM),
+            ChatMessage(role="user", content=build_batch_extraction_prompt(texts)),
+        ],
+        deadline=deadline,
+        cancellation=cancellation,
         max_tokens=max_tokens,
     )
 
@@ -261,6 +290,33 @@ def run_extraction_batch_detailed(texts: list[str]) -> ExtractionBatchOutcome:
         failures[index] = failure
     _attach_summaries(texts, results, max_tokens)
     return ExtractionBatchOutcome(results, failures)
+
+
+def run_extraction_batch_bounded(
+    texts: list[str],
+    *,
+    deadline: datetime,
+    cancellation: CancellationSignal | None = None,
+) -> BoundedExtractionOutcome:
+    """Extract chats through exactly one bounded LLM call.
+
+    ``run_extraction_batch_detailed`` retries each unresolved conversation; a
+    bounded unit budgets a single extraction call, so this entry makes no retry,
+    skips the best-effort summary pass, and reports the call for usage
+    accounting. A provider error yields ``None`` at every index so the caller
+    records a durable retry instead of failing the unit.
+    """
+    if not texts:
+        return BoundedExtractionOutcome([], 0)
+    max_tokens = get_ingestion_config().llm.chat_max_tokens
+    try:
+        raw = asyncio.run(_extract_structured_bounded(texts, max_tokens, deadline, cancellation))
+    except LlmCallAbortedError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - a provider error becomes a durable retry
+        logger.warning("bounded LLM extraction call failed (%d conversations): %r", len(texts), exc)
+        return BoundedExtractionOutcome([None] * len(texts), 1)
+    return BoundedExtractionOutcome(_split_batch_extraction(raw, len(texts)), 1)
 
 
 def _retry_single_extraction(

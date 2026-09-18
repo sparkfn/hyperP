@@ -14,6 +14,7 @@ from urllib.parse import urlencode
 
 import httpx
 
+from src.bitrix_ingestion_models import CRM_ACTIVITY_SOURCE_ACCESS_RETIRED_REASON
 from src.connectors.bitrix_openlines.crm_deal_filter import (
     CrmDealPage,
     crm_deal_capability_filter,
@@ -127,6 +128,24 @@ def _is_allowed_error_payload(
         and description.strip().casefold() == "not found"
     )
     return isinstance(error, str) and (error in allowed_errors or canonical_not_found)
+
+
+def _assert_activity_request_retired(method: str, params: Mapping[str, JsonValue]) -> None:
+    """Reject retired activity reads before request accounting or source I/O."""
+    if method == "crm.activity.list" or (
+        method == "batch" and _batch_contains_activity_command(params)
+    ):
+        raise RuntimeError(CRM_ACTIVITY_SOURCE_ACCESS_RETIRED_REASON)
+
+
+def _batch_contains_activity_command(params: Mapping[str, JsonValue]) -> bool:
+    commands = params.get("cmd")
+    if not isinstance(commands, dict):
+        return False
+    return any(
+        isinstance(command, str) and command.split("?", maxsplit=1)[0].startswith("crm.activity.")
+        for command in commands.values()
+    )
 
 
 class BitrixOpenLinesClient:
@@ -1376,6 +1395,7 @@ class BitrixOpenLinesClient:
         allowed_errors: frozenset[str] = frozenset(),
         reservation_metadata: BitrixHttpCallMetadata | None = None,
     ) -> dict[str, JsonValue]:
+        _assert_activity_request_retired(method, params)
         for attempt in range(1, self._max_attempts + 1):
             intent: BitrixHttpCallIntent | None = None
             outcome_recorded = [False]

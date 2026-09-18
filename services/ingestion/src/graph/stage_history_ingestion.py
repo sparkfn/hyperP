@@ -137,78 +137,91 @@ class StageHistoryIngestionRepository:
         fence: FenceContext,
     ) -> StageHistoryUnitResult:
         """Commit a page under one active stream fence and exact checkpoint CAS."""
+        return self._client.execute_write(
+            lambda tx: self.persist_unit_in_transaction(tx, unit, expected_checkpoint, fence)
+        )
+
+    def persist_unit_in_transaction(
+        self,
+        tx: ManagedTransaction,
+        unit: StageHistoryReplayUnit,
+        expected_checkpoint: StageHistoryCheckpointSnapshot,
+        fence: FenceContext,
+    ) -> StageHistoryUnitResult:
+        """Commit one artifact page inside a caller-owned write transaction.
+
+        Stage authority, parent decision, retry, and accounting semantics are
+        unchanged; only the transaction owner moved to the caller so a bounded
+        unit commits them atomically with its own checkpoint.
+        """
         _validate_request(unit, expected_checkpoint, fence)
-
-        def _work(tx: ManagedTransaction) -> StageHistoryUnitResult:
-            assert_active_bitrix_fence(tx, fence)
-            self._inject("after_fence")
-            existing = _find_committed_unit(tx, fence, unit)
-            if existing is not None:
-                return _already_committed_result(existing, unit, expected_checkpoint)
-            if unit.page_sequence != expected_checkpoint.committed_unit_count + 1:
-                raise StageHistoryPersistenceError(
-                    "checkpoint tail references a missing committed stage-history unit"
-                )
-            _create_unit(tx, fence, unit, expected_checkpoint)
-            self._inject("after_unit")
-            associations: list[StageHistoryAssociationDecision] = []
-            transitions: list[StageHistoryAuthorityTransition] = []
-            retries: list[StageHistoryRetry] = []
-            intents: list[StageHistoryInvalidationIntent] = []
-            for occurrence in unit.occurrences:
-                _persist_occurrence(tx, fence, unit, occurrence)
-                self._inject("after_occurrence")
-                if not _has_domain_state(occurrence):
-                    continue
-                valid = occurrence.observation
-                if not isinstance(valid, StageHistoryValidObservation):
-                    raise StageHistoryPersistenceError("domain occurrence must be valid")
-                _persist_variant(tx, fence, unit, valid, occurrence)
-                self._inject("after_variant")
-                association = _persist_parent_decision(tx, fence, unit, valid, occurrence)
-                associations.append(association)
-                self._inject("after_parent")
-                retry = _persist_retry_if_required(
-                    tx,
-                    fence,
-                    valid,
-                    occurrence,
-                    required_run_type=unit.run_type,
-                    max_attempts=self._retry_max_attempts,
-                )
-                if retry is not None:
-                    retries.append(retry)
-                self._inject("after_retry")
-                transition, emitted = _persist_authority_if_required(
-                    tx,
-                    fence,
-                    valid,
-                    occurrence,
-                    association,
-                    required_run_type=unit.run_type,
-                    after_authority=self._inject,
-                )
-                if transition is not None:
-                    transitions.append(transition)
-                    intents.extend(emitted)
-                self._inject("after_outbox")
-            _persist_accounting(tx, fence, unit)
-            self._inject("after_accounting")
-            after = advance_stage_history_checkpoint(expected_checkpoint, unit)
-            _commit_checkpoint(tx, fence, unit, expected_checkpoint, after)
-            self._inject("after_checkpoint")
-            return StageHistoryUnitResult(
-                outcome="committed",
-                unit=unit,
-                checkpoint_before=expected_checkpoint,
-                checkpoint_after=after,
-                association_decisions=tuple(associations),
-                authority_transitions=tuple(transitions),
-                retries=tuple(retries),
-                invalidation_intents=tuple(intents),
+        assert_active_bitrix_fence(tx, fence)
+        self._inject("after_fence")
+        existing = _find_committed_unit(tx, fence, unit)
+        if existing is not None:
+            return _already_committed_result(existing, unit, expected_checkpoint)
+        if unit.page_sequence != expected_checkpoint.committed_unit_count + 1:
+            raise StageHistoryPersistenceError(
+                "checkpoint tail references a missing committed stage-history unit"
             )
-
-        return self._client.execute_write(_work)
+        _create_unit(tx, fence, unit, expected_checkpoint)
+        self._inject("after_unit")
+        associations: list[StageHistoryAssociationDecision] = []
+        transitions: list[StageHistoryAuthorityTransition] = []
+        retries: list[StageHistoryRetry] = []
+        intents: list[StageHistoryInvalidationIntent] = []
+        for occurrence in unit.occurrences:
+            _persist_occurrence(tx, fence, unit, occurrence)
+            self._inject("after_occurrence")
+            if not _has_domain_state(occurrence):
+                continue
+            valid = occurrence.observation
+            if not isinstance(valid, StageHistoryValidObservation):
+                raise StageHistoryPersistenceError("domain occurrence must be valid")
+            _persist_variant(tx, fence, unit, valid, occurrence)
+            self._inject("after_variant")
+            association = _persist_parent_decision(tx, fence, unit, valid, occurrence)
+            associations.append(association)
+            self._inject("after_parent")
+            retry = _persist_retry_if_required(
+                tx,
+                fence,
+                valid,
+                occurrence,
+                required_run_type=unit.run_type,
+                max_attempts=self._retry_max_attempts,
+            )
+            if retry is not None:
+                retries.append(retry)
+            self._inject("after_retry")
+            transition, emitted = _persist_authority_if_required(
+                tx,
+                fence,
+                valid,
+                occurrence,
+                association,
+                required_run_type=unit.run_type,
+                after_authority=self._inject,
+            )
+            if transition is not None:
+                transitions.append(transition)
+                intents.extend(emitted)
+            self._inject("after_outbox")
+        _persist_accounting(tx, fence, unit)
+        self._inject("after_accounting")
+        after = advance_stage_history_checkpoint(expected_checkpoint, unit)
+        _commit_checkpoint(tx, fence, unit, expected_checkpoint, after)
+        self._inject("after_checkpoint")
+        return StageHistoryUnitResult(
+            outcome="committed",
+            unit=unit,
+            checkpoint_before=expected_checkpoint,
+            checkpoint_after=after,
+            association_decisions=tuple(associations),
+            authority_transitions=tuple(transitions),
+            retries=tuple(retries),
+            invalidation_intents=tuple(intents),
+        )
 
     def _inject(self, point: str) -> None:
         if self._failure_injector is not None:

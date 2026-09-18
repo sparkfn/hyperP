@@ -32,6 +32,12 @@ CRM_STAGE_HISTORY_STREAM: BitrixStreamKey = "crm_stage_history"
 CRM_ACTIVITY_INGESTION_RETIRED_REASON = (
     "Bitrix CRM activity and companion-call Neo4j ingestion is permanently retired"
 )
+CRM_ACTIVITY_SOURCE_ACCESS_RETIRED_REASON = (
+    "Bitrix CRM activity discovery and activity-family source calls are permanently retired"
+)
+BITRIX_LEGACY_OPENLINES_RETIRED_REASON = (
+    "legacy Bitrix API and backfill ingestion are retired; use the bounded adapter"
+)
 BITRIX_STREAM_KEYS: frozenset[BitrixStreamKey] = frozenset(
     {
         CRM_DEALS_STREAM,

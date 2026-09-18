@@ -10,6 +10,7 @@ from dataclasses import dataclass
 from datetime import datetime, timedelta
 from typing import Protocol, cast, runtime_checkable
 
+from src.bitrix_ingestion_models import BITRIX_LEGACY_OPENLINES_RETIRED_REASON
 from src.connectors.base import SourceConnector
 from src.connectors.bitrix.connector import (
     BitrixChatConnector,
@@ -163,6 +164,8 @@ class BitrixOpenLinesConnector(SourceConnector):
             self._log_counters()
 
     def _fetch_records_inner(self) -> Iterator[dict[str, JsonValue]]:
+        if self._mode in {"api", "backfill"}:
+            raise RuntimeError(BITRIX_LEGACY_OPENLINES_RETIRED_REASON)
         if self._include_crm_records:
             yield from self._fetch_crm_deals()
         if self._no_config_selectable:

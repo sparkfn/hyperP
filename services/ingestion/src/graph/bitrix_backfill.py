@@ -80,6 +80,18 @@ class FrozenOwnerExport:
     control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID
 
 
+@dataclass(frozen=True)
+class KnownOwnerMemberPage:
+    """One bounded page of a sealed known-owner membership."""
+
+    generation_id: str
+    membership_set_id: str
+    digest: str
+    member_count: int
+    next_after_ordinal: int | None
+    members: tuple[tuple[int, str], ...]
+
+
 _KNOWN_OWNER_BATCH_SIZE = 1000
 
 
@@ -720,12 +732,14 @@ class BitrixBackfillRepository:
             control_instance_id=self._control_instance_id,
         )
 
-    def find_known_owner_set(
+    def _known_owner_metadata(
         self,
         *,
         generation_id: str,
         membership_set_id: str,
-    ) -> KnownOwnerMembershipSet | None:
+    ) -> tuple[str, int] | None:
+        """Return the digest and member count of a sealed known-owner set."""
+
         def _read_metadata(tx: ManagedTransaction) -> tuple[str, int, str] | None:
             record = tx.run(
                 GET_KNOWN_OWNER_SET,
@@ -749,6 +763,82 @@ class BitrixBackfillRepository:
             return None
         if status != "sealed":
             raise RuntimeError("known-owner set has an invalid build status")
+        return digest, expected_count
+
+    def read_known_owner_page(
+        self,
+        *,
+        generation_id: str,
+        membership_set_id: str,
+        after_ordinal: int = -1,
+        limit: int = _KNOWN_OWNER_BATCH_SIZE,
+    ) -> KnownOwnerMemberPage | None:
+        """Read one page of a sealed membership without accumulating the full set.
+
+        Returns ``None`` when the set is absent or still building; the caller
+        reads subsequent pages by passing ``next_after_ordinal`` back in.
+        """
+        if isinstance(after_ordinal, bool) or after_ordinal < -1:
+            raise ValueError("known-owner page start ordinal is invalid")
+        if isinstance(limit, bool) or limit < 1:
+            raise ValueError("known-owner page limit must be positive")
+        metadata = self._known_owner_metadata(
+            generation_id=generation_id,
+            membership_set_id=membership_set_id,
+        )
+        if metadata is None:
+            return None
+        digest, member_count = metadata
+
+        def _read_page(tx: ManagedTransaction) -> tuple[tuple[int, str], ...]:
+            rows: list[tuple[int, str]] = []
+            for record in tx.run(
+                LIST_KNOWN_OWNER_MEMBERS_PAGE,
+                control_instance_id=self._control_instance_id,
+                generation_id=generation_id,
+                membership_set_id=membership_set_id,
+                after_ordinal=after_ordinal,
+                limit=limit,
+            ):
+                rows.append(
+                    (
+                        _non_negative_int(record, "ordinal"),
+                        _required_str(record["deal_id"], "deal_id"),
+                    )
+                )
+            return tuple(rows)
+
+        members = self._client.execute_read(_read_page)
+        expected_ordinal = after_ordinal + 1
+        for ordinal, _deal_id in members:
+            if ordinal != expected_ordinal:
+                raise RuntimeError("known-owner membership ordinals are not contiguous")
+            expected_ordinal += 1
+        if len(members) > member_count - (after_ordinal + 1):
+            raise RuntimeError("known-owner membership count did not reconcile")
+        exhausted = expected_ordinal >= member_count
+        return KnownOwnerMemberPage(
+            generation_id=generation_id,
+            membership_set_id=membership_set_id,
+            digest=digest,
+            member_count=member_count,
+            next_after_ordinal=None if exhausted else expected_ordinal - 1,
+            members=members,
+        )
+
+    def find_known_owner_set(
+        self,
+        *,
+        generation_id: str,
+        membership_set_id: str,
+    ) -> KnownOwnerMembershipSet | None:
+        metadata = self._known_owner_metadata(
+            generation_id=generation_id,
+            membership_set_id=membership_set_id,
+        )
+        if metadata is None:
+            return None
+        digest, expected_count = metadata
         deal_ids: list[str] = []
         after_ordinal = -1
         while len(deal_ids) < expected_count:
