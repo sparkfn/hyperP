@@ -35,9 +35,7 @@ def _build_envelope(item: RentalFlatRow) -> dict[str, JsonValue]:
     town_name = _legacy_dump_text(item.town.name)
     town_map_id = _legacy_dump_text(item.town.map_id)
     town_map_zone = (
-        _legacy_dump_text(item.town.map_zone)
-        if item.town.map_zone is not None
-        else None
+        _legacy_dump_text(item.town.map_zone) if item.town.map_zone is not None else None
     )
     last_seen_at = _postgres_dump_datetime(item.last_seen_at)
     raw_payload: dict[str, JsonValue] = {
@@ -90,13 +88,9 @@ class SGGovernmentRentalFlatsIncrementalConnector:
         sleeper: Callable[[float], None] = time.sleep,
     ) -> None:
         if not base_url.strip() or not api_key:
-            raise ValueError(
-                "SG rental flats API URL and key are required"
-            )
+            raise ValueError("SG rental flats API URL and key are required")
         if max_attempts < 1:
-            raise ValueError(
-                "SG rental flats API max_attempts must be at least 1"
-            )
+            raise ValueError("SG rental flats API max_attempts must be at least 1")
         self._base_url = base_url.rstrip("/")
         self._api_key = api_key
         self._page_size = page_size
@@ -116,9 +110,7 @@ class SGGovernmentRentalFlatsIncrementalConnector:
 
     def fetch_next_page(self) -> IncrementalPage:
         if not self._query_opened:
-            raise RuntimeError(
-                "open_query() must be called before fetch_next_page()"
-            )
+            raise RuntimeError("open_query() must be called before fetch_next_page()")
         params: dict[str, str | int] = {"limit": self._page_size}
         if self._cursor is not None:
             params["cursor"] = self._cursor
@@ -128,15 +120,10 @@ class SGGovernmentRentalFlatsIncrementalConnector:
         response = self._get_page(params)
         page = RentalFlatCursorPage.model_validate(response.json())
 
-        envelopes: list[dict[str, JsonValue]] = [
-            _build_envelope(item) for item in page.items
-        ]
+        envelopes: list[dict[str, JsonValue]] = [_build_envelope(item) for item in page.items]
 
         if page.items:
-            timestamps = [
-                _ensure_utc(item.updated_at or item.last_seen_at)
-                for item in page.items
-            ]
+            timestamps = [_ensure_utc(item.updated_at or item.last_seen_at) for item in page.items]
             max_updated_at = max(timestamps)
         else:
             if self._updated_since is not None:
@@ -147,13 +134,8 @@ class SGGovernmentRentalFlatsIncrementalConnector:
         has_more = page.next_cursor is not None
 
         if page.next_cursor is not None:
-            if (
-                page.next_cursor == self._cursor
-                or page.next_cursor in self._seen_cursors
-            ):
-                raise RuntimeError(
-                    "SG rental flats export cursor did not advance"
-                )
+            if page.next_cursor == self._cursor or page.next_cursor in self._seen_cursors:
+                raise RuntimeError("SG rental flats export cursor did not advance")
             self._seen_cursors.add(page.next_cursor)
             self._cursor = page.next_cursor
 
@@ -170,11 +152,10 @@ class SGGovernmentRentalFlatsIncrementalConnector:
         self._http.close()
 
     def _get_page(
-        self, params: dict[str, str | int],
+        self,
+        params: dict[str, str | int],
     ) -> httpx.Response:
-        url = (
-            f"{self._base_url}/integrations/hyperp/rental-flats"
-        )
+        url = f"{self._base_url}/integrations/hyperp/rental-flats"
         for attempt in range(self._max_attempts):
             try:
                 response = self._http.get(
@@ -189,15 +170,10 @@ class SGGovernmentRentalFlatsIncrementalConnector:
                     raise
                 self._sleeper(float(2**attempt))
                 continue
-            if (
-                response.status_code == 429
-                or response.status_code >= 500
-            ):
+            if response.status_code == 429 or response.status_code >= 500:
                 if attempt + 1 < self._max_attempts:
                     self._sleeper(float(2**attempt))
                     continue
             response.raise_for_status()
             return response
-        raise RuntimeError(
-            "SG rental flats API retry loop exhausted"
-        )
+        raise RuntimeError("SG rental flats API retry loop exhausted")
