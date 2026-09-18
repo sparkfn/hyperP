@@ -184,9 +184,11 @@ def test_required_capability_names_the_exact_proxy_capability(
     assert required_capability(stream_key) == capability  # type: ignore[arg-type]
 
 
-def test_required_capability_rejects_an_unknown_stream_key() -> None:
-    with pytest.raises(KeyError):
-        required_capability("not_a_stream")  # type: ignore[arg-type]
+@pytest.mark.parametrize("stream_key", ["not_a_stream", "crm_activities"])
+def test_required_capability_rejects_an_unknown_stream_key(stream_key: str) -> None:
+    """An unknown stream is a contract violation, not a missing dictionary key."""
+    with pytest.raises(BitrixBoundedContractError, match="stream is unsupported"):
+        required_capability(stream_key)  # type: ignore[arg-type]
 
 
 def test_parse_capability_snapshot_returns_a_frozen_capability_set() -> None:

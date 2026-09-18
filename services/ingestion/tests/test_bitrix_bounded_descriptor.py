@@ -39,6 +39,7 @@ from src.connectors.bitrix_openlines.bounded_contract import (
     CHANGED_DEALS_ENDPOINT,
     BitrixBoundedCapabilityError,
     BitrixBoundedContractError,
+    BitrixBoundedStream,
 )
 from src.connectors.bitrix_openlines.bounded_descriptor import DESCRIPTOR
 from src.connectors.bitrix_openlines.client import _assert_activity_request_retired
@@ -198,10 +199,15 @@ def _fetch(
         connector.close()
 
 
-def _deals_scope() -> RunScope:
+def _stream_scope(stream_key: BitrixBoundedStream) -> RunScope:
+    """Return the fixture run scope whose stream matches a checkpoint's stream."""
     from _bitrix_bounded_fixtures import scope
 
-    return scope("crm_deals")
+    return scope(stream_key)
+
+
+def _deals_scope() -> RunScope:
+    return _stream_scope("crm_deals")
 
 
 # --------------------------------------------------------------------------- #
@@ -460,13 +466,14 @@ def test_deal_upsert_without_a_payload_is_refused(
         ProxyTransport(deals_pages=[deals_page([deal_change(7, change_version=1, payload=None)])]),
     )
 
-    with pytest.raises(BitrixBoundedContractError, match="pinned payload"):
+    with pytest.raises(BitrixBoundedContractError, match="omitted its pinned current data"):
         _fetch(_deals_checkpoint())
 
 
 def test_deal_upsert_without_a_category_is_refused(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A category-less upsert is refused: category_id is the change's companion field."""
     _bind(
         monkeypatch,
         ProxyTransport(
@@ -474,7 +481,7 @@ def test_deal_upsert_without_a_category_is_refused(
         ),
     )
 
-    with pytest.raises(BitrixBoundedContractError, match="omitted its category"):
+    with pytest.raises(BitrixBoundedContractError, match="omitted its pinned current data"):
         _fetch(_deals_checkpoint())
 
 
@@ -504,10 +511,13 @@ def test_openlines_work_transport_is_refused_before_source_work(
             conversations_pages=[conversations_page([])],
         ),
     )
-    checkpoint = _fetch(capability_checkpoint("openlines_conversations")).unit.checkpoint_after
+    run_scope = _stream_scope("openlines_conversations")
+    checkpoint = _fetch(
+        capability_checkpoint("openlines_conversations"), run_scope=run_scope
+    ).unit.checkpoint_after
 
     with pytest.raises(BitrixBoundedCapabilityError, match="no approved work transport"):
-        _fetch(checkpoint)
+        _fetch(checkpoint, run_scope=run_scope)
 
     assert transport.endpoints() == [CAPABILITY_ENDPOINT]
 
@@ -516,10 +526,13 @@ def test_stage_history_work_transport_is_refused_before_source_work(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     transport = _bind(monkeypatch, ProxyTransport(capabilities=capability_response()))
-    checkpoint = _fetch(capability_checkpoint("crm_stage_history")).unit.checkpoint_after
+    run_scope = _stream_scope("crm_stage_history")
+    checkpoint = _fetch(
+        capability_checkpoint("crm_stage_history"), run_scope=run_scope
+    ).unit.checkpoint_after
 
     with pytest.raises(BitrixBoundedCapabilityError, match="no approved work transport"):
-        _fetch(checkpoint)
+        _fetch(checkpoint, run_scope=run_scope)
 
     assert transport.endpoints() == [CAPABILITY_ENDPOINT]
 

@@ -106,7 +106,10 @@ class ChangedConversationsPage:
 
 def required_capability(stream_key: BitrixBoundedStream) -> str:
     """Return the exact proxy capability required by a bounded Bitrix stream."""
-    return _REQUIRED_CAPABILITY[stream_key]
+    capability = _REQUIRED_CAPABILITY.get(stream_key)
+    if capability is None:
+        raise BitrixBoundedContractError("Bitrix bounded stream is unsupported")
+    return capability
 
 
 def parse_capability_snapshot(value: JsonValue) -> CapabilitySnapshot:

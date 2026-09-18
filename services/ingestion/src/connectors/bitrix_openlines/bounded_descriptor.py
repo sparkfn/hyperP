@@ -378,6 +378,16 @@ def _op_from_record(record: dict[str, JsonValue]) -> _BoundedOp:
     raise BitrixBoundedContractError("Bitrix bounded operation kind is unsupported")
 
 
+def _source_envelope(envelope: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    """Bind a decoded source-record payload to this adapter's source identity.
+
+    ``build_crm_deal_envelope`` deliberately omits ``source_system``; the legacy
+    runner supplied it from ``connector.get_source_key()``. The bounded writer
+    supplies the same identity so the envelope validates unchanged.
+    """
+    return {**envelope, "source_system": SOURCE_KEY}
+
+
 class BitrixBoundedConnector:
     """Fetch exactly one approved bounded Bitrix unit."""
 
@@ -512,7 +522,9 @@ class BitrixBoundedWriter:
                     raise BitrixBoundedContractError("Bitrix bounded upsert lost its envelope")
                 result = pipeline.ingest_in_transaction(
                     tx,
-                    SourceRecordEnvelope.model_validate(operation.envelope),
+                    SourceRecordEnvelope.model_validate(
+                        _source_envelope(operation.envelope),
+                    ),
                 )
                 dispositions.append("duplicate" if result.skipped_duplicate else "committed")
                 continue

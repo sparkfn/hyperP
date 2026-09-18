@@ -1,116 +1,53 @@
+"""Retirement of the hybrid CRM-activity Open Lines discovery.
+
+``stream_chats`` and ``discover_chats`` used to union CRM-activity and
+recent-dialog discovery, de-duplicating chat IDs and retaining typed provenance.
+Activity discovery is permanently retired, so both refuse before reading the
+client at all.
+"""
+
 from __future__ import annotations
 
+import re
 from collections.abc import Iterator
-from datetime import UTC, datetime
 
-from src.connectors.bitrix_openlines import discovery
-from src.connectors.bitrix_openlines.discovery import discover_chats
-from src.connectors.bitrix_openlines.models import ChatReference, CrmOwnerReference
+import pytest
+from src.bitrix_ingestion_models import CRM_ACTIVITY_SOURCE_ACCESS_RETIRED_REASON
+from src.connectors.bitrix_openlines.discovery import discover_chats, stream_chats
+from src.connectors.bitrix_openlines.models import ChatReference
+
+_REFUSAL = re.escape(CRM_ACTIVITY_SOURCE_ACCESS_RETIRED_REASON)
 
 
-class StubDiscoveryClient:
+class _UntouchableDiscoveryClient:
+    """A discovery client that fails if a retired path reads anything."""
+
     def iter_crm_chat_refs(self) -> list[ChatReference]:
-        return [ChatReference(10, None, "crm_activity")]
+        raise AssertionError("retired discovery must not read CRM chat references")
+
+    def iter_crm_chat_ref_pages(self) -> Iterator[list[ChatReference]]:
+        raise AssertionError("retired discovery must not page CRM chat references")
 
     def iter_recent_chat_refs(self, page_size: int) -> list[ChatReference]:
-        assert page_size == 25
-        return [
-            ChatReference(10, datetime(2026, 7, 20, tzinfo=UTC), "recent_dialog"),
-            ChatReference(11, datetime(2026, 7, 19, tzinfo=UTC), "recent_dialog"),
-        ]
+        raise AssertionError("retired discovery must not read recent chat references")
 
 
-def test_hybrid_discovery_deduplicates_chat_ids_and_retains_provenance() -> None:
-    discovered = discover_chats(StubDiscoveryClient(), recent_page_size=25)
-
-    assert [(item.chat_id, item.discovery) for item in discovered] == [
-        (10, "crm_activity,recent_dialog"),
-        (11, "recent_dialog"),
-    ]
+def test_hybrid_discovery_is_refused_before_any_client_read() -> None:
+    """``discover_chats`` refuses instead of unioning CRM and recent discovery."""
+    with pytest.raises(RuntimeError, match=_REFUSAL):
+        discover_chats(_UntouchableDiscoveryClient(), recent_page_size=25)
 
 
-class ConflictingTimestampClient:
-    def iter_crm_chat_refs(self) -> list[ChatReference]:
-        return [ChatReference(10, datetime(2026, 7, 20, 10, tzinfo=UTC), "crm_activity")]
-
-    def iter_recent_chat_refs(self, page_size: int) -> list[ChatReference]:
-        return [ChatReference(10, datetime(2026, 7, 20, 9, tzinfo=UTC), "recent_dialog")]
-
-
-def test_hybrid_discovery_preserves_newest_changed_timestamp() -> None:
-    discovered = discover_chats(ConflictingTimestampClient(), recent_page_size=25)
-
-    assert discovered[0].changed_at == datetime(2026, 7, 20, 10, tzinfo=UTC)
+def test_streaming_discovery_is_refused_before_any_client_read() -> None:
+    """``stream_chats`` refuses instead of yielding hybrid discovery pages."""
+    with pytest.raises(RuntimeError, match=_REFUSAL):
+        stream_chats(_UntouchableDiscoveryClient(), recent_page_size=25)
 
 
 def test_chat_reference_has_typed_crm_provenance_fields() -> None:
+    """The provenance fields stay on the model even though discovery is retired."""
     assert {
         "activity_ids",
         "crm_owner_references",
         "provider_references",
     }.issubset(ChatReference.__dataclass_fields__)
-
-
-class ProvenanceDiscoveryClient:
-    def iter_crm_chat_refs(self) -> list[ChatReference]:
-        return [
-            ChatReference(
-                10,
-                datetime(2026, 7, 20, 8, tzinfo=UTC),
-                "crm_activity",
-                activity_ids=("900",),
-                crm_owner_references=(CrmOwnerReference("deal", 501),),
-                provider_references=({"CHAT_ID": "10"},),
-            ),
-            ChatReference(
-                10,
-                datetime(2026, 7, 20, 10, tzinfo=UTC),
-                "crm_activity",
-                activity_ids=("901",),
-                crm_owner_references=(CrmOwnerReference("contact", 502),),
-                provider_references=({"IM": [{"id": "chat10"}]},),
-            ),
-        ]
-
-    def iter_recent_chat_refs(self, page_size: int) -> list[ChatReference]:
-        return [ChatReference(10, None, "recent_dialog")]
-
-
-def test_hybrid_discovery_unions_typed_crm_provenance_for_duplicate_chat() -> None:
-    reference = discover_chats(ProvenanceDiscoveryClient(), recent_page_size=25)[0]
-
-    assert reference.activity_ids == ("900", "901")
-    assert reference.crm_owner_references == (
-        CrmOwnerReference("deal", 501),
-        CrmOwnerReference("contact", 502),
-    )
-    assert reference.provider_references == (
-        {"CHAT_ID": "10"},
-        {"IM": [{"id": "chat10"}]},
-    )
-
-
-class PagedDiscoveryClient:
-    def __init__(self) -> None:
-        self.events: list[str] = []
-
-    def iter_recent_chat_refs(self, page_size: int) -> list[ChatReference]:
-        self.events.append("recent")
-        return [ChatReference(10, None, "recent_dialog")]
-
-    def iter_crm_chat_ref_pages(self) -> Iterator[list[ChatReference]]:
-        self.events.append("crm-page-1")
-        yield [ChatReference(10, None, "crm_activity")]
-        self.events.append("crm-page-2")
-        yield [ChatReference(11, None, "crm_activity")]
-
-
-def test_streaming_discovery_yields_first_crm_page_before_fetching_next_page() -> None:
-    client = PagedDiscoveryClient()
-    discovered = iter(discovery.stream_chats(client, recent_page_size=25))
-
-    first = next(discovered)
-
-    assert first.chat_id == 10
-    assert first.discovery == "crm_activity,recent_dialog"
-    assert client.events == ["recent", "crm-page-1"]

@@ -1,13 +1,64 @@
 from __future__ import annotations
 
 import json
+import re
+from collections.abc import Callable
 from datetime import UTC, datetime
 from email.utils import formatdate
 from typing import cast
 
 import httpx
 import pytest
+from src.bitrix_ingestion_models import CRM_ACTIVITY_SOURCE_ACCESS_RETIRED_REASON
 from src.connectors.bitrix_openlines.client import BitrixOpenLinesClient
+
+_REFUSAL = re.escape(CRM_ACTIVITY_SOURCE_ACCESS_RETIRED_REASON)
+
+
+def _no_source_client() -> BitrixOpenLinesClient:
+    """Return a client whose transport fails loudly if any request is made."""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        raise AssertionError(f"retired activity path made a request: {request.url.path}")
+
+    return BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+
+@pytest.mark.parametrize(
+    "read",
+    [
+        lambda client: client.iter_crm_chat_refs(),
+        lambda client: list(client.iter_crm_chat_ref_pages()),
+        lambda client: list(client.iter_crm_discovery_pages(start=50)),
+        lambda client: list(client.iter_crm_activities()),
+        lambda client: client.list_deal_activities(501),
+        lambda client: client.list_crm_activity_capability_page(
+            greater_than_id=None,
+            less_than_or_equal_to_id=900,
+        ),
+    ],
+    ids=[
+        "chat-refs",
+        "chat-ref-pages",
+        "discovery-pages",
+        "activities",
+        "deal-activities",
+        "activity-capability-page",
+    ],
+)
+def test_retired_activity_entry_points_refuse_before_any_source_call(
+    read: Callable[[BitrixOpenLinesClient], object],
+) -> None:
+    """Every CRM-activity read refuses instead of issuing a source request."""
+    client = _no_source_client()
+
+    with pytest.raises(RuntimeError, match=_REFUSAL):
+        read(client)
 
 
 def test_client_lists_active_open_channel_configurations() -> None:
@@ -150,15 +201,11 @@ def test_client_reads_historical_openline_history_with_numeric_chat_id() -> None
     assert requests == [{"CHAT_ID": 79}]
 
 
-def test_client_discovers_crm_and_recent_chat_references() -> None:
+def test_client_discovers_recent_chat_references() -> None:
+    """Recent-dialog discovery is unchanged; CRM-activity discovery is retired."""
+
     def handler(request: httpx.Request) -> httpx.Response:
-        method = request.url.path.rsplit("/", 1)[-1]
-        if method == "crm.activity.list":
-            return httpx.Response(
-                200,
-                json={"result": [{"PROVIDER_PARAMS": {"CHAT_ID": "77"}}]},
-            )
-        assert method == "im.recent.list"
+        assert request.url.path.endswith("/im.recent.list")
         return httpx.Response(
             200,
             json={
@@ -186,214 +233,7 @@ def test_client_discovers_crm_and_recent_chat_references() -> None:
         http=httpx.Client(transport=httpx.MockTransport(handler)),
     )
 
-    assert [item.chat_id for item in client.iter_crm_chat_refs()] == [77]
     assert [item.chat_id for item in client.iter_recent_chat_refs(50)] == [78]
-
-
-def test_client_resolves_current_portal_openline_session_activities_to_chat_ids() -> None:
-    def handler(request: httpx.Request) -> httpx.Response:
-        method = request.url.path.rsplit("/", 1)[-1]
-        if method == "crm.activity.list":
-            return httpx.Response(
-                200,
-                json={
-                    "result": [
-                        {
-                            "OWNER_TYPE_ID": "2",
-                            "OWNER_ID": "501",
-                            "PROVIDER_PARAMS": {"USER_CODE": "facebook|46|external"},
-                        }
-                    ]
-                },
-            )
-        assert method == "imopenlines.crm.chat.get"
-        return httpx.Response(
-            200,
-            json={"result": [{"CHAT_ID": "79", "CONNECTOR_ID": "facebook"}]},
-        )
-
-    client = BitrixOpenLinesClient(
-        base_url="https://bitrix.test/rest/hook",
-        timeout_seconds=5,
-        max_attempts=1,
-        http=httpx.Client(transport=httpx.MockTransport(handler)),
-    )
-
-    assert [item.chat_id for item in client.iter_crm_chat_refs()] == [79]
-
-
-def test_client_batches_owner_chat_lookups_for_each_crm_page() -> None:
-    methods: list[str] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        method = request.url.path.rsplit("/", 1)[-1]
-        methods.append(method)
-        if method == "crm.activity.list":
-            return httpx.Response(
-                200,
-                json={
-                    "result": [
-                        {"OWNER_TYPE_ID": "2", "OWNER_ID": "501"},
-                        {"OWNER_TYPE_ID": "3", "OWNER_ID": "502"},
-                    ]
-                },
-            )
-        assert method == "batch"
-        body = json.loads(request.content)
-        assert body["halt"] == 0
-        commands = body["cmd"]
-        assert len(commands) == 2
-        assert any("CRM_ENTITY_TYPE=deal" in command for command in commands.values())
-        assert any("CRM_ENTITY_TYPE=contact" in command for command in commands.values())
-        return httpx.Response(
-            200,
-            json={
-                "result": {
-                    "result": {
-                        "owner_0": [{"CHAT_ID": "79"}],
-                        "owner_1": [{"CHAT_ID": "80"}],
-                    },
-                    "result_next": {},
-                    "result_error": {},
-                }
-            },
-        )
-
-    client = BitrixOpenLinesClient(
-        base_url="https://bitrix.test/rest/hook",
-        timeout_seconds=5,
-        max_attempts=1,
-        http=httpx.Client(transport=httpx.MockTransport(handler)),
-    )
-
-    assert [item.chat_id for item in client.iter_crm_chat_refs()] == [79, 80]
-    assert methods == ["crm.activity.list", "batch"]
-
-
-def test_client_can_resume_crm_discovery_from_saved_start() -> None:
-    starts: list[int] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        body = json.loads(request.content)
-        starts.append(body["start"])
-        return httpx.Response(
-            200,
-            json={
-                "result": [{"PROVIDER_PARAMS": {"CHAT_ID": "79"}}],
-                "next": 100,
-            },
-        )
-
-    client = BitrixOpenLinesClient(
-        base_url="https://bitrix.test/rest/hook",
-        timeout_seconds=5,
-        max_attempts=1,
-        http=httpx.Client(transport=httpx.MockTransport(handler)),
-    )
-
-    page = next(client.iter_crm_discovery_pages(start=50))
-
-    assert starts == [50]
-    assert [reference.chat_id for reference in page.references] == [79]
-    assert page.next_start == 100
-
-
-def test_client_pages_crm_collections_and_preserves_latest_activity_timestamp() -> None:
-    activity_starts: list[int] = []
-    chat_starts: list[int] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        method = request.url.path.rsplit("/", 1)[-1]
-        body = json.loads(request.content)
-        if method == "crm.activity.list":
-            start = body["start"]
-            activity_starts.append(start)
-            changed_at = "2026-07-20T08:00:00+00:00" if start == 0 else "2026-07-20T10:00:00+00:00"
-            response: dict[str, object] = {
-                "result": [
-                    {
-                        "OWNER_TYPE_ID": "2",
-                        "OWNER_ID": "501",
-                        "LAST_UPDATED": changed_at,
-                    }
-                ]
-            }
-            if start == 0:
-                response["next"] = 50
-            return httpx.Response(200, json=response)
-        assert method == "imopenlines.crm.chat.get"
-        start = body["start"]
-        chat_starts.append(start)
-        response = {"result": [{"CHAT_ID": "79" if start == 0 else "80"}]}
-        if start == 0:
-            response["next"] = 50
-        return httpx.Response(200, json=response)
-
-    client = BitrixOpenLinesClient(
-        base_url="https://bitrix.test/rest/hook",
-        timeout_seconds=5,
-        max_attempts=1,
-        http=httpx.Client(transport=httpx.MockTransport(handler)),
-    )
-
-    refs = client.iter_crm_chat_refs()
-
-    assert [(item.chat_id, item.changed_at) for item in refs] == [
-        (79, datetime(2026, 7, 20, 10, tzinfo=UTC)),
-        (80, datetime(2026, 7, 20, 10, tzinfo=UTC)),
-    ]
-    assert activity_starts == [0, 50]
-    assert chat_starts == [0, 50]
-
-
-def test_client_preserves_all_crm_activity_provenance_across_pages() -> None:
-    calls = 0
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        nonlocal calls
-        calls += 1
-        body = json.loads(request.content)
-        assert request.url.path.endswith("/crm.activity.list")
-        activity_id = "900" if body["start"] == 0 else "901"
-        response: dict[str, object] = {
-            "result": [
-                {
-                    "ID": activity_id,
-                    "OWNER_TYPE_ID": "2",
-                    "OWNER_ID": "501",
-                    "PROVIDER_PARAMS": {
-                        "CHAT_ID": "79",
-                        "USER_CODE": "facebook|46|external",
-                        "IM": [{"id": "chat79", "token": "private-im-token"}],
-                        "WEBHOOK_URL": "https://token@example.test/hook",
-                    },
-                }
-            ]
-        }
-        if body["start"] == 0:
-            response["next"] = 50
-        return httpx.Response(200, json=response)
-
-    client = BitrixOpenLinesClient(
-        base_url="https://bitrix.test/rest/hook",
-        timeout_seconds=5,
-        max_attempts=1,
-        http=httpx.Client(transport=httpx.MockTransport(handler)),
-    )
-
-    reference = client.iter_crm_chat_refs()[0]
-
-    assert calls == 2
-    assert getattr(reference, "activity_ids", ()) == ("900", "901")
-    owner_references = getattr(reference, "crm_owner_references", ())
-    assert [(item.owner_type, item.owner_id) for item in owner_references] == [("deal", 501)]
-    assert getattr(reference, "provider_references", ()) == (
-        {
-            "CHAT_ID": "79",
-            "USER_CODE": "facebook|46|external",
-            "IM": [{"id": "chat79"}],
-        },
-    )
 
 
 def test_recent_dialog_pagination_advances_by_requested_limit() -> None:
@@ -690,7 +530,8 @@ def test_client_captures_openline_origin_from_recent_dialogs() -> None:
     assert [(ref.config_id, ref.connector_id) for ref in references] == [("46", "facebook")]
 
 
-def test_client_fetches_all_deal_contacts_and_call_activity_details() -> None:
+def test_client_fetches_all_deal_contacts_without_activity_details() -> None:
+    """Deal contact hydration still works; call-activity details are retired."""
     requests: list[tuple[str, dict[str, object]]] = []
 
     def handler(request: httpx.Request) -> httpx.Response:
@@ -714,37 +555,18 @@ def test_client_fetches_all_deal_contacts_and_call_activity_details() -> None:
                 200,
                 json={"result": [{"CONTACT_ID": "400"}, {"CONTACT_ID": "401"}]},
             )
-        if method == "crm.contact.get":
-            contact_id = body["id"]
-            return httpx.Response(
-                200,
-                json={
-                    "result": {
-                        "ID": str(contact_id),
-                        "NAME": "Ada" if contact_id == "400" else "Grace",
-                        "LAST_NAME": "Lovelace" if contact_id == "400" else "Hopper",
-                        "PHONE": [{"VALUE": "+6591234567"}],
-                        "EMAIL": [{"VALUE": "ada@example.com"}],
-                    }
-                },
-            )
-        assert method == "crm.activity.list"
+        assert method == "crm.contact.get"
+        contact_id = body["id"]
         return httpx.Response(
             200,
             json={
-                "result": [
-                    {
-                        "ID": "901",
-                        "OWNER_TYPE_ID": "2",
-                        "OWNER_ID": "501",
-                        "TYPE_ID": "2",
-                        "SUBJECT": "Follow-up call",
-                        "START_TIME": "2026-07-20T10:00:00+00:00",
-                        "END_TIME": "2026-07-20T10:05:00+00:00",
-                        "DIRECTION": "2",
-                        "RESULT_STATUS": "Y",
-                    }
-                ]
+                "result": {
+                    "ID": str(contact_id),
+                    "NAME": "Ada" if contact_id == "400" else "Grace",
+                    "LAST_NAME": "Lovelace" if contact_id == "400" else "Hopper",
+                    "PHONE": [{"VALUE": "+6591234567"}],
+                    "EMAIL": [{"VALUE": "ada@example.com"}],
+                }
             },
         )
 
@@ -756,15 +578,11 @@ def test_client_fetches_all_deal_contacts_and_call_activity_details() -> None:
     )
 
     deal = client.get_deal(501)
-    activities = client.list_deal_activities(501)
 
     assert deal.primary_contact is not None
     assert deal.primary_contact.id == "400"
     assert [contact.id for contact in deal.contacts] == ["400", "401"]
     assert deal.has_ambiguous_contacts is False
-    assert activities[0].is_call is True
-    assert activities[0].duration_seconds == 300
-    assert activities[0].start_at == datetime(2026, 7, 20, 10, tzinfo=UTC)
     assert ("crm.deal.contact.items.get", {"id": 501}) in requests
 
 
@@ -1374,43 +1192,6 @@ def test_client_retries_the_same_filtered_crm_deal_page(
     ]
 
 
-def test_client_scans_all_deal_activities_without_per_deal_requests() -> None:
-    requests: list[tuple[str, dict[str, object]]] = []
-
-    def handler(request: httpx.Request) -> httpx.Response:
-        method = request.url.path.rsplit("/", 1)[-1]
-        body = json.loads(request.content)
-        requests.append((method, body))
-        assert method == "crm.activity.list"
-        if body["start"] == 0:
-            return httpx.Response(
-                200,
-                json={
-                    "result": [{"ID": "900", "OWNER_TYPE_ID": "2", "OWNER_ID": "501"}],
-                    "next": 1,
-                },
-            )
-        return httpx.Response(
-            200,
-            json={"result": [{"ID": "901", "OWNER_TYPE_ID": "2", "OWNER_ID": "502"}]},
-        )
-
-    client = BitrixOpenLinesClient(
-        base_url="https://bitrix.test/rest/hook",
-        timeout_seconds=5,
-        max_attempts=1,
-        http=httpx.Client(transport=httpx.MockTransport(handler)),
-    )
-
-    activities = list(client.iter_crm_activities())
-
-    assert [activity.id for activity in activities] == ["900", "901"]
-    assert [body["filter"] for _method, body in requests] == [
-        {"OWNER_TYPE_ID": 2},
-        {"OWNER_TYPE_ID": 2},
-    ]
-
-
 def test_client_reads_typed_stage_history_page_with_nested_items() -> None:
     requests: list[dict[str, object]] = []
 
@@ -1605,29 +1386,19 @@ def test_client_rejects_invalid_stage_history_numeric_arguments(
 
 
 def test_fast_keyset_capability_zero_total_is_unavailable_metadata() -> None:
-    responses = {
-        "crm.deal.list": {
-            "result": [{"ID": "501", "CATEGORY_ID": "2", "STAGE_ID": "C2:NEW"}],
-            "total": 0,
-        },
-        "crm.activity.list": {
-            "result": [
-                {
-                    "ID": "900",
-                    "OWNER_TYPE_ID": "2",
-                    "OWNER_ID": "501",
-                    "TYPE_ID": "2",
-                }
-            ],
-            "total": "0",
-        },
-    }
+    """A zero total is unavailable metadata; the activity capability read is retired."""
 
     def handler(request: httpx.Request) -> httpx.Response:
-        method = request.url.path.rsplit("/", 1)[-1]
         body = json.loads(request.content)
         assert body["start"] == -1
-        return httpx.Response(200, json=responses[method])
+        assert request.url.path.endswith("/crm.deal.list")
+        return httpx.Response(
+            200,
+            json={
+                "result": [{"ID": "501", "CATEGORY_ID": "2", "STAGE_ID": "C2:NEW"}],
+                "total": 0,
+            },
+        )
 
     client = BitrixOpenLinesClient(
         base_url="https://bitrix.test/rest/hook",
@@ -1637,15 +1408,9 @@ def test_fast_keyset_capability_zero_total_is_unavailable_metadata() -> None:
     )
 
     deal_page = client.list_crm_deal_capability_page(category_ids=["2"])
-    activity_page = client.list_crm_activity_capability_page(
-        greater_than_id=None,
-        less_than_or_equal_to_id=900,
-    )
 
     assert len(deal_page.items) == 1
     assert deal_page.total is None
-    assert len(activity_page.items) == 1
-    assert activity_page.total is None
 
 
 def test_client_accepts_all_missing_batch_results_encoded_as_empty_list(
