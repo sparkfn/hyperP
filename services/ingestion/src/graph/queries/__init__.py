@@ -205,6 +205,7 @@ from src.graph.queries.stage_history_ingestion import (
     UPSERT_STAGE_HISTORY_UNIT_ACCOUNTING,
     UPSERT_STAGE_HISTORY_VARIANT_SOURCE_RECORD,
 )
+from src.graph.queries.staging_reset import STAGING_RESET_CLEAR_GRAPH
 from src.graph.queries.vehicle import (
     FLAG_VEHICLE_OWNER_CONFLICTS,
     LINK_CHAT_SOURCE_RECORD_MENTIONS_VEHICLE,
@@ -327,6 +328,7 @@ __all__ = [
     "MERGE_LINE_ITEM",
     "MERGE_ORDER",
     "STAGE_SALES_REVIEW",
+    "STAGING_RESET_CLEAR_GRAPH",
     "START_PERSON_COMPLETENESS_MIGRATION",
     "MERGE_PRODUCT",
     "PATH_COMPRESS_MERGED_INTO",
