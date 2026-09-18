@@ -653,16 +653,7 @@ def get_connector(
             connector_type = api_types[source_key]
         except KeyError as exc:
             raise ValueError(f"API mode is not supported for source {source_key!r}") from exc
-        updated_since = None
-        if incremental and checkpoint_store is not None:
-            updated_since = checkpoint_store.get(
-                f"profile_unifier:phppos_api:watermark:{source_key}"
-            )
-        return connector_type(
-            create_phppos_api_client(source_key),
-            updated_since=updated_since,
-            watermark_store=checkpoint_store,
-        )
+        return connector_type(create_phppos_api_client(source_key))
     try:
         return _CONNECTOR_REGISTRY[source_key]()
     except KeyError as exc:

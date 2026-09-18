@@ -1,4 +1,10 @@
-"""SourceConnector adapters for source-shaped PHPPOS API pages."""
+"""SourceConnector adapters for source-shaped PHPPOS API pages.
+
+Each connector here also satisfies the structural
+:class:`~src.incremental_connector.IncrementalConnector` protocol. The protocol is
+satisfied structurally rather than inherited, so no runtime coupling to the
+watermark framework is introduced.
+"""
 
 from __future__ import annotations
 
@@ -11,20 +17,23 @@ from sqlalchemy.engine import RowMapping
 
 from src.connectors.base import SourceConnector
 from src.connectors.eko.connector import EkoConnector
-from src.connectors.phppos_api.models import CustomerRow, SaleRow
+from src.connectors.phppos_api.models import CustomerPage, CustomerRow, SaleRow, SalesPage
 from src.connectors.phppos_sales_common import _build_envelope
 from src.connectors.speedzone.connector import SpeedZoneConnector
+from src.incremental_connector import IncrementalPage
 from src.models import JsonValue
+
+_EPOCH_FLOOR = datetime.min.replace(tzinfo=UTC)
 
 
 class ApiClient(Protocol):
+    def fetch_customer_page(
+        self, cursor: str | None, updated_since: str | None
+    ) -> CustomerPage: ...
+    def fetch_sales_page(self, cursor: str | None, updated_since: str | None) -> SalesPage: ...
     def iter_customers(self, *, updated_since: str | None = None) -> Iterator[CustomerRow]: ...
     def iter_sales(self, *, updated_since: str | None = None) -> Iterator[SaleRow]: ...
     def close(self) -> None: ...
-
-
-class WatermarkStore(Protocol):
-    def set(self, name: str, value: str) -> None: ...
 
 
 class ApiRow:
@@ -43,17 +52,8 @@ class ApiRow:
 class _CustomerApiConnector(SourceConnector):
     source_key: str
 
-    def __init__(
-        self,
-        client: ApiClient,
-        *,
-        updated_since: str | None = None,
-        watermark_store: WatermarkStore | None = None,
-    ) -> None:
+    def __init__(self, client: ApiClient) -> None:
         self._client = client
-        self._updated_since = updated_since
-        self._watermark_store = watermark_store
-        self._latest_updated_at: datetime | None = None
 
     def get_source_key(self) -> str:
         return self.source_key
@@ -61,42 +61,45 @@ class _CustomerApiConnector(SourceConnector):
     def close(self) -> None:
         self._client.close()
 
+    def open_query(self, updated_since: datetime | None) -> None:
+        self._updated_since_str: str | None = (
+            updated_since.isoformat() if updated_since is not None else None
+        )
+        self._cursor: str | None = None
+
+    def fetch_next_page(self) -> IncrementalPage:
+        page = self._client.fetch_customer_page(self._cursor, self._updated_since_str)
+        records: list[dict[str, JsonValue]] = []
+        max_ts: datetime | None = None
+        for row in page.data:
+            values = row.model_dump()
+            ts = _parse_source_timestamp(values.get("last_modified") or values.get("create_date"))
+            if ts is not None and (max_ts is None or ts > max_ts):
+                max_ts = ts
+            for field in _OPTIONAL_CUSTOMER_FIELDS:
+                values.setdefault(field, None)
+            api_row = ApiRow(values)
+            if self.source_key == "eko_phppos":
+                records.append(EkoConnector._build_one(api_row))
+            else:
+                records.append(SpeedZoneConnector._build_envelope_with_customer(api_row))
+        self._cursor = page.pagination.next_cursor
+        return IncrementalPage(
+            records=tuple(records),
+            has_more=page.pagination.has_more,
+            max_updated_at=max_ts or _EPOCH_FLOOR,
+        )
+
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
         try:
-            rows = (
-                self._client.iter_customers(updated_since=self._updated_since)
-                if self._updated_since is not None
-                else self._client.iter_customers()
-            )
-            for row in rows:
-                values = row.model_dump()
-                self._track_watermark(values.get("last_modified") or values.get("create_date"))
-                for field in _OPTIONAL_CUSTOMER_FIELDS:
-                    values.setdefault(field, None)
-                api_row = ApiRow(values)
-                if self.source_key == "eko_phppos":
-                    yield EkoConnector._build_one(api_row)
-                else:
-                    yield SpeedZoneConnector._build_envelope_with_customer(api_row)
+            self.open_query(None)
+            while True:
+                page = self.fetch_next_page()
+                yield from page.records
+                if not page.has_more:
+                    return
         finally:
             self._client.close()
-
-    def commit_watermark(self) -> None:
-        if self._watermark_store is not None and self._latest_updated_at is not None:
-            self._watermark_store.set(
-                self._watermark_key(),
-                self._latest_updated_at.isoformat(),
-            )
-
-    def _watermark_key(self) -> str:
-        return f"profile_unifier:phppos_api:watermark:{self.source_key}"
-
-    def _track_watermark(self, value: object) -> None:
-        parsed = _parse_source_timestamp(value)
-        if parsed is not None and (
-            self._latest_updated_at is None or parsed > self._latest_updated_at
-        ):
-            self._latest_updated_at = parsed
 
 
 class EkoApiConnector(_CustomerApiConnector):
@@ -110,17 +113,8 @@ class SpeedZoneApiConnector(_CustomerApiConnector):
 class _SalesApiConnector(SourceConnector):
     source_key: str
 
-    def __init__(
-        self,
-        client: ApiClient,
-        *,
-        updated_since: str | None = None,
-        watermark_store: WatermarkStore | None = None,
-    ) -> None:
+    def __init__(self, client: ApiClient) -> None:
         self._client = client
-        self._updated_since = updated_since
-        self._watermark_store = watermark_store
-        self._latest_updated_at: datetime | None = None
 
     def get_source_key(self) -> str:
         return f"{self.source_key}:sales"
@@ -128,16 +122,36 @@ class _SalesApiConnector(SourceConnector):
     def close(self) -> None:
         self._client.close()
 
+    def open_query(self, updated_since: datetime | None) -> None:
+        self._updated_since_str: str | None = (
+            updated_since.isoformat() if updated_since is not None else None
+        )
+        self._cursor: str | None = None
+
+    def fetch_next_page(self) -> IncrementalPage:
+        page = self._client.fetch_sales_page(self._cursor, self._updated_since_str)
+        records: list[dict[str, JsonValue]] = []
+        max_ts: datetime | None = None
+        for row in page.data:
+            ts = _parse_source_timestamp(row.sale_time)
+            if ts is not None and (max_ts is None or ts > max_ts):
+                max_ts = ts
+            records.append(self._build_record(row))
+        self._cursor = page.pagination.next_cursor
+        return IncrementalPage(
+            records=tuple(records),
+            has_more=page.pagination.has_more,
+            max_updated_at=max_ts or _EPOCH_FLOOR,
+        )
+
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
         try:
-            rows = (
-                self._client.iter_sales(updated_since=self._updated_since)
-                if self._updated_since is not None
-                else self._client.iter_sales()
-            )
-            for row in rows:
-                self._track_watermark(row.sale_time)
-                yield self._build_record(row)
+            self.open_query(None)
+            while True:
+                page = self.fetch_next_page()
+                yield from page.records
+                if not page.has_more:
+                    return
         finally:
             self._client.close()
 
@@ -190,23 +204,6 @@ class _SalesApiConnector(SourceConnector):
             people_row=cast(RowMapping, person),
             extract_bike_plate=self.source_key == "speedzone_phppos",
         )
-
-    def commit_watermark(self) -> None:
-        if self._watermark_store is not None and self._latest_updated_at is not None:
-            self._watermark_store.set(
-                self._watermark_key(),
-                self._latest_updated_at.isoformat(),
-            )
-
-    def _watermark_key(self) -> str:
-        return f"profile_unifier:phppos_api:watermark:{self.source_key}:sales"
-
-    def _track_watermark(self, value: str) -> None:
-        parsed = _parse_source_timestamp(value)
-        if parsed is not None and (
-            self._latest_updated_at is None or parsed > self._latest_updated_at
-        ):
-            self._latest_updated_at = parsed
 
 
 class EkoSalesApiConnector(_SalesApiConnector):

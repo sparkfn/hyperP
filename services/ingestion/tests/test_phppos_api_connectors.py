@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from datetime import UTC, datetime
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -11,7 +12,13 @@ from src.connectors.phppos_api.connectors import (
     EkoSalesApiConnector,
     SpeedZoneApiConnector,
 )
-from src.connectors.phppos_api.models import CustomerRow, SaleRow
+from src.connectors.phppos_api.models import (
+    CustomerPage,
+    CustomerRow,
+    Pagination,
+    SaleRow,
+    SalesPage,
+)
 from src.main import create_phppos_api_client, get_connector, run_ingestion
 
 
@@ -38,6 +45,18 @@ class StubClient:
 
     def iter_sales(self) -> Iterator[SaleRow]:
         return iter(())
+
+    def fetch_customer_page(self, cursor: str | None, updated_since: str | None) -> CustomerPage:
+        return CustomerPage(
+            data=list(self.iter_customers()),
+            pagination=Pagination(next_cursor=None, has_more=False),
+        )
+
+    def fetch_sales_page(self, cursor: str | None, updated_since: str | None) -> SalesPage:
+        return SalesPage(
+            data=list(self.iter_sales()),
+            pagination=Pagination(next_cursor=None, has_more=False),
+        )
 
     def close(self) -> None:
         self.closed = True
@@ -261,47 +280,22 @@ def test_run_ingestion_closes_api_connector_when_ingestion_fails(
     assert api_client.closed is True
 
 
-class IncrementalCustomerClient(StubClient):
+class _WatermarkTrackingClient(StubClient):
     def __init__(self) -> None:
         super().__init__()
-        self.updated_since: str | None = None
+        self.page_updated_since: str | None = None
 
-    def iter_customers(
-        self,
-        *,
-        updated_since: str | None = None,
-    ) -> Iterator[CustomerRow]:
-        self.updated_since = updated_since
-        yield CustomerRow.model_validate(
-            {
-                "person_id": 9,
-                "create_date": "2026-08-03T01:00:00",
-                "last_modified": None,
-            }
+    def fetch_customer_page(self, cursor: str | None, updated_since: str | None) -> CustomerPage:
+        self.page_updated_since = updated_since
+        return CustomerPage(
+            data=[CustomerRow.model_validate({"person_id": 9})],
+            pagination=Pagination(next_cursor=None, has_more=False),
         )
 
 
-class CapturingWatermarkStore:
-    def __init__(self) -> None:
-        self.values: dict[str, str] = {}
-
-    def set(self, name: str, value: str) -> None:
-        self.values[name] = value
-
-
-def test_customer_connector_uses_checkpoint_and_stages_normalized_source_watermark() -> None:
-    client = IncrementalCustomerClient()
-    store = CapturingWatermarkStore()
-    connector = EkoApiConnector(
-        client,
-        updated_since="2026-08-02T01:00:00+00:00",
-        watermark_store=store,
-    )
-
-    list(connector.fetch_records())
-    connector.commit_watermark()
-
-    assert client.updated_since == "2026-08-02T01:00:00+00:00"
-    assert store.values == {
-        "profile_unifier:phppos_api:watermark:eko_phppos": "2026-08-03T01:00:00+00:00"
-    }
+def test_customer_connector_open_query_passes_updated_since() -> None:
+    client = _WatermarkTrackingClient()
+    connector = EkoApiConnector(client)
+    connector.open_query(datetime(2026, 8, 2, 1, 0, 0, tzinfo=UTC))
+    connector.fetch_next_page()
+    assert client.page_updated_since == "2026-08-02T01:00:00+00:00"

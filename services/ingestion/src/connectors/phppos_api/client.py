@@ -48,10 +48,16 @@ class PhpposApiClient:
         self._access_expires_at = 0.0
         self._closed = False
 
+    def fetch_customer_page(self, cursor: str | None, updated_since: str | None) -> CustomerPage:
+        return CustomerPage.model_validate(self._get_page("customers", cursor, updated_since))
+
+    def fetch_sales_page(self, cursor: str | None, updated_since: str | None) -> SalesPage:
+        return SalesPage.model_validate(self._get_page("sales", cursor, updated_since))
+
     def iter_customers(self, *, updated_since: str | None = None) -> Iterator[CustomerRow]:
         cursor: str | None = None
         while True:
-            page = CustomerPage.model_validate(self._get_page("customers", cursor, updated_since))
+            page = self.fetch_customer_page(cursor, updated_since)
             yield from page.data
             if not page.pagination.has_more:
                 return
@@ -60,7 +66,7 @@ class PhpposApiClient:
     def iter_sales(self, *, updated_since: str | None = None) -> Iterator[SaleRow]:
         cursor: str | None = None
         while True:
-            page = SalesPage.model_validate(self._get_page("sales", cursor, updated_since))
+            page = self.fetch_sales_page(cursor, updated_since)
             yield from page.data
             if not page.pagination.has_more:
                 return
