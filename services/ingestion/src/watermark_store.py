@@ -6,17 +6,12 @@ import json
 import logging
 from dataclasses import dataclass
 from datetime import datetime
-from typing import Protocol
+
+import redis
 
 logger = logging.getLogger(__name__)
 
 _KEY_PREFIX = "profile_unifier:watermark"
-
-
-class _RedisLike(Protocol):
-    def get(self, name: str) -> bytes | str | None: ...
-    def set(self, name: str, value: str | bytes, **kwargs: object) -> object: ...
-    def delete(self, *names: str) -> object: ...
 
 
 @dataclass(frozen=True)
@@ -35,7 +30,7 @@ def _redis_key(source_key: str, entity_key: str | None) -> str:
 
 
 def load_watermark(
-    client: _RedisLike,
+    client: redis.Redis[bytes],
     source_key: str,
     entity_key: str | None = None,
 ) -> IngestionWatermark:
@@ -50,7 +45,7 @@ def load_watermark(
     return IngestionWatermark(updated_at=updated_at, source_key=source_key, entity_key=entity_key)
 
 
-def save_watermark(client: _RedisLike, watermark: IngestionWatermark) -> None:
+def save_watermark(client: redis.Redis[bytes], watermark: IngestionWatermark) -> None:
     """Persist a watermark after a successful full drain."""
     if watermark.updated_at is None:
         raise ValueError("Cannot save a watermark with updated_at=None")
@@ -59,7 +54,7 @@ def save_watermark(client: _RedisLike, watermark: IngestionWatermark) -> None:
 
 
 def reset_watermark(
-    client: _RedisLike,
+    client: redis.Redis[bytes],
     source_key: str,
     entity_key: str | None = None,
 ) -> None:
