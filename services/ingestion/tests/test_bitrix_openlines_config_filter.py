@@ -1,9 +1,19 @@
+"""Config selection no longer reaches Open Lines dialog lookups.
+
+These scenarios used to drive dialog resolution and message retrieval for the
+legacy api/backfill modes. Those modes are retired, so configuration selection
+is now moot: a run refuses before any config listing or dialog lookup, whatever
+the configuration selects.
+"""
+
 from __future__ import annotations
 
-from collections.abc import Iterator
-from datetime import UTC, datetime
+import re
+from collections.abc import Callable, Iterator
+from datetime import datetime
 
-from pytest import MonkeyPatch
+import pytest
+from src.bitrix_ingestion_models import BITRIX_LEGACY_OPENLINES_RETIRED_REASON
 from src.connectors.bitrix_openlines.connector import BitrixOpenLinesConnector
 from src.connectors.bitrix_openlines.models import (
     ChatReference,
@@ -13,284 +23,90 @@ from src.connectors.bitrix_openlines.models import (
 )
 from src.ingestion_config import BitrixOpenLinesConfig
 
+_LEGACY_REFUSAL = re.escape(BITRIX_LEGACY_OPENLINES_RETIRED_REASON)
 
-class StubWatermark:
-    def __init__(self) -> None:
-        self.committed: datetime | None = None
+
+class _UntouchableClient:
+    """An Open Lines client that fails if a refused mode performs any read."""
+
+    def list_active_configs(self) -> list[OpenLineConfig]:
+        raise AssertionError("a refused mode must not list active configs")
+
+    def iter_crm_chat_refs(self) -> list[ChatReference]:
+        raise AssertionError("a refused mode must not read CRM chat references")
+
+    def iter_crm_chat_ref_pages(self) -> Iterator[list[ChatReference]]:
+        raise AssertionError("a refused mode must not page CRM chat references")
+
+    def iter_recent_chat_refs(self, page_size: int) -> list[ChatReference]:
+        raise AssertionError("a refused mode must not read recent chat references")
+
+    def get_dialog(self, chat_id: int) -> DialogMetadata:
+        raise AssertionError("a refused mode must not resolve a dialog")
+
+    def get_messages(self, chat_id: int) -> list[OpenLineMessage]:
+        raise AssertionError("a refused mode must not read messages")
+
+    def get_history(self, chat_id: int) -> list[OpenLineMessage]:
+        raise AssertionError("a refused mode must not read history")
+
+    def close(self) -> None:
+        return None
+
+
+class _StubWatermark:
+    """A watermark store that never returns a committed position."""
 
     def get(self, *, overlap_seconds: int) -> datetime | None:
         return None
 
-    def set(self, value: datetime) -> None:
-        self.committed = value
+    def set(self, value: object) -> None:
+        return None
 
     def close(self) -> None:
         return None
 
 
-class StubDialogCache:
-    def __init__(
-        self,
-        entries: dict[int, DialogMetadata] | None = None,
-    ) -> None:
-        self.entries: dict[int, DialogMetadata] = dict(entries or {})
-        self.sets: list[tuple[int, DialogMetadata]] = []
-
-    def get(self, chat_id: int) -> DialogMetadata | None:
-        return self.entries.get(chat_id)
-
-    def set(self, chat_id: int, dialog: DialogMetadata) -> None:
-        self.sets.append((chat_id, dialog))
-        self.entries[chat_id] = dialog
-
-    def close(self) -> None:
-        return None
-
-
-class TrackingClient:
-    def __init__(
-        self,
-        references: list[ChatReference],
-        dialogs: dict[int, DialogMetadata] | None = None,
-        config_id: str = "46",
-    ) -> None:
-        self.references = references
-        self.dialogs = dialogs or {}
-        self.dialog_calls: list[int] = []
-        self.message_calls: list[int] = []
-        self._config_id = config_id
-
-    def list_active_configs(self) -> list[OpenLineConfig]:
-        return [OpenLineConfig(self._config_id, "Speedzone: FB")]
-
-    def iter_crm_chat_refs(self) -> list[ChatReference]:
-        return self.references
-
-    def iter_crm_chat_ref_pages(self) -> Iterator[list[ChatReference]]:
-        yield self.references
-
-    def iter_recent_chat_refs(self, page_size: int) -> list[ChatReference]:
-        return []
-
-    def get_dialog(self, chat_id: int) -> DialogMetadata:
-        self.dialog_calls.append(chat_id)
-        return self.dialogs.get(
-            chat_id,
-            DialogMetadata(chat_id, self._config_id, "facebook"),
-        )
-
-    def get_messages(self, chat_id: int) -> list[OpenLineMessage]:
-        self.message_calls.append(chat_id)
-        return [
-            OpenLineMessage(
-                1,
-                501,
-                "Ada",
-                "My phone is +6591234567",
-                datetime(2026, 7, 20, 8, tzinfo=UTC),
-                False,
-            )
-        ]
-
-    def get_history(self, chat_id: int) -> list[OpenLineMessage]:
-        return self.get_messages(chat_id)
-
-    def close(self) -> None:
-        return None
-
-
-def _extract_persons(monkeypatch: MonkeyPatch) -> None:
-    monkeypatch.setattr(
-        "src.connectors.bitrix_openlines.connector.run_extraction_batch",
-        lambda texts: [
-            {
-                "persons": [{"name": "Ada", "phone": "+6591234567"}],
-                "transactions": [],
-                "summary": "Customer conversation.",
-                "confidence": 0.95,
-            }
-            for _ in texts
-        ],
+def _connector(config: BitrixOpenLinesConfig, *, mode: str) -> BitrixOpenLinesConnector:
+    return BitrixOpenLinesConnector(
+        _UntouchableClient(),
+        _StubWatermark(),
+        config,
+        mode=mode,
     )
 
 
-def test_backfill_with_no_selected_config_makes_no_dialog_lookups(
-    monkeypatch: MonkeyPatch,
+def _selected_config() -> BitrixOpenLinesConfig:
+    """A config whose single configuration ID is included and entity-mapped."""
+    return BitrixOpenLinesConfig(
+        included_config_ids=["46"],
+        entity_by_config_id={"46": "eko"},
+    )
+
+
+def _unselected_config() -> BitrixOpenLinesConfig:
+    """A config whose configuration is excluded, so no chat could be selected."""
+    return BitrixOpenLinesConfig(
+        included_config_ids=["46"],
+        excluded_config_ids=["46"],
+        entity_by_config_id={"46": "eko"},
+    )
+
+
+@pytest.mark.parametrize("build_config", [_selected_config, _unselected_config])
+def test_retired_api_mode_refuses_before_any_dialog_lookup(
+    build_config: Callable[[], BitrixOpenLinesConfig],
 ) -> None:
-    monkeypatch.setattr(
-        "src.connectors.bitrix_openlines.connector.run_extraction_batch",
-        lambda texts: [_ for _ in texts] and [],
-    )
-    client = TrackingClient(
-        [ChatReference(77, datetime(2026, 7, 20, 8, tzinfo=UTC), "crm_activity")],
-    )
-    connector = BitrixOpenLinesConnector(
-        client,
-        StubWatermark(),
-        BitrixOpenLinesConfig(),
-        mode="backfill",
-    )
+    """A selected or excluded configuration still refuses before config listing."""
+    connector = _connector(build_config(), mode="api")
 
-    records = list(connector.fetch_records())
-
-    assert records == []
-    assert client.dialog_calls == []
-    assert client.message_calls == []
-    assert connector._counters.dialogs_requested == 0
-    assert connector._counters.chats_skipped_by_config == 0
-    assert connector._counters.records_emitted == 0
+    with pytest.raises(RuntimeError, match=_LEGACY_REFUSAL):
+        list(connector.fetch_records())
 
 
-def test_recent_dialog_origin_skips_dialog_lookup(
-    monkeypatch: MonkeyPatch,
-) -> None:
-    _extract_persons(monkeypatch)
-    client = TrackingClient(
-        [
-            ChatReference(
-                77,
-                datetime(2026, 7, 20, 8, tzinfo=UTC),
-                "recent_dialog",
-                config_id="46",
-                connector_id="facebook",
-            )
-        ],
-    )
-    connector = BitrixOpenLinesConnector(
-        client,
-        StubWatermark(),
-        BitrixOpenLinesConfig(entity_by_config_id={"46": "speedzone"}),
-        mode="api",
-    )
+def test_retired_backfill_mode_refuses_before_any_dialog_lookup() -> None:
+    """Backfill refuses before resolving any dialog, as api mode does."""
+    connector = _connector(_selected_config(), mode="backfill")
 
-    records = list(connector.fetch_records())
-
-    assert client.dialog_calls == []
-    assert len(records) == 1
-    assert records[0]["raw_payload"]["openline_config_id"] == "46"
-    assert connector._counters.dialogs_requested == 0
-    assert connector._counters.records_emitted == 1
-
-
-def test_dialog_cache_skips_known_unselected_chat_without_lookup() -> None:
-    cache = StubDialogCache(
-        entries={77: DialogMetadata(77, "99", "facebook")},
-    )
-    client = TrackingClient(
-        [ChatReference(77, datetime(2026, 7, 20, 8, tzinfo=UTC), "crm_activity")],
-    )
-    connector = BitrixOpenLinesConnector(
-        client,
-        StubWatermark(),
-        BitrixOpenLinesConfig(
-            included_channel_types=[],
-            included_config_ids=["46"],
-            entity_by_config_id={"46": "speedzone"},
-        ),
-        mode="api",
-        dialog_cache=cache,
-    )
-
-    records = list(connector.fetch_records())
-
-    assert records == []
-    assert client.dialog_calls == []
-    assert client.message_calls == []
-    assert connector._counters.dialogs_requested == 0
-    assert connector._counters.chats_skipped_by_config == 1
-
-
-def test_dialog_cache_caches_unselected_chat_after_dialog_lookup() -> None:
-    cache = StubDialogCache()
-    client = TrackingClient(
-        [ChatReference(77, datetime(2026, 7, 20, 8, tzinfo=UTC), "crm_activity")],
-        dialogs={77: DialogMetadata(77, "99", "facebook")},
-    )
-    connector = BitrixOpenLinesConnector(
-        client,
-        StubWatermark(),
-        BitrixOpenLinesConfig(
-            included_channel_types=[],
-            included_config_ids=["46"],
-            entity_by_config_id={"46": "speedzone"},
-        ),
-        mode="api",
-        dialog_cache=cache,
-    )
-
-    list(connector.fetch_records())
-
-    assert client.dialog_calls == [77]
-    assert cache.sets == [(77, DialogMetadata(77, "99", "facebook"))]
-
-    client.dialog_calls.clear()
-    connector2 = BitrixOpenLinesConnector(
-        client,
-        StubWatermark(),
-        BitrixOpenLinesConfig(
-            included_channel_types=[],
-            included_config_ids=["46"],
-            entity_by_config_id={"46": "speedzone"},
-        ),
-        mode="api",
-        dialog_cache=cache,
-    )
-
-    list(connector2.fetch_records())
-
-    assert client.dialog_calls == []
-    assert connector2._counters.dialogs_requested == 0
-    assert connector2._counters.chats_skipped_by_config == 1
-
-
-def test_dialog_cache_reselects_chat_when_config_becomes_selected(
-    monkeypatch: MonkeyPatch,
-) -> None:
-    _extract_persons(monkeypatch)
-    cache = StubDialogCache(
-        entries={77: DialogMetadata(77, "46", "facebook")},
-    )
-    client = TrackingClient(
-        [ChatReference(77, datetime(2026, 7, 20, 8, tzinfo=UTC), "crm_activity")],
-    )
-    connector = BitrixOpenLinesConnector(
-        client,
-        StubWatermark(),
-        BitrixOpenLinesConfig(
-            included_channel_types=[],
-            included_config_ids=["46"],
-            entity_by_config_id={"46": "speedzone"},
-        ),
-        mode="api",
-        dialog_cache=cache,
-    )
-
-    records = list(connector.fetch_records())
-
-    assert client.dialog_calls == []
-    assert len(records) == 1
-    assert records[0]["raw_payload"]["openline_config_id"] == "46"
-    assert connector._counters.dialogs_requested == 0
-    assert connector._counters.records_emitted == 1
-
-
-def test_counters_track_dialog_lookup_and_emission(
-    monkeypatch: MonkeyPatch,
-) -> None:
-    _extract_persons(monkeypatch)
-    client = TrackingClient(
-        [ChatReference(77, datetime(2026, 7, 20, 8, tzinfo=UTC), "crm_activity")],
-    )
-    connector = BitrixOpenLinesConnector(
-        client,
-        StubWatermark(),
-        BitrixOpenLinesConfig(entity_by_config_id={"46": "speedzone"}),
-        mode="api",
-    )
-
-    list(connector.fetch_records())
-
-    assert client.dialog_calls == [77]
-    assert connector._counters.dialogs_requested == 1
-    assert connector._counters.chats_skipped_by_config == 0
-    assert connector._counters.records_emitted == 1
+    with pytest.raises(RuntimeError, match=_LEGACY_REFUSAL):
+        list(connector.fetch_records())

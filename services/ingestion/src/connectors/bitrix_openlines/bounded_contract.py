@@ -2,8 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Literal
 
 from pydantic.types import JsonValue
 
@@ -273,8 +274,10 @@ def _validate_change_body(
 
 
 def _change_kind(value: JsonValue, name: str) -> DealChangeKind:
-    if value == "upsert" or value == "tombstone":
-        return value
+    if value == "upsert":
+        return "upsert"
+    if value == "tombstone":
+        return "tombstone"
     raise BitrixBoundedContractError(f"{name} has an invalid kind")
 
 
@@ -285,9 +288,9 @@ def _validate_page_size(items: tuple[object, ...], max_items: int, name: str) ->
         raise BitrixBoundedContractError(f"{name} exceeded its declared page size")
 
 
-def _validate_strict_order(items: object, name: str) -> None:
+def _validate_strict_order(items: Iterable[object], name: str) -> None:
     previous: object | None = None
-    for item in cast(tuple[object, ...], tuple(items)):
+    for item in items:
         if previous is not None and item <= previous:  # type: ignore[operator]
             raise BitrixBoundedContractError(f"{name} order did not strictly advance")
         previous = item

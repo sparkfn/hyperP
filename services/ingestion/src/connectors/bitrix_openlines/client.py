@@ -131,8 +131,8 @@ def _is_allowed_error_payload(
 
 
 def _assert_activity_request_retired(method: str, params: Mapping[str, JsonValue]) -> None:
-    """Reject retired activity reads before request accounting or source I/O."""
-    if method == "crm.activity.list" or (
+    """Reject every retired activity-family read before accounting or source I/O."""
+    if method.startswith("crm.activity.") or (
         method == "batch" and _batch_contains_activity_command(params)
     ):
         raise RuntimeError(CRM_ACTIVITY_SOURCE_ACCESS_RETIRED_REASON)

@@ -1,23 +1,30 @@
-"""Restart-safe split deal connector traversal tests."""
+"""Retirement of the split deal connector's legacy keyset traversal.
+
+The exclusive ``last_deal_id`` keyset path was replaced by the bounded adapter,
+so ``fetch_records`` refuses for every frozen window, including an already
+exhausted one.
+"""
 
 from __future__ import annotations
 
+import re
 from collections.abc import Collection
-from datetime import UTC, datetime
 
+import pytest
+from src.bitrix_ingestion_models import BITRIX_LEGACY_OPENLINES_RETIRED_REASON
 from src.connectors.bitrix_crm.deal_connector import BitrixCrmDealConnector
-from src.connectors.bitrix_openlines.models import (
-    CrmContact,
-    CrmDeal,
-    CrmDealCapabilityItem,
-    CrmDealCapabilityPage,
-)
+from src.connectors.bitrix_openlines.models import CrmDeal, CrmDealCapabilityPage
 from src.ingestion_config import BitrixOpenLinesConfig
 
+_LEGACY_REFUSAL = re.escape(BITRIX_LEGACY_OPENLINES_RETIRED_REASON)
 
-class _DealClient:
-    def __init__(self) -> None:
-        self.lower_bounds: list[int | None] = []
+
+class _UntouchableDealClient:
+    """A deal client that fails if the retired keyset path performs any read."""
+
+    @property
+    def request_count(self) -> int:
+        return 0
 
     def list_crm_deal_capability_page(
         self,
@@ -27,94 +34,39 @@ class _DealClient:
         less_than_or_equal_to_id: int | None = None,
         order_direction: str = "ASC",
     ) -> CrmDealCapabilityPage:
-        assert tuple(category_ids) == ("2",)
-        assert less_than_or_equal_to_id == 9
-        assert order_direction == "ASC"
-        self.lower_bounds.append(greater_than_id)
-        return CrmDealCapabilityPage(
-            (CrmDealCapabilityItem("9", "2", "C2:NEW"),),
-            None,
-            1,
-            None,
-            None,
-        )
+        raise AssertionError("the retired keyset path must not read a capability page")
 
     def get_deals(self, deal_ids: Collection[int]) -> list[CrmDeal]:
-        return [
-            CrmDeal(
-                id=str(deal_id),
-                title="Deal",
-                category_id="2",
-                stage_id="C2:NEW",
-                observed_at=datetime(2026, 8, 8, tzinfo=UTC),
-                primary_contact=CrmContact(
-                    id="123",
-                    full_name="Ada Lovelace",
-                    phones=(),
-                    emails=(),
-                ),
-                contacts=(
-                    CrmContact(
-                        id="123",
-                        full_name="Ada Lovelace",
-                        phones=(),
-                        emails=(),
-                    ),
-                ),
-                contact_count=1,
-                has_ambiguous_contacts=False,
-                raw_payload={
-                    "ID": str(deal_id),
-                    "CATEGORY_ID": "2",
-                    "STAGE_ID": "C2:NEW",
-                },
-            )
-            for deal_id in deal_ids
-        ]
+        raise AssertionError("the retired keyset path must not hydrate deals")
 
     def close(self) -> None:
-        pass
+        return None
 
 
-def test_deal_connector_resumes_exclusive_keyset_cursor() -> None:
-    client = _DealClient()
-    config = BitrixOpenLinesConfig(
-        included_crm_category_ids=["2"],
-        entity_by_crm_category_id={"2": "eko"},
-        source_instance_id="bitrix-primary",
-    )
-    connector = BitrixCrmDealConnector(
-        client,
-        config,
+def _connector(*, last_deal_id: int | None = None) -> BitrixCrmDealConnector:
+    return BitrixCrmDealConnector(
+        _UntouchableDealClient(),
+        BitrixOpenLinesConfig(
+            included_crm_category_ids=["2"],
+            entity_by_crm_category_id={"2": "eko"},
+            source_instance_id="bitrix-primary",
+        ),
         upper_deal_id=9,
-        last_deal_id=8,
+        last_deal_id=last_deal_id,
     )
 
-    records = list(connector.fetch_records())
 
-    assert client.lower_bounds == [8]
-    assert records[0]["source_record_id"] == "bitrix-crm-deal-9"
-    assert records[0]["identifiers"][0]["source_instance_id"] == "bitrix-primary"
-    raw_payload = records[0]["raw_payload"]
-    assert isinstance(raw_payload, dict)
-    assert raw_payload["category_id"] == "2"
-    assert raw_payload["stage_id"] == "C2:NEW"
-    assert "CATEGORY_ID" not in raw_payload
-    assert "STAGE_ID" not in raw_payload
+def test_legacy_keyset_traversal_is_refused() -> None:
+    """A resumable frozen window refuses instead of resuming the keyset."""
+    connector = _connector(last_deal_id=8)
+
+    with pytest.raises(RuntimeError, match=_LEGACY_REFUSAL):
+        list(connector.fetch_records())
 
 
-def test_deal_connector_returns_empty_for_an_exhausted_frozen_window() -> None:
-    client = _DealClient()
-    config = BitrixOpenLinesConfig(
-        included_crm_category_ids=["2"],
-        entity_by_crm_category_id={"2": "eko"},
-    )
-    connector = BitrixCrmDealConnector(
-        client,
-        config,
-        upper_deal_id=9,
-        last_deal_id=9,
-    )
+def test_legacy_keyset_refuses_an_exhausted_frozen_window() -> None:
+    """A window that used to short-circuit to no records is refused instead."""
+    connector = _connector(last_deal_id=9)
 
-    assert list(connector.fetch_records()) == []
-    assert client.lower_bounds == []
+    with pytest.raises(RuntimeError, match=_LEGACY_REFUSAL):
+        list(connector.fetch_records())

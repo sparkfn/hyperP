@@ -863,9 +863,27 @@ def test_activity_chat_discovery_is_retired() -> None:
         discover_chats(_UnusedDiscoveryClient(), recent_page_size=10)  # type: ignore[arg-type]
 
 
-def test_activity_list_requests_are_refused_before_io() -> None:
+@pytest.mark.parametrize(
+    "method",
+    [
+        "crm.activity.list",
+        "crm.activity.get",
+        "crm.activity.add",
+        "crm.activity.update",
+        "crm.activity.delete",
+        "crm.activity.fields",
+    ],
+)
+def test_activity_family_requests_are_refused_before_io(method: str) -> None:
+    """Every ``crm.activity.*`` method is refused, not just the list read."""
     with pytest.raises(RuntimeError, match="permanently retired"):
-        _assert_activity_request_retired("crm.activity.list", {})
+        _assert_activity_request_retired(method, {})
+
+
+def test_lookalike_non_activity_methods_are_allowed() -> None:
+    """The refusal is the activity-family prefix, not a loose substring match."""
+    _assert_activity_request_retired("crm.deal.activity.list", {})
+    _assert_activity_request_retired("crm.activityreport.list", {})
 
 
 def test_activity_batch_commands_are_refused_before_io() -> None:
