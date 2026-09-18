@@ -18,6 +18,7 @@ import logging
 import os
 import socket
 from datetime import UTC, datetime
+from typing import cast
 from urllib.parse import urlsplit
 
 import redis
@@ -97,7 +98,7 @@ def _batch_count(record: Record | None) -> int:
     value = record.get("deleted")
     if isinstance(value, bool) or not isinstance(value, int) or value < 0:
         raise RuntimeError("staging reset batch returned an invalid deleted count")
-    return value
+    return cast(int, value)
 
 
 def _delete_batch(tx: ManagedTransaction, batch_size: int) -> int:
@@ -107,9 +108,13 @@ def _delete_batch(tx: ManagedTransaction, batch_size: int) -> int:
 
 def _clear_graph(client: Neo4jClient, batch_size: int = _BATCH_SIZE) -> int:
     """Delete every non-preserved node in batches until none remain."""
+
+    def _batch_work(tx: ManagedTransaction) -> int:
+        return _delete_batch(tx, batch_size)
+
     total = 0
     while True:
-        deleted = client.execute_write(lambda tx, _bs=batch_size: _delete_batch(tx, _bs))
+        deleted = client.execute_write(_batch_work)
         total += deleted
         logger.info("Graph batch: deleted %d nodes (total so far: %d)", deleted, total)
         if deleted == 0:
@@ -126,15 +131,19 @@ def _clear_redis(broker_url: str) -> int:
             pattern_count = 0
             cursor = 0
             while True:
-                raw_cursor, keys = client.scan(cursor, match=pattern, count=_REDIS_SCAN_COUNT)
+                raw_scan = cast(
+                    tuple[object, list[object]],
+                    client.scan(cursor, match=pattern, count=_REDIS_SCAN_COUNT),
+                )
+                raw_cursor, keys = raw_scan
                 cursor = int(raw_cursor)
                 if keys:
-                    pattern_count += int(client.delete(*keys))
+                    pattern_count += cast(int, client.delete(*keys))
                 if cursor == 0:
                     break
             count += pattern_count
             logger.info("Redis scan %s: deleted %d keys", pattern, pattern_count)
-        queue_count = int(client.delete(*_CELERY_QUEUE_KEYS))
+        queue_count = cast(int, client.delete(*_CELERY_QUEUE_KEYS))
         count += queue_count
         logger.info("Redis Celery queues purged: deleted %d keys", queue_count)
         return count
