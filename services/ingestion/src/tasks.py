@@ -2276,3 +2276,20 @@ def _create_sgbankruptcy_incremental() -> IncrementalConnector:
 
 
 INCREMENTAL_CONNECTORS["sgbankruptcy"] = _create_sgbankruptcy_incremental
+
+
+def _create_sgrentalflats_incremental() -> IncrementalConnector:
+    from src.connectors.sggov.rental_flats_incremental import (
+        SGGovernmentRentalFlatsIncrementalConnector,
+    )
+
+    settings = get_settings()
+    return SGGovernmentRentalFlatsIncrementalConnector(
+        base_url=settings.sgrentalflats_api_base_url,
+        api_key=settings.sgrentalflats_api_key.get_secret_value(),
+        page_size=settings.sgrentalflats_api_page_size,
+        timeout_seconds=settings.sgrentalflats_api_timeout_seconds,
+    )
+
+
+INCREMENTAL_CONNECTORS["sgrentalflats"] = _create_sgrentalflats_incremental
