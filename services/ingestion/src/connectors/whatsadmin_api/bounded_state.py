@@ -16,6 +16,7 @@ from dataclasses import dataclass
 from datetime import datetime
 from typing import Literal
 
+from neo4j import ManagedTransaction
 from pydantic.types import JsonValue
 
 from src.config import get_settings
@@ -35,7 +36,10 @@ from src.connectors.whatsadmin_api.watermark import (
 )
 from src.connectors.whatsapp.connector import _ChatBundle, _Participant
 from src.graph.client import Neo4jClient
-from src.graph.incremental_checkpoints import Neo4jCheckpointRedis
+from src.graph.incremental_checkpoints import (
+    Neo4jCheckpointRedis,
+    TransactionBoundCheckpoints,
+)
 
 BoundedSubphase = Literal["sessions", "chats", "extract", "commit", "terminal"]
 
@@ -303,6 +307,15 @@ class WhatsAdminBoundedState:
         if store.reset_generation is None:
             raise ValueError("bounded state requires a generation-scoped checkpoint store")
         self._store = store
+
+    def bind_transaction(
+        self,
+        tx: ManagedTransaction,
+        *,
+        terminal_authorized: bool = False,
+    ) -> TransactionBoundCheckpoints:
+        """Return the commit-transaction view of this run's checkpoint store."""
+        return self._store.bind_transaction(tx, terminal_authorized=terminal_authorized)
 
     def read_bundles(
         self,

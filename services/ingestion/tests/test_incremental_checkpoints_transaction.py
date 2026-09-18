@@ -41,7 +41,7 @@ class FakeTx:
             if not self.skip_deletes:
                 self._store.pop(key, None)
             return _Result({"deleted": True})
-        if "SET checkpoint.value" in query:
+        if "checkpoint.value = $value" in query:
             self.statuses.append(parameters.get("status"))
             if not self.skip_writes:
                 value = parameters.get("value")

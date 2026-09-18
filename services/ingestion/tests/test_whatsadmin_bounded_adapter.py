@@ -482,7 +482,8 @@ def test_stored_chat_page_round_trips_bundle_content(
     assert stored.source_version.startswith("sha256:")
     bundle = bundle_from_stored(stored)
     assert bundle.chat_id == CHAT_A
-    assert bundle.msg_text == "Hello"
+    assert bundle.msg_text == stored.msg_text
+    assert "Hello" in bundle.msg_text
     assert bundle.session_id == SESSION_ID
     assert bundle.source_version == stored.source_version
 

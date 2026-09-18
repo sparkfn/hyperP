@@ -8,6 +8,8 @@ are not upstream capability evidence.
 
 from __future__ import annotations
 
+from typing import cast
+
 from src.bounded_ingestion_models import AttemptContext, OccurrenceContext, RunScope
 from src.config import get_settings
 from src.connectors.whatsadmin_api.bounded_connector import (
@@ -142,8 +144,7 @@ class WhatsAdminBoundedDescriptor:
 def _entity_key(value: str | None) -> WhatsAdminEntity:
     if value not in WHATSADMIN_ENTITIES:
         raise ValueError("bounded WhatsAdmin run requires an eko or speedzone entity")
-    entity: WhatsAdminEntity = value
-    return entity
+    return cast(WhatsAdminEntity, value)
 
 
 DESCRIPTOR = WhatsAdminBoundedDescriptor()

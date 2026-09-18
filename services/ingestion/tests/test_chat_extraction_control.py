@@ -11,7 +11,9 @@ _VALID = (
     '{"conversations": [{"conversation_index": 0, "persons": [], '
     '"possible_persons": [], "confidence": 0.6}]}'
 )
-_SUMMARY = "=== Summary 1 ===\nCustomer asked about a unit."
+# The prompt numbers conversations from zero, so a one-conversation batch answers
+# with a "Summary 0" marker (llm_prompts._number_conversations).
+_SUMMARY = "=== Summary 0 ===\nCustomer asked about a unit."
 
 
 class CountingControl:

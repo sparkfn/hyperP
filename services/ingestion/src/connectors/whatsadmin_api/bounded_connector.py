@@ -173,7 +173,7 @@ class WhatsAdminBoundedConnector:
             cursor=cursor.sessions_cursor,
             deadline_monotonic=self._deadline_monotonic(context),
         )
-        self._bind_snapshot(cursor, page.meta.snapshot_at, required=False)
+        snapshot = self._bind_snapshot(cursor, page.meta.snapshot_at, required=False)
         usage = self._page_usage(page)
         replay_id = _replay_id(
             "sessions",
@@ -189,6 +189,7 @@ class WhatsAdminBoundedConnector:
             located = replace(
                 cursor,
                 subphase="chats",
+                snapshot_id=snapshot,
                 session_queue=queue,
                 sessions_cursor=next_cursor,
                 sessions_processed=processed,
@@ -197,11 +198,12 @@ class WhatsAdminBoundedConnector:
         if next_cursor is not None:
             located = replace(
                 cursor,
+                snapshot_id=snapshot,
                 sessions_cursor=next_cursor,
                 sessions_processed=processed,
             )
             return self._unit(checkpoint, cursor, located, replay_id, usage, terminal=False)
-        located = replace(cursor, subphase="terminal")
+        located = replace(cursor, subphase="terminal", snapshot_id=snapshot)
         return self._unit(checkpoint, cursor, located, replay_id, usage, terminal=True)
 
     def _chats_unit(
@@ -496,36 +498,31 @@ class WhatsAdminBoundedConnector:
                 ),
                 False,
             )
-        cleared: dict[str, object] = {
-            "bundles_digest": None,
-            "bundle_count": 0,
-            "bundle_index": 0,
-            "prepared_digest": None,
-            "chat_id": None,
-            "source_version": None,
-            "chats_cursor": None,
-            "retry_replay_id": None,
-            "retry_source_record_id": None,
-            "extract_attempts": 0,
-        }
+        cleared = replace(
+            cursor,
+            bundles_digest=None,
+            bundle_count=0,
+            bundle_index=0,
+            prepared_digest=None,
+            chat_id=None,
+            source_version=None,
+            chats_cursor=None,
+            retry_replay_id=None,
+            retry_source_record_id=None,
+            extract_attempts=0,
+        )
         if cursor.chats_cursor is not None:
-            return (replace(cursor, subphase="chats", **cleared), False)
+            return (replace(cleared, subphase="chats"), False)
         remaining = cursor.session_queue[1:]
         completed = (*cursor.completed_sessions, session.session_id)
         if remaining:
-            return (
-                replace(cursor, subphase="chats", session_queue=remaining, **cleared),
-                False,
-            )
+            return (replace(cleared, subphase="chats", session_queue=remaining), False)
         if cursor.sessions_cursor is not None:
             return (
-                replace(cursor, subphase="sessions", completed_sessions=completed, **cleared),
+                replace(cleared, subphase="sessions", completed_sessions=completed),
                 False,
             )
-        return (
-            replace(cursor, subphase="terminal", completed_sessions=completed, **cleared),
-            True,
-        )
+        return (replace(cleared, subphase="terminal", completed_sessions=completed), True)
 
     # Shared helpers --------------------------------------------------------
 

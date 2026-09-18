@@ -23,10 +23,10 @@ from src.connectors.whatsadmin_api.watermark import (
     bounded_digest,
     bounded_entry_key,
     committed_version_key,
-    is_completed_watermark_key,
     session_watermark_key,
 )
 from src.connectors.whatsapp.connector import _ChatBundle, _Participant
+from src.graph.incremental_checkpoints import is_completed_watermark_key
 
 WINDOW = {
     "contract_version": "whatsadmin-hyperp-extraction-v1",
@@ -185,7 +185,16 @@ def test_retry_matching_prefers_the_content_version_and_keeps_legacy_entries() -
         session_phone=None,
     )
 
-    serialized = serialize_retry_bundle(versioned, {"failure_code": "malformed_response"})
+    serialized = serialize_retry_bundle(
+        versioned,
+        {
+            "entity_key": "eko",
+            "session_id": "ses_1",
+            "chat_id": "chat-1",
+            "observed_at": versioned.observed_at,
+            "failure_code": "malformed_response",
+        },
+    )
     assert serialized["source_version"] == "sha256:version-a"
     assert retry_matches_bundle(serialized, versioned) is True
     assert retry_matches_bundle(serialized, _with_version(versioned, "sha256:version-b")) is False

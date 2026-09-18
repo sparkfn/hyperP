@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import logging
 from collections.abc import Callable, Mapping
+from typing import cast
 
 from neo4j import ManagedTransaction
 from pydantic.types import JsonValue
@@ -232,8 +233,7 @@ def _entity_key(context: AttemptContext, session_id: str | None) -> WhatsAdminEn
     if value not in WHATSADMIN_ENTITIES:
         detail = f" for session {session_id}" if session_id is not None else ""
         raise RuntimeError(f"bounded WhatsAdmin scope has no entity{detail}")
-    entity: WhatsAdminEntity = value
-    return entity
+    return cast(WhatsAdminEntity, value)
 
 
 def _positive_attempt_count(value: JsonValue) -> int:
