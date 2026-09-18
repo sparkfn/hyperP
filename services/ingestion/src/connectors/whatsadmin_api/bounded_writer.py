@@ -81,7 +81,7 @@ class WhatsAdminBoundedWriter:
         if before.subphase == "extract":
             if unit.unit.records:
                 return self._retry(unit, before)
-            return self._resolved(before)
+            return self._resolved(unit)
         if before.subphase != "commit":
             return UnitApplyResult(dispositions=())
         return self._commit(tx, context, unit, before)
@@ -115,16 +115,24 @@ class WhatsAdminBoundedWriter:
         )
 
     @staticmethod
-    def _resolved(before: WhatsAdminCursor) -> UnitApplyResult:
-        """Resolve the logical-run obligation a successful extraction satisfied."""
-        if before.retry_replay_id is None or before.retry_source_record_id is None:
+    def _resolved(unit: BoundedUnit) -> UnitApplyResult:
+        """Resolve the logical-run obligation a successful extraction satisfied.
+
+        A retry unit leaves its checkpoint at ``extract`` without advancing the
+        cursor (its receipt is ``retry_pending``), so the pending obligation is
+        keyed off this unit's attempt-independent replay identity rather than
+        any cursor marker. Resolution is idempotent in the graph: no pending
+        obligation for this identity is a no-op.
+        """
+        after = WhatsAdminCursor.from_payload(unit.unit.checkpoint_after.cursor)
+        if after.retry_source_record_id is None:
             return UnitApplyResult(dispositions=())
         return UnitApplyResult(
             dispositions=(),
             resolved_retries=(
                 RetryResolution(
-                    replay_id=before.retry_replay_id,
-                    source_record_id=before.retry_source_record_id,
+                    replay_id=unit.replay_id,
+                    source_record_id=after.retry_source_record_id,
                 ),
             ),
         )
@@ -163,10 +171,8 @@ class WhatsAdminBoundedWriter:
                 committed_version_key(entity_key, session.session_id, before.chat_id),
                 before.source_version,
             )
-        return UnitApplyResult(
-            dispositions=tuple(dispositions),
-            resolved_retries=self._resolved(before).resolved_retries,
-        )
+        # The successful extraction unit already resolved this chat's obligation.
+        return UnitApplyResult(dispositions=tuple(dispositions))
 
     def _terminal_watermarks(
         self,

@@ -143,8 +143,8 @@ def test_proven_capability_clears_the_readiness_gate(
         contract_version=descriptor_module.CONTRACT_VERSION,
         cursor_retention_days=45,
         guarantees=tuple(
-            CapabilityGuarantee(name=name, proven=True, evidence="deployed probe")
-            for name in descriptor_module.UPSTREAM_CAPABILITY.guarantees
+            CapabilityGuarantee(name=item.name, proven=True, evidence="deployed probe")
+            for item in descriptor_module.UPSTREAM_CAPABILITY.guarantees
         ),
     )
     monkeypatch.setattr(descriptor_module, "UPSTREAM_CAPABILITY", proven)
@@ -164,8 +164,8 @@ def test_contract_version_drift_blocks_even_a_proven_descriptor(
         contract_version="whatsadmin-hyperp-extraction-v2",
         cursor_retention_days=45,
         guarantees=tuple(
-            CapabilityGuarantee(name=name, proven=True, evidence="deployed probe")
-            for name in descriptor_module.UPSTREAM_CAPABILITY.guarantees
+            CapabilityGuarantee(name=item.name, proven=True, evidence="deployed probe")
+            for item in descriptor_module.UPSTREAM_CAPABILITY.guarantees
         ),
     )
     monkeypatch.setattr(descriptor_module, "UPSTREAM_CAPABILITY", drifted)

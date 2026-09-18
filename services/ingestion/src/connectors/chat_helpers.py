@@ -159,16 +159,19 @@ async def _extract_structured(
     max_tokens: int,
     control: LlmAttemptControl | None = None,
 ) -> str:
-    """ProClaude JSON-mode call for structured identity/transaction extraction."""
+    """ProClaude JSON-mode call for structured identity/transaction extraction.
+
+    The control is only passed when a bounded caller supplied one, so a service
+    that predates the bounded budget keeps receiving its original call shape.
+    """
     svc = get_chat_extraction_service()
-    return await svc.chat_json(
-        [
-            ChatMessage(role="system", content=EXTRACTION_SYSTEM),
-            ChatMessage(role="user", content=build_batch_extraction_prompt(texts)),
-        ],
-        max_tokens=max_tokens,
-        control=control,
-    )
+    messages = [
+        ChatMessage(role="system", content=EXTRACTION_SYSTEM),
+        ChatMessage(role="user", content=build_batch_extraction_prompt(texts)),
+    ]
+    if control is None:
+        return await svc.chat_json(messages, max_tokens=max_tokens)
+    return await svc.chat_json(messages, max_tokens=max_tokens, control=control)
 
 
 async def _summarize_batch(
@@ -176,16 +179,18 @@ async def _summarize_batch(
     max_tokens: int,
     control: LlmAttemptControl | None = None,
 ) -> str:
-    """ProClaude call for narrative per-conversation summaries."""
+    """ProClaude call for narrative per-conversation summaries.
+
+    As with structured extraction, the control is omitted when absent.
+    """
     svc = get_chat_summary_service()
-    return await svc.chat_text(
-        [
-            ChatMessage(role="system", content=SUMMARY_SYSTEM),
-            ChatMessage(role="user", content=build_batch_summary_prompt(texts)),
-        ],
-        max_tokens=max_tokens,
-        control=control,
-    )
+    messages = [
+        ChatMessage(role="system", content=SUMMARY_SYSTEM),
+        ChatMessage(role="user", content=build_batch_summary_prompt(texts)),
+    ]
+    if control is None:
+        return await svc.chat_text(messages, max_tokens=max_tokens)
+    return await svc.chat_text(messages, max_tokens=max_tokens, control=control)
 
 
 #: Matches the "=== Summary N ===" markers ProClaude emits between summaries.

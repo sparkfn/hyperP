@@ -302,7 +302,11 @@ def process_whatsapp_bundles(
     extraction_cache: dict[tuple[str, str], ExtractionResult] = {}
     for start, end in iter_char_batches(texts, chat_batch_max_chars(), chat_batch_size()):
         batch = bundles[start:end]
-        outcome = run_extraction_batch_detailed(texts[start:end], control=call_control)
+        outcome = (
+            run_extraction_batch_detailed(texts[start:end], control=call_control)
+            if call_control is not None
+            else run_extraction_batch_detailed(texts[start:end])
+        )
         batch_results = outcome.results
         logger.info("LLM batch %d-%d/%d done", start, end, len(bundles))
         for bundle, result, failure in zip(batch, batch_results, outcome.failures, strict=True):

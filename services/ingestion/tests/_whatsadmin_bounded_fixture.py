@@ -137,6 +137,8 @@ def chat_page(
     next_cursor: str | None = None,
     snapshot_at: str | None = SNAPSHOT_AT,
     body: str = "Hello",
+    bodies: dict[str, str] | None = None,
+    session_id: str = SESSION_ID,
 ) -> ChatPage:
     meta: dict[str, object] = {
         "timestamp": "2026-09-17T05:30:00Z",
@@ -148,7 +150,14 @@ def chat_page(
     return ChatPage.model_validate(
         {
             "success": True,
-            "data": [chat_payload(chat_id, body=body) for chat_id in chat_ids],
+            "data": [
+                chat_payload(
+                    chat_id,
+                    body=(bodies or {}).get(chat_id, body),
+                    session_id=session_id,
+                )
+                for chat_id in chat_ids
+            ],
             "meta": meta,
         }
     )

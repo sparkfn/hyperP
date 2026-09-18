@@ -303,7 +303,7 @@ class WhatsAdminBoundedConnector:
                 chat_id=bundle.chat_id,
                 source_version=bundle.source_version,
                 retry_replay_id=None,
-                retry_source_record_id=None,
+                retry_source_record_id=retry_source_record_id(bundle),
                 extract_attempts=0,
             )
             return self._unit(checkpoint, cursor, located, replay_id, Usage(), terminal=False)
@@ -350,7 +350,7 @@ class WhatsAdminBoundedConnector:
             chat_id=bundle.chat_id,
             source_version=bundle.source_version,
             retry_replay_id=None,
-            retry_source_record_id=None,
+            retry_source_record_id=retry_source_record_id(bundle),
             extract_attempts=0,
         )
         return self._unit(
@@ -512,11 +512,23 @@ class WhatsAdminBoundedConnector:
             extract_attempts=0,
         )
         if cursor.chats_cursor is not None:
-            return (replace(cleared, subphase="chats"), False)
+            # The session has more chat pages: keep its continuation cursor.
+            return (
+                replace(cleared, subphase="chats", chats_cursor=cursor.chats_cursor),
+                False,
+            )
         remaining = cursor.session_queue[1:]
         completed = (*cursor.completed_sessions, session.session_id)
         if remaining:
-            return (replace(cleared, subphase="chats", session_queue=remaining), False)
+            return (
+                replace(
+                    cleared,
+                    subphase="chats",
+                    session_queue=remaining,
+                    completed_sessions=completed,
+                ),
+                False,
+            )
         if cursor.sessions_cursor is not None:
             return (
                 replace(cleared, subphase="sessions", completed_sessions=completed),

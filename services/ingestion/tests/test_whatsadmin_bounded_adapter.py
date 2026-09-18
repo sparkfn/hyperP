@@ -44,6 +44,7 @@ from src.resumable import CheckpointDescriptor
 
 CHAT_A = "6581111111@c.us"
 CHAT_B = "6582222222@c.us"
+SECOND_SESSION_ID = "ses_2"
 
 
 def _connector(
@@ -190,27 +191,42 @@ def test_terminal_watermark_is_refused_without_terminal_authorization(
 def test_changed_chat_version_is_extracted_and_unchanged_version_is_not(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    extraction = RecordingBundleExtraction(envelopes={CHAT_A: [envelope(CHAT_A)]})
+    extraction = RecordingBundleExtraction(
+        envelopes={CHAT_A: [envelope(CHAT_A)], CHAT_B: [envelope(CHAT_B)]}
+    )
     _start(monkeypatch, extraction)
     state = FakeState()
     pipeline = FakePipeline()
-    connector = _connector(_two_chat_client(), state, extraction)
     writer = _writer(state, pipeline)
 
-    first = drive(connector, writer, checkpoint=_checkpoint())
-    assert first.finished is True
-    assert extraction.calls == [CHAT_A]
-
-    # A second window over the same unchanged chat versions must not re-extract.
-    second = drive(
+    first = drive(
         _connector(_two_chat_client(), state, extraction),
         writer,
         checkpoint=_checkpoint(),
     )
-    assert second.finished is True
-    assert extraction.calls == [CHAT_A]
-    assert pipeline.envelopes == [pipeline.envelopes[0]]
-    assert "committed" not in second.dispositions
+    assert first.finished is True
+    assert extraction.calls == [CHAT_A, CHAT_B]
+    assert first.dispositions == ("committed", "committed")
+
+    # A second window over the same chat versions must not re-extract either.
+    unchanged = drive(
+        _connector(_two_chat_client(), state, extraction),
+        writer,
+        checkpoint=_checkpoint(),
+    )
+    assert unchanged.finished is True
+    assert extraction.calls == [CHAT_A, CHAT_B]
+    assert "committed" not in unchanged.dispositions
+
+    # An edited chat version is extracted again while its unchanged sibling is not.
+    edited = FakeBoundedClient(
+        session_pages=[session_page((SESSION_ID,))],
+        chat_pages={SESSION_ID: [chat_page((CHAT_A, CHAT_B), bodies={CHAT_B: "Edited"})]},
+    )
+    changed = drive(_connector(edited, state, extraction), writer, checkpoint=_checkpoint())
+    assert changed.finished is True
+    assert extraction.calls == [CHAT_A, CHAT_B, CHAT_B]
+    assert changed.dispositions == ("committed",)
 
 
 def test_extraction_failure_persists_a_durable_retry_and_holds_the_subphase(
@@ -251,6 +267,7 @@ def test_extraction_failure_persists_a_durable_retry_and_holds_the_subphase(
 def test_readmission_after_a_retry_resolves_the_obligation_with_a_stable_replay_id(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """A retry unit never advances its cursor, so the retry must still drain."""
     extraction = RecordingBundleExtraction(
         envelopes={CHAT_A: [envelope(CHAT_A)]},
         failures={CHAT_A: "malformed_response"},
@@ -262,21 +279,27 @@ def test_readmission_after_a_retry_resolves_the_obligation_with_a_stable_replay_
         session_pages=[session_page((SESSION_ID,))],
         chat_pages={SESSION_ID: [chat_page((CHAT_A,))]},
     )
-    connector = _connector(client, state, extraction)
-
-    failed = drive(
-        connector,
-        _writer(state, pipeline),
+    writer = _writer(state, pipeline)
+    at_extract = drive_until(
+        _connector(client, state, extraction),
+        writer,
         checkpoint=_checkpoint(),
-        stop_on_obligation=True,
+        subphase="extract",
     )
-    retry_replay_id = failed.steps[-1].replay_id
+
+    applied, _ = apply_one(_connector(client, state, extraction), writer, at_extract)
+    assert applied.dispositions == ("durable_retry",)
+    assert pipeline.envelopes == []
+    retry_replay_id = applied.retry_obligations[0].replay_id
+    # The graph keeps this same pre-retry cursor: the receipt is retry_pending,
+    # so the checkpoint never advances onto the retry unit's after-cursor.
+    assert WhatsAdminCursor.from_payload(at_extract.cursor).retry_replay_id is None
 
     extraction.failures.clear()
     resumed = drive(
         _connector(client, state, extraction),
-        _writer(state, pipeline),
-        checkpoint=failed.checkpoint,
+        writer,
+        checkpoint=at_extract,
         generation=2,
     )
 
@@ -671,6 +694,103 @@ def test_page_units_report_the_response_bytes_the_runner_bounds(
     assert all(step.usage.source_requests == 1 for step in page_steps)
     assert all(step.usage.pages == 1 for step in page_steps)
     assert all(step.usage.bytes_read > 0 for step in page_steps)
+
+
+def test_chat_pagination_continues_within_the_session(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    extraction = RecordingBundleExtraction(
+        envelopes={CHAT_A: [envelope(CHAT_A)], CHAT_B: [envelope(CHAT_B)]}
+    )
+    _start(monkeypatch, extraction)
+    state = FakeState()
+    pipeline = FakePipeline()
+    client = FakeBoundedClient(
+        session_pages=[session_page((SESSION_ID,))],
+        chat_pages={
+            SESSION_ID: [
+                chat_page((CHAT_A,), has_more=True, next_cursor="page-1"),
+                chat_page((CHAT_B,)),
+            ]
+        },
+    )
+
+    walked = drive(
+        _connector(client, state, extraction),
+        _writer(state, pipeline),
+        checkpoint=_checkpoint(),
+    )
+
+    assert walked.finished is True
+    assert walked.subphases() == [
+        "sessions",
+        "chats",
+        "extract",
+        "commit",
+        "chats",
+        "extract",
+        "commit",
+    ]
+    assert extraction.calls == [CHAT_A, CHAT_B]
+    assert walked.dispositions == ("committed", "committed")
+    assert cursor_subphase(walked.checkpoint) == "terminal"
+    assert [call.cursor for call in client.calls if call.resource == "chats"] == [
+        None,
+        "page-1",
+    ]
+
+
+def test_every_completed_session_of_a_page_publishes_its_watermark(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    extraction = RecordingBundleExtraction(
+        envelopes={CHAT_A: [envelope(CHAT_A)], CHAT_B: [envelope(CHAT_B)]}
+    )
+    _start(monkeypatch, extraction)
+    state = FakeState()
+    pipeline = FakePipeline()
+    client = FakeBoundedClient(
+        session_pages=[session_page((SESSION_ID, SECOND_SESSION_ID))],
+        chat_pages={
+            SESSION_ID: [chat_page((CHAT_A,))],
+            SECOND_SESSION_ID: [chat_page((CHAT_B,), session_id=SECOND_SESSION_ID)],
+        },
+    )
+
+    walked = drive(
+        _connector(client, state, extraction),
+        _writer(state, pipeline),
+        checkpoint=_checkpoint(),
+    )
+
+    assert walked.finished is True
+    assert cursor_subphase(walked.checkpoint) == "terminal"
+    assert extraction.calls == [CHAT_A, CHAT_B]
+    assert state.entries[session_watermark_key(ENTITY, SESSION_ID)] == UPPER_BOUND
+    assert state.entries[session_watermark_key(ENTITY, SECOND_SESSION_ID)] == UPPER_BOUND
+
+
+def test_session_page_snapshot_drift_across_pages_is_refused(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    extraction = RecordingBundleExtraction(envelopes={})
+    _start(monkeypatch, extraction)
+    state = FakeState()
+    pipeline = FakePipeline()
+    client = FakeBoundedClient(
+        session_pages=[
+            session_page((), has_more=True, next_cursor="page-2"),
+            session_page((SESSION_ID,), snapshot_at="2026-09-17T05:45:00Z"),
+        ],
+        chat_pages={SESSION_ID: [chat_page((CHAT_A,))]},
+    )
+
+    with pytest.raises(RuntimeError, match="snapshotAt changed"):
+        drive(
+            _connector(client, state, extraction),
+            _writer(state, pipeline),
+            checkpoint=_checkpoint(),
+        )
 
 
 def _staged_prepared(state: FakeState) -> PreparedChat:
