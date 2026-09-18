@@ -57,6 +57,11 @@ from src.bounded_ingestion_task_runtime import (
 from src.bounded_ingestion_window import occurrence_from_payload
 from src.celery_app import LIFECYCLE_QUEUE, celery_app
 from src.config import get_settings
+from src.connectors.fundbox_api.incremental import (
+    create_fundbox_contacts_incremental,
+    create_fundbox_sales_incremental,
+    create_fundbox_users_incremental,
+)
 from src.connectors.whatsadmin_api.credentials import WHATSADMIN_ENTITIES
 from src.errors import SourceNotConfiguredError
 from src.graph import queries
@@ -2038,7 +2043,11 @@ def _parse_feature_snapshot(raw: str) -> dict[str, JsonValue]:
 # Incremental (watermark) ingestion
 # ---------------------------------------------------------------------------
 
-INCREMENTAL_CONNECTORS: dict[str, object] = {}
+INCREMENTAL_CONNECTORS: dict[str, object] = {
+    "fundbox": create_fundbox_users_incremental,
+    "fundbox:contacts": create_fundbox_contacts_incremental,
+    "fundbox:sales": create_fundbox_sales_incremental,
+}
 
 
 def _create_bitrix_openlines_incremental() -> object:

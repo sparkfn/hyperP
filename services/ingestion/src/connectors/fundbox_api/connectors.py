@@ -133,7 +133,8 @@ class FundboxApiConnector(SourceConnector):
         ) > datetime.fromisoformat(self.latest_effective_updated_at.replace("Z", "+00:00")):
             self.latest_effective_updated_at = effective
 
-    def build_record(self, composite: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    @staticmethod
+    def build_record(composite: dict[str, JsonValue]) -> dict[str, JsonValue]:
         raise NotImplementedError
 
     def source_record_id(self, root_id: int) -> str:
@@ -156,7 +157,8 @@ class FundboxUsersApiConnector(FundboxApiConnector):
     def source_record_id(self, root_id: int) -> str:
         return f"fundbox-user-{root_id}"
 
-    def build_record(self, composite: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    @staticmethod
+    def build_record(composite: dict[str, JsonValue]) -> dict[str, JsonValue]:
         user = _object(composite.get("user"), "user")
         profile_value = composite.get("basic_profile")
         profile = profile_value if isinstance(profile_value, dict) else {}
@@ -243,7 +245,8 @@ class FundboxContactsApiConnector(FundboxApiConnector):
     def source_record_id(self, root_id: int) -> str:
         return f"fundbox-contact-{root_id}"
 
-    def build_record(self, composite: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    @staticmethod
+    def build_record(composite: dict[str, JsonValue]) -> dict[str, JsonValue]:
         contact = _object(composite.get("contact"), "contact")
         identifiers = IdentifierBag()
         identifiers.add("phone", contact.get("mobile_number"))
@@ -274,7 +277,8 @@ class FundboxSalesApiConnector(FundboxApiConnector):
     def source_record_id(self, root_id: int) -> str:
         return f"fundbox-order-{root_id}"
 
-    def build_record(self, composite: dict[str, JsonValue]) -> dict[str, JsonValue]:
+    @staticmethod
+    def build_record(composite: dict[str, JsonValue]) -> dict[str, JsonValue]:
         order = _object(composite.get("order"), "order")
         merchant_value = composite.get("merchant")
         merchant = merchant_value if isinstance(merchant_value, dict) else {}
