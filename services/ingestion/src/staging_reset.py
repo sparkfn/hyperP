@@ -74,8 +74,7 @@ def _check_environment_guard(settings: Settings) -> str | None:
         parsed_host = urlsplit(uri).hostname or ""
         if _host_looks_production(parsed_host):
             return (
-                f"Refusing to reset: {label} host {parsed_host!r} "
-                "contains a production indicator."
+                f"Refusing to reset: {label} host {parsed_host!r} contains a production indicator."
             )
 
     return None
