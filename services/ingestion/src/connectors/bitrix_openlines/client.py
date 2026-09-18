@@ -481,7 +481,12 @@ class BitrixOpenLinesClient:
             key=lambda item: (item.date, item.id),
         )
 
-    def iter_crm_deal_pages(self, category_ids: Collection[str]) -> Iterator[CrmDealPage]:
+    def iter_crm_deal_pages(
+        self,
+        category_ids: Collection[str],
+        *,
+        modified_since: datetime | None = None,
+    ) -> Iterator[CrmDealPage]:
         """Yield filtered CRM deal pages independently of Open Lines discovery."""
         normalized_categories = normalize_crm_category_ids(category_ids)
         if not normalized_categories:
@@ -494,11 +499,14 @@ class BitrixOpenLinesClient:
         page_count = 0
         returned_count = 0
         seen_deal_ids: set[str] = set()
+        deal_filter: dict[str, JsonValue] = crm_deal_category_filter(normalized_categories)
+        if modified_since is not None:
+            deal_filter[">=DATE_MODIFY"] = modified_since.strftime("%Y-%m-%dT%H:%M:%S")
         while True:
             payload = self._request(
                 "crm.deal.list",
                 {
-                    "filter": crm_deal_category_filter(normalized_categories),
+                    "filter": deal_filter,
                     "order": {"ID": "ASC"},
                     "start": start,
                 },
