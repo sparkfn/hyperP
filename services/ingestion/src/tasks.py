@@ -126,7 +126,8 @@ def active_reset_generation(environment: str) -> int | None:
 
         def work(tx: ManagedTransaction) -> int | None:
             record = tx.run(
-                "MATCH (reset:IngestionResetGeneration {environment: $environment, status: 'active'}) "
+                "MATCH (reset:IngestionResetGeneration "
+                "{environment: $environment, status: 'active'}) "
                 "RETURN reset.generation AS generation "
                 "ORDER BY reset.generation DESC "
                 "LIMIT 1",
