@@ -26,6 +26,7 @@ _MONDAY_CLOSED = datetime(2026, 9, 21, 16, 0, tzinfo=UTC)
 def test_drive_group_returns_disabled_when_scheduled_ingestion_not_enabled(
     monkeypatch: MonkeyPatch,
 ) -> None:
+    # disabled dispatch must not resolve a group
     monkeypatch.setattr(
         "src.scheduled_ingestion_tasks.get_ingestion_config",
         lambda: SimpleNamespace(scheduled_ingestion=SimpleNamespace(enabled=False)),
@@ -143,6 +144,7 @@ def test_dispatch_scheduled_maintenance_publishes_when_open(
 def test_successor_filters_executable_historical_activity_before_probing_or_publication(
     monkeypatch: MonkeyPatch,
 ) -> None:
+    # active successor must not publish legacy Bitrix
     from src import scheduled_ingestion_tasks as tasks
 
     # The control module is Linux-oriented because artifact evidence uses

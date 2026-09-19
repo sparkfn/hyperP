@@ -117,6 +117,41 @@ _INIT_LOCK_RELEASE_RETRY_SECONDS = 0.2
 _INIT_REQUESTER_CLASS: ContextVar[str] = ContextVar("init_requester_class", default="unknown")
 _LEGACY_SOURCE_LOCK_MODES = ("api", "backfill", "batch", "dump")
 _MAX_GRAPH_WRITERS: Final[int] = 1
+
+
+def active_reset_generation(environment: str) -> int | None:
+    """Return the active reset generation integer for the environment, if any."""
+    client = Neo4jClient(get_settings())
+    try:
+
+        def work(tx: ManagedTransaction) -> int | None:
+            record = tx.run(
+                "MATCH (reset:IngestionResetGeneration {environment: $environment, status: 'active'}) "
+                "RETURN reset.generation AS generation "
+                "ORDER BY reset.generation DESC "
+                "LIMIT 1",
+                environment=environment,
+            ).single()
+            if record is None:
+                return None
+            gen = record["generation"]
+            return int(gen) if gen is not None else None
+
+        return client.execute_read(work)
+    finally:
+        client.close()
+
+
+def _reject_unadmitted_bounded_maintenance(
+    *,
+    bounded_occurrence: dict[str, str] | None = None,
+    bounded_logical_run_id: str | None = None,
+    **_kwargs: object,
+) -> None:
+    """Legacy bounded maintenance guard hook retained for backward compatibility."""
+    del bounded_occurrence, bounded_logical_run_id, _kwargs
+
+
 # Leases are renewed while ingestion is running. Keeping the base TTL modest
 # bounds the unavailable period after a worker crashes.
 _LOCK_LEASE_SECONDS = 60 * 60
@@ -1295,8 +1330,14 @@ def materialize_knows_task(
     phase: KnowsMaterializationPhase,
     cursor: str = "",
     predecessor_task_id: str | None = None,
+    bounded_occurrence: dict[str, str] | None = None,
+    bounded_logical_run_id: str | None = None,
 ) -> KnowsMaterializationSummary:
     """Process one bounded, locked KNOWS batch and continue from its cursor."""
+    _reject_unadmitted_bounded_maintenance(
+        bounded_occurrence=bounded_occurrence,
+        bounded_logical_run_id=bounded_logical_run_id,
+    )
     settings = get_settings()
     setup_logging(settings.log_level)
     started = time.monotonic()
@@ -1470,6 +1511,17 @@ def run_ingestion_task(
             "dump_path": dump_path,
             "entity_key": entity_key,
         }
+
+    environment = getattr(get_settings(), "deployment_environment", None)
+    reset_generation = (
+        active_reset_generation(environment) if isinstance(environment, str) else None
+    )
+    if reset_generation is not None:
+        raise Reject(
+            "generation-bound ingestion context is required after reset",
+            requeue=False,
+        )
+
     # PR #62 introduced ``entity_key`` as the fourth positional task argument.
     # PR #63's API producer used that position for its Bitrix ingest-run ID.
     # Keep existing WhatsAdmin task messages valid while interpreting the
@@ -1720,8 +1772,14 @@ def run_ingestion_task(
 )
 def reconcile_lifecycle_task(
     self: Task,
+    bounded_occurrence: dict[str, str] | None = None,
+    bounded_logical_run_id: str | None = None,
 ) -> LifecycleReconciliationSummary:
     """Periodically repair lifecycle state for late-arriving legacy records."""
+    _reject_unadmitted_bounded_maintenance(
+        bounded_occurrence=bounded_occurrence,
+        bounded_logical_run_id=bounded_logical_run_id,
+    )
     settings = get_settings()
     setup_logging(settings.log_level)
     celery_task_id = self.request.id
