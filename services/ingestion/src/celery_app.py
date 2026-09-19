@@ -42,7 +42,6 @@ celery_app.conf.update(
     task_routes={
         "src.tasks.run_ingestion_task": {"queue": INGESTION_QUEUE},
         "src.tasks.run_incremental_task": {"queue": INGESTION_QUEUE},
-        "src.tasks.recover_bounded_logical_run_task": {"queue": INGESTION_QUEUE},
         "src.ingestion_orchestration_tasks.*": {"queue": INGESTION_QUEUE},
         "src.scheduled_ingestion_tasks.*": {"queue": INGESTION_QUEUE},
         "src.standalone_crm_schedule_tasks.*": {"queue": INGESTION_QUEUE},

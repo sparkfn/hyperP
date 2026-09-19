@@ -10,7 +10,6 @@ from datetime import datetime
 from pathlib import Path
 from typing import Literal, cast
 
-from src.bounded_ingestion_budget import BoundedIngestionBudget
 from src.config import get_settings
 from src.crm_tenant_mapping_configured_authorization import CrmTenantMappingConfiguredGrant
 from src.crm_tenant_mapping_contracts import CrmTenantMappingExpectedHead, CrmTenantMappingScope
@@ -152,7 +151,6 @@ class IngestionConfig:
     llm: LlmConfig = field(default_factory=LlmConfig)
     bitrix_openlines: BitrixOpenLinesConfig = field(default_factory=BitrixOpenLinesConfig)
     scheduled_ingestion: ScheduledIngestionConfig = field(default_factory=ScheduledIngestionConfig)
-    bounded_ingestion: BoundedIngestionBudget = field(default_factory=BoundedIngestionBudget)
     crm_tenant_mapping_authorization: CrmTenantMappingAuthorizationConfig = field(
         default_factory=CrmTenantMappingAuthorizationConfig
     )
@@ -466,69 +464,6 @@ def _scheduled_ingestion_config(raw: JsonValue, *, path: Path) -> ScheduledInges
     return ScheduledIngestionConfig(enabled=enabled)
 
 
-def _bounded_ingestion_config(
-    raw: JsonValue,
-    *,
-    path: Path,
-) -> BoundedIngestionBudget:
-    if raw is None:
-        return BoundedIngestionBudget()
-    if not isinstance(raw, dict):
-        raise ValueError(f"Invalid ingestion config JSON: {path}")
-    allowed = {
-        "max_records",
-        "max_source_requests",
-        "max_pages",
-        "max_bytes",
-        "max_extraction_calls",
-        "max_unit_seconds",
-        "max_graph_transaction_seconds",
-        "drain_reserve_seconds",
-        "max_graph_writers",
-    }
-    if set(raw) - allowed:
-        raise ValueError(f"Invalid ingestion config JSON: {path}")
-    defaults = BoundedIngestionBudget()
-    try:
-        return BoundedIngestionBudget(
-            max_records=_int(raw.get("max_records"), defaults.max_records, path=path),
-            max_source_requests=_int(
-                raw.get("max_source_requests"),
-                defaults.max_source_requests,
-                path=path,
-            ),
-            max_pages=_int(raw.get("max_pages"), defaults.max_pages, path=path),
-            max_bytes=_int(raw.get("max_bytes"), defaults.max_bytes, path=path),
-            max_extraction_calls=_int(
-                raw.get("max_extraction_calls"),
-                defaults.max_extraction_calls,
-                path=path,
-            ),
-            max_unit_seconds=_float(
-                raw.get("max_unit_seconds"),
-                defaults.max_unit_seconds,
-                path=path,
-            ),
-            max_graph_transaction_seconds=_float(
-                raw.get("max_graph_transaction_seconds"),
-                defaults.max_graph_transaction_seconds,
-                path=path,
-            ),
-            drain_reserve_seconds=_float(
-                raw.get("drain_reserve_seconds"),
-                defaults.drain_reserve_seconds,
-                path=path,
-            ),
-            max_graph_writers=_int(
-                raw.get("max_graph_writers"),
-                defaults.max_graph_writers,
-                path=path,
-            ),
-        )
-    except ValueError as exc:
-        raise ValueError(f"Invalid ingestion config JSON: {path}") from exc
-
-
 def _mapping_authorization_config(
     raw: JsonValue, *, path: Path
 ) -> CrmTenantMappingAuthorizationConfig:
@@ -831,7 +766,6 @@ def load_ingestion_config(path_value: str) -> IngestionConfig:
         "llm",
         "bitrix_openlines",
         "scheduled_ingestion",
-        "bounded_ingestion",
         "crm_tenant_mapping_authorization",
         "stage_history_ingestion",
     }.intersection(payload):
@@ -844,7 +778,6 @@ def load_ingestion_config(path_value: str) -> IngestionConfig:
         scheduled_ingestion=_scheduled_ingestion_config(
             payload.get("scheduled_ingestion"), path=path
         ),
-        bounded_ingestion=_bounded_ingestion_config(payload.get("bounded_ingestion"), path=path),
         crm_tenant_mapping_authorization=_mapping_authorization_config(
             payload.get("crm_tenant_mapping_authorization"), path=path
         ),

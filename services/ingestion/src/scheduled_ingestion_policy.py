@@ -7,7 +7,38 @@ from datetime import UTC, datetime, time, timedelta
 from typing import Literal
 from zoneinfo import ZoneInfo
 
-from src.bounded_ingestion_models import SCHEDULE_TIMEZONE, OccurrenceContext
+SCHEDULE_TIMEZONE = "Asia/Singapore"
+
+
+@dataclass(frozen=True)
+class OccurrenceContext:
+    """Persisted occurrence deadline, independent of task delivery time."""
+
+    occurrence_id: str
+    starts_at: datetime
+    drain_starts_at: datetime
+    cutoff_at: datetime
+    next_eligible_at: datetime
+    timezone: str = SCHEDULE_TIMEZONE
+    scheduled: bool = True
+
+    def __post_init__(self) -> None:
+        values = (
+            self.starts_at,
+            self.drain_starts_at,
+            self.cutoff_at,
+            self.next_eligible_at,
+        )
+        if not self.occurrence_id.strip():
+            raise ValueError("occurrence ID must be non-empty")
+        if any(
+            value.tzinfo is None or value.utcoffset() is None
+            for value in values
+        ):
+            raise ValueError(
+                "occurrence timestamps must be timezone-aware"
+            )
+
 
 WeekdayName = Literal["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]
 OccurrenceEligibility = Literal["before_open", "open", "draining", "closed"]

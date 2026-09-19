@@ -22,7 +22,7 @@ class ScheduledIngestionSpec:
         return f"{self.source_key}|{self.entity_key or '-'}"
 
     def mode_for(self, incremental: bool) -> Literal["bootstrap", "delta"]:
-        """Select the bounded mode for one recurring weekly run.
+        """Select the ingestion mode for one recurring weekly run.
 
         A source without incremental capability keeps its cadence by repeating a
         full bootstrap snapshot instead of being silently withheld.

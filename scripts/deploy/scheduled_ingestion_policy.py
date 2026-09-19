@@ -42,7 +42,6 @@ _NESTED_CONFIG_SECTIONS: Final[frozenset[str]] = frozenset(
         "exclusions",
         "llm",
         "bitrix_openlines",
-        "bounded_ingestion",
         "scheduled_ingestion",
         "crm_tenant_mapping_authorization",
         "stage_history_ingestion",

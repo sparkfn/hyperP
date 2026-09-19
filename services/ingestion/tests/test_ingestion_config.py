@@ -9,7 +9,6 @@ from pathlib import Path
 
 import pytest
 import src.ingestion_config as ingestion_config
-from src.bounded_ingestion_budget import BoundedIngestionBudget
 from src.exclusion_config import ExclusionFile
 from src.ingestion_config import (
     BitrixOpenLinesConfig,
@@ -98,41 +97,6 @@ def test_legacy_explicit_category_digest_reconstructs_accepted_gate_evidence() -
 
 def test_scheduled_ingestion_is_disabled_by_default() -> None:
     assert load_ingestion_config("").scheduled_ingestion == ScheduledIngestionConfig(enabled=False)
-
-
-def test_bounded_ingestion_defaults_are_conservative_and_single_writer() -> None:
-    assert load_ingestion_config("").bounded_ingestion == BoundedIngestionBudget(
-        max_records=5_000,
-        max_source_requests=500,
-        max_pages=500,
-        max_bytes=50_000_000,
-        max_extraction_calls=500,
-        max_unit_seconds=120.0,
-        drain_reserve_seconds=300.0,
-        max_graph_writers=1,
-    )
-
-
-@pytest.mark.parametrize(
-    "bounded",
-    [
-        {"max_records": 0},
-        {"max_source_requests": -1},
-        {"max_unit_seconds": float("inf")},
-        {"max_unit_seconds": 120, "drain_reserve_seconds": 120},
-        {"max_graph_writers": False},
-        {"unknown_limit": 1},
-    ],
-)
-def test_bounded_ingestion_config_rejects_invalid_or_unbounded_limits(
-    tmp_path: Path,
-    bounded: dict[str, object],
-) -> None:
-    path = tmp_path / "invalid-bounded-config.json"
-    path.write_text(json.dumps({"bounded_ingestion": bounded}), encoding="utf-8")
-
-    with pytest.raises(ValueError, match="Invalid ingestion config JSON"):
-        load_ingestion_config(str(path))
 
 
 def test_stage_history_ingestion_is_hard_disabled_by_default() -> None:

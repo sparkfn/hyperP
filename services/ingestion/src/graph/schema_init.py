@@ -12,7 +12,6 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
-from src.graph.bounded_ingestion_schema import CREATE_BOUNDED_INGESTION_SCHEMA
 from src.graph.client import Neo4jClient
 from src.graph.identifier_scope_schema import apply_identifier_scope_schema_transition
 from src.graph.queries.bitrix_backfill import CREATE_BITRIX_BACKFILL_CONSTRAINTS
@@ -73,7 +72,20 @@ ON (sr.source_version_key)""",
     *CREATE_STANDALONE_CRM_CENSUS_CONSTRAINTS,
     *CREATE_STANDALONE_CRM_LANE_A_CONSTRAINTS,
     *CREATE_IDENTITY_LINK_SCHEMA,
-    *CREATE_BOUNDED_INGESTION_SCHEMA,
+    """CREATE CONSTRAINT ingestion_reset_generation_unique IF NOT EXISTS
+FOR (reset:IngestionResetGeneration)
+REQUIRE (reset.environment, reset.generation) IS UNIQUE""",
+)
+
+DROP_BOUNDED_INGESTION_SCHEMA: tuple[str, ...] = (
+    "DROP CONSTRAINT bounded_ingestion_scope_key_unique IF EXISTS",
+    "DROP CONSTRAINT bounded_ingestion_logical_key_unique IF EXISTS",
+    "DROP CONSTRAINT bounded_ingestion_global_slot_unique IF EXISTS",
+    "DROP CONSTRAINT bounded_ingestion_reservation_identity_unique IF EXISTS",
+    "DROP CONSTRAINT bounded_ingestion_receipt_attempt_identity_unique IF EXISTS",
+    "DROP CONSTRAINT bounded_ingestion_retry_identity_unique IF EXISTS",
+    "DROP INDEX bounded_ingestion_logical_status IF EXISTS",
+    "DROP INDEX bounded_ingestion_retry_status IF EXISTS",
 )
 
 DEFERRED_SOURCE_RECORD_CONSTRAINTS: tuple[str, ...] = (
@@ -150,6 +162,8 @@ def apply_schema(client: Neo4jClient) -> int:
     logger.info("Applying %d schema statements from %s", len(statements), path)
 
     with client.session() as session:
+        for stmt in DROP_BOUNDED_INGESTION_SCHEMA:
+            session.run(stmt).consume()
         for stmt in statements:
             session.run(stmt).consume()
     logger.info("Schema applied (%d statements, idempotent)", len(statements))
