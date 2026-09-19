@@ -23,6 +23,7 @@ FOREACH (old_rel IN old_relationships |
       old_rel.retired_at = datetime(),
       old_rel.updated_at = datetime()
 )
+WITH declarer, contact
 // Normalize a legacy current edge before matching the explicit active projection.
 OPTIONAL MATCH (declarer)-[legacy:KNOWS {
     source_system_key: $source_system_key,
@@ -35,6 +36,7 @@ FOREACH (legacy_relationship IN legacy_relationships |
       legacy_relationship.activated_at = coalesce(legacy_relationship.activated_at, datetime()),
       legacy_relationship.retired_at = null
 )
+WITH declarer, contact
 MERGE (declarer)-[rel:KNOWS {
     source_system_key: $source_system_key,
     source_record_pk:  $source_record_pk,

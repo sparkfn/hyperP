@@ -205,6 +205,7 @@ def _auto_merge_pair(
         confidence=confidence,
         reasons=reasons,
         blocking_conflicts=[],
+        review_candidate_person_ids=[left_person_id, right_person_id],
         feature_snapshot=feature_snapshot,
         policy_version=_POLICY_VERSION,
     ).single()

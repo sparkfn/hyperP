@@ -37,6 +37,7 @@ FOREACH (_ IN CASE WHEN legacy IS NULL THEN [] ELSE [1] END |
       canonical.created_at = coalesce(legacy.created_at, canonical.created_at),
       canonical.updated_at = datetime()
 )
+WITH canonical, legacy
 CALL {
   WITH canonical, legacy
   OPTIONAL MATCH (record:SourceRecord)-[legacy_link:FROM_SOURCE]->(legacy)
