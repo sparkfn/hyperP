@@ -204,7 +204,6 @@ def test_policy_prepare_preserves_legacy_bare_exclusion_loader_semantics(tmp_pat
     assert payload["scheduled_ingestion"]["timezone"] == "Asia/Singapore"
 
 
-
 def test_atomic_prepare_rejects_fchown_failure_before_replace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

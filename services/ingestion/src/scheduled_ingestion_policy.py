@@ -31,13 +31,8 @@ class OccurrenceContext:
         )
         if not self.occurrence_id.strip():
             raise ValueError("occurrence ID must be non-empty")
-        if any(
-            value.tzinfo is None or value.utcoffset() is None
-            for value in values
-        ):
-            raise ValueError(
-                "occurrence timestamps must be timezone-aware"
-            )
+        if any(value.tzinfo is None or value.utcoffset() is None for value in values):
+            raise ValueError("occurrence timestamps must be timezone-aware")
 
 
 WeekdayName = Literal["monday", "tuesday", "wednesday", "thursday", "friday", "saturday"]

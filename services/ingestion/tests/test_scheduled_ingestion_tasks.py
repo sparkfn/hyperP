@@ -28,9 +28,7 @@ def test_drive_group_returns_disabled_when_scheduled_ingestion_not_enabled(
 ) -> None:
     monkeypatch.setattr(
         "src.scheduled_ingestion_tasks.get_ingestion_config",
-        lambda: SimpleNamespace(
-            scheduled_ingestion=SimpleNamespace(enabled=False)
-        ),
+        lambda: SimpleNamespace(scheduled_ingestion=SimpleNamespace(enabled=False)),
     )
     result = _drive_group("fundbox", incremental=False, now=_MONDAY_OPEN)
     assert result["status"] == "disabled"
@@ -42,9 +40,7 @@ def test_drive_group_returns_window_status_outside_opening(
 ) -> None:
     monkeypatch.setattr(
         "src.scheduled_ingestion_tasks.get_ingestion_config",
-        lambda: SimpleNamespace(
-            scheduled_ingestion=SimpleNamespace(enabled=True)
-        ),
+        lambda: SimpleNamespace(scheduled_ingestion=SimpleNamespace(enabled=True)),
     )
     result = _drive_group("fundbox", incremental=False, now=_MONDAY_CLOSED)
     assert result["status"].startswith("window_")
@@ -67,9 +63,7 @@ def test_drive_group_publishes_incremental_tasks(
 
     monkeypatch.setattr(
         "src.scheduled_ingestion_tasks.get_ingestion_config",
-        lambda: SimpleNamespace(
-            scheduled_ingestion=SimpleNamespace(enabled=True)
-        ),
+        lambda: SimpleNamespace(scheduled_ingestion=SimpleNamespace(enabled=True)),
     )
     monkeypatch.setattr("src.tasks.run_incremental_task", DummyTask)
 
@@ -85,9 +79,7 @@ def test_dispatch_ingestion_group_task_calls_drive(
 ) -> None:
     monkeypatch.setattr(
         "src.scheduled_ingestion_tasks.get_ingestion_config",
-        lambda: SimpleNamespace(
-            scheduled_ingestion=SimpleNamespace(enabled=False)
-        ),
+        lambda: SimpleNamespace(scheduled_ingestion=SimpleNamespace(enabled=False)),
     )
     result = dispatch_ingestion_group_task("fundbox", incremental=True)
     assert result["status"] == "disabled"
@@ -109,9 +101,7 @@ def test_dispatch_scheduled_maintenance_task_disabled_by_config(
 ) -> None:
     monkeypatch.setattr(
         "src.scheduled_ingestion_tasks.get_ingestion_config",
-        lambda: SimpleNamespace(
-            scheduled_ingestion=SimpleNamespace(enabled=False)
-        ),
+        lambda: SimpleNamespace(scheduled_ingestion=SimpleNamespace(enabled=False)),
     )
     result = dispatch_scheduled_maintenance_task("lifecycle")
     assert result == "disabled"
@@ -137,9 +127,7 @@ def test_dispatch_scheduled_maintenance_publishes_when_open(
 
     monkeypatch.setattr(
         "src.scheduled_ingestion_tasks.get_ingestion_config",
-        lambda: SimpleNamespace(
-            scheduled_ingestion=SimpleNamespace(enabled=True)
-        ),
+        lambda: SimpleNamespace(scheduled_ingestion=SimpleNamespace(enabled=True)),
     )
     monkeypatch.setattr("src.scheduled_ingestion_tasks._utc_now", lambda: _MONDAY_OPEN)
     monkeypatch.setattr("src.tasks.reconcile_lifecycle_task", DummyLifecycleTask)
