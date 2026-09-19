@@ -95,17 +95,6 @@ def test_frontend_app_openapi_uses_unversioned_contract_paths() -> None:
     assert "/persons" in paths
     assert "/review-cases" in paths
     assert "/admin/oauth-clients" in paths
-    bounded = paths["/ingest/logical-runs/{logical_run_id}"]
-    assert isinstance(bounded, dict)
-    get_operation = bounded["get"]
-    assert isinstance(get_operation, dict)
-    assert get_operation["operationId"] == "get_bounded_logical_run"
-    pause = paths["/ingest/logical-runs/{logical_run_id}/pause"]
-    resume = paths["/ingest/logical-runs/{logical_run_id}/resume"]
-    assert isinstance(pause, dict)
-    assert isinstance(resume, dict)
-    assert pause["post"]["operationId"] == "pause_bounded_logical_run"
-    assert resume["post"]["operationId"] == "resume_bounded_logical_run"
     assert "/v1/persons" not in paths
     assert "/v1/review-cases" not in paths
 

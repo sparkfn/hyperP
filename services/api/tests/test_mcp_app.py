@@ -88,13 +88,6 @@ def test_mcp_tools_match_every_canonical_api_operation() -> None:
     operation_ids = _source_operation_ids(source_app)
     tool_names = {tool.name for tool in mcp.tools}
 
-    required_bounded_operations = {
-        "get_bounded_logical_run",
-        "pause_bounded_logical_run",
-        "resume_bounded_logical_run",
-    }
-    assert required_bounded_operations <= operation_ids
-    assert required_bounded_operations <= tool_names
     assert tool_names == operation_ids
 
 

@@ -5,7 +5,7 @@ from __future__ import annotations
 from pathlib import PurePosixPath
 from typing import Literal
 
-from pydantic import BaseModel, ConfigDict, Field, model_validator
+from pydantic import BaseModel, Field, model_validator
 
 from src.repositories.protocols.merge import GoldenProfileSelection
 from src.types import (
@@ -209,49 +209,3 @@ class IngestRunUpdateRequest(BaseModel):
 
 class FieldTrustUpdateRequest(BaseModel):
     updates: dict[str, TrustTier]
-
-
-class _BoundedRunIdentityRequest(BaseModel):
-    """Shared exact persisted-identity fields for bounded operator actions."""
-
-    model_config = ConfigDict(extra="forbid")
-
-    source_key: str = Field(min_length=1, max_length=255)
-    control_instance_id: str = Field(min_length=1, max_length=255)
-    reset_generation: int = Field(ge=1)
-
-    @model_validator(mode="after")
-    def _normalize_identity(self) -> _BoundedRunIdentityRequest:
-        self.source_key = _safe_bounded_text(self.source_key, "source_key", 255)
-        self.control_instance_id = _safe_bounded_text(
-            self.control_instance_id,
-            "control_instance_id",
-            255,
-        )
-        return self
-
-
-class BoundedRunPauseRequest(_BoundedRunIdentityRequest):
-    """Human-admin request to latch one logical run in manual pause."""
-
-    reason: str = Field(min_length=1, max_length=200)
-
-    @model_validator(mode="after")
-    def _normalize_reason(self) -> BoundedRunPauseRequest:
-        self.reason = _safe_bounded_text(self.reason, "reason", 200)
-        return self
-
-
-class BoundedRunResumeRequest(_BoundedRunIdentityRequest):
-    """Human-admin request to release one exact durable manual pause."""
-
-
-def _safe_bounded_text(value: str, field: str, maximum: int) -> str:
-    normalized = value.strip()
-    if (
-        not normalized
-        or len(normalized) > maximum
-        or any(character in normalized for character in ("\x00", "\r", "\n"))
-    ):
-        raise ValueError(f"{field} must be bounded single-line text")
-    return normalized

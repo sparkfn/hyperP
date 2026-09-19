@@ -204,39 +204,6 @@ def test_policy_prepare_preserves_legacy_bare_exclusion_loader_semantics(tmp_pat
     assert payload["scheduled_ingestion"]["timezone"] == "Asia/Singapore"
 
 
-def test_policy_prepare_preserves_bounded_only_config(tmp_path: Path) -> None:
-    subprocess.run(["git", "init", "-q", str(tmp_path)], check=True)
-    bounded_only = {
-        "bounded_ingestion": {
-            "max_records": 100,
-            "max_source_requests": 10,
-        }
-    }
-    _policy_run(tmp_path, "probe", config=bounded_only)
-    source_path = tmp_path / "effective-config/ingestion-config.json"
-    before = load_ingestion_config(str(source_path)).bounded_ingestion
-
-    prepared = _policy_run(
-        tmp_path,
-        "prepare",
-        config=bounded_only,
-        rewrite_source=False,
-    )
-    after = load_ingestion_config(str(source_path)).bounded_ingestion
-    prepared_again = _policy_run(
-        tmp_path,
-        "prepare",
-        rewrite_source=False,
-    )
-    payload = json.loads(source_path.read_text(encoding="utf-8"))
-
-    assert prepared.returncode == 0, prepared.stderr
-    assert prepared_again.returncode == 0, prepared_again.stderr
-    assert after == before
-    assert payload["bounded_ingestion"] == bounded_only["bounded_ingestion"]
-    assert payload["scheduled_ingestion"].get("enabled", False) is False
-
-
 def test_atomic_prepare_rejects_fchown_failure_before_replace(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,

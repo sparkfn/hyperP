@@ -15,7 +15,6 @@ from src.repositories.neo4j.entity import Neo4jEntityRepository
 from src.repositories.neo4j.event import Neo4jEventRepository
 from src.repositories.neo4j.identity_link_revision import Neo4jIdentityLinkRevisionRepository
 from src.repositories.neo4j.ingest import Neo4jIngestRepository
-from src.repositories.neo4j.ingestion_control import Neo4jIngestionControlRepository
 from src.repositories.neo4j.merge import Neo4jMergeRepository
 from src.repositories.neo4j.person import Neo4jPersonRepository
 from src.repositories.neo4j.report import Neo4jReportRepository
@@ -29,7 +28,6 @@ from src.repositories.protocols.entity import EntityRepository
 from src.repositories.protocols.event import EventRepository
 from src.repositories.protocols.identity_link_revision import IdentityLinkRevisionRepository
 from src.repositories.protocols.ingest import IngestRepository
-from src.repositories.protocols.ingestion_control import IngestionControlRepository
 from src.repositories.protocols.merge import MergeRepository
 from src.repositories.protocols.person import PersonRepository
 from src.repositories.protocols.report import ReportRepository
@@ -47,7 +45,6 @@ _report_repo: ReportRepository = Neo4jReportRepository()
 _event_repo: EventRepository = Neo4jEventRepository()
 _admin_repo: AdminRepository = Neo4jAdminRepository()
 _ingest_repo: IngestRepository = Neo4jIngestRepository()
-_ingestion_control_repo: IngestionControlRepository = Neo4jIngestionControlRepository()
 _crm_deal_metrics_repo: CrmDealMetricsRepository = Neo4jCrmDealMetricsRepository()
 _crm_activity_metrics_repo: CrmActivityMetricsRepository = BitrixCrmActivityRepository(config)
 _identity_link_revision_repo: IdentityLinkRevisionRepository = Neo4jIdentityLinkRevisionRepository()
@@ -91,10 +88,6 @@ def get_admin_repo() -> AdminRepository:
 
 def get_ingest_repo() -> IngestRepository:
     return _ingest_repo
-
-
-def get_ingestion_control_repo() -> IngestionControlRepository:
-    return _ingestion_control_repo
 
 
 def get_crm_deal_metrics_repo() -> CrmDealMetricsRepository:

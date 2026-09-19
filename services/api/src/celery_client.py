@@ -8,7 +8,6 @@ creates a lazy producer-only Celery app wired from ``config.celery_broker_url``.
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass
 from functools import lru_cache
 
 from celery import Celery
@@ -19,7 +18,6 @@ logger = logging.getLogger(__name__)
 
 _RECALCULATE_PAIR_AUDIT_TASK = "src.tasks.recalculate_pair_audit_match_task"
 _RUN_INGESTION_TASK = "src.tasks.run_ingestion_task"
-_RECOVER_BOUNDED_LOGICAL_RUN_TASK = "src.tasks.recover_bounded_logical_run_task"
 _INGESTION_QUEUE = "ingestion"
 _MISCELLANEOUS_QUEUE = "miscellaneous"
 
@@ -57,50 +55,6 @@ def enqueue_match_recalculation(review_case_ids: list[str]) -> None:
             "Failed to enqueue match recalculation tasks for %d review case(s)",
             len(review_case_ids),
         )
-
-
-@dataclass(frozen=True)
-class BoundedLogicalRunRecoveryRequest:
-    """Minimal recovery publication identity for a persisted bounded run.
-
-    The ingestion worker must re-read the durable logical run and apply its
-    normal disabled/window/reset/capability guards. This producer never carries
-    a cursor, source boundary, occurrence, payload, or fencing token.
-    """
-
-    logical_run_id: str
-    source_key: str
-    control_instance_id: str
-    reset_generation: int
-
-
-def enqueue_bounded_logical_run_recovery(
-    request: BoundedLogicalRunRecoveryRequest,
-) -> bool:
-    """Best-effort publish one idempotent bounded-run recovery request.
-
-    The durable publication intent is written before this method is called.
-    A broker failure is deliberately non-fatal: a later operator action or the
-    scheduler may re-attempt publication from that persisted intent.
-    """
-    try:
-        get_celery_app().send_task(
-            _RECOVER_BOUNDED_LOGICAL_RUN_TASK,
-            kwargs={
-                "logical_run_id": request.logical_run_id,
-                "source_key": request.source_key,
-                "control_instance_id": request.control_instance_id,
-                "reset_generation": request.reset_generation,
-            },
-            queue=_INGESTION_QUEUE,
-        )
-    except Exception:
-        logger.exception(
-            "Failed to publish bounded logical-run recovery logical_run_id=%s",
-            request.logical_run_id,
-        )
-        return False
-    return True
 
 
 def enqueue_ingestion_run(
