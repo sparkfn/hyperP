@@ -351,6 +351,10 @@ def _create_sales_source_record(
         raw_payload=json.dumps(envelope.raw_payload, default=str),
         normalized_payload=json.dumps({}, default=str),
         crm_deal_stage_id=None,
+        source_entity_type=None,
+        source_entity_id=None,
+        identity_policy_version=None,
+        identity_link_key=None,
     ).single()
     assert rec is not None, "CREATE_SOURCE_RECORD must return a row"
     pk: str = rec["source_record_pk"]

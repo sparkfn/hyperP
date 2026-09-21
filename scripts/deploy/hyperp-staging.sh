@@ -556,9 +556,9 @@ else
 fi
 
 if [[ " ${RUNNING_RECREATE_SERVICES} " == *" api "* ]]; then
-  "${COMPOSE[@]}" run --rm --no-deps ingestion-worker \
+  "${COMPOSE[@]}" run -T --rm --no-deps ingestion-worker \
     python -m src.person_completeness_control check
-  "${COMPOSE[@]}" run --rm --no-deps ingestion-worker \
+  "${COMPOSE[@]}" run -T --rm --no-deps ingestion-worker \
     python -m src.crm_deal_count_control check
 fi
 
@@ -571,9 +571,9 @@ if (( ${#RUNNING_RECREATE_SERVICE_ARRAY[@]} > 0 )); then
   printf '[hyperp-staging] recreating running services: %s\n' "${RUNNING_RECREATE_SERVICES}"
   "${COMPOSE[@]}" up -d --no-deps --force-recreate "${RUNNING_RECREATE_SERVICE_ARRAY[@]}"
   if [[ " ${RUNNING_RECREATE_SERVICES} " == *" api "* ]]; then
-    "${COMPOSE[@]}" run --rm --no-deps ingestion-worker \
+    "${COMPOSE[@]}" run -T --rm --no-deps ingestion-worker \
       python -m src.person_completeness_control check
-    "${COMPOSE[@]}" run --rm --no-deps ingestion-worker \
+    "${COMPOSE[@]}" run -T --rm --no-deps ingestion-worker \
       python -m src.crm_deal_count_control check
   fi
 fi
