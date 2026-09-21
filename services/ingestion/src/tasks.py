@@ -2056,7 +2056,10 @@ def run_incremental_task(
             f"Connector factory for {source_key!r} is not callable",
             requeue=False,
         )
-    connector = connector_factory(entity_key)
+    import inspect
+
+    sig = inspect.signature(connector_factory)
+    connector = connector_factory(entity_key) if sig.parameters else connector_factory()
     settings = get_settings()
     setup_logging(settings.log_level)
     _initialize_graph_under_lock("incremental_ingestion")
