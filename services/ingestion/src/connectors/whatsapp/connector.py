@@ -3,7 +3,7 @@
 Sessions (one row per WhatsApp account) map to tenants via org_name:
 - "Fundbox"      → entity fundbox
 - "EkoLife SG"   → entity eko
-- "SpeedZone"    → entity speedzone
+- "SpeedZone" or "Speedzone" → entity speedzone (either casing)
 
 For each session belonging to a known tenant, all chats and messages are
 assembled into a conversation text, run through the LLM extractor to pull
@@ -82,6 +82,7 @@ ORG_TO_ENTITY: dict[str, str] = {
     "EkoLife SG": "eko",
     "EkoLife MY": "eko",
     "SpeedZone": "speedzone",
+    "Speedzone": "speedzone",
 }
 
 
