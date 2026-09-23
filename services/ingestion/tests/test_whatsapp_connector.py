@@ -400,3 +400,8 @@ def test_whatsapp_chat_envelopes_split_possible_people(monkeypatch: MonkeyPatch)
         assert record["raw_payload"]["purpose"] == "relationship_management"
         assert record["raw_payload"]["outcome"] == "no_action_required"
         assert record["raw_payload"]["difficulty"] == "low"
+
+
+@pytest.mark.parametrize("org_name", ["SpeedZone", "Speedzone"])
+def test_org_to_entity_accepts_speedzone_casings(org_name: str) -> None:
+    assert whatsapp_module.ORG_TO_ENTITY[org_name] == "speedzone"
