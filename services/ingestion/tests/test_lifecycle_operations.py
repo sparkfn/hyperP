@@ -239,12 +239,12 @@ def test_woodpecker_staging_deploy_uses_testable_lifecycle_guard() -> None:
     assert "services/frontend2/*)" not in deploy
     assert "services/ingestion/*)" not in deploy
     build = deploy.index('"${COMPOSE[@]}" build "${BUILD_SERVICE_ARRAY[@]}"')
-    preflight = deploy.index('"${COMPOSE[@]}" run --rm --no-deps ingestion-worker', build)
+    preflight = deploy.index('"${COMPOSE[@]}" run -T --rm --no-deps ingestion-worker', build)
     recreate = deploy.index(
         '"${COMPOSE[@]}" up -d --no-deps --force-recreate "${RUNNING_RECREATE_SERVICE_ARRAY[@]}"',
         preflight,
     )
-    postflight = deploy.index('"${COMPOSE[@]}" run --rm --no-deps ingestion-worker', recreate)
+    postflight = deploy.index('"${COMPOSE[@]}" run -T --rm --no-deps ingestion-worker', recreate)
     assert build < preflight < recreate < postflight
     assert deploy.count("python -m src.person_completeness_control check") == 2
     assert deploy.count("python -m src.crm_deal_count_control check") == 2
