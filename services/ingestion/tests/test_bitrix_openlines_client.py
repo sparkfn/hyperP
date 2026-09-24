@@ -150,6 +150,42 @@ def test_client_reads_historical_openline_history_with_numeric_chat_id() -> None
     assert requests == [{"CHAT_ID": 79}]
 
 
+def test_client_reads_historical_openline_history_with_empty_users_and_system_message() -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/imopenlines.session.history.get")
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "message": {
+                        "10": {
+                            "id": "10",
+                            "senderid": "0",
+                            "text": "CRM link created",
+                            "date": "2026-07-20T08:00:00+00:00",
+                        },
+                    },
+                    "users": [],
+                }
+            },
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    messages = client.get_history(80)
+
+    assert [
+        (item.id, item.author_id, item.author_name, item.text, item.is_agent) for item in messages
+    ] == [
+        (10, 0, "System", "CRM link created", True),
+    ]
+
+
 def test_client_discovers_crm_and_recent_chat_references() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         method = request.url.path.rsplit("/", 1)[-1]
