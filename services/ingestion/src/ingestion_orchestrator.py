@@ -77,6 +77,7 @@ _API_SOURCE_KEYS = frozenset(
         "speedzone_phppos:sales",
         "whatsapp_chat",
         "bitrix_chat",
+        "bitrix_chat:deals",
         "sgbankruptcy",
         "sgrentalflats",
     }

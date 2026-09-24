@@ -55,8 +55,13 @@ def test_groups_follow_parent_entity_and_keep_parentless_sources_standalone() ->
                 continue
             parent_entity = SOURCE_KEY_TO_ENTITY.get(task.source_key)
             if parent_entity is None:
-                assert group.key == task.source_key
-                assert len(group.tasks) == 1
+                if ":" in task.source_key:
+                    assert task.source_key.startswith(group.key + ":")
+                else:
+                    assert group.key == task.source_key
+                    has_sub_keys = any(":" in t.source_key for t in group.tasks)
+                    if not has_sub_keys:
+                        assert len(group.tasks) == 1
             else:
                 assert group.key == parent_entity
 
@@ -113,6 +118,10 @@ def test_child_keys_are_stable_and_entity_scoped() -> None:
         "eko_phppos|-",
         "eko_phppos:sales|-",
         "whatsapp_chat|eko",
+    ]
+    assert [task.child_key for task in scheduled_ingestion_group("bitrix_chat").tasks] == [
+        "bitrix_chat|-",
+        "bitrix_chat:deals|-",
     ]
 
 

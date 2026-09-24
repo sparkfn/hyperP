@@ -262,3 +262,37 @@ def test_successor_filters_executable_historical_activity_before_probing_or_publ
     assert published_entries[0].source_window is not None
     assert published_entries[0].source_window["upper_deal_id"] == 901
     assert closes == ["graph", "source", "graph"]
+
+
+def test_drive_group_publishes_bitrix_chat_and_deals(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    published: list[tuple[tuple[object, ...], dict[str, object]]] = []
+
+    class DummyTask:
+        @staticmethod
+        def apply_async(
+            args: tuple[object, ...] = (),
+            kwargs: dict[str, object] | None = None,
+            queue: str = "",
+        ) -> None:
+            del queue
+            published.append((args, kwargs or {}))
+
+    monkeypatch.setattr(
+        "src.scheduled_ingestion_tasks.get_ingestion_config",
+        lambda: SimpleNamespace(scheduled_ingestion=SimpleNamespace(enabled=True)),
+    )
+    monkeypatch.setattr(
+        "src.scheduled_ingestion_tasks._dispatch_active_bitrix_successor",
+        lambda _date: None,
+    )
+    monkeypatch.setattr("src.tasks.run_incremental_task", DummyTask)
+
+    _thursday_open = datetime(2026, 9, 24, 2, 0, tzinfo=UTC)
+    result = _drive_group("bitrix_chat", incremental=True, now=_thursday_open)
+    assert result["status"] == "published"
+    assert result["group_key"] == "bitrix_chat"
+    assert len(published) == 2
+    assert published[0][0][0] == "bitrix_chat"
+    assert published[1][0][0] == "bitrix_chat:deals"
