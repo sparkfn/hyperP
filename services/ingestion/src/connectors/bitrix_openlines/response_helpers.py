@@ -244,10 +244,11 @@ def history_message_page(result: JsonValue) -> list[OpenLineMessage]:
     raw_users = result.get("users")
     if not isinstance(raw_messages, dict):
         raise RuntimeError("Bitrix Open Lines history omitted message")
+    user_items: list[JsonValue]
     if isinstance(raw_users, dict):
         user_items = _mapping_items(raw_users)
     elif isinstance(raw_users, list) and not raw_users:
-        user_items: list[JsonValue] = []
+        user_items = []
     else:
         raise RuntimeError("Bitrix Open Lines history omitted users")
     return _parse_message_items(
