@@ -70,7 +70,10 @@ SCHEDULED_INGESTION_GROUPS: tuple[ScheduledIngestionGroup, ...] = (
     ScheduledIngestionGroup(
         key="bitrix_chat",
         weekday="thursday",
-        tasks=(ScheduledIngestionSpec("bitrix_chat"),),
+        tasks=(
+            ScheduledIngestionSpec("bitrix_chat"),
+            ScheduledIngestionSpec("bitrix_chat:deals"),
+        ),
     ),
     ScheduledIngestionGroup(
         key="sgbankruptcy",
