@@ -222,15 +222,46 @@ function makeChoice(args: {
   };
 }
 
-function uniqueChoices(choices: readonly GoldenProfileChoice[]): GoldenProfileChoice[] {
-  const seen = new Set<string>();
-  const unique: GoldenProfileChoice[] = [];
+/**
+ * Collapses choices that assert the same value for the same person and field, keeping
+ * the strongest provenance. The winner's raw value and source-record PK are preserved;
+ * only the grouping uses the normalized value.
+ */
+export function uniqueChoices(choices: readonly GoldenProfileChoice[]): GoldenProfileChoice[] {
+  const byValue = new Map<string, GoldenProfileChoice>();
   for (const choice of choices) {
-    const key = `${choice.fieldName}|${choice.value}|${choice.sourceKind}|${choice.sourceRecordPk ?? ""}`;
-    if (!seen.has(key)) {
-      seen.add(key);
-      unique.push(choice);
+    const valueKey = `${choice.personId}|${choice.fieldName}|${choice.value.trim().toLowerCase()}`;
+    const existing = byValue.get(valueKey);
+    if (existing === undefined || isPreferredChoice(choice, existing)) {
+      byValue.set(valueKey, choice);
     }
   }
-  return unique;
+  return [...byValue.values()];
+}
+
+function isPreferredChoice(candidate: GoldenProfileChoice, current: GoldenProfileChoice): boolean {
+  const candidateFact = isCorroboratedFact(candidate);
+  if (candidateFact !== isCorroboratedFact(current)) {
+    return candidateFact;
+  }
+  const candidateObserved = observedInstant(candidate.observedAt);
+  const currentObserved = observedInstant(current.observedAt);
+  if (candidateObserved !== currentObserved) {
+    return candidateObserved > currentObserved;
+  }
+  const candidatePk = candidate.sourceRecordPk ?? "";
+  const currentPk = current.sourceRecordPk ?? "";
+  if (candidatePk !== currentPk) {
+    return candidatePk < currentPk;
+  }
+  return candidate.key < current.key;
+}
+
+function isCorroboratedFact(choice: GoldenProfileChoice): boolean {
+  return choice.sourceKind === "source_record_fact" && (choice.sourceRecordPk ?? "") !== "";
+}
+
+function observedInstant(observedAt: string): number {
+  const parsed = Date.parse(observedAt);
+  return Number.isNaN(parsed) ? Number.NEGATIVE_INFINITY : parsed;
 }
