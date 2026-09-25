@@ -27,10 +27,12 @@ from src.graph.queries import (
     REVERT_PERSON_PAIR_REDIRECTS_LEFT,
     REVERT_PERSON_PAIR_REDIRECTS_RIGHT,
     REVERT_RECORD_PERSON_CASE_REDIRECTS,
+    UPDATE_GOLDEN_FIELDS,
 )
 from src.repositories.neo4j import merge as merge_module
 from src.repositories.neo4j.merge import (
     Neo4jMergeRepository,
+    _apply_golden_profile_selections_tx,
     _create_lock_tx,
     _delete_lock_tx,
     _manual_merge_tx,
@@ -534,7 +536,14 @@ async def test_repository_manual_merge_applies_selected_golden_profile_values(
             "selected_value": "customer@example.com",
             "source_record_pk": "sr-1",
             "identifier_type": "email",
-        }
+        },
+        {
+            "field_name": "preferred_full_name",
+            "source_kind": "source_record_fact",
+            "selected_value": "Alice Tan",
+            "source_record_pk": "sr-2",
+            "identifier_type": None,
+        },
     ]
     session = _Session([MergeOutcome(merge_event_id="merge-1")])
     factory = _SessionFactory([session])
@@ -590,6 +599,46 @@ def test_golden_profile_selection_validation_rejects_fact_without_source_record(
     ]
 
     assert merge_module.are_valid_golden_profile_selections(selections) is False
+
+
+def test_golden_profile_selection_validation_accepts_deduplicated_fact_choice() -> None:
+    selections: list[GoldenProfileSelection] = [
+        {
+            "field_name": "preferred_full_name",
+            "source_kind": "source_record_fact",
+            "selected_value": "Alice Tan",
+            "source_record_pk": "sr-2",
+            "identifier_type": None,
+        }
+    ]
+
+    assert merge_module.are_valid_golden_profile_selections(selections) is True
+
+
+@pytest.mark.asyncio
+async def test_fact_selection_applies_golden_fields_in_merge_transaction() -> None:
+    selections: list[GoldenProfileSelection] = [
+        {
+            "field_name": "preferred_full_name",
+            "source_kind": "source_record_fact",
+            "selected_value": "Alice Tan",
+            "source_record_pk": "sr-2",
+            "identifier_type": None,
+        }
+    ]
+    tx = _Tx([])
+
+    result = await _apply_golden_profile_selections_tx(
+        cast(AsyncManagedTransaction, tx), "person-b", selections
+    )
+
+    assert result == "ok"
+    assert [call.query for call in tx.calls] == [UPDATE_GOLDEN_FIELDS]
+    assert tx.calls[0].params == {
+        "person_id": "person-b",
+        "updates": [{"field_name": "preferred_full_name", "value": "Alice Tan"}],
+        "invalidate_analysis": False,
+    }
 
 
 @pytest.mark.asyncio

@@ -80,14 +80,16 @@ def neo4j_driver() -> Iterator[_TestGraph]:
 def test_identifiers_query_executes_and_preserves_provenance_variants(
     neo4j_driver: _TestGraph,
 ) -> None:
-    """The batched query must compile and retain valid, missing, and dangling provenance."""
+    """The batched query retains all provenance variants and aggregates multi-edge Identifiers."""
     run_id = neo4j_driver.run_id
     person_id = f"person-{run_id}"
     source_key = f"source-{run_id}"
+    source_key_two = f"source-two-{run_id}"
     record_entity_key = f"record-entity-{run_id}"
     source_entity_key = f"source-entity-{run_id}"
     phone_one_pk = f"phone-one-{run_id}"
     phone_two_pk = f"phone-two-{run_id}"
+    phone_three_pk = f"phone-three-{run_id}"
     email_pk = f"email-{run_id}"
     dangling_pk = f"dangling-{run_id}"
     email_value = f"a-{run_id}@example.test"
@@ -104,6 +106,10 @@ def test_identifiers_query_executes_and_preserves_provenance_variants(
             })
             CREATE (source:SourceSystem {
               source_key: $source_key,
+              _person_identifiers_test_run: $test_run_id
+            })
+            CREATE (source_two:SourceSystem {
+              source_key: $source_key_two,
               _person_identifiers_test_run: $test_run_id
             })
             CREATE (record_entity:Entity {
@@ -143,6 +149,16 @@ def test_identifiers_query_executes_and_preserves_provenance_variants(
               ingested_at: datetime('2026-08-20T00:01:00Z'),
               _person_identifiers_test_run: $test_run_id
             })-[:FROM_SOURCE]->(source)
+            CREATE (phone_three:SourceRecord {
+              source_record_pk: $phone_three_pk,
+              source_record_id: $phone_three_pk,
+              record_type: 'identity',
+              link_status: 'linked',
+              lifecycle_status: 'active',
+              observed_at: datetime('2026-08-20T00:05:00Z'),
+              ingested_at: datetime('2026-08-20T00:05:00Z'),
+              _person_identifiers_test_run: $test_run_id
+            })-[:FROM_SOURCE]->(source_two)
             CREATE (email:SourceRecord {
               source_record_pk: $email_pk,
               source_record_id: $email_pk,
@@ -155,6 +171,7 @@ def test_identifiers_query_executes_and_preserves_provenance_variants(
             })-[:FROM_SOURCE]->(source)
             CREATE (phone_one)-[:OWNED_BY]->(record_entity)
             CREATE (phone_two)-[:OWNED_BY]->(record_entity)
+            CREATE (phone_three)-[:OWNED_BY]->(record_entity)
             CREATE (phone_identifier:Identifier {
               identifier_type: 'phone', normalized_value: $phone_value,
               _person_identifiers_test_run: $test_run_id
@@ -177,7 +194,13 @@ def test_identifiers_query_executes_and_preserves_provenance_variants(
             }]->(phone_identifier)
             CREATE (person)-[:IDENTIFIED_BY {
               is_active: true, is_verified: true, source_system_key: $source_key,
-              source_record_pk: $phone_two_pk
+              source_record_pk: $phone_two_pk,
+              last_confirmed_at: datetime('2026-08-20T00:03:00Z')
+            }]->(phone_identifier)
+            CREATE (person)-[:IDENTIFIED_BY {
+              is_active: false, is_verified: false, source_system_key: $source_key_two,
+              source_record_pk: $phone_three_pk,
+              last_confirmed_at: datetime('2026-08-20T00:05:00Z')
             }]->(phone_identifier)
             CREATE (person)-[:IDENTIFIED_BY {
               is_active: true, is_verified: false, source_system_key: $source_key,
@@ -193,10 +216,12 @@ def test_identifiers_query_executes_and_preserves_provenance_variants(
             """,
             person_id=person_id,
             source_key=source_key,
+            source_key_two=source_key_two,
             record_entity_key=record_entity_key,
             source_entity_key=source_entity_key,
             phone_one_pk=phone_one_pk,
             phone_two_pk=phone_two_pk,
+            phone_three_pk=phone_three_pk,
             email_pk=email_pk,
             dangling_pk=dangling_pk,
             email_value=email_value,
@@ -232,15 +257,35 @@ def test_identifiers_query_executes_and_preserves_provenance_variants(
     assert empty_page == []
 
     phone_identifier, email_identifier, dangling_identifier, legacy_identifier = identifiers
+    # Three provenance edges point at the phone Identifier — two active/verified and
+    # one inactive/unverified — but the Identifier must still surface as a single row
+    # with the edge properties aggregated.
+    assert sum(1 for item in identifiers if item.normalized_value == phone_value) == 1
+    assert phone_identifier.is_active is True
+    assert phone_identifier.is_verified is True
+    assert phone_identifier.last_confirmed_at == "2026-08-20T00:05:00+00:00"
+    # The three corroborating records span two source systems; all survive, and the
+    # identifier's own legacy source_system_key resolves deterministically.
+    assert {item.source_system for item in phone_identifier.source_records} == {
+        source_key,
+        source_key_two,
+    }
+    assert phone_identifier.source_system_key == source_key
+    assert legacy_identifier.source_system_key == source_key
     assert email_identifier.entities[0].entity_key == source_entity_key
     assert email_identifier.entities[0].source_record_count == 1
-    assert set(phone_identifier.source_record_pks) == {phone_one_pk, phone_two_pk}
+    assert set(phone_identifier.source_record_pks) == {
+        phone_one_pk,
+        phone_two_pk,
+        phone_three_pk,
+    }
     assert {item.source_record_pk for item in phone_identifier.source_records} == {
         phone_one_pk,
         phone_two_pk,
+        phone_three_pk,
     }
     assert phone_identifier.entities[0].entity_key == record_entity_key
-    assert phone_identifier.entities[0].source_record_count == 2
+    assert phone_identifier.entities[0].source_record_count == 3
     assert dangling_identifier.source_record_pks == [dangling_pk]
     assert dangling_identifier.source_record_ids == []
     assert dangling_identifier.source_records == []
