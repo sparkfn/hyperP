@@ -186,6 +186,47 @@ def test_client_reads_historical_openline_history_with_empty_users_and_system_me
     ]
 
 
+def test_client_reads_historical_openline_history_with_absent_author_falling_back_to_agent(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    def handler(request: httpx.Request) -> httpx.Response:
+        assert request.url.path.endswith("/imopenlines.session.history.get")
+        return httpx.Response(
+            200,
+            json={
+                "result": {
+                    "message": {
+                        "11": {
+                            "id": "11",
+                            "senderid": "503",
+                            "text": "Unknown author",
+                            "date": "2026-07-20T08:00:00+00:00",
+                        },
+                    },
+                    "users": {
+                        "501": {"id": "501", "name": "Customer", "type": "connector"},
+                    },
+                }
+            },
+        )
+
+    client = BitrixOpenLinesClient(
+        base_url="https://bitrix.test/rest/hook",
+        timeout_seconds=5,
+        max_attempts=1,
+        http=httpx.Client(transport=httpx.MockTransport(handler)),
+    )
+
+    messages = client.get_history(81)
+
+    assert [
+        (item.id, item.author_id, item.author_name, item.text, item.is_agent) for item in messages
+    ] == [
+        (11, 503, "User 503", "Unknown author", True),
+    ]
+    assert "Bitrix message author absent from users payload" in caplog.text
+
+
 def test_client_discovers_crm_and_recent_chat_references() -> None:
     def handler(request: httpx.Request) -> httpx.Response:
         method = request.url.path.rsplit("/", 1)[-1]
