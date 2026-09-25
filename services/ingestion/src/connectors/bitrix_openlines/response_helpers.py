@@ -304,10 +304,12 @@ def _parse_message_items(
             raise RuntimeError("Bitrix message omitted required fields")
         if author_id == 0:
             author_name, is_agent = "System", True
-        elif author_id not in users:
-            raise RuntimeError("Bitrix message author was absent from the users payload")
-        else:
+        elif author_id in users:
             author_name, is_agent = users[author_id]
+        else:
+            # Fall back safely for messages from internal staff or bots omitted
+            # from the session history user list by Bitrix.
+            author_name, is_agent = f"User {author_id}", True
         messages.append(
             OpenLineMessage(
                 message_id,
