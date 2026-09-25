@@ -165,16 +165,26 @@ def test_identifiers_entity_subquery_only_returns_entities() -> None:
 
 
 def test_identifiers_count_query_matches_data_row_grouping() -> None:
-    """The total must count identifier rows, not raw provenance relationships."""
-    assert "MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY]->(id:Identifier)" in (
+    """The total must count distinct Identifier nodes, not raw provenance edges."""
+    assert "MATCH (p:Person {person_id: $person_id})-[:IDENTIFIED_BY]->(id:Identifier)" in (
         COUNT_PERSON_IDENTIFIERS
     )
-    assert "WITH DISTINCT id," in COUNT_PERSON_IDENTIFIERS
-    assert "rel.is_active AS is_active" in COUNT_PERSON_IDENTIFIERS
-    assert "rel.is_verified AS is_verified" in COUNT_PERSON_IDENTIFIERS
-    assert "rel.last_confirmed_at AS last_confirmed_at" in COUNT_PERSON_IDENTIFIERS
-    assert "rel.source_system_key AS source_system_key" in COUNT_PERSON_IDENTIFIERS
-    assert "RETURN count(*) AS total" in COUNT_PERSON_IDENTIFIERS
+    assert "RETURN count(DISTINCT id) AS total" in COUNT_PERSON_IDENTIFIERS
+
+
+def test_identifiers_query_aggregates_multi_edge_provenance_per_identifier() -> None:
+    """Every Identifier node must yield exactly one row, with edge properties aggregated."""
+    assert "WITH id," in GET_PERSON_IDENTIFIERS
+    assert "any(r IN collect(rel) WHERE r.is_active = true) AS is_active" in GET_PERSON_IDENTIFIERS
+    assert (
+        "any(r IN collect(rel) WHERE r.is_verified = true) AS is_verified" in GET_PERSON_IDENTIFIERS
+    )
+    assert "max(rel.last_confirmed_at) AS last_confirmed_at" in GET_PERSON_IDENTIFIERS
+    assert "collect(DISTINCT rel.source_record_pk) AS source_record_pks" in GET_PERSON_IDENTIFIERS
+    # The scalar edge projections must not remain grouping keys, otherwise two
+    # edges to the same Identifier would produce two rows for one identifier.
+    assert "rel.is_active AS is_active" not in GET_PERSON_IDENTIFIERS
+    assert "rel.source_system_key AS source_system_key" not in GET_PERSON_IDENTIFIERS
 
 
 def test_lazy_endpoint_queries_return_person_marker() -> None:

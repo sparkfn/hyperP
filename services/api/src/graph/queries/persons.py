@@ -509,12 +509,12 @@ ORDER BY e.display_name
 GET_PERSON_IDENTIFIERS = """
 MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY]->(id:Identifier)
 WITH id, rel
-ORDER BY coalesce(rel.source_record_pk, '')
+ORDER BY coalesce(rel.source_record_pk, ''), coalesce(rel.source_system_key, '')
 WITH id,
-     rel.is_active AS is_active,
-     rel.is_verified AS is_verified,
-     rel.last_confirmed_at AS last_confirmed_at,
-     rel.source_system_key AS source_system_key,
+     any(r IN collect(rel) WHERE r.is_active = true) AS is_active,
+     any(r IN collect(rel) WHERE r.is_verified = true) AS is_verified,
+     max(rel.last_confirmed_at) AS last_confirmed_at,
+     head([r IN collect(rel) WHERE r.source_system_key IS NOT NULL | r.source_system_key]) AS source_system_key,
      collect(DISTINCT rel.source_record_pk) AS source_record_pks
 ORDER BY is_active DESC, is_verified DESC, id.identifier_type, id.normalized_value,
          coalesce(source_system_key, ''), coalesce(last_confirmed_at, datetime('1970-01-01T00:00:00Z')),
@@ -639,13 +639,8 @@ RETURN count(sr) AS total
 """
 
 COUNT_PERSON_IDENTIFIERS = """
-MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY]->(id:Identifier)
-WITH DISTINCT id,
-     rel.is_active AS is_active,
-     rel.is_verified AS is_verified,
-     rel.last_confirmed_at AS last_confirmed_at,
-     rel.source_system_key AS source_system_key
-RETURN count(*) AS total
+MATCH (p:Person {person_id: $person_id})-[:IDENTIFIED_BY]->(id:Identifier)
+RETURN count(DISTINCT id) AS total
 """
 
 COUNT_PERSON_SHARED_IDENTIFIERS = """

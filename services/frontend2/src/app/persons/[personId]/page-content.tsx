@@ -3848,7 +3848,7 @@ function SourceRecordsTab({ personId, facets, onTotalLoaded }: { personId: strin
   );
 }
 
-function IdentifiersTab({
+export function IdentifiersTab({
   identifiers,
   totalCount,
   nextCursor,
@@ -3907,10 +3907,21 @@ function IdentifiersTab({
             const entityNames = [
               ...new Set(id.entities.map((e) => e.display_name).filter((n): n is string => n !== null)),
             ];
+            // Corroborating records can come from several systems; fall back to the
+            // identifier's own legacy provenance key when no records carry one.
+            const contributingSystems = [
+              ...new Set(
+                id.source_records
+                  .map((sr) => sr.source_system)
+                  .filter((system) => system.trim() !== ""),
+              ),
+            ];
+            if (contributingSystems.length === 0 && id.source_system_key !== null) {
+              contributingSystems.push(id.source_system_key);
+            }
             const metaParts: Array<string> = [
               titleCase(id.identifier_type),
               ...entityNames,
-              ...(id.source_system_key !== null ? [id.source_system_key] : []),
               ...(id.last_confirmed_at !== null ? [`Last seen ${fmtDate(id.last_confirmed_at)}`] : []),
             ];
 
@@ -3951,6 +3962,12 @@ function IdentifiersTab({
                         <Fragment key={j}>
                           {j > 0 && <span className={styles.connMetaSep}>·</span>}
                           <span>{part}</span>
+                        </Fragment>
+                      ))}
+                      {contributingSystems.map((system) => (
+                        <Fragment key={`system-${system}`}>
+                          <span className={styles.connMetaSep}>·</span>
+                          <span className={`${styles.idSrcChip} ${styles.idSrcChipSystem}`}>{system}</span>
                         </Fragment>
                       ))}
                     </div>
