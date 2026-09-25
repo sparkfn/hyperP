@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 import time
 from collections.abc import Mapping
 from dataclasses import dataclass
@@ -18,6 +19,8 @@ from src.connectors.bitrix_openlines.models import (
     merge_chat_references,
 )
 from src.models import JsonValue
+
+logger = logging.getLogger(__name__)
 
 RETRYABLE_ERRORS = frozenset(
     {
@@ -305,7 +308,12 @@ def _parse_message_items(
         if author_id == 0:
             author_name, is_agent = "System", True
         elif author_id not in users:
-            raise RuntimeError("Bitrix message author was absent from the users payload")
+            logger.warning(
+                "Bitrix message author absent from users payload author_id=%d message_id=%d",
+                author_id,
+                message_id,
+            )
+            author_name, is_agent = f"User {author_id}", True
         else:
             author_name, is_agent = users[author_id]
         messages.append(
