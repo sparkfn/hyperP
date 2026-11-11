@@ -27,6 +27,7 @@ from src.repositories.neo4j.bootstrap import (
 )
 from src.request_middleware import RequestTimingMiddleware
 from src.route_catalog import ROOT_ROUTERS
+from src.routes.oauth import mark_root_routes_deprecated
 
 logger = logging.getLogger("profile_unifier_api")
 
@@ -115,6 +116,7 @@ def build_app() -> FastAPI:
     # and are copied into those mounts; the root app no longer registers them.
     for router in ROOT_ROUTERS:
         app.include_router(router)
+    mark_root_routes_deprecated(app)
 
     # Frontend-facing API contract. A fresh FastAPI instance exposing the
     # authenticated router set with the /v1 prefix stripped, mounted for the

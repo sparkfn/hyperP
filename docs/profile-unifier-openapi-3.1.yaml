@@ -1132,10 +1132,14 @@ paths:
       tags: [OAuth]
       summary: Issue an OAuth2 client-credentials access token
       operationId: createOAuthToken
+      deprecated: true
       description: |
         Exchanges an OAuth client ID and one active client secret for a short-lived
         HyperP-issued RS256 JWT access token. This endpoint uses OAuth-compatible
         top-level JSON responses rather than the standard HyperP response envelope.
+
+        Deprecated: use the `/oauth2/v1` equivalent. Responses carry an RFC 8594
+        `Sunset` header.
       security: []
       requestBody:
         required: true
@@ -1171,6 +1175,10 @@ paths:
               schema:
                 type: string
                 const: no-cache
+            Sunset:
+              description: RFC 8594 HTTP-date after which this deprecated route may stop responding.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -1186,6 +1194,10 @@ paths:
               schema:
                 type: string
                 const: no-cache
+            Sunset:
+              description: RFC 8594 HTTP-date after which this deprecated route may stop responding.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -1201,6 +1213,10 @@ paths:
               schema:
                 type: string
                 const: no-cache
+            Sunset:
+              description: RFC 8594 HTTP-date after which this deprecated route may stop responding.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -1210,10 +1226,19 @@ paths:
       tags: [OAuth]
       summary: Return public signing keys for HyperP-issued access tokens
       operationId: getOAuthJwks
+      deprecated: true
+      description: |
+        Deprecated: use the `/oauth2/v1` equivalent. Responses carry an RFC 8594
+        `Sunset` header.
       security: []
       responses:
         '200':
           description: JSON Web Key Set containing active OAuth signing keys.
+          headers:
+            Sunset:
+              description: RFC 8594 HTTP-date after which this deprecated route may stop responding.
+              schema:
+                type: string
           content:
             application/json:
               schema:
@@ -1229,10 +1254,10 @@ paths:
       summary: Issue an OAuth2 client-credentials access token (machine surface)
       operationId: createOAuthTokenMachine
       description: |
-        Identical contract to `POST /v1/oauth/token`, exposed on the dedicated
-        machine mount. Uses OAuth-compatible top-level JSON responses rather than
-        the standard HyperP envelope. Response carries `Cache-Control: no-store`
-        and `Pragma: no-cache`.
+        Same contract as the deprecated `POST /v1/oauth/token` route, without the
+        `Sunset` header, exposed on the dedicated machine mount. Uses
+        OAuth-compatible top-level JSON responses rather than the standard HyperP
+        envelope. Response carries `Cache-Control: no-store` and `Pragma: no-cache`.
       security: []
       requestBody:
         required: true
@@ -1273,7 +1298,9 @@ paths:
       tags: [OAuth2 Machine API]
       summary: Public signing keys for HyperP-issued access tokens (machine surface)
       operationId: getOAuthJwksMachine
-      description: Identical to `GET /v1/oauth/jwks`, exposed on the machine mount.
+      description: >-
+        Same contract as the deprecated `GET /v1/oauth/jwks` route, without the
+        `Sunset` header, exposed on the machine mount.
       security: []
       responses:
         '200':

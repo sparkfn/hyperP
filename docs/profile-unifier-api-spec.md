@@ -26,7 +26,8 @@ The FastAPI application separates concerns by mount. The **root app** exposes
 only cross-cutting and unauthenticated surfaces:
 
 - `GET /api/health` — health check.
-- `POST /api/v1/oauth/token`, `GET /api/v1/oauth/jwks` — machine OAuth2 token flow.
+- `POST /api/v1/oauth/token`, `GET /api/v1/oauth/jwks` — machine OAuth2 token flow
+  (deprecated; use `/api/oauth2/v1/{token,jwks}`; responses carry `Sunset`).
 - `GET /api/v1/public/persons/{token}/...` — unauthenticated share-link pages.
 
 Every **authenticated** endpoint in this spec (the `/v1/...` paths below) is
@@ -159,10 +160,11 @@ the `persons:read` scope.
 Endpoints:
 
 - `POST /api/oauth2/v1/token`: issue a client-credentials access token. Same
-  contract as `POST /v1/oauth/token`; the redundant `oauth` path segment is
-  dropped because the mount already conveys it. Unauthenticated.
-- `GET /api/oauth2/v1/jwks`: public signing keys, identical to
-  `GET /v1/oauth/jwks`. Unauthenticated.
+  contract as the deprecated `POST /v1/oauth/token`, without the `Sunset`
+  header; the redundant `oauth` path segment is dropped because the mount
+  already conveys it. Unauthenticated.
+- `GET /api/oauth2/v1/jwks`: public signing keys, same contract as the
+  deprecated `GET /v1/oauth/jwks`, without the `Sunset` header. Unauthenticated.
 - `GET /api/oauth2/v1/persons`: paginated person list, with the same filters and
   sorting as the authenticated person list. Requires `persons:read`.
 - `GET /api/oauth2/v1/persons/{person_id}`: canonical person detail. Requires
