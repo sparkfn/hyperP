@@ -6,6 +6,7 @@ import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
+import pytest
 from fastapi.testclient import TestClient
 from src.auth.deps import OAuthClientUser, get_current_user_or_oauth_client
 from src.auth.models import AuthUser
@@ -69,6 +70,22 @@ class _PersonRepo:
         _ = person_id
         return Person(person_id="p1", status="active")
 
+    async def search_by_identifier(self, identifier_type: str, value: str) -> list[Person]:
+        _ = identifier_type, value
+        return []
+
+
+class _SearchRepo:
+    """Partial person-repository double recording exact-identifier searches."""
+
+    def __init__(self, persons: list[Person] | None = None) -> None:
+        self.persons = persons if persons is not None else []
+        self.search_calls: list[tuple[str, str]] = []
+
+    async def search_by_identifier(self, identifier_type: str, value: str) -> list[Person]:
+        self.search_calls.append((identifier_type, value))
+        return self.persons
+
 
 async def _override_person_repo() -> PersonRepository:
     return _PersonRepo()  # type: ignore[return-value]  # partial stub for route tests
@@ -108,6 +125,13 @@ async def _override_human_employee() -> AuthUser:
         entity_key="fundbox",
         display_name="Person",
     )
+
+
+def _machine_search_client(repo: _SearchRepo) -> TestClient:
+    app = build_oauth2_app()
+    app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_persons_reader
+    app.dependency_overrides[get_person_repo] = lambda: repo
+    return TestClient(app)
 
 
 def test_oauth2_token_endpoint_issues_access_token() -> None:
@@ -418,3 +442,132 @@ def test_oauth2_persons_list_uses_typed_sort_validation() -> None:
     assert invalid_sort.json()["error"]["code"] == "invalid_request"
     assert negative_bound.status_code == 400
     assert negative_bound.json()["error"]["code"] == "invalid_request"
+
+
+@pytest.mark.parametrize(
+    ("persons", "expected_ids"),
+    [
+        ([], []),
+        ([Person(person_id="p-only", status="active")], ["p-only"]),
+        (
+            [
+                Person(person_id="p-newest", status="active"),
+                Person(person_id="p-older", status="active"),
+            ],
+            ["p-newest", "p-older"],
+        ),
+    ],
+)
+def test_oauth2_person_search_exact_identifier_returns_ordered_results(
+    persons: list[Person], expected_ids: list[str]
+) -> None:
+    repo = _SearchRepo(persons)
+    client = _machine_search_client(repo)
+
+    res = client.get("/persons/search", params={"identifier_type": "nric", "value": "S1234567A"})
+
+    assert res.status_code == 200
+    body = res.json()
+    assert [item["person_id"] for item in body["data"]] == expected_ids
+    assert body["meta"]["request_id"]
+    assert body["meta"]["next_cursor"] is None
+    assert body["meta"]["total_count"] is None
+    assert repo.search_calls == [("nric", "S1234567A")]
+
+
+def test_oauth2_person_search_rejects_unknown_machine_identifier_type() -> None:
+    """The machine surface is restricted to the canonical IdentifierType vocabulary."""
+    repo = _SearchRepo([Person(person_id="p1", status="active")])
+    client = _machine_search_client(repo)
+
+    res = client.get(
+        "/persons/search",
+        params={"identifier_type": "partner_account_id", "value": "acct-42"},
+    )
+
+    assert res.status_code == 400
+    assert res.json()["error"]["code"] == "invalid_request"
+    assert repo.search_calls == []
+
+
+@pytest.mark.parametrize(
+    "params",
+    [
+        {"identifier_type": "nric"},
+        {"value": "S1234567A"},
+        {"identifier_type": "nric", "value": ""},
+        {"identifier_type": "nric", "value": "   "},
+    ],
+)
+def test_oauth2_person_search_rejects_incomplete_exact_pair(params: dict[str, str]) -> None:
+    repo = _SearchRepo()
+    client = _machine_search_client(repo)
+
+    res = client.get("/persons/search", params=params)
+
+    assert res.status_code == 400
+    body = res.json()
+    assert body["error"]["code"] == "invalid_request"
+    assert "data" not in body
+    assert repo.search_calls == []
+
+
+def test_oauth2_person_search_rejects_human_user() -> None:
+    app = build_oauth2_app()
+    app.dependency_overrides[get_current_user_or_oauth_client] = _override_human_employee
+    app.dependency_overrides[get_person_repo] = lambda: _SearchRepo()
+    client = TestClient(app)
+
+    res = client.get("/persons/search", params={"identifier_type": "nric", "value": "S1234567A"})
+
+    assert res.status_code == 403
+    assert res.json()["error"]["message"] == "This endpoint requires OAuth2 client credentials."
+
+
+def test_oauth2_person_search_rejects_oauth_client_without_persons_read_scope() -> None:
+    app = build_oauth2_app()
+    app.dependency_overrides[get_current_user_or_oauth_client] = _override_oauth_ingest_writer
+    app.dependency_overrides[get_person_repo] = lambda: _SearchRepo()
+    client = TestClient(app)
+
+    res = client.get("/persons/search", params={"identifier_type": "nric", "value": "S1234567A"})
+
+    assert res.status_code == 403
+    assert res.json()["error"]["message"] == "OAuth client lacks required scope: persons:read"
+
+
+def test_oauth2_person_search_openapi_documents_machine_only_restrictions() -> None:
+    paths = build_oauth2_app().openapi()["paths"]
+    operation = paths["/persons/search"]["get"]
+    description = operation["description"]
+    parameter_names = [parameter["name"] for parameter in operation["parameters"]]
+
+    for identifier_type in (
+        "phone",
+        "email",
+        "nric",
+        "external_customer_id",
+        "membership_id",
+        "crm_contact_id",
+        "loyalty_id",
+        "custom",
+    ):
+        assert f"`{identifier_type}`" in description
+    assert "nonblank" in description
+    assert "together" in description
+    assert "normalized" in description
+    assert "Operational person search by identifier or free-text." not in description
+    assert parameter_names.count("identifier_type") == 1
+    assert parameter_names.count("value") == 1
+    assert set(parameter_names) == {
+        "identifier_type",
+        "value",
+        "q",
+        "status",
+        "cursor",
+        "limit",
+    }
+    # The override must not leak onto the unchanged list/detail copies.
+    assert paths["/persons/{person_id}"]["get"]["description"] == (
+        "Return the canonical person view, resolving merge chain and address."
+    )

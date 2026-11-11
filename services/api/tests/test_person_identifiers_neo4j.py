@@ -17,8 +17,12 @@ from uuid import uuid4
 import pytest
 from neo4j import Driver, GraphDatabase
 from neo4j.exceptions import ServiceUnavailable
-from src.graph.mappers import map_person_identifier
-from src.graph.queries.persons import COUNT_PERSON_IDENTIFIERS, GET_PERSON_IDENTIFIERS
+from src.graph.mappers import map_person, map_person_identifier
+from src.graph.queries.persons import (
+    COUNT_PERSON_IDENTIFIERS,
+    FIND_PERSON_BY_IDENTIFIER,
+    GET_PERSON_IDENTIFIERS,
+)
 from src.repositories.neo4j._utils import record_to_dict
 
 
@@ -294,3 +298,100 @@ def test_identifiers_query_executes_and_preserves_provenance_variants(
     assert legacy_identifier.source_record_ids == []
     assert legacy_identifier.source_records == []
     assert legacy_identifier.entities == []
+
+
+def test_find_person_by_identifier_matches_exact_effective_active_links(
+    neo4j_driver: _TestGraph,
+) -> None:
+    """Exact (type, normalized value) lookups include legacy null-active links only."""
+    run_id = neo4j_driver.run_id
+    target_value = f"nric-target-{run_id}"
+    wrong_value = f"nric-wrong-{run_id}"
+    newer_person_id = f"person-newer-{run_id}"
+    older_person_id = f"person-older-{run_id}"
+    inactive_person_id = f"person-inactive-{run_id}"
+    merged_person_id = f"person-merged-{run_id}"
+    wrong_type_person_id = f"person-wrong-type-{run_id}"
+    wrong_value_person_id = f"person-wrong-value-{run_id}"
+
+    with neo4j_driver.driver.session() as session:
+        session.run(
+            """
+            CREATE (target:Identifier {
+              identifier_type: 'nric', normalized_value: $target_value,
+              _person_identifiers_test_run: $test_run_id
+            })
+            CREATE (wrong_type:Identifier {
+              identifier_type: 'phone', normalized_value: $target_value,
+              _person_identifiers_test_run: $test_run_id
+            })
+            CREATE (wrong_value:Identifier {
+              identifier_type: 'nric', normalized_value: $wrong_value,
+              _person_identifiers_test_run: $test_run_id
+            })
+            CREATE (newer:Person {
+              person_id: $newer_person_id, status: 'active',
+              updated_at: datetime('2026-08-20T00:10:00Z'),
+              _person_identifiers_test_run: $test_run_id
+            })
+            CREATE (older:Person {
+              person_id: $older_person_id, status: 'active',
+              updated_at: datetime('2026-08-20T00:05:00Z'),
+              _person_identifiers_test_run: $test_run_id
+            })
+            CREATE (inactive:Person {
+              person_id: $inactive_person_id, status: 'active',
+              updated_at: datetime('2026-08-20T00:15:00Z'),
+              _person_identifiers_test_run: $test_run_id
+            })
+            CREATE (merged:Person {
+              person_id: $merged_person_id, status: 'merged',
+              updated_at: datetime('2026-08-20T00:20:00Z'),
+              _person_identifiers_test_run: $test_run_id
+            })
+            CREATE (wrong_type_person:Person {
+              person_id: $wrong_type_person_id, status: 'active',
+              updated_at: datetime('2026-08-20T00:01:00Z'),
+              _person_identifiers_test_run: $test_run_id
+            })
+            CREATE (wrong_value_person:Person {
+              person_id: $wrong_value_person_id, status: 'active',
+              updated_at: datetime('2026-08-20T00:02:00Z'),
+              _person_identifiers_test_run: $test_run_id
+            })
+            CREATE (newer)-[:IDENTIFIED_BY {is_active: true}]->(target)
+            CREATE (older)-[:IDENTIFIED_BY]->(target)
+            CREATE (inactive)-[:IDENTIFIED_BY {is_active: false}]->(target)
+            CREATE (merged)-[:IDENTIFIED_BY {is_active: true}]->(target)
+            CREATE (wrong_type_person)-[:IDENTIFIED_BY {is_active: true}]->(wrong_type)
+            CREATE (wrong_value_person)-[:IDENTIFIED_BY {is_active: true}]->(wrong_value)
+            """,
+            test_run_id=run_id,
+            target_value=target_value,
+            wrong_value=wrong_value,
+            newer_person_id=newer_person_id,
+            older_person_id=older_person_id,
+            inactive_person_id=inactive_person_id,
+            merged_person_id=merged_person_id,
+            wrong_type_person_id=wrong_type_person_id,
+            wrong_value_person_id=wrong_value_person_id,
+        ).consume()
+
+        def person_ids(identifier_type: str, value: str) -> list[str]:
+            result = session.run(
+                FIND_PERSON_BY_IDENTIFIER, identifier_type=identifier_type, value=value
+            )
+            return [
+                map_person(record_to_dict(record.keys(), list(record.values()))).person_id
+                for record in result
+            ]
+
+        target_ids = person_ids("nric", target_value)
+        missing_ids = person_ids("nric", f"absent-{run_id}")
+        wrong_type_ids = person_ids("phone", target_value)
+        wrong_value_ids = person_ids("nric", wrong_value)
+
+    assert target_ids == [newer_person_id, older_person_id]
+    assert missing_ids == []
+    assert wrong_type_ids == [wrong_type_person_id]
+    assert wrong_value_ids == [wrong_value_person_id]
