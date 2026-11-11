@@ -138,6 +138,17 @@ RETURN sr.source_record_pk AS source_record_pk
 LIMIT 1
 """
 
+FIND_PARKED_SOURCE_RECORD_BY_HASH = """
+MATCH (sr:SourceRecord {
+    source_instance_id: $source_instance_id,
+    source_record_id: $source_record_id
+})-[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})
+WHERE sr.lifecycle_status = 'parked'
+  AND sr.record_hash = $record_hash
+RETURN sr.source_record_pk AS source_record_pk
+LIMIT 1
+"""
+
 GET_LATEST_SOURCE_RECORD = """
 MATCH (sr:SourceRecord {
     source_instance_id: $source_instance_id,
@@ -216,6 +227,16 @@ FOREACH (_ IN CASE WHEN entity IS NULL THEN [] ELSE [1] END |
     MERGE (sr)-[:OWNED_BY]->(entity)
 )
 RETURN sr.source_record_pk AS source_record_pk
+"""
+
+SET_SOURCE_RECORD_ATTRIBUTION = """
+MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})
+SET sr.attribution_status = $attribution_status,
+    sr.reeval_pending = $reeval_pending,
+    sr.attribution_eval_at = CASE
+        WHEN $attribution_status IS NULL THEN sr.attribution_eval_at
+        ELSE datetime()
+    END
 """
 
 RETIRE_IDENTITY_PROJECTIONS = """

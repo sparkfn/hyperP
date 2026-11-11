@@ -22,6 +22,7 @@ from src.identifier_scopes import (
     identifier_scope,
     source_instance_for_identifier,
 )
+from src.identity_assertions import write_assertions
 from src.identity_link_revisions import identity_link_key
 from src.models import (
     CandidateResult,
@@ -430,8 +431,16 @@ def persist_source_record(
     activation_blueprint: dict[str, JsonValue] | None = None,
     link_status: str | None = None,
     control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    attribution_status: str | None = None,
+    reeval_pending: bool | None = None,
+    shadow_assertions: bool = False,
 ) -> str:
-    """Step 7 + 7b: persist SourceRecord and link to IngestRun."""
+    """Step 7 + 7b: persist SourceRecord and link to IngestRun.
+
+    ``attribution_status``/``reeval_pending`` are only written when supplied, so
+    legacy linked rows keep their exact property set. ``shadow_assertions``
+    additionally writes the v2 shadow identity assertions for this record.
+    """
     normalized = build_normalized_source_payload(
         envelope=envelope,
         identifiers=identifiers,
@@ -522,6 +531,15 @@ def persist_source_record(
             ingest_run_id=ingest_run_id,
             control_instance_id=control_instance_id,
         )
+    if attribution_status is not None or reeval_pending is not None:
+        tx.run(
+            queries.SET_SOURCE_RECORD_ATTRIBUTION,
+            source_record_pk=pk,
+            attribution_status=attribution_status,
+            reeval_pending=reeval_pending,
+        )
+    if shadow_assertions:
+        write_assertions(tx, pk, normalized)
     return pk
 
 

@@ -24,6 +24,7 @@ from neo4j import ManagedTransaction
 
 from src.bitrix_backfill_runtime import record_terminal_unit, source_lineage_text
 from src.bitrix_ingestion_models import ExecutionContext, FenceContext
+from src.config import IdentityModel, get_settings
 from src.exclusions import ExclusionContext, is_excluded_vehicle_observation
 from src.golden_profile import compute_golden_profile
 from src.graph import queries
@@ -163,10 +164,13 @@ class IngestPipeline:
         fence_context: FenceContext | None = None,
         execution_context: ExecutionContext | None = None,
         control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+        identity_model: IdentityModel | None = None,
     ) -> None:
         if execution_context is not None and fence_context is not None:
             raise ValueError("supply execution_context or fence_context, not both")
         self._client = client
+        resolved_identity_model = identity_model or get_settings().identity_model
+        self._shadow_assertions = resolved_identity_model == "v2_shadow"
         self._match_engine = MatchEngine()
         self._execution_context = execution_context
         self._fence_context = (
@@ -258,13 +262,17 @@ class IngestPipeline:
                         scope_state="in_scope",
                         category_id=category_id,
                         entity_key=envelope.entity_key,
-                        source_record_pk=result.source_record_pk,
+                        source_record_pk=None if result.parked else result.source_record_pk,
                     )
                 ],
                 fence_context=context.fence_context,
             )
             scope_state = "in_scope"
-        if envelope.record_type == RecordType.CONVERSATION and result.source_record_pk is not None:
+        if (
+            envelope.record_type == RecordType.CONVERSATION
+            and result.source_record_pk is not None
+            and not result.parked
+        ):
             activity_ids = envelope.raw_payload.get("crm_activity_ids")
             if isinstance(activity_ids, list):
                 tx.run(
@@ -401,15 +409,24 @@ class IngestPipeline:
                 and canonical_contact_result is None
             ):
                 logger.info(
-                    "Dropping CRM deal %s: contacts do not resolve to one existing person",
+                    "Parking CRM deal %s: contacts do not resolve to one existing person",
                     envelope.source_record_id,
                 )
                 if rejected_pending:
                     collector.finalize(tx)
-                return IngestResult(
-                    source_record_id=envelope.source_record_id,
+                return self._persist_parked(
+                    tx,
+                    envelope=envelope,
+                    identifiers=person_identifiers,
+                    addresses=addresses,
+                    attributes=attributes,
+                    # Never persisted: the parked write carries its own link status.
+                    match_result=MatchResult(
+                        decision=MatchDecision.NO_MATCH,
+                        reasons=["crm_deal_contacts_unresolved"],
+                    ),
                     ingest_run_id=ingest_run_id,
-                    dropped=True,
+                    activation_blueprint=activation_blueprint,
                 )
             if len(lifecycle_plan.prior_person_ids) > 1:
                 match_result = ambiguous_prior_owners_result(lifecycle_plan.prior_person_ids)
@@ -446,17 +463,22 @@ class IngestPipeline:
             and not self._has_usable_match(match_result, candidates)
         ):
             logger.info(
-                "Dropping unmatched match-only record %s (source=%s, decision=%s)",
+                "Parking unmatched match-only record %s (source=%s, decision=%s)",
                 envelope.source_record_id,
                 envelope.source_system,
                 match_result.decision.value,
             )
             if rejected_pending:
                 collector.finalize(tx)
-            return IngestResult(
-                source_record_id=envelope.source_record_id,
+            return self._persist_parked(
+                tx,
+                envelope=envelope,
+                identifiers=person_identifiers,
+                addresses=addresses,
+                attributes=attributes,
+                match_result=match_result,
                 ingest_run_id=ingest_run_id,
-                dropped=True,
+                activation_blueprint=activation_blueprint,
             )
         if durable_quarantine:
             logger.info(
@@ -502,6 +524,7 @@ class IngestPipeline:
             expected_active_source_record_pk=lifecycle_plan.active_source_record_pk,
             activation_blueprint=activation_blueprint,
             control_instance_id=self._control_instance_id,
+            shadow_assertions=self._shadow_assertions,
         )
         collector.mark_new(source_record_pks=[source_record_pk])
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
@@ -972,6 +995,65 @@ class IngestPipeline:
             return set()
         return {candidate.person_id for candidate in find_candidates(tx, canonical_identifiers, [])}
 
+    def _persist_parked(
+        self,
+        tx: ManagedTransaction,
+        *,
+        envelope: SourceRecordEnvelope,
+        identifiers: list[NormalizedIdentifier],
+        addresses: list[NormalizedAddressModel],
+        attributes: list[NormalizedAttribute],
+        match_result: MatchResult,
+        ingest_run_id: str | None,
+        activation_blueprint: dict[str, JsonValue],
+    ) -> IngestResult:
+        """Persist a deliberately unlinked SourceRecord without identity writes.
+
+        The row is invisible to version planning (lifecycle ``parked``), so a
+        later rerun re-evaluates it exactly like a previously dropped record.
+        Matching the same hash again is idempotent and writes nothing.
+        """
+        parked = tx.run(
+            queries.FIND_PARKED_SOURCE_RECORD_BY_HASH,
+            source_system=envelope.source_system,
+            source_instance_id=effective_source_instance_id(envelope.source_instance_id),
+            source_record_id=envelope.source_record_id,
+            record_hash=envelope.record_hash,
+        ).single()
+        if parked is not None:
+            return IngestResult(
+                source_record_id=envelope.source_record_id,
+                source_record_pk=str(parked["source_record_pk"]),
+                skipped_duplicate=True,
+                parked=True,
+                ingest_run_id=ingest_run_id,
+            )
+        source_record_pk = persist_source_record(
+            tx,
+            envelope=envelope,
+            identifiers=identifiers,
+            addresses=addresses,
+            attributes=attributes,
+            match_result=match_result,
+            is_new_person=False,
+            ingest_run_id=ingest_run_id,
+            lifecycle_status=SourceRecordLifecycleStatus.PARKED,
+            expected_active_source_record_pk=None,
+            activation_blueprint=activation_blueprint,
+            link_status="unlinked",
+            control_instance_id=self._control_instance_id,
+            attribution_status="parked",
+            reeval_pending=True,
+            shadow_assertions=self._shadow_assertions,
+        )
+        return IngestResult(
+            source_record_id=envelope.source_record_id,
+            source_record_pk=source_record_pk,
+            parked=True,
+            match_decision=None,
+            ingest_run_id=ingest_run_id,
+        )
+
     def _persist_unlinked_review(
         self,
         tx: ManagedTransaction,
@@ -1000,6 +1082,7 @@ class IngestPipeline:
             activation_blueprint=activation_blueprint,
             link_status="blocked",
             control_instance_id=self._control_instance_id,
+            shadow_assertions=self._shadow_assertions,
         )
         collector.mark_new(source_record_pks=[source_record_pk])
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)

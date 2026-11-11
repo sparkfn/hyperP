@@ -97,10 +97,12 @@ def source_lineage_text(
 
 
 def _result_disposition(result: IngestResult) -> CoverageDisposition:
+    # A parked unit is re-evaluated on every run exactly as a dropped one was, so a rerun that
+    # finds its identical parked version is still "conflict", not "existing_same_hash".
+    if result.parked or result.excluded:
+        return "conflict"
     if result.skipped_duplicate:
         return "existing_same_hash"
-    if result.dropped:
-        return "conflict"
     return "created"
 
 

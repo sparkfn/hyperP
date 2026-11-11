@@ -148,6 +148,8 @@ class SourceRecordLifecycleStatus(StrEnum):
     SUPERSEDED = "superseded"
     REJECTED = "rejected"
     LINK_FAILED = "link_failed"
+    # Persisted-first but unlinked: kept for re-evaluation, invisible to version planning.
+    PARKED = "parked"
 
 
 @dataclass(frozen=True)
@@ -565,5 +567,10 @@ class IngestResult(BaseModel):
     review_case_id: str | None = None
     errors: list[str] = Field(default_factory=list)
     skipped_duplicate: bool = False
-    dropped: bool = False
+    # Persisted as a SourceRecord but not linked to any Person (match-only miss, unresolved CRM
+    # deal contacts). Replaces the former ``dropped`` exit.
+    parked: bool = False
+    # Deliberately not persisted; the caller records an ``IngestSkip`` with ``skip_reason``.
+    excluded: bool = False
+    skip_reason: str | None = None
     retry_pending: bool = False

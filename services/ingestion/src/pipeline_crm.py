@@ -69,7 +69,8 @@ def ingest_crm_history_record(
         if owner_scope is None:
             result = IngestResult(
                 source_record_id=envelope.source_record_id,
-                dropped=True,
+                excluded=True,
+                skip_reason="owner_scope_unresolved_retry",
                 ingest_run_id=ingest_run_id,
             )
             _record_activity_unit(
@@ -84,7 +85,8 @@ def ingest_crm_history_record(
         if owner_scope == "out_of_scope":
             result = IngestResult(
                 source_record_id=envelope.source_record_id,
-                dropped=True,
+                excluded=True,
+                skip_reason="excluded_out_of_scope",
                 ingest_run_id=ingest_run_id,
             )
             _record_activity_unit(
@@ -157,7 +159,8 @@ def ingest_crm_history_record(
         if created is None:
             result = IngestResult(
                 source_record_id=envelope.source_record_id,
-                dropped=True,
+                excluded=True,
+                skip_reason="parent_without_person_context",
                 ingest_run_id=ingest_run_id,
             )
             _record_activity_unit(
@@ -227,7 +230,8 @@ def ingest_call_record(
         if owner_scope is None:
             result = IngestResult(
                 source_record_id=envelope.source_record_id,
-                dropped=True,
+                excluded=True,
+                skip_reason="owner_scope_unresolved_retry",
                 ingest_run_id=ingest_run_id,
             )
             _record_activity_unit(
@@ -242,7 +246,8 @@ def ingest_call_record(
         if owner_scope == "out_of_scope":
             result = IngestResult(
                 source_record_id=envelope.source_record_id,
-                dropped=True,
+                excluded=True,
+                skip_reason="excluded_out_of_scope",
                 ingest_run_id=ingest_run_id,
             )
             _record_activity_unit(
@@ -304,7 +309,8 @@ def ingest_call_record(
         if created is None:
             result = IngestResult(
                 source_record_id=envelope.source_record_id,
-                dropped=True,
+                excluded=True,
+                skip_reason="parent_without_person_context",
                 ingest_run_id=ingest_run_id,
             )
             _record_activity_unit(
@@ -463,7 +469,7 @@ def _record_activity_unit(
     resolved = disposition
     if scope_state == "out_of_scope":
         resolved = "excluded_out_of_scope"
-        if not result.dropped:
+        if not result.excluded:
             raise RuntimeError("out-of-scope activity attempted to persist")
     record_terminal_unit(
         tx,

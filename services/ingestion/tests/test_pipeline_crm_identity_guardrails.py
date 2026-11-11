@@ -675,7 +675,7 @@ def test_blocked_canonical_owner_persists_durable_pending_review() -> None:
 
         result = pipeline._execute_ingest(tx, envelope, _contact_identifier(), [], [])
 
-    assert result.dropped is False
+    assert result.parked is False
     assert result.source_record_pk == "deal-sr"
     assert result.match_decision_id == "decision-1"
     assert result.review_case_id == "review-1"
