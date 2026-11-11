@@ -167,12 +167,64 @@ Endpoints:
   deprecated `GET /v1/oauth/jwks`, without the `Sunset` header. Unauthenticated.
 - `GET /api/oauth2/v1/persons`: paginated person list, with the same filters and
   sorting as the authenticated person list. Requires `persons:read`.
+- `GET /api/oauth2/v1/persons/search`: exact identifier lookup (see below).
+  Requires `persons:read`.
 - `GET /api/oauth2/v1/persons/{person_id}`: canonical person detail. Requires
   `persons:read`.
 
 The person endpoints return `401` when no bearer token is supplied, `403` for
 human users (client credentials required), and `403` for clients lacking
 `persons:read`. Person detail returns `404` for unknown IDs.
+
+### Machine exact-identifier search
+
+`GET /api/oauth2/v1/persons/search` performs an exact identifier lookup for
+machine clients.
+
+- `identifier_type` and `value` must be supplied together, and `value` must be
+  nonblank. A request carrying only one of them, an empty or whitespace-only
+  `value`, or an unsupported `identifier_type` returns `400` with code
+  `invalid_request`. Incomplete or blank machine lookups never produce an
+  apparent authoritative empty result.
+- Supported `identifier_type` values are exactly `phone`, `email`, `nric`,
+  `external_customer_id`, `membership_id`, `crm_contact_id`, `loyalty_id`, and
+  `custom`. Arbitrary persisted identifier keys accepted by the human search
+  surface are rejected on this machine route.
+- Matching is exact `(identifier_type, normalized_value)` equality against the
+  canonical value stored by ingestion. HyperP performs no server-side
+  normalization for this endpoint; callers must send the stored normalized
+  value:
+  - `nric`: trim surrounding whitespace, remove leading junk `x`/`X` markers,
+    and uppercase; preserve a trailing `X`, which may be a check letter. No
+    checksum validation is implied.
+  - `phone`: normalized E.164, with Singapore as the default region for local
+    numbers.
+  - `email`: trim and lowercase; Gmail/Googlemail local-part dots and `+tags`
+    are removed and the domain is folded to `gmail.com`.
+  - Other supported machine types use their canonical stored value;
+    ingestion's generic fallback trims surrounding whitespace.
+
+A successful lookup returns `200` with `data` as a `Person[]` (`[]` when no
+eligible Person matches), a populated `meta.request_id`, and null
+`meta.next_cursor`/`meta.total_count`. Exact search is unpaginated and ignores
+`cursor`/`limit`. Results are ordered by `updated_at` descending.
+
+The lookup traverses links whose `is_active` is true or absent (legacy null
+links are included) and excludes only Persons with status `merged`;
+suppressed and retired Persons remain eligible. Consequently, only a complete,
+nonblank, correctly normalized machine exact request makes `[]` authoritative
+for "no non-merged Person currently has this normalized identifier through an
+effective-active link". It says nothing about inactive links, historical
+evidence, or merged nodes.
+
+When neither `identifier_type` nor `value` is supplied, the machine copy falls
+back to the shared handler's free-text `q` / no-parameter behavior unchanged; a
+fuzzy `[]` result is not an authoritative identifier negative.
+
+HyperP currently implements no endpoint-specific request quota or search `429`
+contract for this handler. Callers should use bounded request
+rates/concurrency and exponential backoff for transient failures; this change
+adds no limiter or retry envelope.
 
 ## Admin OAuth client management
 
@@ -595,7 +647,10 @@ Operational search for canonical persons.
 
 ### Query Parameters
 
-- `identifier_type`: optional, one of `phone`, `email`, `external_customer_id`, `membership_id`, `crm_contact_id`, `government_id_hash`
+- `identifier_type`: optional persisted identifier key. Common examples are
+  `nric`, `phone`, and `email`; custom source keys such as
+  `partner_account_id` and dynamic social keys are also accepted. Human/MCP
+  search is not limited to the machine identifier vocabulary.
 - `value`: optional exact search value
 - `q`: optional free-text search for name or display fields
 - `source_system`: optional source filter
@@ -632,8 +687,10 @@ At least one of `identifier_type + value` or `q` should be provided.
 
 - support-agent role may receive redacted sensitive fields
 - government-ID-derived lookups should be exact-match only
-- rate limiting is enforced per caller role, with stricter limits for
-  `support_agent`
+- HyperP currently implements no endpoint-specific request quota or search
+  `429` contract for this handler. Callers should use bounded request
+  rates/concurrency and exponential backoff for transient failures; this
+  change adds no limiter or retry envelope.
 - free-text `q` requires a minimum of 3 characters
 - all search queries are logged with caller identity for audit
 

@@ -481,8 +481,13 @@ paths:
       parameters:
         - name: identifier_type
           in: query
+          description: >-
+            Persisted identifier key. Common examples are `nric`, `phone`, and
+            `email`; custom source keys such as `partner_account_id` and dynamic
+            social keys are also accepted. Human search is not limited to the
+            machine identifier vocabulary.
           schema:
-            $ref: '#/components/schemas/IdentifierType'
+            type: string
         - name: value
           in: query
           schema:
@@ -1495,6 +1500,81 @@ paths:
             application/json:
               schema:
                 $ref: '#/components/schemas/ListedPersonListResponseEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /oauth2/v1/persons/search:
+    get:
+      tags: [OAuth2 Machine API]
+      summary: Exact identifier lookup (machine surface)
+      operationId: searchPersonsMachine
+      description: |
+        Exact `(identifier_type, normalized_value)` lookup for OAuth2 machine
+        clients. `identifier_type` and `value` must be supplied together with a
+        nonblank `value`; a partial pair, a blank `value`, or an unsupported
+        `identifier_type` returns `400 invalid_request`. Supported
+        `identifier_type` values: `phone`, `email`, `nric`,
+        `external_customer_id`, `membership_id`, `crm_contact_id`, `loyalty_id`,
+        and `custom`. Matching compares the canonical normalized value stored by
+        ingestion, so callers must send the normalized value.
+
+        A successful request returns every non-merged Person linked to the
+        matching Identifier through an effective-active link (including legacy
+        links with no `is_active` property), ordered by `updated_at` descending
+        and unpaginated. Because merged Persons and inactive links are excluded,
+        only a complete, nonblank, correctly normalized request makes an empty
+        `data` array authoritative. HyperP currently implements no
+        endpoint-specific request quota or search `429` contract for this
+        handler; callers should use bounded request rates/concurrency and
+        exponential backoff for transient failures.
+      security:
+        - bearerAuth: []
+      parameters:
+        - name: identifier_type
+          in: query
+          description: >-
+            Exact identifier type. Supported values: `phone`, `email`, `nric`,
+            `external_customer_id`, `membership_id`, `crm_contact_id`,
+            `loyalty_id`, and `custom`. Must be supplied together with a
+            nonblank `value`; anything else returns `400 invalid_request`.
+          schema:
+            type: string
+        - name: value
+          in: query
+          description: >-
+            Canonical normalized identifier value stored by ingestion. Must be
+            nonblank and supplied together with `identifier_type`.
+          schema:
+            type: string
+        - name: q
+          in: query
+          schema:
+            type: string
+            minLength: 3
+        - name: status
+          in: query
+          schema:
+            $ref: '#/components/schemas/PersonStatus'
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 100
+      responses:
+        '200':
+          description: Exact identifier lookup results.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/PersonSearchResponseEnvelope'
         '400':
           $ref: '#/components/responses/BadRequest'
         '401':
@@ -3974,6 +4054,10 @@ components:
             $ref: '#/components/schemas/Person'
         meta:
           $ref: '#/components/schemas/Meta'
+        display_items:
+          type: [array, 'null']
+          items:
+            $ref: '#/components/schemas/PopoverDisplayItem'
       required: [data, meta]
       additionalProperties: false
     PersonDetail:

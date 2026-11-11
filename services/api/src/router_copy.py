@@ -38,6 +38,7 @@ def copy_router_routes(
     dependencies: list[DependsMarker],
     path_filter: Callable[[str], bool] | None = None,
     path_transform: Callable[[str], str] | None = None,
+    description_override: str | None = None,
 ) -> None:
     """Copy a router's API routes onto *app*, rewriting each route's path.
 
@@ -45,6 +46,8 @@ def copy_router_routes(
     the predicate are copied. *path_transform* maps each route's path onto the
     sub-app and defaults to stripping the ``/v1`` prefix. The extra
     *dependencies* are prepended to each route's own dependencies.
+    *description_override* replaces each copied route's own description when
+    supplied; the default preserves the shared handler description.
     """
     transform = path_transform if path_transform is not None else strip_v1_prefix
     for route in router.routes:
@@ -52,6 +55,9 @@ def copy_router_routes(
             continue
         if path_filter is not None and not path_filter(route.path):
             continue
+        description = (
+            description_override if description_override is not None else route.description
+        )
         app.add_api_route(
             transform(route.path),
             route.endpoint,
@@ -60,7 +66,7 @@ def copy_router_routes(
             tags=route.tags,
             dependencies=[*dependencies, *route.dependencies],
             summary=route.summary,
-            description=route.description,
+            description=description,
             response_description=route.response_description,
             responses=route.responses,
             deprecated=route.deprecated,

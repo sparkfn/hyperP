@@ -7,9 +7,15 @@ from fastapi.testclient import TestClient
 from src.app import build_app
 from src.auth.deps import get_current_user_or_oauth_client, require_active_user
 from src.auth.models import AuthUser
-from src.repositories.deps import get_entity_repo
+from src.repositories.deps import get_entity_repo, get_person_repo
 from src.repositories.protocols.entity import EntityRepository
-from src.types import EntityFilterOption, EntityPerson, EntitySummary, SourceSystemSummary
+from src.types import (
+    EntityFilterOption,
+    EntityPerson,
+    EntitySummary,
+    Person,
+    SourceSystemSummary,
+)
 from starlette.routing import Mount
 
 
@@ -53,6 +59,17 @@ class _EntityRepo:
 
 def _entity_repo() -> EntityRepository:
     return _EntityRepo()
+
+
+class _SearchPersonRepo:
+    """Partial person-repository double recording exact-identifier searches."""
+
+    def __init__(self) -> None:
+        self.search_calls: list[tuple[str, str]] = []
+
+    async def search_by_identifier(self, identifier_type: str, value: str) -> list[Person]:
+        self.search_calls.append((identifier_type, value))
+        return [Person(person_id="p1", status="active")]
 
 
 def test_frontend_app_docs_are_mounted_under_app_v2() -> None:
@@ -137,6 +154,26 @@ def test_frontend_app_mount_exposes_entity_filter_options() -> None:
 
     assert response.status_code == 200
     assert response.json()["data"] == [{"entity_key": "eko", "display_name": "Eko"}]
+
+
+def test_frontend_app_search_preserves_arbitrary_identifier_keys() -> None:
+    """The machine-only validation must not narrow the human/MCP search surface."""
+    app = build_app()
+    frontend_app = mounted_frontend_app(app)
+    frontend_app.dependency_overrides[require_active_user] = _active_user
+    frontend_app.dependency_overrides[get_current_user_or_oauth_client] = _active_user
+    repo = _SearchPersonRepo()
+    frontend_app.dependency_overrides[get_person_repo] = lambda: repo
+    client = TestClient(app)
+
+    response = client.get(
+        "/app/v2/persons/search",
+        params={"identifier_type": "partner_account_id", "value": "acct-42"},
+    )
+
+    assert response.status_code == 200
+    assert response.json()["data"][0]["person_id"] == "p1"
+    assert repo.search_calls == [("partner_account_id", "acct-42")]
 
 
 def test_frontend_app_excludes_public_and_oauth_token_routes() -> None:
