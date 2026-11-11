@@ -328,12 +328,17 @@ CREATE (md:MatchDecision {
   engine_type: 'heuristic',       // deterministic | heuristic | llm | manual | pair_audit
   engine_version: 'v1.0.0',
   decision: 'review',             // merge | review | no_match
-  confidence: 0.78,
-  reasons: ['same phone', 'same DOB', 'highly similar name'],
+  confidence: 0.20,
+  reasons: ['Phone match (unverified: +0.20)'],
   blocking_conflicts: [],
   feature_snapshot: {},
   prompt_snapshot: null,
   policy_version: 'policy-2026-03-31',
+  // optional — written only when the review policy parks the decision
+  review_suppressed: true,
+  suppressed_reason: 'unverified_phone',  // unverified_phone | unverified_email |
+                                          // phone_near_match | email_near_match |
+                                          // weak_signal_combination
   created_at: datetime(),
   retention_expires_at: null
 })
@@ -342,18 +347,31 @@ CREATE (md:MatchDecision {
 Note: `reasons` and `blocking_conflicts` are native Neo4j lists.
 `feature_snapshot` is a native map.
 
+`review_suppressed` and `suppressed_reason` are optional properties, set only
+when the ingestion `REVIEW_POLICY=v2_weak_signal_park` policy parks a
+weak-signal `review` decision instead of opening a `ReviewCase`. The example
+above shows such a parked decision. The decision itself is still persisted and
+still carries `decision = 'review'`; only the review case is skipped. The
+source record stays `pending_review` and no evidence is attached to it — the
+decision is parked, not resolved. When the policy is off (the default) neither
+property is written.
+
 ### ReviewCase
 
 ```cypher
 CREATE (rc:ReviewCase {
   review_case_id: randomUUID(),
   priority: 100,
-  queue_state: 'open',            // open | assigned | deferred | resolved | cancelled
+  queue_state: 'open',            // open | assigned | deferred | resolved | cancelled |
+                                 // expired | dismissed | superseded_by_policy
   assigned_to: null,
   follow_up_at: null,
   sla_due_at: datetime(),
-  resolution: null,               // merge | reject | manual_no_match | cancelled_superseded
+  resolution: null,               // merge | reject | manual_no_match | resolve |
+                                 // expired | dismissed | cancelled_superseded
   resolved_at: null,
+  resolved_by: null,              // reviewer who closed the case
+  resolution_reason_code: null,   // audit reason code for the close
   // review actions stored as an ordered list of JSON strings — no separate node
   actions: [],
   created_at: datetime(),
@@ -375,9 +393,23 @@ SET rc.actions = rc.actions + [$action_json]
 ```
 
 The `review_action_type` values include both API-submitted actions (`merge`,
-`reject`, `defer`, `escalate`, `manual_no_match`) and system-recorded actions
-(`assign`, `unassign`, `cancel`, `reopen`). The API layer exposes only the
-API-submitted subset.
+`reject`, `defer`, `escalate`, `manual_no_match`, `resolve`, `expire`,
+`dismiss`) and system-recorded actions (`assign`, `unassign`, `cancel`,
+`reopen`). The API layer exposes only the API-submitted subset.
+
+A reason-coded action appends a `reason_code` key to its audit entry. A closing
+action — one that sets a resolution — additionally records the reviewer in
+`resolved_by` and, when a reason code was supplied, the code in
+`resolution_reason_code`. The two node properties are written only for
+reason-coded closes and for the `resolve`, `expire`, and `dismiss` actions; a
+legacy close without a reason code leaves both properties unset.
+
+`expired`, `dismissed`, and `superseded_by_policy` are terminal dispositions.
+The `expire` and `dismiss` actions close the case in place — they do not
+delete the `ReviewCase` node — and the case stays queryable even after an
+involved `SourceRecord` later changes its lifecycle status.
+`superseded_by_policy` is a state only: no API action transitions a case into
+it.
 
 **Merge side-effect provenance (nullable).** When a person merge closes or
 redirects a still-open case as a side effect, the case carries provenance so an

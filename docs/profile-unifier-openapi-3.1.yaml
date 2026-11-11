@@ -1075,6 +1075,10 @@ paths:
       tags: [Persons]
       summary: Get recent match decisions related to a person
       operationId: getPersonMatches
+      description: >
+        Includes the `review_suppressed` and `suppressed_reason` fields, so a
+        decision that the review policy parked instead of raising a review
+        case is still visible here.
       parameters:
         - $ref: '#/components/parameters/PersonId'
         - $ref: '#/components/parameters/RequestId'
@@ -1842,6 +1846,11 @@ paths:
       tags: [Review]
       summary: List review cases
       operationId: listReviewCases
+      description: >
+        A case that involves source-record evidence is listed only while that
+        evidence is still pending. The terminal disposition states `expired`,
+        `dismissed` and `superseded_by_policy` stay listed even after an
+        involved source record later changes its lifecycle status.
       parameters:
         - $ref: '#/components/parameters/RequestId'
         - name: queue_state
@@ -1915,14 +1924,17 @@ paths:
             format: date-time
         - name: overdue_sla
           in: query
-          description: When true, only cases past their SLA and not yet resolved/cancelled.
+          description: >-
+            When true, only cases past their SLA and not yet in a closed state
+            (resolved, cancelled, expired, dismissed, superseded_by_policy).
           schema:
             type: boolean
         - name: resolved
           in: query
           description: >-
-            True for closed cases (queue_state resolved or cancelled); false
-            for unresolved cases (open, assigned, deferred).
+            True for closed cases (queue_state resolved, cancelled, expired,
+            dismissed, or superseded_by_policy); false for unresolved cases
+            (open, assigned, deferred).
           schema:
             type: boolean
         - name: sort_by
@@ -2009,6 +2021,13 @@ paths:
       tags: [Review]
       summary: Submit a review action
       operationId: createReviewAction
+      description: >
+        `merge` is refused with `422 pair_audit_merge_disabled` when the case's
+        match decision came from the `pair_audit` engine; refusing the merge
+        does not by itself dispose of the case, which stays in its current
+        queue state. `resolve` is refused with `422 resolve_not_applicable`
+        unless the case links two persons and carries no source-record
+        evidence. `expire` and `dismiss` close the case without deleting it.
       parameters:
         - $ref: '#/components/parameters/ReviewCaseId'
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -2030,6 +2049,54 @@ paths:
           $ref: '#/components/responses/ReviewCaseNotFound'
         '409':
           $ref: '#/components/responses/MergeBlocked'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+  /v1/review-cases/bulk-actions:
+    post:
+      tags: [Review]
+      summary: Apply one review action to many review cases
+      operationId: submit_bulk_review_action
+      description: >
+        Applies a single action to a batch of review cases and reports one
+        outcome per case, in the order the ids were submitted.
+
+        Every id is authorized before the first write: an admin may act on any
+        case, and an employee must own at least one of the entities behind
+        each listed case. A batch that includes a case outside the caller's
+        entity scope is rejected without writing anything. Human principals
+        only — machine OAuth clients cannot call this endpoint.
+
+        Each case is actioned in its own transaction, so one failing case does
+        not abort the batch. A case that cannot be actioned is reported as an
+        error item. `outcome_unknown` means the commit state of that one case
+        was indeterminate: refresh the queue before retrying it.
+
+        This endpoint accepts no idempotency key and does not enforce
+        request-level idempotency. A retried request re-applies the action and
+        can append duplicate audit entries, so clients must not assume a repeat
+        is a no-op. After an indeterminate outcome, refresh the queue to learn
+        which cases actually changed before retrying anything.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkReviewActionRequest'
+      responses:
+        '200':
+          description: Per-item outcomes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkReviewActionResponseEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /v1/persons/manual-merge:
     post:
       tags: [Merge]
@@ -2506,13 +2573,74 @@ components:
       enum: [active, merged, suppressed, retired]
     ReviewQueueState:
       type: string
-      enum: [open, assigned, deferred, resolved, cancelled]
+      enum: [open, assigned, deferred, resolved, cancelled, expired, dismissed, superseded_by_policy]
     ReviewResolution:
       type: string
-      enum: [merge, reject, manual_no_match, cancelled_superseded]
+      enum: [merge, reject, manual_no_match, resolve, expired, dismissed, cancelled_superseded]
     ReviewActionType:
       type: string
-      enum: [merge, reject, defer, escalate, manual_no_match]
+      enum: [merge, reject, defer, escalate, manual_no_match, resolve, expire, dismiss]
+    BulkReviewActionType:
+      type: string
+      description: >
+        Actions accepted by the bulk review endpoint. `merge` is deliberately
+        excluded — a bulk batch never merges people.
+      enum: [resolve, reject, defer, expire, dismiss]
+    ReviewReasonCode:
+      type: string
+      description: >
+        Taxonomy for why a review case was raised. `unverified_phone`,
+        `unverified_email`, `phone_near_match`, `email_near_match` and
+        `weak_signal_combination` are the weak-signal codes that the
+        `v2_weak_signal_park` review policy can suppress; `weak_signal` is the
+        telemetry roll-up for a case whose reasons were all weak-signal.
+      enum:
+        - unverified_phone
+        - unverified_email
+        - phone_near_match
+        - email_near_match
+        - weak_signal_combination
+        - crm_ambiguity
+        - continuity_reassignment
+        - dob_conflict
+        - name_mismatch
+        - name_similarity
+        - dob_match
+        - shared_identifier_bridge
+        - weak_signal
+        - other
+    ReviewActionReasonCode:
+      type: string
+      description: >
+        Taxonomy for why a reviewer closed or deferred a review case. Required
+        on bulk review actions; optional on single-case review actions.
+      enum:
+        - confirmed_match
+        - confirmed_distinct
+        - insufficient_evidence
+        - parked_weak_signal
+        - stale_expired
+        - awaiting_verification
+        - pair_audit_retired_in_v2
+        - other
+    BulkReviewActionErrorCode:
+      type: string
+      description: >
+        Per-item failure code of a bulk review action.
+        `duplicate_review_case_id` — the id was already present earlier in the
+        same request and was not actioned twice. `outcome_unknown` — the commit
+        state was indeterminate, so refresh the queue before retrying that id.
+        `review_case_not_found` — no such review case, or the case is no longer
+        actionable (for example, it was already closed). `resolve_not_applicable`
+        — the case does not link two persons without source-record evidence.
+        `action_not_applicable` — the action could not be applied to this case
+        (for example, the case could no longer be claimed).
+      enum:
+        - duplicate_review_case_id
+        - outcome_unknown
+        - review_case_not_found
+        - resolve_not_applicable
+        - action_not_applicable
     PersonSummary:
       type: object
       properties:
@@ -3181,6 +3309,21 @@ components:
           type: array
           items:
             type: string
+        review_suppressed:
+          type: boolean
+          default: false
+          description: >
+            True when the review policy parked this decision instead of opening
+            a review case. The decision itself is still persisted and still
+            `review`.
+        suppressed_reason:
+          type:
+            - string
+            - 'null'
+          description: >
+            Weak-signal reason code recorded when `review_suppressed` is true
+            (`unverified_phone`, `unverified_email`, `phone_near_match`,
+            `email_near_match`, or `weak_signal_combination`).
       required:
         - match_decision_id
         - engine_type
@@ -3219,6 +3362,20 @@ components:
           oneOf:
             - $ref: '#/components/schemas/ReviewResolution'
             - type: 'null'
+        resolved_by:
+          type:
+            - string
+            - 'null'
+          description: >
+            Actor recorded when the case was closed by a reason-coded or
+            `resolve`/`expire`/`dismiss` action.
+        resolution_reason_code:
+          type:
+            - string
+            - 'null'
+          description: >
+            `ReviewActionReasonCode` recorded when the case was closed with a
+            reason code.
         match_decision:
           $ref: '#/components/schemas/MatchDecision'
       required:
@@ -3640,10 +3797,48 @@ components:
           type:
             - string
             - 'null'
+        reason_code:
+          oneOf:
+            - $ref: '#/components/schemas/ReviewActionReasonCode'
+            - type: 'null'
+          description: >
+            Optional audit reason code. When supplied together with a closing
+            action, the case records `resolved_by` and
+            `resolution_reason_code`. Omitting it keeps the legacy write
+            shape unchanged.
         metadata:
           type: object
           additionalProperties: true
       required: [action_type]
+      additionalProperties: false
+    BulkReviewActionRequest:
+      type: object
+      properties:
+        review_case_ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
+            format: uuid
+          description: >
+            Review cases to action, in the order the outcomes are reported. A
+            repeated id is reported as `duplicate_review_case_id` and is
+            actioned only once.
+        action_type:
+          $ref: '#/components/schemas/BulkReviewActionType'
+        reason_code:
+          $ref: '#/components/schemas/ReviewActionReasonCode'
+        notes:
+          type:
+            - string
+            - 'null'
+        follow_up_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+      required: [review_case_ids, action_type, reason_code]
       additionalProperties: false
     ManualMergeRequest:
       type: object
@@ -4665,6 +4860,47 @@ components:
                 - $ref: '#/components/schemas/ReviewResolution'
                 - type: 'null'
           required: [review_case_id, queue_state, resolution]
+          additionalProperties: false
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    BulkReviewActionItemResult:
+      type: object
+      properties:
+        review_case_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [updated, error]
+        queue_state:
+          oneOf:
+            - $ref: '#/components/schemas/ReviewQueueState'
+            - type: 'null'
+        resolution:
+          oneOf:
+            - $ref: '#/components/schemas/ReviewResolution'
+            - type: 'null'
+        error_code:
+          oneOf:
+            - $ref: '#/components/schemas/BulkReviewActionErrorCode'
+            - type: 'null'
+      required: [review_case_id, status, queue_state, resolution, error_code]
+      additionalProperties: false
+    BulkReviewActionResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            items:
+              type: array
+              description: >
+                One outcome per submitted id, in submission order.
+              items:
+                $ref: '#/components/schemas/BulkReviewActionItemResult'
+          required: [items]
           additionalProperties: false
         meta:
           $ref: '#/components/schemas/Meta'
