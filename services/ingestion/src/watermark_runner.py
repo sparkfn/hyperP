@@ -90,12 +90,10 @@ def _finalize_run(
     *,
     control_instance_id: str,
     watermark_end: str | None,
-    ledger: SkipLedger | None = None,
 ) -> None:
     """Finalize an IngestRun with status and optional watermark_end."""
 
     def _tx(tx: ManagedTransaction) -> None:
-        counters = ledger.counters() if ledger is not None else {}
         tx.run(
             queries.UPDATE_INGEST_RUN,
             ingest_run_id=ingest_run_id,
@@ -104,13 +102,6 @@ def _finalize_run(
             record_count=record_count,
             rejected_count=0,
             watermark_end=watermark_end,
-            emitted_count=counters.get("emitted_count"),
-            persisted_count=counters.get("persisted_count"),
-            duplicate_count=counters.get("duplicate_count"),
-            pipeline_skip_count=counters.get("pipeline_skip_count"),
-            connector_skip_count=counters.get("connector_skip_count"),
-            record_error_count=counters.get("record_error_count"),
-            skip_ledger_reconciled=counters.get("skip_ledger_reconciled"),
         )
 
     with client.session() as session:
@@ -134,6 +125,7 @@ def _process_page_records(
     errors = 0
     for raw_record in records:
         if ledger is not None:
+            ledger.checkpoint()
             ledger.emitted += 1
         envelope = SourceRecordEnvelope.model_validate(
             {"source_system": source_key, **raw_record},
@@ -223,7 +215,6 @@ def run_incremental(
                     records_processed,
                     control_instance_id=control_instance_id,
                     watermark_end=None,
-                    ledger=ledger,
                 )
                 return IncrementalRunSummary(
                     ingest_run_id=ingest_run_id,
@@ -278,7 +269,6 @@ def run_incremental(
                     records_processed,
                     control_instance_id=control_instance_id,
                     watermark_end=watermark_end_iso,
-                    ledger=ledger,
                 )
                 return IncrementalRunSummary(
                     ingest_run_id=ingest_run_id,
@@ -302,7 +292,6 @@ def run_incremental(
                 records_processed,
                 control_instance_id=control_instance_id,
                 watermark_end=None,
-                ledger=ledger,
             )
         except Exception:
             logger.exception("Failed to finalize IngestRun %s as failed", ingest_run_id)

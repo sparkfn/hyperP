@@ -262,6 +262,7 @@ def test_known_owner_refresh_serializes_out_of_scope_observed_at(
         "bitrix-crm-deal-7",
     )
     assert skip["ingest_run_id"] == context.fence_context.ingest_run_id
+    assert skip["attempt_key"] == ""
 
     scope_recorder.assert_called_once()
     scope_call = scope_recorder.call_args

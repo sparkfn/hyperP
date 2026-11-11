@@ -638,6 +638,7 @@ class BitrixDumpConnector(SourceConnector):
             envelopes = self._builder._build_envelopes(
                 bundle=bundle,
                 extraction=extraction,
+                on_skip=self.record_skip,
             )
             if envelopes:
                 yield envelopes[0]
@@ -839,6 +840,7 @@ def _extract_whatsapp_dump_bundles(
         envelopes = build_whatsapp_envelopes(
             bundle=bundle,
             extraction=extraction,
+            on_skip=on_skip,
         )
         if envelopes:
             yield envelopes[0]

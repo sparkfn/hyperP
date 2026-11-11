@@ -7,6 +7,9 @@ CREATE_IDENTITY_FOUNDATION_SCHEMA: tuple[str, ...] = (
 FOR ()-[assertion:ASSERTS]-() REQUIRE assertion.assertion_id IS UNIQUE""",
     """CREATE CONSTRAINT ingest_skip_id_unique IF NOT EXISTS
 FOR (skip:IngestSkip) REQUIRE skip.skip_id IS UNIQUE""",
+    """CREATE CONSTRAINT ingest_run_attempt_key_unique IF NOT EXISTS
+FOR (attempt:IngestRunAttempt)
+REQUIRE (attempt.ingest_run_id, attempt.attempt_key) IS UNIQUE""",
     """CREATE INDEX ingest_skip_run IF NOT EXISTS
 FOR (skip:IngestSkip) ON (skip.ingest_run_id)""",
     """CREATE CONSTRAINT profile_fact_key_unique IF NOT EXISTS

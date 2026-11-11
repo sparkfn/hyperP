@@ -13,6 +13,7 @@ from src.graph.queries.identity_assertions import ASSERT_IDENTIFIERS
 from src.identity_assertions import (
     _parse_normalized_payload,
     assertion_rows,
+    audit_assertions,
     backfill_assertions,
     write_assertions,
 )
@@ -185,3 +186,118 @@ def test_backfill_falls_back_to_identified_by_edges_when_payload_is_invalid() ->
     assert backfill_assertions(cast(Neo4jClient, client), batch_size=1) == 1
     assert any("IDENTIFIED_BY" in query for query in client.read_calls)
     assert ASSERT_IDENTIFIERS in client.write_calls
+
+
+def test_unusable_quality_flag_entry_is_not_malformed() -> None:
+    payload: dict[str, JsonValue] = {
+        "identifiers": [
+            {
+                "identifier_type": "phone",
+                "normalized_value": "+6591234567",
+                "quality_flag": "invalid_format",
+            }
+        ]
+    }
+    rows = assertion_rows("source-1", payload)
+    assert rows.malformed == 0
+    assert len(rows.identifiers) == 0
+
+
+def test_legacy_shaped_payload_records_malformed_and_audit_reports_it() -> None:
+    legacy_payload: dict[str, JsonValue] = {
+        "identifiers": [
+            {
+                "type": "phone",
+                "value": "+6591234567",
+            }
+        ]
+    }
+    rows = assertion_rows("source-1", legacy_payload)
+    assert rows.malformed == 1
+    assert len(rows.identifiers) == 0
+
+    client = _FakeClient(
+        [
+            [
+                {
+                    "source_record_pk": "source-legacy",
+                    "normalized_payload": json.dumps(legacy_payload),
+                    "fallback_identifiers": [],
+                    "identifier_count": 0,
+                    "address_count": 0,
+                    "fact_count": 0,
+                }
+            ],
+            [],
+        ]
+    )
+    mismatches = audit_assertions(cast(Neo4jClient, client), batch_size=1)
+    assert len(mismatches) == 1
+    assert mismatches[0].source_record_pk == "source-legacy"
+    assert mismatches[0].malformed_entries == 1
+
+
+def test_payload_without_identifiers_list_uses_fallback_for_backfill_and_audit() -> None:
+    fallback_identifiers: list[JsonValue] = [
+        {
+            "identifier_type": "phone",
+            "identifier_scope": "global",
+            "normalized_value": "+6591234567",
+            "source_instance_id": None,
+            "quality_flag": "valid",
+        }
+    ]
+    payload_no_id_list = json.dumps({"attributes": []})
+
+    audit_client = _FakeClient(
+        [
+            [
+                {
+                    "source_record_pk": "source-1",
+                    "normalized_payload": payload_no_id_list,
+                    "fallback_identifiers": fallback_identifiers,
+                    "identifier_count": 1,
+                    "address_count": 0,
+                    "fact_count": 0,
+                }
+            ],
+            [],
+        ]
+    )
+    mismatches = audit_assertions(cast(Neo4jClient, audit_client), batch_size=1)
+    assert mismatches == []
+
+    backfill_client = _FakeClient(
+        [
+            [
+                {
+                    "source_record_pk": "source-1",
+                    "normalized_payload": payload_no_id_list,
+                    "fallback_identifiers": fallback_identifiers,
+                }
+            ],
+            [],
+        ]
+    )
+    assert backfill_assertions(cast(Neo4jClient, backfill_client), batch_size=1) == 1
+    assert ASSERT_IDENTIFIERS in backfill_client.write_calls
+
+
+def test_empty_object_payload_with_no_identified_by_edges_has_no_mismatch() -> None:
+    client = _FakeClient(
+        [
+            [
+                {
+                    "source_record_pk": "source-empty",
+                    "normalized_payload": "{}",
+                    "fallback_identifiers": [],
+                    "identifier_count": 0,
+                    "address_count": 0,
+                    "fact_count": 0,
+                }
+            ],
+            [],
+        ]
+    )
+    mismatches = audit_assertions(cast(Neo4jClient, client), batch_size=1)
+    assert mismatches == []

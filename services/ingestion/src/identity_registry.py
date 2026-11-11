@@ -1,4 +1,16 @@
-"""Identity type policies shared by ingestion and shadow assertions."""
+"""Identity type policies shared by ingestion and shadow assertions.
+
+Unseeded values (no source of truth):
+- Per-type half-life windows: docs/profile-unifier-architecture.md:638-647
+  requires per-type configurable aging windows, but no aging implementation
+  or configuration exists in code today; all half_life_days remain None.
+- Trust-tier-derived promotion: bootstrap trust tiers (src.graph.bootstrap)
+  govern attribute fact precedence, not identifier promotion. `promotes` is
+  only True where existing code makes that type decisive.
+- `single_valued` for CRM ids (`crm_*_id`) and `promotes` for `crm_contact_id`:
+  CRM owner resolution is record-type specific (src.pipeline_crm_identity) and
+  no generic rule exists, so both stay False until one is specified.
+"""
 
 from __future__ import annotations
 
@@ -19,8 +31,10 @@ class IdentifierTypePolicy:
     promotes: bool
 
 
+# Default policy for unknown/unregistered identifier types. Candidate generation
+# in src.graph.queries.matching has no type filter, so candidate_eligible=True.
 _DEFAULT_POLICY = IdentifierTypePolicy(
-    candidate_eligible=False,
+    candidate_eligible=True,
     single_valued=False,
     fanout_cap=None,
     half_life_days=None,
@@ -34,20 +48,25 @@ _SOCIAL_POLICY = IdentifierTypePolicy(
     promotes=False,
 )
 
-# No identifier aging configuration exists yet; all half_life_days remain None.
-# `promotes` is a future C3 seed only and is not consumed by C1 ingestion.
+# Registry of known identifier types.
+# - single_valued: True where code treats a second distinct value as a conflict
+#   (nric: `_check_government_id`, matching/deterministic.py:206-230).
+# - promotes: True where existing code makes this identifier type decisive for
+#   an automatic merge (nric: matching/deterministic.py:206-230;
+#   external_customer_id and membership_id: TRUSTED_ID_TYPES,
+#   matching/deterministic.py:90,267).
 IDENTIFIER_TYPE_REGISTRY: Mapping[str, IdentifierTypePolicy] = {
     "phone": IdentifierTypePolicy(True, False, 50, None, False),
     "email": IdentifierTypePolicy(True, False, 100, None, False),
     "nric": IdentifierTypePolicy(True, True, 5, None, True),
     "device_id": IdentifierTypePolicy(True, False, 25, None, False),
     "social:*": _SOCIAL_POLICY,
-    "crm_contact_id": IdentifierTypePolicy(True, True, None, None, True),
-    "crm_lead_id": IdentifierTypePolicy(True, True, None, None, True),
-    "crm_company_id": IdentifierTypePolicy(True, True, None, None, True),
-    "membership_id": IdentifierTypePolicy(True, False, None, None, False),
+    "crm_contact_id": IdentifierTypePolicy(True, False, None, None, False),
+    "crm_lead_id": IdentifierTypePolicy(True, False, None, None, False),
+    "crm_company_id": IdentifierTypePolicy(True, False, None, None, False),
+    "membership_id": IdentifierTypePolicy(True, False, None, None, True),
     "external:bitrix": IdentifierTypePolicy(True, False, None, None, False),
-    "external_customer_id": IdentifierTypePolicy(True, False, None, None, False),
+    "external_customer_id": IdentifierTypePolicy(True, False, None, None, True),
 }
 
 FACT_ASSERTION_ATTRIBUTES = frozenset({"full_name", "dob"})

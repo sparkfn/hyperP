@@ -71,6 +71,7 @@ MATCH (deal:SourceRecord {
   record_type: 'crm_deal',
   source_record_id: parent.source_record_id
 })-[:FROM_SOURCE]->(:SourceSystem {source_key: parent.source_system})
+WHERE coalesce(deal.lifecycle_status, 'active') <> 'parked'
 OPTIONAL MATCH (deal)-[link:LINKED_TO]->(person:Person)
 WHERE coalesce(link.is_active, true) = true
 RETURN parent.source_system AS parent_source_system,

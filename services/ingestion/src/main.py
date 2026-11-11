@@ -761,12 +761,10 @@ def finalize_ingest_run(
     *,
     control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
     watermark_end: str | None = None,
-    ledger: SkipLedger | None = None,
 ) -> None:
     """Update the IngestRun with final status and counts."""
 
     def _tx(tx: ManagedTransaction) -> None:
-        counters = ledger.counters() if ledger is not None else {}
         tx.run(
             queries.UPDATE_INGEST_RUN,
             ingest_run_id=ingest_run_id,
@@ -775,13 +773,6 @@ def finalize_ingest_run(
             record_count=record_count,
             rejected_count=rejected_count,
             watermark_end=watermark_end,
-            emitted_count=counters.get("emitted_count"),
-            persisted_count=counters.get("persisted_count"),
-            duplicate_count=counters.get("duplicate_count"),
-            pipeline_skip_count=counters.get("pipeline_skip_count"),
-            connector_skip_count=counters.get("connector_skip_count"),
-            record_error_count=counters.get("record_error_count"),
-            skip_ledger_reconciled=counters.get("skip_ledger_reconciled"),
         )
         if checkpoint_store is not None and status in {"completed", "completed_with_errors"}:
             checkpoint_store.flush(tx, ingest_run_id, status)
@@ -901,6 +892,7 @@ def _ingest_all_records_open(
     )
     for raw_record in connector.fetch_records():
         if ledger is not None:
+            ledger.checkpoint()
             ledger.emitted += 1
         if execution_context is not None:
             processed = success + errors + skipped
@@ -1305,10 +1297,9 @@ def run_ingestion(
                 errors,
                 checkpoint_store,
                 control_instance_id=control_instance_id,
-                ledger=ledger,
             )
         else:
-            ledger.flush_quietly()
+            ledger.reconcile()
         http_request_count = (
             connector.request_count if isinstance(connector, _HttpRequestCounter) else 0
         )

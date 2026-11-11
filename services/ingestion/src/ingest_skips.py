@@ -4,13 +4,18 @@ from __future__ import annotations
 
 import hashlib
 import logging
+import uuid
 from dataclasses import dataclass
 from typing import Literal, Protocol, runtime_checkable
 
 from neo4j import ManagedTransaction
 
 from src.graph.client import Neo4jClient
-from src.graph.queries.ingest_skips import COUNT_INGEST_SKIPS, WRITE_INGEST_SKIPS
+from src.graph.queries.ingest_skips import (
+    RECONCILE_INGEST_RUN_ACCOUNTING,
+    WRITE_INGEST_ATTEMPT,
+    WRITE_INGEST_SKIPS,
+)
 from src.models import JsonValue, SourceRecordEnvelope
 from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID
 
@@ -82,18 +87,22 @@ def skip_row(
     source_record_id: str | None,
     locator: str,
     occurrence: int = 0,
+    attempt_key: str = "",
 ) -> dict[str, JsonValue]:
     """Build one ``WRITE_INGEST_SKIPS`` row; ``skip_id`` makes replays idempotent.
 
-    ``occurrence`` numbers repeats of an identical skip within one run (0 for the first) so each
-    repeat keeps its own row instead of merging into one.
+    ``occurrence`` numbers repeats of an identical skip within one attempt (0 for the first) so
+    each repeat keeps its own row instead of merging into one.
     """
     seed = f"{ingest_run_id}|{stage}|{source_system}|{reason}|{source_record_id or locator}"
+    if attempt_key:
+        seed = f"{seed}|{attempt_key}"
     if occurrence:
         seed = f"{seed}|{occurrence}"
     return {
         "skip_id": hashlib.sha1(seed.encode("utf-8")).hexdigest(),
         "ingest_run_id": ingest_run_id,
+        "attempt_key": attempt_key,
         "source_system": source_system,
         "stage": stage,
         "reason": reason,
@@ -111,11 +120,13 @@ class SkipLedger:
         ingest_run_id: str,
         source_key: str,
         control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+        attempt_key: str = "",
     ) -> None:
         self._client = client
         self._ingest_run_id = ingest_run_id
         self._source_key = source_key
         self._control_instance_id = control_instance_id
+        self._attempt_key = attempt_key or uuid.uuid4().hex
 
         self.emitted: int = 0
         self.persisted: int = 0
@@ -127,6 +138,8 @@ class SkipLedger:
 
         self._buffer: list[dict[str, JsonValue]] = []
         self._occurrences: dict[tuple[str, str, str, str], int] = {}
+        self._last_snapshot: tuple[int, int, int, int, int, int] | None = None
+        self._last_flushed_emitted = 0
 
     def add_pipeline_skip(
         self,
@@ -164,28 +177,63 @@ class SkipLedger:
         occurrence = self._occurrences.get(key, 0)
         self._occurrences[key] = occurrence + 1
         row = skip_row(
-            self._ingest_run_id, stage, source_system, reason, source_record_id, locator, occurrence
+            self._ingest_run_id,
+            stage,
+            source_system,
+            reason,
+            source_record_id,
+            locator,
+            occurrence,
+            attempt_key=self._attempt_key,
         )
         self._buffer.append(row)
         if len(self._buffer) >= _FLUSH_BATCH_SIZE:
             self.flush()
 
     def flush(self) -> None:
-        """Write buffered rows; they stay buffered if the write fails (the MERGE is idempotent)."""
-        if not self._buffer:
+        """Atomically write buffered skips and this attempt's latest counter snapshot."""
+        snapshot = (
+            self.emitted,
+            self.persisted,
+            self.duplicates,
+            self.pipeline_skips,
+            self.connector_skips,
+            self.record_errors,
+        )
+        if not self._buffer and snapshot == self._last_snapshot:
             return
         rows = list(self._buffer)
 
         def _tx(tx: ManagedTransaction) -> None:
+            if rows:
+                tx.run(
+                    WRITE_INGEST_SKIPS,
+                    rows=rows,
+                    control_instance_id=self._control_instance_id,
+                )
             tx.run(
-                WRITE_INGEST_SKIPS,
-                rows=rows,
+                WRITE_INGEST_ATTEMPT,
+                ingest_run_id=self._ingest_run_id,
                 control_instance_id=self._control_instance_id,
+                attempt_key=self._attempt_key,
+                emitted_count=self.emitted,
+                persisted_count=self.persisted,
+                duplicate_count=self.duplicates,
+                pipeline_skip_count=self.pipeline_skips,
+                connector_skip_count=self.connector_skips,
+                record_error_count=self.record_errors,
             )
 
         with self._client.session() as session:
             session.execute_write(_tx)
         del self._buffer[: len(rows)]
+        self._last_snapshot = snapshot
+        self._last_flushed_emitted = self.emitted
+
+    def checkpoint(self) -> None:
+        """Persist counters and skips every 500 emitted records."""
+        if self.emitted - self._last_flushed_emitted >= _FLUSH_BATCH_SIZE:
+            self.flush()
 
     def flush_quietly(self) -> None:
         """Best-effort flush for failure/teardown paths that must not mask the real outcome."""
@@ -195,53 +243,64 @@ class SkipLedger:
             logger.exception("Failed to flush skip ledger for run %s", self._ingest_run_id)
 
     def reconcile(self) -> bool:
-        """Compare stored skip rows and run totals; log (never raise) on a mismatch."""
+        """Recompute run totals from durable attempt snapshots; log and never raise."""
         try:
             self.flush()
 
-            def _tx(tx: ManagedTransaction) -> int:
+            def _tx(
+                tx: ManagedTransaction,
+            ) -> tuple[int, int, int, int, int, int, int, int, bool]:
                 record = tx.run(
-                    COUNT_INGEST_SKIPS,
+                    RECONCILE_INGEST_RUN_ACCOUNTING,
                     ingest_run_id=self._ingest_run_id,
+                    control_instance_id=self._control_instance_id,
                 ).single()
-                return int(record["skip_count"]) if record is not None else 0
+                if record is None:
+                    return (0, 0, 0, 0, 0, 0, 0, 0, False)
+                return (
+                    int(record["emitted_count"]),
+                    int(record["persisted_count"]),
+                    int(record["duplicate_count"]),
+                    int(record["pipeline_skip_count"]),
+                    int(record["connector_skip_count"]),
+                    int(record["record_error_count"]),
+                    int(record["stored_skips"]),
+                    int(record["expected_skips"]),
+                    bool(record["reconciled"]),
+                )
 
             with self._client.session() as session:
-                stored_skips = session.execute_read(_tx)
+                values = session.execute_write(_tx)
         except Exception:
-            logger.exception("Skip ledger count failed for run %s", self._ingest_run_id)
+            logger.exception("Skip ledger reconciliation failed for run %s", self._ingest_run_id)
             self.reconciled = False
             return False
 
-        accounted = self.persisted + self.duplicates + self.pipeline_skips + self.record_errors
-        expected_skips = self.pipeline_skips + self.connector_skips
-        self.reconciled = stored_skips == expected_skips and self.emitted == accounted
-        if not self.reconciled:
+        (
+            emitted,
+            persisted,
+            duplicates,
+            pipeline_skips,
+            connector_skips,
+            record_errors,
+            stored_skips,
+            expected_skips,
+            reconciled,
+        ) = values
+        self.reconciled = reconciled
+        if not reconciled:
             logger.error(
-                "Skip ledger reconciliation failed for run %s: stored_skips=%d expected_skips=%d "
-                "emitted=%d accounted=%d (persisted=%d duplicates=%d pipeline_skips=%d "
-                "connector_skips=%d record_errors=%d)",
+                "Skip ledger reconciliation failed for run %s: emitted=%d persisted=%d "
+                "duplicates=%d pipeline_skips=%d connector_skips=%d record_errors=%d "
+                "stored_skips=%d expected_skips=%d",
                 self._ingest_run_id,
+                emitted,
+                persisted,
+                duplicates,
+                pipeline_skips,
+                connector_skips,
+                record_errors,
                 stored_skips,
                 expected_skips,
-                self.emitted,
-                accounted,
-                self.persisted,
-                self.duplicates,
-                self.pipeline_skips,
-                self.connector_skips,
-                self.record_errors,
             )
-        return self.reconciled
-
-    def counters(self) -> dict[str, int | bool]:
-        """IngestRun counter properties for ``UPDATE_INGEST_RUN``."""
-        return {
-            "emitted_count": self.emitted,
-            "persisted_count": self.persisted,
-            "duplicate_count": self.duplicates,
-            "pipeline_skip_count": self.pipeline_skips,
-            "connector_skip_count": self.connector_skips,
-            "record_error_count": self.record_errors,
-            "skip_ledger_reconciled": bool(self.reconciled),
-        }
+        return reconciled

@@ -436,6 +436,7 @@ _EXPECTED_QUERY_TEST_PATHS = frozenset(
         "services/ingestion/tests/test_identity_link_revision_baseline_neo4j.py",
         "services/ingestion/tests/test_ingestion_control_instance_migration_neo4j.py",
         "services/ingestion/tests/test_loyalty_points_migration_neo4j.py",
+        "services/ingestion/tests/test_persist_first_neo4j.py",
         "services/ingestion/tests/test_person_completeness_migration_neo4j.py",
         "services/ingestion/tests/test_projection_sync_postgres.py",
         "services/ingestion/tests/test_standalone_crm_census_neo4j.py",

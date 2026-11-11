@@ -202,6 +202,9 @@ def test_multi_owner_changed_update_stays_pending_without_active_side_effects() 
         persist = stack.enter_context(
             patch("src.pipeline.persist_source_record", return_value="new-sr")
         )
+        settle = stack.enter_context(
+            patch("src.pipeline.settle_staged_source_record", return_value="new-sr")
+        )
         stack.enter_context(patch("src.pipeline.persist_match_decision", return_value="decision-1"))
         review = stack.enter_context(
             patch("src.pipeline.create_review_case_if_needed", return_value="review-1")
@@ -222,8 +225,15 @@ def test_multi_owner_changed_update_stays_pending_without_active_side_effects() 
     assert result.person_id == "person-a"
     find.assert_called_once()
     match_engine.evaluate.assert_not_called()
-    assert persist.call_args.kwargs["lifecycle_status"].value == "pending_review"
-    assert persist.call_args.kwargs["expected_active_source_record_pk"] == "old-sr"
+    assert persist.call_args.kwargs["lifecycle_status"].value == "parked"
+    assert persist.call_args.kwargs["link_status"] == "unlinked"
+    assert persist.call_args.kwargs["expected_active_source_record_pk"] is None
+    settle.assert_called_once_with(
+        tx,
+        "new-sr",
+        link_status="pending_review",
+        expected_active_source_record_pk="old-sr",
+    )
     review.assert_called_once()
     assert link.call_args.kwargs["attach_evidence"] is False
     retire.assert_not_called()
@@ -286,6 +296,9 @@ def test_accepted_update_retires_activates_and_recomputes_complete_affected_set(
         stack.enter_context(patch("src.pipeline.find_candidates", return_value=[]))
         stack.enter_context(patch("src.pipeline.upsert_nodes"))
         stack.enter_context(patch("src.pipeline.persist_source_record", return_value="new-sr"))
+        settle = stack.enter_context(
+            patch("src.pipeline.settle_staged_source_record", return_value="new-sr")
+        )
         stack.enter_context(patch("src.pipeline.persist_match_decision", return_value="decision-1"))
         stack.enter_context(patch("src.pipeline.create_review_case_if_needed", return_value=None))
         link = stack.enter_context(patch("src.pipeline.link_record_to_graph"))
@@ -306,6 +319,12 @@ def test_accepted_update_retires_activates_and_recomputes_complete_affected_set(
         retire.assert_not_called()
     else:
         retire.assert_called_once_with(tx, old_pk)
+    settle.assert_called_once_with(
+        tx,
+        "new-sr",
+        link_status="linked",
+        expected_active_source_record_pk=old_pk,
+    )
     activate.assert_called_once()
     assert activate.call_args.kwargs["old_source_record_pk"] == old_pk
     assert all(call.kwargs["attach_evidence"] for call in link.call_args_list)
@@ -447,6 +466,9 @@ def test_unchanged_crm_identity_update_reuses_continuity_without_rematching() ->
         persist = stack.enter_context(
             patch("src.pipeline.persist_source_record", return_value="new-sr")
         )
+        settle = stack.enter_context(
+            patch("src.pipeline.settle_staged_source_record", return_value="new-sr")
+        )
         stack.enter_context(patch("src.pipeline.persist_match_decision", return_value="decision-1"))
         stack.enter_context(patch("src.pipeline.create_review_case_if_needed", return_value=None))
         stack.enter_context(patch("src.pipeline.link_record_to_graph"))
@@ -468,7 +490,15 @@ def test_unchanged_crm_identity_update_reuses_continuity_without_rematching() ->
     find.assert_not_called()
     pipeline._match_engine.evaluate.assert_not_called()
     upsert.assert_not_called()
-    assert persist.call_args.kwargs["match_result"].reasons == ["unchanged_crm_identity_continuity"]
+    assert persist.call_args.kwargs["lifecycle_status"].value == "parked"
+    assert persist.call_args.kwargs["link_status"] == "unlinked"
+    assert persist.call_args.kwargs["expected_active_source_record_pk"] is None
+    settle.assert_called_once_with(
+        tx,
+        "new-sr",
+        link_status="linked",
+        expected_active_source_record_pk="old-sr",
+    )
     retire.assert_called_once_with(tx, "old-sr", person_ids=("person-a",))
     activate.assert_called_once()
     golden.assert_not_called()
@@ -509,6 +539,9 @@ def test_crm_contact_change_uses_full_matching_and_projection_refresh() -> None:
         find = stack.enter_context(patch("src.pipeline.find_candidates", return_value=[]))
         upsert = stack.enter_context(patch("src.pipeline.upsert_nodes"))
         stack.enter_context(patch("src.pipeline.persist_source_record", return_value="new-sr"))
+        settle = stack.enter_context(
+            patch("src.pipeline.settle_staged_source_record", return_value="new-sr")
+        )
         stack.enter_context(patch("src.pipeline.persist_match_decision", return_value="decision-1"))
         stack.enter_context(patch("src.pipeline.create_review_case_if_needed", return_value=None))
         stack.enter_context(patch("src.pipeline.link_record_to_graph"))
@@ -528,6 +561,12 @@ def test_crm_contact_change_uses_full_matching_and_projection_refresh() -> None:
     find.assert_called_once()
     pipeline._match_engine.evaluate.assert_called_once()
     upsert.assert_called_once()
+    settle.assert_called_once_with(
+        tx,
+        "new-sr",
+        link_status="linked",
+        expected_active_source_record_pk="old-sr",
+    )
     golden.assert_called_once_with(tx, "person-a")
     audit.assert_called_once()
     merge_event.assert_called_once()

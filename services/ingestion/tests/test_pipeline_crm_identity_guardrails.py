@@ -665,6 +665,9 @@ def test_blocked_canonical_owner_persists_durable_pending_review() -> None:
         persist = stack.enter_context(
             patch("src.pipeline.persist_source_record", return_value="deal-sr")
         )
+        settle = stack.enter_context(
+            patch("src.pipeline.settle_staged_source_record", return_value="deal-sr")
+        )
         persist_decision = stack.enter_context(
             patch("src.pipeline.persist_match_decision", return_value="decision-1")
         )
@@ -683,7 +686,14 @@ def test_blocked_canonical_owner_persists_durable_pending_review() -> None:
     assert result.candidate_count == 0
     upsert.assert_not_called()
     link.assert_not_called()
-    assert persist.call_args.kwargs["lifecycle_status"].value == "pending_review"
+    assert persist.call_args.kwargs["lifecycle_status"].value == "parked"
+    assert persist.call_args.kwargs["link_status"] == "unlinked"
+    settle.assert_called_once_with(
+        tx,
+        "deal-sr",
+        link_status="blocked",
+        expected_active_source_record_pk=None,
+    )
     persist_decision.assert_called_once_with(tx, quarantine, "deal-sr")
     create_review.assert_called_once_with(
         tx,
@@ -735,6 +745,9 @@ def test_crm_multi_merge_persists_provisional_link_without_identity_evidence() -
         persist = stack.enter_context(
             patch("src.pipeline.persist_source_record", return_value="deal-sr")
         )
+        settle = stack.enter_context(
+            patch("src.pipeline.settle_staged_source_record", return_value="deal-sr")
+        )
         stack.enter_context(patch("src.pipeline.persist_match_decision", return_value="decision-1"))
         stack.enter_context(
             patch("src.pipeline.create_review_case_if_needed", return_value="review-1")
@@ -754,6 +767,12 @@ def test_crm_multi_merge_persists_provisional_link_without_identity_evidence() -
     find.assert_called_once()
     assert upsert.call_args.args[1] == [identifiers[0]]
     assert persist.call_args.kwargs["identifiers"] == [identifiers[0]]
+    settle.assert_called_once_with(
+        tx,
+        "deal-sr",
+        link_status="pending_review",
+        expected_active_source_record_pk=None,
+    )
     assert len(link.call_args_list) == 1
     assert link.call_args.kwargs["person_id"] == "person-a"
     assert link.call_args.kwargs["identifiers"] == [identifiers[0]]

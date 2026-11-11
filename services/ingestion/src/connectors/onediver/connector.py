@@ -363,12 +363,17 @@ class OneDiverDumpConnector(SourceConnector):
                 ONEDIVER_TABLES["profiles"],
             )
         )
+        emitted_profile_ids: set[int] = set()
         for profile_batch in _row_batches(profiles, _PROFILE_BATCH_SIZE):
-            yield from self._build_profile_batch(profile_batch)
+            batch_profile_ids = {_int(row, "id") for row in profile_batch}
+            emitted_profile_ids.update(batch_profile_ids)
+            yield from self._build_profile_batch(profile_batch, batch_profile_ids)
+        self._record_orphan_emergencies(emitted_profile_ids)
 
     def _build_profile_batch(
         self,
         profile_batch: list[DumpRow],
+        active_profile_ids: set[int],
     ) -> Iterator[dict[str, JsonValue]]:
         user_ids = {_int(row, "user_id") for row in profile_batch}
         users_by_id = {
@@ -391,7 +396,6 @@ class OneDiverDumpConnector(SourceConnector):
             account = accounts_by_id.get(_int(user, "account_id")) if user is not None else None
             yield _build_identity_envelope(row, user, account)
 
-        active_profile_ids = {_int(row, "id") for row in profile_batch}
         for emergency in iter_dump_rows(
             self._dump_path,
             "profile_emergencies",
@@ -399,6 +403,29 @@ class OneDiverDumpConnector(SourceConnector):
         ):
             if _int(emergency, "profile_id") in active_profile_ids:
                 yield from _build_relationship_envelopes(emergency, on_skip=self.record_skip)
+
+    def _record_orphan_emergencies(self, emitted_profile_ids: set[int]) -> None:
+        """Ledger emergency rows whose parent profile was never emitted.
+
+        ``profile_emergencies`` is scanned once per profile batch, so an emergency
+        whose profile was deleted or is absent from the dump matches no batch and
+        would otherwise be dropped without a trace.
+        """
+        for emergency in iter_dump_rows(
+            self._dump_path,
+            "profile_emergencies",
+            ONEDIVER_TABLES["profile_emergencies"],
+        ):
+            if _int(emergency, "profile_id") in emitted_profile_ids:
+                continue
+            self.record_skip(
+                "orphan_or_deleted_parent",
+                source_record_id=None,
+                locator=(
+                    f"profile_emergencies#id={emergency.get('id')},"
+                    f"profile_id={emergency.get('profile_id')}"
+                ),
+            )
 
 
 class OneDiverSalesDumpConnector(SourceConnector):

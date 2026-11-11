@@ -11,15 +11,17 @@ import pytest
 from neo4j import Driver, GraphDatabase
 from neo4j.exceptions import ConstraintError
 from src.graph.client import Neo4jClient
-from src.graph.queries.identifier_scope_schema import CREATE_IDENTIFIER_IDENTITY_SCOPE_UNIQUE
 from src.graph.queries.identity_foundation_schema import CREATE_IDENTITY_FOUNDATION_SCHEMA
 from src.graph.schema_init import (
     BASE_LIFECYCLE_CONSTRAINTS,
     _find_init_cypher,
     _split_statements,
+    apply_deferred_identifier_scope_constraints,
     apply_schema,
 )
 from src.identity_assertions import audit_assertions, backfill_assertions
+from src.ingest_skips import ConnectorSkip, SkipLedger
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID
 
 _ENV_PREFIX = "HYPERP_NEO4J_CONTROL_MIGRATION_TEST"
 _SOURCE_RECORD_PK = "identity-foundation-source-1"
@@ -187,12 +189,12 @@ def test_identity_foundation_schema_and_backfill_are_idempotent(neo4j_driver: Dr
 
     apply_schema(client)
     apply_schema(client)
-    with neo4j_driver.session() as session:
-        session.run(CREATE_IDENTIFIER_IDENTITY_SCOPE_UNIQUE).consume()
+    apply_deferred_identifier_scope_constraints(client)
     assert _graph_counts(neo4j_driver) == original_counts
     assert {
         "source_record_assertion_id_unique",
         "ingest_skip_id_unique",
+        "ingest_run_attempt_key_unique",
         "profile_fact_key_unique",
         "identifier_identity_scope_unique",
     } <= _constraint_names(neo4j_driver)
@@ -213,3 +215,77 @@ def test_identity_foundation_schema_and_backfill_are_idempotent(neo4j_driver: Dr
                 source_record_pk=_SOURCE_RECORD_PK,
                 assertion_id=first_assertions[0],
             ).consume()
+
+
+def _record_retry_attempt(
+    client: _Client,
+    ingest_run_id: str,
+    attempt_key: str,
+    *,
+    persisted: int,
+    duplicates: int,
+) -> SkipLedger:
+    ledger = SkipLedger(client, ingest_run_id, "fundbox", attempt_key=attempt_key)
+    ledger.emitted = 3
+    ledger.persisted = persisted
+    ledger.duplicates = duplicates
+    ledger.add_pipeline_skip("excluded_identity", source_record_id="rec-skip")
+    ledger.add_connector_skips(
+        [ConnectorSkip(reason="missing_id", source_record_id=None, locator="users#missing_id")]
+    )
+    ledger.flush()
+    return ledger
+
+
+def test_skip_ledger_reconciles_redelivered_attempts(neo4j_driver: Driver) -> None:
+    ingest_run_id = "retry-safe-ingest-run"
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE (:IngestRun {ingest_run_id: $ingest_run_id, "
+            "control_instance_id: $control_instance_id})",
+            ingest_run_id=ingest_run_id,
+            control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+        ).consume()
+    client = _Client(neo4j_driver)
+
+    _record_retry_attempt(
+        client,
+        ingest_run_id,
+        "attempt-one",
+        persisted=1,
+        duplicates=1,
+    )
+    attempt_two = _record_retry_attempt(
+        client,
+        ingest_run_id,
+        "attempt-two",
+        persisted=0,
+        duplicates=2,
+    )
+
+    assert attempt_two.reconcile() is True
+    with neo4j_driver.session() as session:
+        run = session.run(
+            "MATCH (ir:IngestRun {ingest_run_id: $ingest_run_id}) "
+            "RETURN ir.emitted_count AS emitted, ir.persisted_count AS persisted, "
+            "ir.duplicate_count AS duplicates, ir.pipeline_skip_count AS pipeline_skips, "
+            "ir.connector_skip_count AS connector_skips, "
+            "ir.record_error_count AS record_errors, "
+            "ir.skip_ledger_reconciled AS reconciled",
+            ingest_run_id=ingest_run_id,
+        ).single(strict=True)
+    assert run["emitted"] == 6
+    assert run["persisted"] == 1
+    assert run["duplicates"] == 3
+    assert run["pipeline_skips"] == 2
+    assert run["connector_skips"] == 2
+    assert run["record_errors"] == 0
+    assert run["reconciled"] is True
+
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (skip:IngestSkip {ingest_run_id: $ingest_run_id}) "
+            "WITH skip ORDER BY skip.skip_id LIMIT 1 DETACH DELETE skip",
+            ingest_run_id=ingest_run_id,
+        ).consume()
+    assert attempt_two.reconcile() is False

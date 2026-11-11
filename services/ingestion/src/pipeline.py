@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -77,10 +78,12 @@ from src.pipeline_writes import (
     create_review_case_if_needed,
     find_candidates,
     link_record_to_graph,
+    link_status_for,
     persist_match_decision,
     persist_source_record,
     record_auto_merge_event,
     retire_identity_projections,
+    settle_staged_source_record,
     upsert_nodes,
 )
 from src.profile_analysis_dirty import mark_profile_analysis_dirty
@@ -148,6 +151,12 @@ _CRM_DEAL_CONTINUITY_RAW_KEYS = (
     "crm_deal_identity_policy_version",
     "crm_contact_identity_metadata",
 )
+
+
+@dataclass(frozen=True)
+class _Staged:
+    source_record_pk: str
+    created: bool
 
 
 class IngestPipeline:
@@ -367,6 +376,15 @@ class IngestPipeline:
             active_exclusion_context,
         )
         person_identifiers = projected_identifiers(envelope, identifiers)
+        staged = self._stage_source_record(
+            tx,
+            envelope=envelope,
+            identifiers=person_identifiers,
+            addresses=addresses,
+            attributes=attributes,
+            ingest_run_id=ingest_run_id,
+            activation_blueprint=activation_blueprint,
+        )
         continuity_person_id = (
             lifecycle_plan.prior_person_ids[0]
             if len(lifecycle_plan.prior_person_ids) == 1
@@ -414,19 +432,13 @@ class IngestPipeline:
                 )
                 if rejected_pending:
                     collector.finalize(tx)
-                return self._persist_parked(
-                    tx,
-                    envelope=envelope,
-                    identifiers=person_identifiers,
-                    addresses=addresses,
-                    attributes=attributes,
-                    # Never persisted: the parked write carries its own link status.
-                    match_result=MatchResult(
-                        decision=MatchDecision.NO_MATCH,
-                        reasons=["crm_deal_contacts_unresolved"],
-                    ),
+                return IngestResult(
+                    source_record_id=envelope.source_record_id,
+                    source_record_pk=staged.source_record_pk,
+                    skipped_duplicate=not staged.created,
+                    parked=True,
+                    match_decision=None,
                     ingest_run_id=ingest_run_id,
-                    activation_blueprint=activation_blueprint,
                 )
             if len(lifecycle_plan.prior_person_ids) > 1:
                 match_result = ambiguous_prior_owners_result(lifecycle_plan.prior_person_ids)
@@ -470,15 +482,13 @@ class IngestPipeline:
             )
             if rejected_pending:
                 collector.finalize(tx)
-            return self._persist_parked(
-                tx,
-                envelope=envelope,
-                identifiers=person_identifiers,
-                addresses=addresses,
-                attributes=attributes,
-                match_result=match_result,
+            return IngestResult(
+                source_record_id=envelope.source_record_id,
+                source_record_pk=staged.source_record_pk,
+                skipped_duplicate=not staged.created,
+                parked=True,
+                match_decision=None,
                 ingest_run_id=ingest_run_id,
-                activation_blueprint=activation_blueprint,
             )
         if durable_quarantine:
             logger.info(
@@ -489,13 +499,10 @@ class IngestPipeline:
             quarantine_result = self._persist_unlinked_review(
                 tx,
                 envelope=envelope,
-                identifiers=person_identifiers,
-                addresses=addresses,
-                attributes=attributes,
+                source_record_pk=staged.source_record_pk,
                 match_result=match_result,
                 ingest_run_id=ingest_run_id,
                 lifecycle_plan=lifecycle_plan,
-                activation_blueprint=activation_blueprint,
                 collector=collector,
             )
             collector.finalize(tx)
@@ -511,21 +518,13 @@ class IngestPipeline:
         person_id, is_new_person = self._resolve_person(tx, match_result, candidates)
         if is_new_person:
             collector.mark_new(person_ids=[person_id])
-        source_record_pk = persist_source_record(
+        settle_staged_source_record(
             tx,
-            envelope=envelope,
-            identifiers=person_identifiers,
-            addresses=addresses,
-            attributes=attributes,
-            match_result=match_result,
-            is_new_person=is_new_person,
-            ingest_run_id=ingest_run_id,
-            lifecycle_status=SourceRecordLifecycleStatus.PENDING_REVIEW,
+            staged.source_record_pk,
+            link_status=link_status_for(match_result, is_new_person),
             expected_active_source_record_pk=lifecycle_plan.active_source_record_pk,
-            activation_blueprint=activation_blueprint,
-            control_instance_id=self._control_instance_id,
-            shadow_assertions=self._shadow_assertions,
         )
+        source_record_pk = staged.source_record_pk
         collector.mark_new(source_record_pks=[source_record_pk])
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
         review_case_id = create_review_case_if_needed(
@@ -995,7 +994,7 @@ class IngestPipeline:
             return set()
         return {candidate.person_id for candidate in find_candidates(tx, canonical_identifiers, [])}
 
-    def _persist_parked(
+    def _stage_source_record(
         self,
         tx: ManagedTransaction,
         *,
@@ -1003,38 +1002,33 @@ class IngestPipeline:
         identifiers: list[NormalizedIdentifier],
         addresses: list[NormalizedAddressModel],
         attributes: list[NormalizedAttribute],
-        match_result: MatchResult,
         ingest_run_id: str | None,
         activation_blueprint: dict[str, JsonValue],
-    ) -> IngestResult:
-        """Persist a deliberately unlinked SourceRecord without identity writes.
+    ) -> _Staged:
+        """Stage the SourceRecord as parked first before candidate or match logic.
 
-        The row is invisible to version planning (lifecycle ``parked``), so a
-        later rerun re-evaluates it exactly like a previously dropped record.
-        Matching the same hash again is idempotent and writes nothing.
+        If an identical parked version already exists for this source identity,
+        reuse it without rewriting. Otherwise persist the new version with
+        lifecycle_status='parked', link_status='unlinked', and attribution='parked'.
         """
+        planned_version = int(envelope.source_record_version or "1")
         parked = tx.run(
             queries.FIND_PARKED_SOURCE_RECORD_BY_HASH,
             source_system=envelope.source_system,
             source_instance_id=effective_source_instance_id(envelope.source_instance_id),
             source_record_id=envelope.source_record_id,
             record_hash=envelope.record_hash,
+            latest_version=planned_version - 1,
         ).single()
         if parked is not None:
-            return IngestResult(
-                source_record_id=envelope.source_record_id,
-                source_record_pk=str(parked["source_record_pk"]),
-                skipped_duplicate=True,
-                parked=True,
-                ingest_run_id=ingest_run_id,
-            )
-        source_record_pk = persist_source_record(
+            return _Staged(source_record_pk=str(parked["source_record_pk"]), created=False)
+        pk = persist_source_record(
             tx,
             envelope=envelope,
             identifiers=identifiers,
             addresses=addresses,
             attributes=attributes,
-            match_result=match_result,
+            match_result=None,
             is_new_person=False,
             ingest_run_id=ingest_run_id,
             lifecycle_status=SourceRecordLifecycleStatus.PARKED,
@@ -1046,43 +1040,24 @@ class IngestPipeline:
             reeval_pending=True,
             shadow_assertions=self._shadow_assertions,
         )
-        return IngestResult(
-            source_record_id=envelope.source_record_id,
-            source_record_pk=source_record_pk,
-            parked=True,
-            match_decision=None,
-            ingest_run_id=ingest_run_id,
-        )
+        return _Staged(source_record_pk=pk, created=True)
 
     def _persist_unlinked_review(
         self,
         tx: ManagedTransaction,
         *,
         envelope: SourceRecordEnvelope,
-        identifiers: list[NormalizedIdentifier],
-        addresses: list[NormalizedAddressModel],
-        attributes: list[NormalizedAttribute],
+        source_record_pk: str,
         match_result: MatchResult,
         ingest_run_id: str | None,
         lifecycle_plan: PlannedVersion,
-        activation_blueprint: dict[str, JsonValue],
         collector: PersonListSummaryDeltaCollector,
     ) -> IngestResult:
-        source_record_pk = persist_source_record(
+        settle_staged_source_record(
             tx,
-            envelope=envelope,
-            identifiers=identifiers,
-            addresses=addresses,
-            attributes=attributes,
-            match_result=match_result,
-            is_new_person=False,
-            ingest_run_id=ingest_run_id,
-            lifecycle_status=SourceRecordLifecycleStatus.PENDING_REVIEW,
-            expected_active_source_record_pk=lifecycle_plan.active_source_record_pk,
-            activation_blueprint=activation_blueprint,
+            source_record_pk,
             link_status="blocked",
-            control_instance_id=self._control_instance_id,
-            shadow_assertions=self._shadow_assertions,
+            expected_active_source_record_pk=lifecycle_plan.active_source_record_pk,
         )
         collector.mark_new(source_record_pks=[source_record_pk])
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)

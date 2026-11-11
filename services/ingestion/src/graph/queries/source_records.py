@@ -145,6 +145,7 @@ MATCH (sr:SourceRecord {
 })-[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})
 WHERE sr.lifecycle_status = 'parked'
   AND sr.record_hash = $record_hash
+  AND toInteger(sr.source_record_version) = $latest_version
 RETURN sr.source_record_pk AS source_record_pk
 LIMIT 1
 """
@@ -237,6 +238,17 @@ SET sr.attribution_status = $attribution_status,
         WHEN $attribution_status IS NULL THEN sr.attribution_eval_at
         ELSE datetime()
     END
+"""
+
+PROMOTE_STAGED_SOURCE_RECORD = """
+MATCH (sr:SourceRecord {source_record_pk: $source_record_pk, lifecycle_status: 'parked'})
+SET sr.lifecycle_status = 'pending_review',
+    sr.link_status = $link_status,
+    sr.expected_active_source_record_pk = $expected_active_source_record_pk,
+    sr.attribution_status = null,
+    sr.reeval_pending = null,
+    sr.attribution_eval_at = null
+RETURN sr.source_record_pk AS source_record_pk
 """
 
 RETIRE_IDENTITY_PROJECTIONS = """
@@ -358,13 +370,6 @@ SET ir.status = $status,
     ir.finished_at = datetime(),
     ir.record_count = $record_count,
     ir.rejected_count = $rejected_count,
-    ir.emitted_count = coalesce($emitted_count, ir.emitted_count),
-    ir.persisted_count = coalesce($persisted_count, ir.persisted_count),
-    ir.duplicate_count = coalesce($duplicate_count, ir.duplicate_count),
-    ir.pipeline_skip_count = coalesce($pipeline_skip_count, ir.pipeline_skip_count),
-    ir.connector_skip_count = coalesce($connector_skip_count, ir.connector_skip_count),
-    ir.record_error_count = coalesce($record_error_count, ir.record_error_count),
-    ir.skip_ledger_reconciled = coalesce($skip_ledger_reconciled, ir.skip_ledger_reconciled),
     ir.watermark_end = $watermark_end
 """
 

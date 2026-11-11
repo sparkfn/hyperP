@@ -8,6 +8,9 @@ MATCH (sr:SourceRecord {
     source_record_id: $source_record_id
 })
       -[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})
+// A parked call is a re-evaluable stub, not a persisted version: it must not
+// mask the real call that later context creates.
+WHERE coalesce(sr.lifecycle_status, 'active') <> 'parked'
 RETURN sr.source_record_pk AS source_record_pk
       ,sr.record_hash AS record_hash
       ,sr.history_family AS history_family
@@ -150,7 +153,7 @@ CREATE (call:SourceRecord {
     source_record_pk: randomUUID(),
     source_record_id: $source_record_id,
     source_instance_id: $source_instance_id,
-    source_record_version: '1',
+    source_record_version: $source_record_version,
     source_version_key: $source_version_key,
     entity_key: deal.entity_key,
     expected_active_source_record_pk: null,

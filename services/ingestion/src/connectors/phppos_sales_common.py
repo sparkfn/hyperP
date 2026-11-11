@@ -171,6 +171,11 @@ def fetch_phppos_sales(
     identity record is keyed on the same person_id (see EkoConnector._build_one),
     so the sales ``customer_link`` references ``-customer-{customer_id}`` directly.
 
+    Excluded (employee) sales are filtered in Python, not in SQL, so each one is
+    ledgered as ``employee_sale``. A sale with no ``customer_id`` is ledgered as
+    ``missing_customer_id`` whenever employee customers exist — SQL ``NOT IN``
+    drops NULL rows silently.
+
     ``extract_bike_plate`` is True only for SpeedZone — its customer
     ``custom_field_8/10_value`` columns hold the bike plate emitted as the line
     ``lta_tag``. Eko shares the schema but the columns are not bike plates, so
@@ -220,13 +225,30 @@ def fetch_phppos_sales(
                 people_by_person_id[int(person_id_raw)] = row
 
     stmt = select(sales_t).order_by(sales_t.c.sale_id)
-    if excluded_person_ids:
-        stmt = stmt.where(sales_t.c.customer_id.not_in(sorted(excluded_person_ids)))
     result = conn.execute(stmt).mappings().yield_per(chunk_size)
     with engine.connect() as sidecar:
         for sale in result:
             customer_id_raw = sale.get("customer_id")
-            if customer_id_raw is not None and int(customer_id_raw) in excluded_person_ids:
+            if customer_id_raw is None:
+                # ``customer_id NOT IN (...)`` is UNKNOWN for NULL, so the former
+                # SQL-side filter silently dropped sales with no customer whenever
+                # employee customers existed. Preserve that exclusion explicitly.
+                if excluded_person_ids:
+                    if on_skip is not None:
+                        sale_id_raw = sale.get("sale_id")
+                        on_skip(
+                            ConnectorSkip(
+                                reason="missing_customer_id",
+                                source_record_id=(
+                                    f"{source_system_key}-sale-{sale_id_raw}"
+                                    if sale_id_raw is not None
+                                    else None
+                                ),
+                                locator=f"phppos_sales#sale_id={sale_id_raw}",
+                            )
+                        )
+                    continue
+            elif int(customer_id_raw) in excluded_person_ids:
                 if on_skip is not None:
                     sale_id_raw = sale.get("sale_id")
                     on_skip(

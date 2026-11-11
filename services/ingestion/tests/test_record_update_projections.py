@@ -12,7 +12,7 @@ from _txmock import (
 from neo4j import ManagedTransaction
 from src.graph import queries
 from src.models import MatchDecision, MatchResult, RecordType, SourceRecordEnvelope
-from src.pipeline import IngestPipeline
+from src.pipeline import IngestPipeline, _Staged
 from src.record_lifecycle import PlannedVersion
 
 
@@ -60,7 +60,16 @@ def _run_conversation(
         stack.enter_context(patch("src.pipeline.find_candidates", return_value=[]))
         stack.enter_context(patch("src.pipeline.upsert_nodes"))
         stack.enter_context(
+            patch(
+                "src.pipeline.IngestPipeline._stage_source_record",
+                return_value=_Staged("new-conversation", True),
+            )
+        )
+        stack.enter_context(
             patch("src.pipeline.persist_source_record", return_value="new-conversation")
+        )
+        stack.enter_context(
+            patch("src.pipeline.settle_staged_source_record", return_value="new-conversation")
         )
         stack.enter_context(patch("src.pipeline.persist_match_decision", return_value="decision-1"))
         stack.enter_context(patch("src.pipeline.create_review_case_if_needed", return_value=None))

@@ -9,8 +9,13 @@ from unittest.mock import MagicMock
 import pytest
 from src.connectors.base import SourceConnector
 from src.exclusions import ExclusionContext
+from src.graph.queries.ingest_skips import (
+    RECONCILE_INGEST_RUN_ACCOUNTING,
+    WRITE_INGEST_ATTEMPT,
+    WRITE_INGEST_SKIPS,
+)
 from src.ingest_skips import ConnectorSkip, SkipLedger, SkipRecorder, skip_row
-from src.main import _ingest_all_records, finalize_ingest_run
+from src.main import _ingest_all_records
 from src.models import (
     IngestResult,
     JsonValue,
@@ -21,24 +26,36 @@ from src.pipeline import IngestPipeline
 class _FakeTx:
     def __init__(self, skip_count: int = 0) -> None:
         self.calls: list[tuple[str, dict[str, object]]] = []
-        self.skip_count = skip_count
+        self.reconciliation: dict[str, object] = {
+            "emitted_count": 0,
+            "persisted_count": 0,
+            "duplicate_count": 0,
+            "pipeline_skip_count": 0,
+            "connector_skip_count": 0,
+            "record_error_count": 0,
+            "stored_skips": skip_count,
+            "expected_skips": 0,
+            "reconciled": skip_count == 0,
+        }
 
     def run(self, query: str, **kwargs: object) -> _FakeTx:
         self.calls.append((query, kwargs))
         return self
 
     def single(self) -> dict[str, object] | None:
-        return {"skip_count": self.skip_count}
+        return self.reconciliation
 
 
 class _FakeSession:
     def __init__(self, tx: _FakeTx) -> None:
         self.tx = tx
+        self.write_calls = 0
 
     def execute_write(self, fn: object) -> object:
         from collections.abc import Callable
 
         assert isinstance(fn, Callable)
+        self.write_calls += 1
         return fn(self.tx)
 
     def execute_read(self, fn: object) -> object:
@@ -91,21 +108,24 @@ def test_skip_recorder_mixin() -> None:
     assert recorder.drain_skips() == []
 
 
-def test_ledger_deterministic_skip_ids() -> None:
+def test_ledger_skip_ids_are_deterministic_within_an_attempt() -> None:
     tx = _FakeTx()
     client = _FakeClient(tx)
-    ledger1 = SkipLedger(client, "run-123", "fundbox")
+    ledger1 = SkipLedger(client, "run-123", "fundbox", attempt_key="attempt-1")
     ledger1.add_pipeline_skip("excluded_identity", source_record_id="rec-1")
     ledger1.flush()
 
-    assert len(tx.calls) == 1
-    query, kwargs = tx.calls[0]
+    assert len(tx.calls) == 2
+    assert tx.calls[0][0] == WRITE_INGEST_SKIPS
+    assert tx.calls[1][0] == WRITE_INGEST_ATTEMPT
+    assert client._session.write_calls == 1
+    _query, kwargs = tx.calls[0]
     rows1 = kwargs["rows"]
     skip_id1 = rows1[0]["skip_id"]
 
     tx2 = _FakeTx()
     client2 = _FakeClient(tx2)
-    ledger2 = SkipLedger(client2, "run-123", "fundbox")
+    ledger2 = SkipLedger(client2, "run-123", "fundbox", attempt_key="attempt-1")
     ledger2.add_pipeline_skip("excluded_identity", source_record_id="rec-1")
     ledger2.flush()
 
@@ -114,6 +134,28 @@ def test_ledger_deterministic_skip_ids() -> None:
     skip_id2 = rows2[0]["skip_id"]
 
     assert skip_id1 == skip_id2
+
+
+def test_attempt_keys_make_skip_ids_distinct() -> None:
+    first = skip_row(
+        "run-123",
+        "connector",
+        "fundbox",
+        "missing_id",
+        None,
+        "users#missing_id",
+        attempt_key="one",
+    )
+    second = skip_row(
+        "run-123",
+        "connector",
+        "fundbox",
+        "missing_id",
+        None,
+        "users#missing_id",
+        attempt_key="two",
+    )
+    assert first["skip_id"] != second["skip_id"]
 
 
 def test_ledger_run_counters_satisfy_invariant() -> None:
@@ -170,10 +212,36 @@ def test_ledger_run_counters_satisfy_invariant() -> None:
     assert ledger.emitted == (
         ledger.persisted + ledger.duplicates + ledger.pipeline_skips + ledger.record_errors
     )
+    tx.reconciliation = {
+        "emitted_count": 6,
+        "persisted_count": 2,
+        "duplicate_count": 1,
+        "pipeline_skip_count": 2,
+        "connector_skip_count": 1,
+        "record_error_count": 1,
+        "stored_skips": 3,
+        "expected_skips": 3,
+        "reconciled": True,
+    }
 
     reconciled = ledger.reconcile()
     assert reconciled is True
     assert ledger.reconciled is True
+
+
+def test_checkpoint_flushes_after_500_emitted_records() -> None:
+    tx = _FakeTx()
+    client = _FakeClient(tx)
+    ledger = SkipLedger(client, "run-checkpoint", "fundbox")
+
+    ledger.emitted = 499
+    ledger.checkpoint()
+    assert client._session.write_calls == 0
+
+    ledger.emitted = 500
+    ledger.checkpoint()
+    assert client._session.write_calls == 1
+    assert [query for query, _params in tx.calls] == [WRITE_INGEST_ATTEMPT]
 
 
 def test_reconcile_mismatch_logs_and_returns_false(caplog: pytest.LogCaptureFixture) -> None:
@@ -191,45 +259,41 @@ def test_reconcile_mismatch_logs_and_returns_false(caplog: pytest.LogCaptureFixt
     assert "Skip ledger reconciliation failed for run run-mismatch" in caplog.text
 
 
-def test_finalize_ingest_run_with_none_ledger_passes_none_counters() -> None:
-    tx = _FakeTx()
-    client = _FakeClient(tx)
-
-    finalize_ingest_run(
-        client,
-        "run-none-ledger",
-        "completed",
-        record_count=10,
-        rejected_count=0,
-        ledger=None,
-    )
-
-    assert len(tx.calls) == 1
-    _query, kwargs = tx.calls[0]
-    assert kwargs["emitted_count"] is None
-    assert kwargs["persisted_count"] is None
-    assert kwargs["duplicate_count"] is None
-    assert kwargs["pipeline_skip_count"] is None
-    assert kwargs["connector_skip_count"] is None
-    assert kwargs["record_error_count"] is None
-    assert kwargs["skip_ledger_reconciled"] is None
-
-
 def test_identical_skips_keep_one_distinct_row_each() -> None:
     tx = _FakeTx(skip_count=3)
-    ledger = SkipLedger(_FakeClient(tx), "run-dup", "onediver")
+    ledger = SkipLedger(_FakeClient(tx), "run-dup", "onediver", attempt_key="attempt-dup")
     skip = ConnectorSkip(reason="missing_id", source_record_id=None, locator="profiles#missing_id")
 
     ledger.add_connector_skips([skip, skip, skip])
     ledger.flush()
 
-    [(_query, params)] = tx.calls
+    skip_query, params = tx.calls[0]
+    assert skip_query == WRITE_INGEST_SKIPS
     rows = cast(list[dict[str, str]], params["rows"])
     assert len({row["skip_id"] for row in rows}) == 3
-    # The first occurrence keeps the plain seed so single writers (scope reconciliation) agree.
-    first = skip_row("run-dup", "connector", "onediver", "missing_id", None, "profiles#missing_id")
+    first = skip_row(
+        "run-dup",
+        "connector",
+        "onediver",
+        "missing_id",
+        None,
+        "profiles#missing_id",
+        attempt_key="attempt-dup",
+    )
     assert rows[0]["skip_id"] == first["skip_id"]
+    tx.reconciliation = {
+        "emitted_count": 0,
+        "persisted_count": 0,
+        "duplicate_count": 0,
+        "pipeline_skip_count": 0,
+        "connector_skip_count": 3,
+        "record_error_count": 0,
+        "stored_skips": 3,
+        "expected_skips": 3,
+        "reconciled": True,
+    }
     assert ledger.reconcile() is True
+    assert tx.calls[-1][0] == RECONCILE_INGEST_RUN_ACCOUNTING
 
 
 class _FailingSession:

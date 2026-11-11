@@ -7,7 +7,12 @@ from io import StringIO
 from pathlib import Path
 
 import pytest
-from src.graph.queries.sales_prediction_discovery import DISCOVERY_DEAL_RECORDS
+from src.graph.queries.sales_prediction_discovery import (
+    DISCOVERY_DEAL_RECORDS,
+    DISCOVERY_INTERACTION_RECORDS,
+    DISCOVERY_LATE_ARRIVAL,
+    DISCOVERY_SOURCE_COVERAGE,
+)
 from src.sales_prediction_discovery import (
     DiscoveryOutput,
     DiscoverySettings,
@@ -83,6 +88,19 @@ def test_markdown_cell_flattens_control_lines_and_escapes_markup() -> None:
 
 def test_deal_query_bounds_generic_history_coverage_by_report_cutoff() -> None:
     assert "history.ingested_at <= datetime($report_cutoff_at)" in DISCOVERY_DEAL_RECORDS
+
+
+@pytest.mark.parametrize(
+    "query",
+    (
+        DISCOVERY_SOURCE_COVERAGE,
+        DISCOVERY_DEAL_RECORDS,
+        DISCOVERY_INTERACTION_RECORDS,
+        DISCOVERY_LATE_ARRIVAL,
+    ),
+)
+def test_discovery_queries_exclude_parked_source_records(query: str) -> None:
+    assert "coalesce(record.lifecycle_status, 'active') <> 'parked'" in query
 
 
 def test_mapping_status_is_reported_per_requested_entity() -> None:

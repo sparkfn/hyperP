@@ -95,6 +95,7 @@ CALL (ss, source_entity_keys) {
   WITH ss, source_entity_keys
   WHERE size(source_entity_keys) = 0
   OPTIONAL MATCH (record:SourceRecord)-[:FROM_SOURCE]->(ss)
+  WHERE coalesce(record.lifecycle_status, 'active') <> 'parked'
   OPTIONAL MATCH (record)-[:OWNED_BY]->(record_entity:Entity)
   RETURN collect(DISTINCT record_entity.entity_key) AS record_entity_keys
   UNION

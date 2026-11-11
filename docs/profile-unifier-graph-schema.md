@@ -371,10 +371,15 @@ not a replacement for Person `HAS_FACT` profile projection.
 `ingest_run_id`, `source_system`, `stage`, `reason`, and source ID or locator.
 A SourceRecord with `lifecycle_status='parked'` is persisted without a Person
 link and remains eligible for later re-evaluation; it is not active or latest.
+An `IngestRunAttempt` node stores durable counters for one process attempt and links to its
+`IngestRun` for cumulative reconciliation.
 Optional SourceRecord attribution properties are `attribution_status`,
 `attribution_score` (reserved for later work), `attribution_eval_at`, and
 `reeval_pending`. `IDENTITY_MODEL=v1` is the default; `v2_shadow` adds ASSERTS
 writes only and does not change matching or linking behavior.
+
+Every IngestPipeline record is staged as `parked` first and settled to
+`pending_review`/`active` once linked.
 
 ### IngestRun
 

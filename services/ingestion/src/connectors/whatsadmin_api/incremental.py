@@ -107,6 +107,7 @@ class WhatsAdminIncrementalConnector(SkipRecorder):
                     process_whatsapp_bundles(
                         bundles,
                         on_extraction_failure=self._log_extraction_failure,
+                        on_skip=self.record_skip,
                     )
                 )
                 yield IncrementalPage(

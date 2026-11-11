@@ -260,6 +260,7 @@ def _record_out_of_scope(
             disposition="excluded_out_of_scope",
             scope_state="out_of_scope",
         )
+        # Scope rows have an empty attempt key and are excluded from reconciliation.
         tx.run(
             WRITE_INGEST_SKIPS,
             rows=[

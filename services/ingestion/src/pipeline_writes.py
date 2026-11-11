@@ -46,6 +46,7 @@ from src.models import (
 from src.normalizers.nric import encrypt_nric
 from src.pipeline_normalization import fanout_cap_for, is_usable
 from src.raw_payload import scrub_nric_strings, serialize_raw_payload
+from src.record_lifecycle import SourceLifecycleConflict
 from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID, effective_source_instance_id
 from src.source_version_keys import encode_source_version_key
 
@@ -416,6 +417,40 @@ def retire_address_projection(tx: ManagedTransaction, source_record_pk: str) -> 
 # --- Step 7: persist source record + match decision + review case ---------
 
 
+def link_status_for(match_result: MatchResult, is_new_person: bool) -> str:
+    """Return 'linked' for merge decisions or new persons, else 'pending_review'."""
+    return (
+        "linked"
+        if match_result.decision == MatchDecision.MERGE or is_new_person
+        else "pending_review"
+    )
+
+
+def settle_staged_source_record(
+    tx: ManagedTransaction,
+    source_record_pk: str,
+    *,
+    link_status: str,
+    expected_active_source_record_pk: str | None,
+) -> str:
+    """Transition a staged parked SourceRecord to pending_review before linking.
+
+    Raises SourceLifecycleConflict if the record is not found or not in parked state.
+    """
+    result = tx.run(
+        queries.PROMOTE_STAGED_SOURCE_RECORD,
+        source_record_pk=source_record_pk,
+        link_status=link_status,
+        expected_active_source_record_pk=expected_active_source_record_pk,
+    )
+    record = result.single()
+    if record is None:
+        raise SourceLifecycleConflict(
+            f"staged source record {source_record_pk} is not in parked state or does not exist"
+        )
+    return str(record["source_record_pk"])
+
+
 def persist_source_record(
     tx: ManagedTransaction,
     *,
@@ -423,8 +458,8 @@ def persist_source_record(
     identifiers: list[NormalizedIdentifier],
     addresses: list[NormalizedAddressModel],
     attributes: list[NormalizedAttribute],
-    match_result: MatchResult,
-    is_new_person: bool,
+    match_result: MatchResult | None = None,
+    is_new_person: bool = False,
     ingest_run_id: str | None,
     lifecycle_status: SourceRecordLifecycleStatus,
     expected_active_source_record_pk: str | None,
@@ -433,7 +468,7 @@ def persist_source_record(
     control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
     attribution_status: str | None = None,
     reeval_pending: bool | None = None,
-    shadow_assertions: bool = False,
+    shadow_assertions: bool | None = None,
 ) -> str:
     """Step 7 + 7b: persist SourceRecord and link to IngestRun.
 
@@ -451,9 +486,9 @@ def persist_source_record(
     resolved_link_status = (
         link_status
         if link_status is not None
-        else "linked"
-        if match_result.decision == MatchDecision.MERGE or is_new_person
-        else "pending_review"
+        else link_status_for(match_result, is_new_person)
+        if match_result is not None
+        else "unlinked"
     )
     conv_ref = (
         json.dumps(envelope.conversation_ref, default=str)
@@ -538,7 +573,12 @@ def persist_source_record(
             attribution_status=attribution_status,
             reeval_pending=reeval_pending,
         )
-    if shadow_assertions:
+    should_assert = (
+        get_settings().identity_model == "v2_shadow"
+        if shadow_assertions is None
+        else shadow_assertions
+    )
+    if should_assert:
         write_assertions(tx, pk, normalized)
     return pk
 

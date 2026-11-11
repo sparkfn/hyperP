@@ -5,8 +5,9 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import logging
 import sys
-from collections.abc import Mapping
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 
 from neo4j import ManagedTransaction
@@ -27,6 +28,8 @@ from src.identity_registry import FACT_ASSERTION_ATTRIBUTES
 from src.models import JsonValue, QualityFlag
 from src.pipeline_normalization import is_usable
 
+logger = logging.getLogger(__name__)
+
 
 @dataclass(frozen=True)
 class AssertionRows:
@@ -35,6 +38,7 @@ class AssertionRows:
     identifiers: list[dict[str, JsonValue]]
     addresses: list[dict[str, JsonValue]]
     facts: list[dict[str, JsonValue]]
+    malformed: int = 0
 
 
 @dataclass(frozen=True)
@@ -48,35 +52,72 @@ class AssertionAuditMismatch:
     actual_addresses: int
     expected_facts: int
     actual_facts: int
+    malformed_entries: int = 0
+
+
+class _MalformedEntryError(ValueError):
+    """A payload entry lacks the shape the row builder needs."""
+
+
+RowBuilder = Callable[[str, Mapping[str, JsonValue]], dict[str, JsonValue] | None]
+
+
+def _quality(raw: Mapping[str, JsonValue]) -> QualityFlag:
+    value = raw.get("quality_flag")
+    if isinstance(value, str):
+        try:
+            return QualityFlag(value)
+        except ValueError:
+            pass
+    raise _MalformedEntryError
+
+
+def _collect(
+    source_record_pk: str,
+    entries: JsonValue | None,
+    build: RowBuilder,
+) -> tuple[list[dict[str, JsonValue]], int]:
+    """Build deduplicated rows; count entries that are not well-formed objects."""
+    rows: dict[str, dict[str, JsonValue]] = {}
+    malformed = 0
+    for entry in entries if isinstance(entries, list) else []:
+        try:
+            if not isinstance(entry, dict):
+                raise _MalformedEntryError
+            row = build(source_record_pk, entry)
+        except _MalformedEntryError:
+            malformed += 1
+            continue
+        if row is not None:
+            rows[str(row["assertion_id"])] = row
+    return [rows[key] for key in sorted(rows)], malformed
 
 
 def assertion_rows(
     source_record_pk: str,
     normalized_payload: Mapping[str, JsonValue],
 ) -> AssertionRows:
-    """Build stable rows for usable identifiers, addresses, and selected facts."""
-    identifiers: dict[str, dict[str, JsonValue]] = {}
-    for raw in _items(normalized_payload.get("identifiers")):
-        row = _identifier_row(source_record_pk, raw)
-        if row is not None:
-            identifiers[str(row["assertion_id"])] = row
+    """Build stable rows for usable identifiers, addresses, and selected facts.
 
-    addresses: dict[str, dict[str, JsonValue]] = {}
-    for raw in _address_items(normalized_payload):
-        row = _address_row(source_record_pk, raw)
-        if row is not None:
-            addresses[str(row["assertion_id"])] = row
-
-    facts: dict[str, dict[str, JsonValue]] = {}
-    for raw in _items(normalized_payload.get("attributes")):
-        row = _fact_row(source_record_pk, raw)
-        if row is not None:
-            facts[str(row["assertion_id"])] = row
-
+    ``malformed`` counts entries that are not objects or lack the fields a row needs; entries
+    that are well formed but unusable (low quality, other attributes) are intentionally absent.
+    """
+    addresses = normalized_payload.get("addresses")
+    legacy_address = normalized_payload.get("address")
+    if not isinstance(addresses, list) and legacy_address is not None:
+        addresses = [legacy_address]
+    identifier_rows, bad_identifiers = _collect(
+        source_record_pk, normalized_payload.get("identifiers"), _identifier_row
+    )
+    address_rows, bad_addresses = _collect(source_record_pk, addresses, _address_row)
+    fact_rows, bad_facts = _collect(
+        source_record_pk, normalized_payload.get("attributes"), _fact_row
+    )
     return AssertionRows(
-        identifiers=[identifiers[key] for key in sorted(identifiers)],
-        addresses=[addresses[key] for key in sorted(addresses)],
-        facts=[facts[key] for key in sorted(facts)],
+        identifiers=identifier_rows,
+        addresses=address_rows,
+        facts=fact_rows,
+        malformed=bad_identifiers + bad_addresses + bad_facts,
     )
 
 
@@ -86,8 +127,9 @@ def _identifier_row(
 ) -> dict[str, JsonValue] | None:
     identifier_type = _string(raw, "identifier_type")
     normalized_value = _string(raw, "normalized_value")
-    quality_flag = _usable_quality(raw.get("quality_flag"))
-    if identifier_type is None or normalized_value is None or not quality_flag:
+    if identifier_type is None or normalized_value is None:
+        raise _MalformedEntryError
+    if not is_usable(_quality(raw)):
         return None
     source_instance_id = _optional_string(raw.get("source_instance_id"))
     scope = identifier_scope(identifier_type, source_instance_id)
@@ -109,7 +151,7 @@ def _address_row(
     source_record_pk: str,
     raw: Mapping[str, JsonValue],
 ) -> dict[str, JsonValue] | None:
-    if not _usable_quality(raw.get("quality_flag")):
+    if not is_usable(_quality(raw)):
         return None
     country_code = _string(raw, "country_code") or "SG"
     postal_code = _string(raw, "postal_code") or ""
@@ -141,7 +183,9 @@ def _fact_row(
 ) -> dict[str, JsonValue] | None:
     attribute_name = _string(raw, "attribute_name")
     attribute_value = _string(raw, "attribute_value")
-    if attribute_name not in FACT_ASSERTION_ATTRIBUTES or attribute_value is None:
+    if attribute_name is None or attribute_value is None:
+        raise _MalformedEntryError
+    if attribute_name not in FACT_ASSERTION_ATTRIBUTES:
         return None
     target_id = f"{attribute_name}|{attribute_value}"
     field_path = f"attributes.{attribute_name}"
@@ -160,20 +204,6 @@ def _assertion_id(source_record_pk: str, field_path: str, target_id: str) -> str
     return hashlib.sha1(identity.encode("utf-8")).hexdigest()
 
 
-def _items(value: JsonValue | None) -> list[Mapping[str, JsonValue]]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, dict)]
-
-
-def _address_items(payload: Mapping[str, JsonValue]) -> list[Mapping[str, JsonValue]]:
-    values = _items(payload.get("addresses"))
-    if values:
-        return values
-    address = payload.get("address")
-    return [address] if isinstance(address, dict) else []
-
-
 def _string(row: Mapping[str, JsonValue], key: str) -> str | None:
     value = row.get(key)
     return value if isinstance(value, str) else None
@@ -181,15 +211,6 @@ def _string(row: Mapping[str, JsonValue], key: str) -> str | None:
 
 def _optional_string(value: JsonValue | None) -> str | None:
     return value if isinstance(value, str) else None
-
-
-def _usable_quality(value: JsonValue | None) -> bool:
-    if not isinstance(value, str):
-        return False
-    try:
-        return is_usable(QualityFlag(value))
-    except ValueError:
-        return False
 
 
 def write_assertions(
@@ -245,8 +266,17 @@ def _parse_normalized_payload(value: object) -> Mapping[str, JsonValue] | None:
 
 
 def _fallback_payload(value: object) -> Mapping[str, JsonValue]:
+    if not isinstance(value, list):
+        return {"identifiers": []}
     parsed = _parse_normalized_payload({"identifiers": value})
     return parsed if parsed is not None else {"identifiers": []}
+
+
+def _payload_or_fallback(record: Mapping[str, object]) -> Mapping[str, JsonValue]:
+    payload = _parse_normalized_payload(record.get("normalized_payload"))
+    if payload is not None and isinstance(payload.get("identifiers"), list):
+        return payload
+    return _fallback_payload(record.get("fallback_identifiers"))
 
 
 def _read_page(
@@ -272,6 +302,29 @@ def _read_page(
     ]
 
 
+def _fetch_page(
+    client: Neo4jClient,
+    query: str,
+    after_source_record_pk: str | None,
+    batch_size: int,
+) -> list[dict[str, object]]:
+    def _work(tx: ManagedTransaction) -> list[dict[str, object]]:
+        return _read_page(tx, query, after_source_record_pk, batch_size)
+
+    return client.execute_read(_work)
+
+
+def _assert_record(
+    client: Neo4jClient,
+    source_record_pk: str,
+    payload: Mapping[str, JsonValue],
+) -> None:
+    def _work(tx: ManagedTransaction) -> None:
+        write_assertions(tx, source_record_pk, payload)
+
+    client.execute_write(_work)
+
+
 def backfill_assertions(client: Neo4jClient, batch_size: int = 500) -> int:
     """Backfill ASSERTS for active, pending, parked, and legacy-current records."""
     if batch_size < 1:
@@ -279,24 +332,22 @@ def backfill_assertions(client: Neo4jClient, batch_size: int = 500) -> int:
     after_source_record_pk: str | None = None
     processed = 0
     while True:
-        cursor = after_source_record_pk
-        page = client.execute_read(
-            lambda tx, _cursor=cursor: _read_page(tx, BACKFILL_ASSERTION_PAGE, _cursor, batch_size)
-        )
+        page = _fetch_page(client, BACKFILL_ASSERTION_PAGE, after_source_record_pk, batch_size)
         if not page:
             return processed
         for record in page:
             source_record_pk = record.get("source_record_pk")
             if not isinstance(source_record_pk, str):
                 continue
-            payload = _parse_normalized_payload(record.get("normalized_payload"))
-            if payload is None:
-                payload = _fallback_payload(record.get("fallback_identifiers"))
-            client.execute_write(
-                lambda tx, _pk=source_record_pk, _payload=payload: write_assertions(
-                    tx, _pk, _payload
+            payload = _payload_or_fallback(record)
+            rows = assertion_rows(source_record_pk, payload)
+            if rows.malformed > 0:
+                logger.warning(
+                    "SourceRecord %s has %d malformed assertion entries in payload",
+                    source_record_pk,
+                    rows.malformed,
                 )
-            )
+            _assert_record(client, source_record_pk, payload)
             processed += 1
         last_pk = page[-1].get("source_record_pk")
         if not isinstance(last_pk, str):
@@ -305,9 +356,7 @@ def backfill_assertions(client: Neo4jClient, batch_size: int = 500) -> int:
 
 
 def _expected_rows(record: Mapping[str, object], source_record_pk: str) -> AssertionRows:
-    payload = _parse_normalized_payload(record.get("normalized_payload"))
-    if payload is None:
-        payload = _fallback_payload(record.get("fallback_identifiers"))
+    payload = _payload_or_fallback(record)
     return assertion_rows(source_record_pk, payload)
 
 
@@ -323,10 +372,7 @@ def audit_assertions(client: Neo4jClient, batch_size: int = 500) -> list[Asserti
     mismatches: list[AssertionAuditMismatch] = []
     after_source_record_pk: str | None = None
     while True:
-        cursor = after_source_record_pk
-        page = client.execute_read(
-            lambda tx, _cursor=cursor: _read_page(tx, AUDIT_ASSERTION_PAGE, _cursor, batch_size)
-        )
+        page = _fetch_page(client, AUDIT_ASSERTION_PAGE, after_source_record_pk, batch_size)
         if not page:
             return mismatches
         for record in page:
@@ -341,6 +387,7 @@ def audit_assertions(client: Neo4jClient, batch_size: int = 500) -> list[Asserti
                 len(expected.identifiers) != actual_identifiers
                 or len(expected.addresses) != actual_addresses
                 or len(expected.facts) != actual_facts
+                or expected.malformed > 0
             ):
                 mismatches.append(
                     AssertionAuditMismatch(
@@ -351,6 +398,7 @@ def audit_assertions(client: Neo4jClient, batch_size: int = 500) -> list[Asserti
                         actual_addresses=actual_addresses,
                         expected_facts=len(expected.facts),
                         actual_facts=actual_facts,
+                        malformed_entries=expected.malformed,
                     )
                 )
         last_pk = page[-1].get("source_record_pk")

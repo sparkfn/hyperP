@@ -442,6 +442,7 @@ class BitrixOpenLinesConnector(SourceConnector):
                 source_record_prefix="bitrix-openlines-chat",
                 platform="bitrix_openlines",
                 extra_raw_payload=prepared.extra_raw_payload,
+                on_skip=self.record_skip,
             ):
                 _add_crm_activity_references(record, prepared.reference.activity_ids)
                 self._counters.records_emitted += 1

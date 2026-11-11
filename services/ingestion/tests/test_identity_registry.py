@@ -68,6 +68,15 @@ def test_fanout_caps_match_the_previous_behavior() -> None:
     assert fanout_cap_for("unknown") is None
 
 
+def test_promotion_and_single_value_flags_follow_existing_matching_rules() -> None:
+    promoting = {name for name, policy in IDENTIFIER_TYPE_REGISTRY.items() if policy.promotes}
+    assert promoting == {"nric", "membership_id", "external_customer_id"}
+    single_valued = {
+        name for name, policy in IDENTIFIER_TYPE_REGISTRY.items() if policy.single_valued
+    }
+    assert single_valued == {"nric"}
+
+
 def test_every_bootstrap_source_has_an_explicit_promotion_answer() -> None:
     for source in _SOURCE_SYSTEMS:
         should_promote = not source.get("match_only", False)
@@ -85,9 +94,21 @@ def test_every_connector_identifier_type_is_registered_or_social_wildcard() -> N
         for identifier_type in emitted
     )
     assert identifier_policy("future_unknown") == IdentifierTypePolicy(
-        candidate_eligible=False,
+        candidate_eligible=True,
         single_valued=False,
         fanout_cap=None,
         half_life_days=None,
         promotes=False,
     )
+
+
+def test_all_registered_types_have_none_half_life_days() -> None:
+    for identifier_type, policy in IDENTIFIER_TYPE_REGISTRY.items():
+        assert policy.half_life_days is None, f"{identifier_type} must not invent half_life_days"
+    assert identifier_policy("unknown").half_life_days is None
+
+
+def test_all_registered_types_and_default_are_candidate_eligible() -> None:
+    for identifier_type, policy in IDENTIFIER_TYPE_REGISTRY.items():
+        assert policy.candidate_eligible is True, f"{identifier_type} must be candidate_eligible"
+    assert identifier_policy("unknown").candidate_eligible is True

@@ -133,6 +133,10 @@ CREATE CONSTRAINT source_record_assertion_id_unique IF NOT EXISTS
 CREATE CONSTRAINT ingest_skip_id_unique IF NOT EXISTS
   FOR (skip:IngestSkip) REQUIRE skip.skip_id IS UNIQUE;
 
+CREATE CONSTRAINT ingest_run_attempt_key_unique IF NOT EXISTS
+  FOR (attempt:IngestRunAttempt)
+  REQUIRE (attempt.ingest_run_id, attempt.attempt_key) IS UNIQUE;
+
 CREATE INDEX ingest_skip_run IF NOT EXISTS
   FOR (skip:IngestSkip) ON (skip.ingest_run_id);
 

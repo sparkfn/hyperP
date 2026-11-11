@@ -50,6 +50,7 @@ class _StreamTx(_RecordingTx):
 
     _ROWS: dict[str, dict[str, object]] = {
         queries.CREATE_SOURCE_RECORD: {"source_record_pk": "sr-new"},
+        queries.PROMOTE_STAGED_SOURCE_RECORD: {"source_record_pk": "sr-new"},
         queries.CREATE_PERSON: {"person_id": "person-created"},
         queries.CREATE_MATCH_DECISION: {"match_decision_id": "md-1"},
         queries.CREATE_REVIEW_CASE: {"review_case_id": "rc-1"},
@@ -185,6 +186,5 @@ def test_shadow_flag_only_adds_assertion_writes(
     assert shadow_assertions[0][0] == "sr-new"
     v1_queries = [query for query, _ in v1_stream]
     assert queries.CREATE_SOURCE_RECORD in v1_queries
-    # Linked/review/quarantine writes must not gain any parked-only attribution write.
-    assert queries.SET_SOURCE_RECORD_ATTRIBUTION not in v1_queries
+    assert queries.PROMOTE_STAGED_SOURCE_RECORD in v1_queries
     assert shadow_stream == v1_stream
