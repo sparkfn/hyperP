@@ -80,5 +80,5 @@ CREATE (rc:ReviewCase {
     created_at: datetime(),
     updated_at: datetime()
 })-[:FOR_DECISION]->(md)
-RETURN rc.review_case_id AS review_case_id
+RETURN rc.review_case_id AS review_case_id, md.match_decision_id AS match_decision_id
 """

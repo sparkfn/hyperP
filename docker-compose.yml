@@ -3,6 +3,7 @@ x-ingestion-env: &ingestion-env
   NEO4J_USER: neo4j
   NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  REVIEW_POLICY: ${REVIEW_POLICY:-off}
   DUMPS_ROOT: /app/dumps
   BATCH_SIZE: ${BATCH_SIZE:-1000}
   CELERY_BROKER_URL: redis://redis:6379/0

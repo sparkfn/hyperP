@@ -453,7 +453,12 @@ class IngestPipeline:
             control_instance_id=self._control_instance_id,
         )
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
-        review_case_id = create_review_case_if_needed(tx, match_result, match_decision_id)
+        review_case_id = create_review_case_if_needed(
+            tx,
+            match_result,
+            match_decision_id,
+            source_system=envelope.source_system,
+        )
         if (
             match_result.decision == MatchDecision.REVIEW
             and envelope.source_entity_type is not None
@@ -938,7 +943,12 @@ class IngestPipeline:
             control_instance_id=self._control_instance_id,
         )
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
-        review_case_id = create_review_case_if_needed(tx, match_result, match_decision_id)
+        review_case_id = create_review_case_if_needed(
+            tx,
+            match_result,
+            match_decision_id,
+            source_system=envelope.source_system,
+        )
         if envelope.source_entity_type is not None:
             append_identity_link_revisions(
                 tx,

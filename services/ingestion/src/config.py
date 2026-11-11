@@ -42,6 +42,7 @@ class Settings(BaseSettings):
     # Ingestion tuning --------------------------------------------------------
     dumps_root: str = "/app/dumps"
     batch_size: int = 500
+    review_policy: Literal["off", "v2_weak_signal_park"] = "off"
 
     # Celery / queue ----------------------------------------------------------
     celery_broker_url: str = "redis://redis:6379/0"
