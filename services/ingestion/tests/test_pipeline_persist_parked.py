@@ -40,6 +40,7 @@ from src.models import (
     MatchResult,
     RecordType,
     SourceRecordEnvelope,
+    SourceRecordParentRef,
 )
 from src.pipeline import IngestPipeline
 from src.pipeline_addresses import ingest_address_record
@@ -175,6 +176,11 @@ def _call_envelope() -> SourceRecordEnvelope:
         record_hash="sha256:call",
         identifiers=[{"type": "phone", "value": "+6591234567", "is_verified": True}],
         raw_payload={"crm_activity_id": "900", "owner_id": "501"},
+        parent_ref=SourceRecordParentRef(
+            parent_source_system="bitrix_chat",
+            parent_source_record_id="bitrix-crm-history-900",
+            parent_record_type=RecordType.CRM_HISTORY,
+        ),
     )
 
 
@@ -628,6 +634,8 @@ class _FullOrderTx(_RecordingTx):
             return _Result({"person_id": "person-created"})
         if query == queries.CREATE_MATCH_DECISION:
             return _Result({"match_decision_id": "md-created"})
+        if query == queries.CREATE_MERGE_EVENT_AUTO_MERGE:
+            return _Result({"merge_event_id": "me-created"})
         if query == queries.CREATE_REVIEW_CASE:
             return _Result({"review_case_id": "rc-created"})
         if query == queries.FIND_CANDIDATES_BY_IDENTIFIERS_BATCH:
@@ -768,21 +776,20 @@ def test_persist_first_order_in_review_path() -> None:
     assert promote_calls[0]["link_status"] == "pending_review"
 
 
-def test_persist_first_order_in_quarantine_path() -> None:
+def test_persist_first_order_in_quarantine_path(monkeypatch: MonkeyPatch) -> None:
+    quarantine = MatchResult(
+        decision=MatchDecision.REVIEW,
+        confidence=1.0,
+        reasons=["canonical_crm_contact_owner_blocked_by_no_match_lock"],
+        feature_snapshot={
+            "crm_deal_quarantine": True,
+            "blocked_canonical_crm_contact_candidate_ids": ["person-a"],
+        },
+    )
+    monkeypatch.setattr("src.pipeline.resolve_canonical_crm_contact", lambda *_a, **_kw: quarantine)
     tx = _FullOrderTx()
     pipeline = IngestPipeline(cast(object, _Client(tx)))
-    deal = _deal_envelope()
-    pipeline._match_engine = MagicMock(
-        evaluate=MagicMock(
-            return_value=MatchResult(
-                decision=MatchDecision.REVIEW,
-                confidence=1.0,
-                feature_snapshot={"crm_deal_quarantine": True},
-                reasons=["crm_deal_quarantine"],
-            )
-        )
-    )
-    result = pipeline.ingest(deal)
+    result = pipeline.ingest(_deal_envelope())
 
     assert result.parked is False
     assert result.person_id is None

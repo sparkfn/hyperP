@@ -26,6 +26,16 @@ def _build_engine() -> tuple[Engine, Table]:
     return engine, sales
 
 
+def _seed(engine: Engine, sales: Table, rows: list[dict[str, int | None]]) -> None:
+    """Commit the sales rows before fetching.
+
+    ``fetch_phppos_sales`` inspects the engine, and on the shared in-memory SQLite connection
+    that rolls back anything still uncommitted, so the fetch must start from committed data.
+    """
+    with engine.begin() as conn:
+        conn.execute(insert(sales), rows)
+
+
 def test_fetch_phppos_sales_does_not_filter_customer_id_in_sql() -> None:
     """Employee exclusion is a Python backstop, so the sales query stays unfiltered."""
     engine, sales = _build_engine()
@@ -73,14 +83,15 @@ def test_fetch_phppos_sales_does_not_filter_customer_id_in_sql() -> None:
 def test_fetch_phppos_sales_ledgers_employee_sale_and_keeps_other_sales() -> None:
     engine, sales = _build_engine()
     skips: list[ConnectorSkip] = []
+    _seed(
+        engine,
+        sales,
+        [
+            {"sale_id": 1, "customer_id": 10},
+            {"sale_id": 2, "customer_id": 20},
+        ],
+    )
     with engine.begin() as conn:
-        conn.execute(
-            insert(sales),
-            [
-                {"sale_id": 1, "customer_id": 10},
-                {"sale_id": 2, "customer_id": 20},
-            ],
-        )
         records = list(
             fetch_phppos_sales(
                 engine=engine,
@@ -100,14 +111,15 @@ def test_fetch_phppos_sales_ledgers_employee_sale_and_keeps_other_sales() -> Non
 def test_fetch_phppos_sales_ledgers_null_customer_sale_when_employees_exist() -> None:
     engine, sales = _build_engine()
     skips: list[ConnectorSkip] = []
+    _seed(
+        engine,
+        sales,
+        [
+            {"sale_id": 1, "customer_id": None},
+            {"sale_id": 2, "customer_id": 20},
+        ],
+    )
     with engine.begin() as conn:
-        conn.execute(
-            insert(sales),
-            [
-                {"sale_id": 1, "customer_id": None},
-                {"sale_id": 2, "customer_id": 20},
-            ],
-        )
         records = list(
             fetch_phppos_sales(
                 engine=engine,
@@ -127,14 +139,15 @@ def test_fetch_phppos_sales_ledgers_null_customer_sale_when_employees_exist() ->
 def test_fetch_phppos_sales_emits_null_customer_sale_when_no_employees_exist() -> None:
     engine, sales = _build_engine()
     skips: list[ConnectorSkip] = []
+    _seed(
+        engine,
+        sales,
+        [
+            {"sale_id": 1, "customer_id": None},
+            {"sale_id": 2, "customer_id": 20},
+        ],
+    )
     with engine.begin() as conn:
-        conn.execute(
-            insert(sales),
-            [
-                {"sale_id": 1, "customer_id": None},
-                {"sale_id": 2, "customer_id": 20},
-            ],
-        )
         records = list(
             fetch_phppos_sales(
                 engine=engine,

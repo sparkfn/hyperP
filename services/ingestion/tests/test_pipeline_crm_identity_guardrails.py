@@ -37,6 +37,8 @@ from src.pipeline_crm_identity import (
     resolve_canonical_crm_contact,
 )
 from src.pipeline_normalization import normalize_envelope_identifiers
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID
+from tests._staging_tx import tx_without_parked_row
 
 
 class _Rows:
@@ -650,11 +652,7 @@ def test_blocked_canonical_owner_persists_durable_pending_review() -> None:
             "blocked_canonical_crm_contact_candidate_ids": ["person-a"],
         },
     )
-    tx_mock = MagicMock()
-    tx_mock.run.side_effect = (
-        lambda query, *_args, **_kwargs: summary_counter_result(query) or DEFAULT
-    )
-    tx = cast(ManagedTransaction, tx_mock)
+    tx = tx_without_parked_row()
 
     with ExitStack() as stack:
         stack.enter_context(patch("src.pipeline.find_candidates", return_value=[]))
@@ -693,6 +691,8 @@ def test_blocked_canonical_owner_persists_durable_pending_review() -> None:
         "deal-sr",
         link_status="blocked",
         expected_active_source_record_pk=None,
+        ingest_run_id=None,
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
     )
     persist_decision.assert_called_once_with(tx, quarantine, "deal-sr")
     create_review.assert_called_once_with(
@@ -733,11 +733,7 @@ def test_crm_multi_merge_persists_provisional_link_without_identity_evidence() -
             quality_flag=QualityFlag.VALID,
         ),
     ]
-    tx_mock = MagicMock()
-    tx_mock.run.side_effect = (
-        lambda query, *_args, **_kwargs: summary_counter_result(query) or DEFAULT
-    )
-    tx = cast(ManagedTransaction, tx_mock)
+    tx = tx_without_parked_row()
 
     with ExitStack() as stack:
         find = stack.enter_context(patch("src.pipeline.find_candidates", return_value=[]))
@@ -772,6 +768,8 @@ def test_crm_multi_merge_persists_provisional_link_without_identity_evidence() -
         "deal-sr",
         link_status="pending_review",
         expected_active_source_record_pk=None,
+        ingest_run_id=None,
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
     )
     assert len(link.call_args_list) == 1
     assert link.call_args.kwargs["person_id"] == "person-a"

@@ -14,6 +14,8 @@ from src.models import MatchDecision, MatchResult, RecordType, SourceRecordEnvel
 from src.pipeline import IngestPipeline
 from src.pipeline_writes import persist_match_decision, retire_identity_projections
 from src.record_lifecycle import PlannedVersion
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID
+from tests._staging_tx import tx_without_parked_row
 
 
 class _Rows:
@@ -182,11 +184,7 @@ def _envelope() -> SourceRecordEnvelope:
 
 def test_multi_owner_changed_update_stays_pending_without_active_side_effects() -> None:
     pipeline = IngestPipeline(cast(object, MagicMock()))
-    tx_mock = MagicMock()
-    tx_mock.run.side_effect = (
-        lambda query, *_args, **_kwargs: summary_counter_result(query) or DEFAULT
-    )
-    tx = cast(ManagedTransaction, tx_mock)
+    tx = tx_without_parked_row()
     plan = PlannedVersion(
         version=2,
         active_source_record_pk="old-sr",
@@ -233,6 +231,8 @@ def test_multi_owner_changed_update_stays_pending_without_active_side_effects() 
         "new-sr",
         link_status="pending_review",
         expected_active_source_record_pk="old-sr",
+        ingest_run_id=None,
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
     )
     review.assert_called_once()
     assert link.call_args.kwargs["attach_evidence"] is False
@@ -285,11 +285,7 @@ def test_accepted_update_retires_activates_and_recomputes_complete_affected_set(
             )
         )
     )
-    tx_mock = MagicMock()
-    tx_mock.run.side_effect = (
-        lambda query, *_args, **_kwargs: summary_counter_result(query) or DEFAULT
-    )
-    tx = cast(ManagedTransaction, tx_mock)
+    tx = tx_without_parked_row()
     plan = PlannedVersion(2, old_pk, prior, None)
 
     with ExitStack() as stack:
@@ -324,6 +320,8 @@ def test_accepted_update_retires_activates_and_recomputes_complete_affected_set(
         "new-sr",
         link_status="linked",
         expected_active_source_record_pk=old_pk,
+        ingest_run_id=None,
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
     )
     activate.assert_called_once()
     assert activate.call_args.kwargs["old_source_record_pk"] == old_pk
@@ -445,11 +443,7 @@ def _crm_normalized_payload() -> str:
 def test_unchanged_crm_identity_update_reuses_continuity_without_rematching() -> None:
     pipeline = IngestPipeline(cast(object, MagicMock()))
     pipeline._match_engine = MagicMock()
-    tx_mock = MagicMock()
-    tx_mock.run.side_effect = (
-        lambda query, *_args, **_kwargs: summary_counter_result(query) or DEFAULT
-    )
-    tx = cast(ManagedTransaction, tx_mock)
+    tx = tx_without_parked_row()
     envelope = _crm_deal_envelope()
     plan = PlannedVersion(
         version=2,
@@ -498,6 +492,8 @@ def test_unchanged_crm_identity_update_reuses_continuity_without_rematching() ->
         "new-sr",
         link_status="linked",
         expected_active_source_record_pk="old-sr",
+        ingest_run_id=None,
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
     )
     retire.assert_called_once_with(tx, "old-sr", person_ids=("person-a",))
     activate.assert_called_once()
@@ -518,11 +514,7 @@ def test_crm_contact_change_uses_full_matching_and_projection_refresh() -> None:
             )
         )
     )
-    tx_mock = MagicMock()
-    tx_mock.run.side_effect = (
-        lambda query, *_args, **_kwargs: summary_counter_result(query) or DEFAULT
-    )
-    tx = cast(ManagedTransaction, tx_mock)
+    tx = tx_without_parked_row()
     envelope = _crm_deal_envelope(contact_ids=["contact-1"])
     prior_raw = dict(envelope.raw_payload)
     prior_raw["crm_contact_ids"] = ["contact-old"]
@@ -566,6 +558,8 @@ def test_crm_contact_change_uses_full_matching_and_projection_refresh() -> None:
         "new-sr",
         link_status="linked",
         expected_active_source_record_pk="old-sr",
+        ingest_run_id=None,
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
     )
     golden.assert_called_once_with(tx, "person-a")
     audit.assert_called_once()
