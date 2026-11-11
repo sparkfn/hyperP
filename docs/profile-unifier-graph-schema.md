@@ -379,7 +379,13 @@ Optional SourceRecord attribution properties are `attribution_status`,
 writes only and does not change matching or linking behavior.
 
 Every IngestPipeline record is staged as `parked` first and settled to
-`pending_review`/`active` once linked.
+`pending_review`/`active` once linked. A parked row reused by a later run is attached to that
+run with `PART_OF_RUN` when it settles, so run lineage matches a record that run created.
+
+Source retirement (`retire_source_evidence`) applies to `active`/`pending_review` rows only.
+No retirement-capable connector (the Fundbox API) can leave a record parked today; a connector
+that emits retirement markers for a record type that can be parked must add `parked` to the
+retirement lifecycle filters, otherwise a retracted parked row keeps `reeval_pending`.
 
 ### IngestRun
 

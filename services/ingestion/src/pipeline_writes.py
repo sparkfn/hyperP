@@ -432,16 +432,22 @@ def settle_staged_source_record(
     *,
     link_status: str,
     expected_active_source_record_pk: str | None,
+    ingest_run_id: str | None,
+    control_instance_id: str,
 ) -> str:
     """Transition a staged parked SourceRecord to pending_review before linking.
 
-    Raises SourceLifecycleConflict if the record is not found or not in parked state.
+    A parked row reused from an earlier run is also attached to this run (idempotent), so run
+    lineage matches a record created by this run. Raises SourceLifecycleConflict if the record
+    is not found or not in parked state.
     """
     result = tx.run(
         queries.PROMOTE_STAGED_SOURCE_RECORD,
         source_record_pk=source_record_pk,
         link_status=link_status,
         expected_active_source_record_pk=expected_active_source_record_pk,
+        ingest_run_id=ingest_run_id,
+        control_instance_id=control_instance_id,
     )
     record = result.single()
     if record is None:

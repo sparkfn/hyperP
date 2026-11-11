@@ -77,10 +77,14 @@ def _collect(
     entries: JsonValue | None,
     build: RowBuilder,
 ) -> tuple[list[dict[str, JsonValue]], int]:
-    """Build deduplicated rows; count entries that are not well-formed objects."""
+    """Build deduplicated rows; count malformed entries and present non-list containers."""
+    if entries is None:
+        return [], 0
+    if not isinstance(entries, list):
+        return [], 1
     rows: dict[str, dict[str, JsonValue]] = {}
     malformed = 0
-    for entry in entries if isinstance(entries, list) else []:
+    for entry in entries:
         try:
             if not isinstance(entry, dict):
                 raise _MalformedEntryError
@@ -99,12 +103,14 @@ def assertion_rows(
 ) -> AssertionRows:
     """Build stable rows for usable identifiers, addresses, and selected facts.
 
-    ``malformed`` counts entries that are not objects or lack the fields a row needs; entries
-    that are well formed but unusable (low quality, other attributes) are intentionally absent.
+    ``malformed`` counts entries that are not objects or lack the fields a row needs, and any
+    present container that is not a list; entries that are well formed but unusable (low quality,
+    other attributes) are intentionally absent. A missing or empty ``addresses`` falls back to
+    the legacy single ``address``.
     """
     addresses = normalized_payload.get("addresses")
     legacy_address = normalized_payload.get("address")
-    if not isinstance(addresses, list) and legacy_address is not None:
+    if addresses in (None, []) and legacy_address is not None:
         addresses = [legacy_address]
     identifier_rows, bad_identifiers = _collect(
         source_record_pk, normalized_payload.get("identifiers"), _identifier_row

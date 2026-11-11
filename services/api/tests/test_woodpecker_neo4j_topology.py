@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import runpy
+import subprocess
 import tomllib
 from pathlib import Path
 from typing import cast
@@ -35,6 +36,18 @@ _NEO4J_SETTINGS = {
     "NEO4J_server_memory_pagecache_size": "128m",
 }
 _PR_PATH_FILTER = [{"path": {"exclude": ["docs/**", "services/frontend2/**"]}}]
+
+
+def _collect_command(service: str) -> str:
+    """Collection writes the manifest; on failure it prints the output minus node ids."""
+    manifest = f".ci-manifests/{service}-default-nodes.txt"
+    return (
+        f"uv run --package profile-unifier-{service} pytest services/{service}/tests "
+        f"--collect-only -q > {manifest} || "
+        f"{{ rc=$?; grep -vE '^services/.*::' {manifest}; exit $rc; }}"
+    )
+
+
 _EXPECTED_PR_PYTHON_COMMANDS = (
     "uv sync --frozen --group dev --package profile-unifier-api "
     "--package profile-unifier-ingestion",
@@ -48,12 +61,10 @@ _EXPECTED_PR_PYTHON_COMMANDS = (
     "uv run --package profile-unifier-ingestion mypy --strict services/ingestion/src "
     "$(python scripts/ci_selection_manifest.py tool-excludes --tool mypy)",
     "mkdir -p .ci-manifests",
-    "uv run --package profile-unifier-api pytest services/api/tests --collect-only -q "
-    "> .ci-manifests/api-default-nodes.txt",
+    _collect_command("api"),
     "python scripts/ci_selection_manifest.py verify-nodes --service api "
     "--path .ci-manifests/api-default-nodes.txt",
-    "uv run --package profile-unifier-ingestion pytest services/ingestion/tests --collect-only -q "
-    "> .ci-manifests/ingestion-default-nodes.txt",
+    _collect_command("ingestion"),
     "python scripts/ci_selection_manifest.py verify-nodes --service ingestion "
     "--path .ci-manifests/ingestion-default-nodes.txt",
     "uv run --package profile-unifier-api pytest services/api/tests",
@@ -518,6 +529,48 @@ def test_collection_and_query_evidence_are_ordered_and_labeled_by_kind() -> None
     assert "configured-query=" in script
     assert "default-node=" not in script
     assert "default-query=" not in script
+
+
+def test_collection_failure_prints_diagnostics_and_keeps_the_manifest(tmp_path: Path) -> None:
+    (tmp_path / ".ci-manifests").mkdir()
+    for name in _WORKFLOWS:
+        commands = _commands(_steps(_workflow(name))["python-checks"])
+        for service in ("api", "ingestion"):
+            command = next(
+                item
+                for item in commands
+                if f"pytest services/{service}/tests --collect-only" in item
+            )
+            node = f"services/{service}/tests/test_a.py::test_ok"
+            # A shell function named ``uv`` stands in for the real collector.
+            failing = (
+                f"uv() {{ printf '%s\\n' '{node}' 'ERROR collecting x.py' "
+                "'ImportError: cannot import name'; return 2; }; "
+            )
+            failed = subprocess.run(
+                ["sh", "-ec", failing + command],
+                cwd=tmp_path,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert failed.returncode == 2
+            assert "ImportError: cannot import name" in failed.stdout
+            assert node not in failed.stdout
+            manifest = (tmp_path / ".ci-manifests" / f"{service}-default-nodes.txt").read_text(
+                encoding="utf-8"
+            )
+            assert node in manifest and "ImportError" in manifest
+
+            passing = f"uv() {{ printf '%s\\n' '{node}'; }}; "
+            passed = subprocess.run(
+                ["sh", "-ec", passing + command],
+                cwd=tmp_path,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert (passed.returncode, passed.stdout) == (0, "")
 
 
 def test_query_connections_have_complete_families_and_readiness_precedes_execution() -> None:

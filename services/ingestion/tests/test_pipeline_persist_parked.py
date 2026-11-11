@@ -43,8 +43,8 @@ from src.models import (
 )
 from src.pipeline import IngestPipeline
 from src.pipeline_addresses import ingest_address_record
-from src.pipeline_crm_identity import plan_crm_deal_identity
-from src.pipeline_normalization import normalize_envelope_identifiers, projected_identifiers
+from src.pipeline_crm_identity import plan_crm_deal_identity, projected_identifiers
+from src.pipeline_normalization import normalize_envelope_identifiers
 from src.pipeline_references import ingest_reference_record
 from src.resumable import CheckpointDescriptor
 
@@ -671,6 +671,18 @@ def test_persist_first_order_in_new_person_path() -> None:
     promote_calls = [params for q, params in tx.calls if q == PROMOTE_STAGED_SOURCE_RECORD]
     assert len(promote_calls) == 1
     assert promote_calls[0]["link_status"] == "linked"
+
+
+def test_promotion_carries_the_settling_run_so_reused_rows_join_its_lineage() -> None:
+    tx = _FullOrderTx()
+    pipeline = IngestPipeline(cast(object, _Client(tx)))
+    pipeline.ingest(_identity_order_envelope(), ingest_run_id="run-2")
+
+    [promote] = [params for q, params in tx.calls if q == PROMOTE_STAGED_SOURCE_RECORD]
+    assert promote["ingest_run_id"] == "run-2"
+    assert promote["control_instance_id"]
+    # Idempotent: a row staged in this same run keeps exactly one PART_OF_RUN edge.
+    assert "MERGE (sr)-[:PART_OF_RUN]->(run)" in PROMOTE_STAGED_SOURCE_RECORD
 
 
 def test_persist_first_order_in_matched_person_path() -> None:

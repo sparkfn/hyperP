@@ -3,12 +3,15 @@
 from __future__ import annotations
 
 import logging
+from types import SimpleNamespace
 from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
+from src.bitrix_ingestion_models import ExecutionContext
 from src.connectors.base import SourceConnector
 from src.exclusions import ExclusionContext
+from src.graph.client import Neo4jClient
 from src.graph.queries.ingest_skips import (
     RECONCILE_INGEST_RUN_ACCOUNTING,
     WRITE_INGEST_ATTEMPT,
@@ -21,6 +24,7 @@ from src.models import (
     JsonValue,
 )
 from src.pipeline import IngestPipeline
+from src.watermark_runner import _process_page_records
 
 
 class _FakeTx:
@@ -227,6 +231,125 @@ def test_ledger_run_counters_satisfy_invariant() -> None:
     reconciled = ledger.reconcile()
     assert reconciled is True
     assert ledger.reconciled is True
+
+
+def _raw_record(index: int) -> dict[str, JsonValue]:
+    return {
+        "source_record_id": f"rec-{index}",
+        "observed_at": "2026-01-01T00:00:00Z",
+        "record_hash": f"hash-{index}",
+        "identifiers": [],
+        "attributes": {},
+        "raw_payload": {},
+    }
+
+
+def _durable_attempt(tx: _FakeTx) -> dict[str, object]:
+    """The counters the failure path durably wrote for the attempt."""
+    [params] = [kwargs for query, kwargs in tx.calls if query == WRITE_INGEST_ATTEMPT]
+    return params
+
+
+def _assert_attempt_is_balanced(params: dict[str, object], *, emitted: int) -> None:
+    assert params["emitted_count"] == emitted
+    assert params["emitted_count"] == (
+        cast(int, params["persisted_count"])
+        + cast(int, params["duplicate_count"])
+        + cast(int, params["pipeline_skip_count"])
+        + cast(int, params["record_error_count"])
+    )
+
+
+def _run_until_failure(
+    pipeline: MagicMock,
+    records: list[dict[str, JsonValue]],
+    *,
+    max_rows: int | None = None,
+) -> tuple[SkipLedger, _FakeTx, BaseException]:
+    tx = _FakeTx()
+    client = _FakeClient(tx)
+    ledger = SkipLedger(client, "run-abort", "fundbox")
+    execution = SimpleNamespace(max_rows=max_rows, deadline_monotonic=None, fence_context=None)
+    with pytest.raises(Exception) as raised:
+        _ingest_all_records(
+            client=client,
+            pipeline=pipeline,
+            connector=_DummyConnector(records),
+            ingest_run_id="run-abort",
+            exclusion_context=ExclusionContext(),
+            execution_context=cast(ExecutionContext, execution) if max_rows else None,
+            ledger=ledger,
+        )
+    ledger.flush_quietly()  # what the run owner's failure path does
+    return ledger, tx, raised.value
+
+
+def test_row_ceiling_stop_leaves_a_balanced_durable_attempt() -> None:
+    pipeline = MagicMock(spec=IngestPipeline)
+    pipeline.ingest.return_value = IngestResult(source_record_id="rec-1", person_id="p-1")
+
+    ledger, tx, error = _run_until_failure(pipeline, [_raw_record(1), _raw_record(2)], max_rows=1)
+
+    assert "row ceiling" in str(error)
+    assert ledger.emitted == ledger.persisted == 1
+    _assert_attempt_is_balanced(_durable_attempt(tx), emitted=1)
+
+
+def test_failure_mid_record_does_not_count_the_unclassified_record() -> None:
+    pipeline = MagicMock(spec=IngestPipeline)
+    pipeline.ingest.side_effect = [
+        IngestResult(source_record_id="rec-1", person_id="p-1"),
+        RuntimeError("write failed"),
+    ]
+
+    ledger, tx, _ = _run_until_failure(pipeline, [_raw_record(1), _raw_record(2)])
+
+    assert ledger.emitted == ledger.persisted == 1
+    _assert_attempt_is_balanced(_durable_attempt(tx), emitted=1)
+
+
+def test_invalid_envelope_does_not_count_the_unclassified_record() -> None:
+    pipeline = MagicMock(spec=IngestPipeline)
+    pipeline.ingest.return_value = IngestResult(source_record_id="rec-1", person_id="p-1")
+    invalid: dict[str, JsonValue] = {"source_record_id": "rec-2"}
+
+    ledger, tx, _ = _run_until_failure(pipeline, [_raw_record(1), invalid])
+
+    assert ledger.emitted == ledger.persisted == 1
+    _assert_attempt_is_balanced(_durable_attempt(tx), emitted=1)
+
+
+def test_watermark_page_failure_does_not_count_the_unclassified_record(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    results = iter([IngestResult(source_record_id="rec-1", person_id="p-1")])
+
+    def _process(*_args: object, **_kwargs: object) -> IngestResult:
+        try:
+            return next(results)
+        except StopIteration:
+            raise RuntimeError("write failed") from None
+
+    monkeypatch.setattr("src.main._process_record", _process)
+    tx = _FakeTx()
+    client = _FakeClient(tx)
+    ledger = SkipLedger(client, "run-page", "fundbox")
+
+    with pytest.raises(RuntimeError, match="write failed"):
+        _process_page_records(
+            cast(Neo4jClient, client),
+            MagicMock(spec=IngestPipeline),
+            "fundbox",
+            (_raw_record(1), _raw_record(2)),
+            "run-page",
+            ExclusionContext(),
+            "control-1",
+            ledger=ledger,
+        )
+    ledger.flush_quietly()
+
+    assert ledger.emitted == ledger.persisted == 1
+    _assert_attempt_is_balanced(_durable_attempt(tx), emitted=1)
 
 
 def test_checkpoint_flushes_after_500_emitted_records() -> None:

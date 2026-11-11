@@ -248,6 +248,13 @@ SET sr.lifecycle_status = 'pending_review',
     sr.attribution_status = null,
     sr.reeval_pending = null,
     sr.attribution_eval_at = null
+WITH sr
+OPTIONAL MATCH (ir:IngestRun {
+  ingest_run_id: $ingest_run_id, control_instance_id: $control_instance_id
+})
+FOREACH (run IN CASE WHEN ir IS NULL THEN [] ELSE [ir] END |
+  MERGE (sr)-[:PART_OF_RUN]->(run)
+)
 RETURN sr.source_record_pk AS source_record_pk
 """
 

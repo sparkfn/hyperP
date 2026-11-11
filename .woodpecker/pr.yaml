@@ -64,9 +64,9 @@ steps:
       - uv run --package profile-unifier-api mypy --strict services/api/src
       - uv run --package profile-unifier-ingestion mypy --strict services/ingestion/src $(python scripts/ci_selection_manifest.py tool-excludes --tool mypy)
       - mkdir -p .ci-manifests
-      - uv run --package profile-unifier-api pytest services/api/tests --collect-only -q > .ci-manifests/api-default-nodes.txt
+      - uv run --package profile-unifier-api pytest services/api/tests --collect-only -q > .ci-manifests/api-default-nodes.txt || { rc=$?; grep -vE '^services/.*::' .ci-manifests/api-default-nodes.txt; exit $rc; }
       - python scripts/ci_selection_manifest.py verify-nodes --service api --path .ci-manifests/api-default-nodes.txt
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests --collect-only -q > .ci-manifests/ingestion-default-nodes.txt
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests --collect-only -q > .ci-manifests/ingestion-default-nodes.txt || { rc=$?; grep -vE '^services/.*::' .ci-manifests/ingestion-default-nodes.txt; exit $rc; }
       - python scripts/ci_selection_manifest.py verify-nodes --service ingestion --path .ci-manifests/ingestion-default-nodes.txt
       - uv run --package profile-unifier-api pytest services/api/tests
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests --durations=25 --durations-min=1.0

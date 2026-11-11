@@ -225,6 +225,17 @@ def _assert_s4_graph(driver: Driver) -> None:
         assert review_cases == 0
 
 
+def _run_links(driver: Driver, source_record_id: str) -> dict[str, int]:
+    """PART_OF_RUN edge count per IngestRun for one source record."""
+    with driver.session() as s:
+        rows = s.run(
+            "MATCH (:SourceRecord {source_record_id: $id})-[r:PART_OF_RUN]->(ir:IngestRun) "
+            "RETURN ir.ingest_run_id AS run, count(r) AS links",
+            id=source_record_id,
+        ).data()
+    return {str(row["run"]): int(row["links"]) for row in rows}
+
+
 def _assert_s5_graph(driver: Driver, person_id: str) -> None:
     with driver.session() as s:
         sr_promoted = s.run(
@@ -263,6 +274,7 @@ def test_persist_first_baseline_scenarios_s1_to_s5(neo4j_driver: Driver) -> None
 
     fb_run = _create_ingest_run(client, "fundbox", "batch")
     bk_run = _create_ingest_run(client, "sgbankruptcy", "batch")
+    bk_run_later = _create_ingest_run(client, "sgbankruptcy", "batch")
     pipeline = IngestPipeline(client)
 
     # --- S1: new person ---
@@ -270,6 +282,8 @@ def test_persist_first_baseline_scenarios_s1_to_s5(neo4j_driver: Driver) -> None
     res1 = pipeline.ingest(env1, ingest_run_id=fb_run)
     assert res1.parked is False and res1.is_new_person is True and res1.person_id is not None
     _assert_s1_graph(neo4j_driver, res1.person_id)
+    # Staged and settled in the same run: still exactly one PART_OF_RUN edge (idempotent link).
+    assert _run_links(neo4j_driver, "fb-user-1") == {fb_run: 1}
 
     # --- S2: rerun same hash ---
     with neo4j_driver.session() as s:
@@ -316,9 +330,12 @@ def test_persist_first_baseline_scenarios_s1_to_s5(neo4j_driver: Driver) -> None
     res5_fb = pipeline.ingest(env5_fb, ingest_run_id=fb_run)
     assert res5_fb.is_new_person is True and res5_fb.person_id is not None
 
-    res5_bk = pipeline.ingest(env4, ingest_run_id=bk_run)
+    assert _run_links(neo4j_driver, "bankrupt-s4") == {bk_run: 1}
+    res5_bk = pipeline.ingest(env4, ingest_run_id=bk_run_later)
     assert res5_bk.parked is False and res5_bk.person_id == res5_fb.person_id
     _assert_s5_graph(neo4j_driver, res5_fb.person_id)
+    # The reused parked row joins the run that activated it, without losing the run that staged it.
+    assert _run_links(neo4j_driver, "bankrupt-s4") == {bk_run: 1, bk_run_later: 1}
 
 
 def test_persist_first_rollback_s6(neo4j_driver: Driver, monkeypatch: MonkeyPatch) -> None:

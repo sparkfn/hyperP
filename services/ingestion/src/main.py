@@ -891,9 +891,10 @@ def _ingest_all_records_open(
         exclusion_context if exclusion_context is not None else _load_exclusion_context()
     )
     for raw_record in connector.fetch_records():
+        # A record counts as emitted only once classified (below): a ceiling stop or an
+        # unexpected failure must not leave an unclassified record in the durable attempt.
         if ledger is not None:
             ledger.checkpoint()
-            ledger.emitted += 1
         if execution_context is not None:
             processed = success + errors + skipped
             if execution_context.max_rows is not None and processed >= execution_context.max_rows:
@@ -924,6 +925,7 @@ def _ingest_all_records_open(
             success += 1
             if ledger is not None:
                 ledger.persisted += 1
+                ledger.emitted += 1
             _report_record_outcome(connector, succeeded=True)
             if ledger is not None and isinstance(connector, SkipReporter):
                 ledger.add_connector_skips(connector.drain_skips())
@@ -936,6 +938,7 @@ def _ingest_all_records_open(
             skipped += 1
             if ledger is not None:
                 ledger.add_pipeline_skip(exclusion_reason, envelope)
+                ledger.emitted += 1
             logger.info("  %s -> excluded", envelope.source_record_id)
             _report_record_outcome(connector, succeeded=True)
             if ledger is not None and isinstance(connector, SkipReporter):
@@ -966,6 +969,8 @@ def _ingest_all_records_open(
             success += 1
             if ledger is not None:
                 ledger.persisted += 1
+        if ledger is not None:
+            ledger.emitted += 1
         _report_record_outcome(connector, succeeded=not bool(result.errors))
         if ledger is not None and isinstance(connector, SkipReporter):
             ledger.add_connector_skips(connector.drain_skips())

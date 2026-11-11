@@ -124,9 +124,10 @@ def _process_page_records(
     succeeded = 0
     errors = 0
     for raw_record in records:
+        # Counted as emitted only once classified, so a failure mid-record never leaves an
+        # unclassified record in the durable attempt snapshot.
         if ledger is not None:
             ledger.checkpoint()
-            ledger.emitted += 1
         envelope = SourceRecordEnvelope.model_validate(
             {"source_system": source_key, **raw_record},
         )
@@ -134,6 +135,7 @@ def _process_page_records(
         if exclusion_reason is not None:
             if ledger is not None:
                 ledger.add_pipeline_skip(exclusion_reason, envelope)
+                ledger.emitted += 1
             continue
         result = _process_record(
             client,
@@ -157,6 +159,8 @@ def _process_page_records(
             succeeded += 1
             if ledger is not None:
                 ledger.persisted += 1
+        if ledger is not None:
+            ledger.emitted += 1
     return succeeded, errors
 
 

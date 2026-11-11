@@ -523,6 +523,8 @@ class IngestPipeline:
             staged.source_record_pk,
             link_status=link_status_for(match_result, is_new_person),
             expected_active_source_record_pk=lifecycle_plan.active_source_record_pk,
+            ingest_run_id=ingest_run_id,
+            control_instance_id=self._control_instance_id,
         )
         source_record_pk = staged.source_record_pk
         collector.mark_new(source_record_pks=[source_record_pk])
@@ -1058,6 +1060,8 @@ class IngestPipeline:
             source_record_pk,
             link_status="blocked",
             expected_active_source_record_pk=lifecycle_plan.active_source_record_pk,
+            ingest_run_id=ingest_run_id,
+            control_instance_id=self._control_instance_id,
         )
         collector.mark_new(source_record_pks=[source_record_pk])
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
