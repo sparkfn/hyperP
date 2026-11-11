@@ -937,8 +937,10 @@ def _ingest_all_records_open(
         if exclusion_reason is not None:
             skipped += 1
             if ledger is not None:
-                ledger.add_pipeline_skip(exclusion_reason, envelope)
+                # Emitted first: buffering the skip may flush, and no snapshot may hold the
+                # skip without its record.
                 ledger.emitted += 1
+                ledger.add_pipeline_skip(exclusion_reason, envelope)
             logger.info("  %s -> excluded", envelope.source_record_id)
             _report_record_outcome(connector, succeeded=True)
             if ledger is not None and isinstance(connector, SkipReporter):
@@ -953,6 +955,9 @@ def _ingest_all_records_open(
             execution_context,
             control_instance_id,
         )
+        if ledger is not None:
+            # Emitted before its bucket: add_pipeline_skip below may flush mid-classification.
+            ledger.emitted += 1
         if result.excluded:
             skipped += 1
             if ledger is not None:
@@ -969,8 +974,6 @@ def _ingest_all_records_open(
             success += 1
             if ledger is not None:
                 ledger.persisted += 1
-        if ledger is not None:
-            ledger.emitted += 1
         _report_record_outcome(connector, succeeded=not bool(result.errors))
         if ledger is not None and isinstance(connector, SkipReporter):
             ledger.add_connector_skips(connector.drain_skips())

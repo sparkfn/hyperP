@@ -352,6 +352,118 @@ def test_watermark_page_failure_does_not_count_the_unclassified_record(
     _assert_attempt_is_balanced(_durable_attempt(tx), emitted=1)
 
 
+_SKIP_FLUSH_THRESHOLD = 500  # buffered skip rows that trigger an immediate ledger flush
+_ATTEMPT_COUNTERS = (
+    "emitted_count",
+    "persisted_count",
+    "duplicate_count",
+    "pipeline_skip_count",
+    "connector_skip_count",
+    "record_error_count",
+)
+
+
+class _FlakySession(_FakeSession):
+    def __init__(self, tx: _FakeTx, owner: _FlakyClient) -> None:
+        super().__init__(tx)
+        self._owner = owner
+
+    def execute_write(self, fn: object) -> object:
+        if self._owner.failures_left > 0:
+            self._owner.failures_left -= 1
+            raise ConnectionError("neo4j write dropped")
+        return super().execute_write(fn)
+
+
+class _FlakyClient(_FakeClient):
+    """Fails its first ``fail_writes`` write transactions, as a dropped connection would."""
+
+    def __init__(self, tx: _FakeTx, *, fail_writes: int) -> None:
+        super().__init__(tx)
+        self.failures_left = fail_writes
+
+    def session(self) -> _FlakySession:
+        return _FlakySession(self.tx, self)
+
+
+def _drive_skipped_records(
+    runner: str,
+    mode: str,
+    client: _FakeClient,
+    ledger: SkipLedger,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Feed one more skipped record than the flush threshold through a record loop."""
+    records = [_raw_record(index) for index in range(1, _SKIP_FLUSH_THRESHOLD + 2)]
+    policy = ExclusionContext(
+        source_ids=frozenset(str(record["source_record_id"]) for record in records)
+    )
+    excluded_by_pipeline = IngestResult(source_record_id="rec", excluded=True, skip_reason="policy")
+    exclusion = policy if mode == "pre_pipeline_exclusion" else ExclusionContext()
+    if runner == "run_loop":
+        pipeline = MagicMock(spec=IngestPipeline)
+        pipeline.ingest.return_value = excluded_by_pipeline
+        _ingest_all_records(
+            client=client,
+            pipeline=pipeline,
+            connector=_DummyConnector(records),
+            ingest_run_id="run-500",
+            exclusion_context=exclusion,
+            ledger=ledger,
+        )
+        return
+    monkeypatch.setattr("src.main._process_record", lambda *_a, **_k: excluded_by_pipeline)
+    _process_page_records(
+        cast(Neo4jClient, client),
+        MagicMock(spec=IngestPipeline),
+        "fundbox",
+        tuple(records),
+        "run-500",
+        exclusion,
+        "control-1",
+        ledger=ledger,
+    )
+
+
+@pytest.mark.parametrize("runner", ["run_loop", "watermark_page"])
+@pytest.mark.parametrize("mode", ["pre_pipeline_exclusion", "pipeline_excluded_result"])
+def test_failed_flush_on_the_500th_skip_leaves_balanced_attempts_across_a_retry(
+    runner: str,
+    mode: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tx = _FakeTx()
+    client = _FlakyClient(tx, fail_writes=1)  # the flush the 500th skipped row triggers
+    first = SkipLedger(client, "run-500", "fundbox", attempt_key="attempt-1")
+
+    with pytest.raises(ConnectionError):
+        _drive_skipped_records(runner, mode, client, first, monkeypatch)
+    first.flush_quietly()  # the run owner's failure path, once the connection is back
+
+    retry = SkipLedger(client, "run-500", "fundbox", attempt_key="attempt-2")
+    _drive_skipped_records(runner, mode, client, retry, monkeypatch)
+    retry.flush()
+
+    snapshots = [kwargs for query, kwargs in tx.calls if query == WRITE_INGEST_ATTEMPT]
+    # The retry flushed at the 500th skip too, so there are transient snapshots to check.
+    assert len(snapshots) >= 3
+    for snapshot in snapshots:
+        _assert_attempt_is_balanced(snapshot, emitted=cast(int, snapshot["emitted_count"]))
+
+    latest = {str(item["attempt_key"]): item for item in snapshots}
+    assert set(latest) == {"attempt-1", "attempt-2"}
+    # Attempt 1 classified exactly the 500 records before the failed flush; attempt 2 all 501.
+    assert latest["attempt-1"]["emitted_count"] == _SKIP_FLUSH_THRESHOLD
+    assert latest["attempt-1"]["pipeline_skip_count"] == _SKIP_FLUSH_THRESHOLD
+    assert latest["attempt-2"]["emitted_count"] == _SKIP_FLUSH_THRESHOLD + 1
+    # What RECONCILE_INGEST_RUN_ACCOUNTING sums across the run's attempts is balanced too.
+    totals = {
+        name: sum(cast(int, item[name]) for item in latest.values()) for name in _ATTEMPT_COUNTERS
+    }
+    _assert_attempt_is_balanced(totals, emitted=totals["emitted_count"])
+    assert totals["emitted_count"] == 2 * _SKIP_FLUSH_THRESHOLD + 1
+
+
 def test_checkpoint_flushes_after_500_emitted_records() -> None:
     tx = _FakeTx()
     client = _FakeClient(tx)

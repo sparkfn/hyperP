@@ -134,8 +134,10 @@ def _process_page_records(
         exclusion_reason = _exclusion_reason(envelope, exclusion_context)
         if exclusion_reason is not None:
             if ledger is not None:
-                ledger.add_pipeline_skip(exclusion_reason, envelope)
+                # Emitted first: buffering the skip may flush, and no snapshot may hold the
+                # skip without its record.
                 ledger.emitted += 1
+                ledger.add_pipeline_skip(exclusion_reason, envelope)
             continue
         result = _process_record(
             client,
@@ -145,6 +147,9 @@ def _process_page_records(
             exclusion_context,
             control_instance_id=control_instance_id,
         )
+        if ledger is not None:
+            # Emitted before its bucket: add_pipeline_skip below may flush mid-classification.
+            ledger.emitted += 1
         if result.excluded:
             if ledger is not None:
                 ledger.add_pipeline_skip(result.skip_reason or "excluded", envelope)
@@ -159,8 +164,6 @@ def _process_page_records(
             succeeded += 1
             if ledger is not None:
                 ledger.persisted += 1
-        if ledger is not None:
-            ledger.emitted += 1
     return succeeded, errors
 
 

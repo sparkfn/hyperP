@@ -149,6 +149,11 @@ class SkipLedger:
         source_record_id: str | None = None,
         locator: str = "",
     ) -> None:
+        """Count one pipeline skip and buffer its row.
+
+        The skipped record must already be counted in ``emitted``: buffering the 500th row
+        flushes, and a snapshot holding the skip without its record is permanently unbalanced.
+        """
         self.pipeline_skips += 1
         self._buffer_skip(
             "pipeline",
