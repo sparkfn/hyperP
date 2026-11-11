@@ -58,6 +58,66 @@ export interface paths {
         patch: operations["updateIngestRun"];
         trace?: never;
     };
+    "/v1/ingest/logical-runs/{logical_run_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get bounded logical-run status
+         * @description Human administrators only. Returns redacted, bounded progress and never returns cursors, source boundaries, payloads, replay tokens, fence tokens, raw failures, or secrets.
+         */
+        get: operations["get_bounded_logical_run"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/ingest/logical-runs/{logical_run_id}/pause": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Pause a bounded logical run
+         * @description Human administrators only. Persists a durable manual pause intent for the exact source, control instance, and reset generation identity.
+         */
+        post: operations["pause_bounded_logical_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/ingest/logical-runs/{logical_run_id}/resume": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Release a bounded logical-run manual pause
+         * @description Human administrators only. Persists manual-release and recovery publication intent, but cannot override disabled, window, reset, or capability admission gates.
+         */
+        post: operations["resume_bounded_logical_run"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/persons": {
         parameters: {
             query?: never;
@@ -549,9 +609,13 @@ export interface paths {
         put?: never;
         /**
          * Issue an OAuth2 client-credentials access token
+         * @deprecated
          * @description Exchanges an OAuth client ID and one active client secret for a short-lived
          *     HyperP-issued RS256 JWT access token. This endpoint uses OAuth-compatible
          *     top-level JSON responses rather than the standard HyperP response envelope.
+         *
+         *     Deprecated: use the `/oauth2/v1` equivalent. Responses carry an RFC 8594
+         *     `Sunset` header.
          */
         post: operations["createOAuthToken"];
         delete?: never;
@@ -567,7 +631,12 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Return public signing keys for HyperP-issued access tokens */
+        /**
+         * Return public signing keys for HyperP-issued access tokens
+         * @deprecated
+         * @description Deprecated: use the `/oauth2/v1` equivalent. Responses carry an RFC 8594
+         *     `Sunset` header.
+         */
         get: operations["getOAuthJwks"];
         put?: never;
         post?: never;
@@ -588,10 +657,10 @@ export interface paths {
         put?: never;
         /**
          * Issue an OAuth2 client-credentials access token (machine surface)
-         * @description Identical contract to `POST /v1/oauth/token`, exposed on the dedicated
-         *     machine mount. Uses OAuth-compatible top-level JSON responses rather than
-         *     the standard HyperP envelope. Response carries `Cache-Control: no-store`
-         *     and `Pragma: no-cache`.
+         * @description Same contract as the deprecated `POST /v1/oauth/token` route, without the
+         *     `Sunset` header, exposed on the dedicated machine mount. Uses
+         *     OAuth-compatible top-level JSON responses rather than the standard HyperP
+         *     envelope. Response carries `Cache-Control: no-store` and `Pragma: no-cache`.
          */
         post: operations["createOAuthTokenMachine"];
         delete?: never;
@@ -609,7 +678,7 @@ export interface paths {
         };
         /**
          * Public signing keys for HyperP-issued access tokens (machine surface)
-         * @description Identical to `GET /v1/oauth/jwks`, exposed on the machine mount.
+         * @description Same contract as the deprecated `GET /v1/oauth/jwks` route, without the `Sunset` header, exposed on the machine mount.
          */
         get: operations["getOAuthJwksMachine"];
         put?: never;
@@ -1777,6 +1846,58 @@ export interface components {
             data: components["schemas"]["IngestRunData"];
             meta: components["schemas"]["Meta"];
         };
+        BoundedRunPauseRequest: {
+            source_key: string;
+            control_instance_id: string;
+            reset_generation: number;
+            reason: string;
+        };
+        BoundedRunResumeRequest: {
+            source_key: string;
+            control_instance_id: string;
+            reset_generation: number;
+        };
+        BoundedLogicalRunUsage: {
+            records: number;
+            source_requests: number;
+            pages: number;
+            bytes_read: number;
+            extraction_calls: number;
+        };
+        BoundedLogicalRunStatus: {
+            logical_run_id: string;
+            source_key: string;
+            control_instance_id: string;
+            entity_key: string | null;
+            status: string;
+            pause_reason: string | null;
+            occurrence_id: string | null;
+            timezone: string | null;
+            /** Format: date-time */
+            starts_at: string | null;
+            /** Format: date-time */
+            drain_starts_at: string | null;
+            /** Format: date-time */
+            cutoff_at: string | null;
+            /** Format: date-time */
+            next_eligible_at: string | null;
+            usage: components["schemas"]["BoundedLogicalRunUsage"];
+            reserved_usage: components["schemas"]["BoundedLogicalRunUsage"];
+            attempt_generation: number;
+            source_window_fingerprint: string;
+            checkpoint_cursor_present: boolean;
+            phase: string | null;
+            /** Format: date-time */
+            checkpointed_at: string | null;
+            retry_backlog: number;
+            /** Format: date-time */
+            retry_oldest_at: string | null;
+            failure_category: string | null;
+        };
+        BoundedLogicalRunStatusEnvelope: {
+            data: components["schemas"]["BoundedLogicalRunStatus"];
+            meta: components["schemas"]["Meta"];
+        };
         Person: {
             person_id: string;
             status: components["schemas"]["PersonStatus"];
@@ -2470,6 +2591,7 @@ export interface components {
         PersonId: string;
         ReviewCaseId: string;
         IngestRunId: string;
+        LogicalRunId: string;
         LockId: string;
         /** @example hpc_2VhJd9uLS2wK8f3P */
         OAuthClientId: string;
@@ -2577,6 +2699,97 @@ export interface operations {
             };
             400: components["responses"]["BadRequest"];
             404: components["responses"]["NotFound"];
+        };
+    };
+    get_bounded_logical_run: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path: {
+                logical_run_id: components["parameters"]["LogicalRunId"];
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Redacted bounded logical-run status */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BoundedLogicalRunStatusEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+        };
+    };
+    pause_bounded_logical_run: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path: {
+                logical_run_id: components["parameters"]["LogicalRunId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BoundedRunPauseRequest"];
+            };
+        };
+        responses: {
+            /** @description Manual pause intent persisted */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BoundedLogicalRunStatusEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
+        };
+    };
+    resume_bounded_logical_run: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path: {
+                logical_run_id: components["parameters"]["LogicalRunId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BoundedRunResumeRequest"];
+            };
+        };
+        responses: {
+            /** @description Manual pause released and recovery publication requested */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BoundedLogicalRunStatusEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
+            409: components["responses"]["Conflict"];
         };
     };
     listPersons: {
@@ -3457,6 +3670,8 @@ export interface operations {
                 headers: {
                     "Cache-Control"?: "no-store";
                     Pragma?: "no-cache";
+                    /** @description RFC 8594 HTTP-date after which this deprecated route may stop responding. */
+                    Sunset?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -3468,6 +3683,8 @@ export interface operations {
                 headers: {
                     "Cache-Control"?: "no-store";
                     Pragma?: "no-cache";
+                    /** @description RFC 8594 HTTP-date after which this deprecated route may stop responding. */
+                    Sunset?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -3479,6 +3696,8 @@ export interface operations {
                 headers: {
                     "Cache-Control"?: "no-store";
                     Pragma?: "no-cache";
+                    /** @description RFC 8594 HTTP-date after which this deprecated route may stop responding. */
+                    Sunset?: string;
                     [name: string]: unknown;
                 };
                 content: {
@@ -3499,6 +3718,8 @@ export interface operations {
             /** @description JSON Web Key Set containing active OAuth signing keys. */
             200: {
                 headers: {
+                    /** @description RFC 8594 HTTP-date after which this deprecated route may stop responding. */
+                    Sunset?: string;
                     [name: string]: unknown;
                 };
                 content: {
