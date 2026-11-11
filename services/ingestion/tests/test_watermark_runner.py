@@ -80,7 +80,12 @@ class FakeNeo4jTx:
         return self
 
     def single(self) -> dict[str, object] | None:
-        return {"ingest_run_id": "run-001", "status": "started", "created": True}
+        return {
+            "ingest_run_id": "run-001",
+            "status": "started",
+            "created": True,
+            "skip_count": 0,
+        }
 
 
 class FakeNeo4jSession:
@@ -90,6 +95,12 @@ class FakeNeo4jSession:
         self.tx = FakeNeo4jTx()
 
     def execute_write(self, fn: object) -> object:
+        from collections.abc import Callable
+
+        assert isinstance(fn, Callable)
+        return fn(self.tx)
+
+    def execute_read(self, fn: object) -> object:
         from collections.abc import Callable
 
         assert isinstance(fn, Callable)

@@ -46,7 +46,12 @@ from src.connectors.chat_helpers import (
 from src.connectors.whatsapp.db import get_engine
 from src.connectors.whatsapp.schema import chats, contacts, messages, orgs, sessions
 from src.exclusion_config import ExclusionFile
-from src.exclusions import build_exclusion_context, filter_extraction
+from src.exclusions import (
+    build_exclusion_context,
+    excluded_person_ordinals,
+    filter_extraction,
+)
+from src.ingest_skips import ConnectorSkip
 from src.ingestion_config import get_ingestion_config
 from src.models import JsonValue
 
@@ -155,7 +160,7 @@ class WhatsAppChatConnector(SourceConnector):
             max_chars=chat_batch_max_chars(),
             max_count=chat_batch_size(),
         ):
-            yield from process_whatsapp_bundles(batch)
+            yield from process_whatsapp_bundles(batch, on_skip=self.record_skip)
 
     def _iter_chat_bundles(
         self,
@@ -167,6 +172,11 @@ class WhatsAppChatConnector(SourceConnector):
             session_row = cast(_SessionRow, session)
             org_name = org_name_by_id.get(str(session_row.org_id), "")
             if org_name not in ORG_TO_ENTITY:
+                self.record_skip(
+                    "org_unmapped",
+                    source_record_id=None,
+                    locator=f"sessions#id={session_row.id},org_id={session_row.org_id}",
+                )
                 continue
 
             tenant = ORG_TO_ENTITY[org_name]
@@ -176,6 +186,11 @@ class WhatsAppChatConnector(SourceConnector):
             for chat in conn.execute(chat_stmt):
                 msgs = self._fetch_messages(conn, chat.id, whatsapp_uid)
                 if not msgs:
+                    self.record_skip(
+                        "empty_content",
+                        source_record_id=None,
+                        locator=f"chats#id={chat.id}",
+                    )
                     continue
                 chat_name = str(chat.name or "")
                 participants = self._fetch_participants(conn, chat.id, whatsapp_uid, msgs)
@@ -276,6 +291,7 @@ def process_whatsapp_bundles(
     *,
     fail_on_extraction_error: bool = False,
     on_extraction_failure: Callable[[_ChatBundle, ExtractionFailure], None] | None = None,
+    on_skip: Callable[[ConnectorSkip], None] | None = None,
 ) -> Iterator[dict[str, JsonValue]]:
     """Run shared LLM extraction and envelope building for chat bundles."""
     try:
@@ -306,6 +322,14 @@ def process_whatsapp_bundles(
     for bundle in bundles:
         extraction = extraction_cache.get((bundle.session_id, bundle.chat_id))
         if extraction is None:
+            if on_skip is not None:
+                on_skip(
+                    ConnectorSkip(
+                        reason="extraction_failed",
+                        source_record_id=None,
+                        locator=f"whatsapp-chat-{bundle.chat_id}",
+                    )
+                )
             if fail_on_extraction_error:
                 raise RuntimeError(f"LLM extraction failed for chat {bundle.chat_id}")
             logger.warning("LLM extraction failed for chat %s", bundle.chat_id)
@@ -317,6 +341,7 @@ def process_whatsapp_bundles(
             company_email_addresses=company_email_addresses,
             internal_person_names=internal_person_names,
             file_exclusions=file_exclusions,
+            on_skip=on_skip,
         )
 
 
@@ -348,6 +373,7 @@ def _build_envelopes(
     company_email_addresses: list[str] | None = None,
     internal_person_names: list[str] | None = None,
     file_exclusions: ExclusionFile | None = None,
+    on_skip: Callable[[ConnectorSkip], None] | None = None,
 ) -> list[dict[str, JsonValue]]:
     from src.connectors.fundbox.builders import build_envelope
 
@@ -361,17 +387,38 @@ def _build_envelopes(
         role = endpoint.get("role") if isinstance(endpoint, dict) else None
         if role == "sender" and isinstance(phone, str):
             company_phones.append(phone)
-    filtered = filter_extraction(
-        extraction,
-        build_exclusion_context(
-            company_mobile_numbers=company_phones,
-            company_email_addresses=company_emails,
-            internal_person_names=internal_names,
-            file_exclusions=file_exclusions or ExclusionFile(),
-        ),
+    exclusion_ctx = build_exclusion_context(
+        company_mobile_numbers=company_phones,
+        company_email_addresses=company_emails,
+        internal_person_names=internal_names,
+        file_exclusions=file_exclusions or ExclusionFile(),
     )
+    filtered = filter_extraction(extraction, exclusion_ctx)
+    scoped_chat_id = (
+        f"{bundle.source_id_scope}-{bundle.chat_id}"
+        if bundle.source_id_scope is not None
+        else bundle.chat_id
+    )
+    chat_key = f"whatsapp-chat-{scoped_chat_id}"
     if filtered is None:
+        if on_skip is not None:
+            on_skip(
+                ConnectorSkip(
+                    reason="person_excluded",
+                    source_record_id=None,
+                    locator=chat_key,
+                )
+            )
         return []
+    if on_skip is not None:
+        for ordinal in excluded_person_ordinals(extraction, exclusion_ctx):
+            on_skip(
+                ConnectorSkip(
+                    reason="person_excluded",
+                    source_record_id=None,
+                    locator=f"{chat_key}#excluded-person-{ordinal}",
+                )
+            )
     extraction = filtered
 
     tx_payload = transactions_payload(extraction)

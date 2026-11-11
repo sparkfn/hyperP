@@ -99,6 +99,7 @@ from src.graph.schema_init import (
 )
 from src.graph.standalone_crm_census_migration import ensure_standalone_crm_census_ready
 from src.graph.standalone_crm_lane_a_migration import ensure_standalone_crm_lane_a_ready
+from src.ingest_skips import SkipLedger, SkipReporter
 from src.ingestion_config import get_ingestion_config
 from src.llm import validate_ingestion_llm_readiness
 from src.models import IngestResult, JsonValue, RecordType, SourceRecordEnvelope
@@ -760,10 +761,12 @@ def finalize_ingest_run(
     *,
     control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
     watermark_end: str | None = None,
+    ledger: SkipLedger | None = None,
 ) -> None:
     """Update the IngestRun with final status and counts."""
 
     def _tx(tx: ManagedTransaction) -> None:
+        counters = ledger.counters() if ledger is not None else {}
         tx.run(
             queries.UPDATE_INGEST_RUN,
             ingest_run_id=ingest_run_id,
@@ -772,6 +775,13 @@ def finalize_ingest_run(
             record_count=record_count,
             rejected_count=rejected_count,
             watermark_end=watermark_end,
+            emitted_count=counters.get("emitted_count"),
+            persisted_count=counters.get("persisted_count"),
+            duplicate_count=counters.get("duplicate_count"),
+            pipeline_skip_count=counters.get("pipeline_skip_count"),
+            connector_skip_count=counters.get("connector_skip_count"),
+            record_error_count=counters.get("record_error_count"),
+            skip_ledger_reconciled=counters.get("skip_ledger_reconciled"),
         )
         if checkpoint_store is not None and status in {"completed", "completed_with_errors"}:
             checkpoint_store.flush(tx, ingest_run_id, status)
@@ -826,15 +836,19 @@ def _process_record(
     )
 
 
-def _record_is_excluded(envelope: SourceRecordEnvelope, context: ExclusionContext) -> bool:
+def _exclusion_reason(envelope: SourceRecordEnvelope, context: ExclusionContext) -> str | None:
     if is_excluded_source_id(envelope.source_record_id, context):
-        return True
+        return "excluded_source_id"
     for identifier in envelope.identifiers:
         if identifier.type == "phone" and is_excluded_phone(identifier.value, context):
-            return True
+            return "excluded_identity"
         if identifier.type == "email" and is_excluded_email(identifier.value, context):
-            return True
-    return False
+            return "excluded_identity"
+    return None
+
+
+def _record_is_excluded(envelope: SourceRecordEnvelope, context: ExclusionContext) -> bool:
+    return _exclusion_reason(envelope, context) is not None
 
 
 def _load_exclusion_context() -> ExclusionContext:
@@ -855,6 +869,7 @@ def _ingest_all_records(
     exclusion_context: ExclusionContext | None = None,
     execution_context: ExecutionContext | None = None,
     control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    ledger: SkipLedger | None = None,
 ) -> tuple[int, int, int]:
     """Process all connector records; the run owner releases connector resources."""
     return _ingest_all_records_open(
@@ -865,6 +880,7 @@ def _ingest_all_records(
         exclusion_context,
         execution_context,
         control_instance_id,
+        ledger=ledger,
     )
 
 
@@ -876,6 +892,7 @@ def _ingest_all_records_open(
     exclusion_context: ExclusionContext | None = None,
     execution_context: ExecutionContext | None = None,
     control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    ledger: SkipLedger | None = None,
 ) -> tuple[int, int, int]:
     """Process every record from the connector. Returns (success, errors, skipped)."""
     success = errors = skipped = 0
@@ -883,6 +900,8 @@ def _ingest_all_records_open(
         exclusion_context if exclusion_context is not None else _load_exclusion_context()
     )
     for raw_record in connector.fetch_records():
+        if ledger is not None:
+            ledger.emitted += 1
         if execution_context is not None:
             processed = success + errors + skipped
             if execution_context.max_rows is not None and processed >= execution_context.max_rows:
@@ -911,15 +930,24 @@ def _ingest_all_records_open(
                 ),
             )
             success += 1
+            if ledger is not None:
+                ledger.persisted += 1
             _report_record_outcome(connector, succeeded=True)
+            if ledger is not None and isinstance(connector, SkipReporter):
+                ledger.add_connector_skips(connector.drain_skips())
             continue
         envelope = SourceRecordEnvelope.model_validate(
             {"source_system": connector.get_source_key(), **raw_record},
         )
-        if _record_is_excluded(envelope, active_exclusion_context):
+        exclusion_reason = _exclusion_reason(envelope, active_exclusion_context)
+        if exclusion_reason is not None:
             skipped += 1
+            if ledger is not None:
+                ledger.add_pipeline_skip(exclusion_reason, envelope)
             logger.info("  %s -> excluded", envelope.source_record_id)
             _report_record_outcome(connector, succeeded=True)
+            if ledger is not None and isinstance(connector, SkipReporter):
+                ledger.add_connector_skips(connector.drain_skips())
             continue
         result = _process_record(
             client,
@@ -930,19 +958,35 @@ def _ingest_all_records_open(
             execution_context,
             control_instance_id,
         )
-        if result.skipped_duplicate:
+        if result.excluded:
             skipped += 1
+            if ledger is not None:
+                ledger.add_pipeline_skip(result.skip_reason or "excluded", envelope)
+        elif result.skipped_duplicate:
+            skipped += 1
+            if ledger is not None:
+                ledger.duplicates += 1
         elif result.errors:
             errors += 1
-        elif result.dropped:
-            skipped += 1
+            if ledger is not None:
+                ledger.record_errors += 1
         else:
             success += 1
+            if ledger is not None:
+                ledger.persisted += 1
         _report_record_outcome(connector, succeeded=not bool(result.errors))
-        if result.dropped:
+        if ledger is not None and isinstance(connector, SkipReporter):
+            ledger.add_connector_skips(connector.drain_skips())
+        if result.parked:
             logger.info(
-                "  %s -> dropped (no match — match-only source)",
+                "  %s -> parked (unlinked, awaiting re-evaluation)",
                 result.source_record_id,
+            )
+        elif result.excluded:
+            logger.info(
+                "  %s -> excluded (%s)",
+                result.source_record_id,
+                result.skip_reason or "unknown",
             )
         elif result.person_id is None:
             logger.info(
@@ -960,6 +1004,8 @@ def _ingest_all_records_open(
                 result.candidate_count,
                 " (DUPLICATE)" if result.skipped_duplicate else "",
             )
+    if ledger is not None and isinstance(connector, SkipReporter):
+        ledger.add_connector_skips(connector.drain_skips())
     return success, errors, skipped
 
 
@@ -1101,6 +1147,8 @@ def run_ingestion(
             "reused" if existing_ingest_run_id is not None or not worker_run_created else "created",
         )
 
+        ledger = SkipLedger(client, ingest_run_id, source_key, control_instance_id)
+
         if existing_status in {"completed", "completed_with_errors", "failed"}:
             return {
                 "ingest_run_id": ingest_run_id,
@@ -1191,6 +1239,7 @@ def run_ingestion(
                 exclusion_context,
                 execution_context,
                 control_instance_id,
+                ledger=ledger,
             )
             if isinstance(connector, _ConnectorErrorReporter):
                 errors += connector.connector_error_count()
@@ -1206,6 +1255,7 @@ def run_ingestion(
                     logger.info("Proposed %d vehicle matches for pending sales", proposed)
             _finalize_connector_progress(connector, error_count=errors)
         except Exception as exc:
+            ledger.flush_quietly()
             checkpoint: dict[str, JsonValue] = {
                 "dump_path": dump_path,
                 "entity_key": entity_key,
@@ -1246,6 +1296,7 @@ def run_ingestion(
                 connector.latest_effective_updated_at,
             )
         if execution_context is None:
+            ledger.reconcile()
             finalize_ingest_run(
                 client,
                 ingest_run_id,
@@ -1254,7 +1305,10 @@ def run_ingestion(
                 errors,
                 checkpoint_store,
                 control_instance_id=control_instance_id,
+                ledger=ledger,
             )
+        else:
+            ledger.flush_quietly()
         http_request_count = (
             connector.request_count if isinstance(connector, _HttpRequestCounter) else 0
         )

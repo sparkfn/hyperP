@@ -21,6 +21,7 @@ from src.connectors.whatsapp.connector import (
     process_whatsapp_bundles,
 )
 from src.incremental_connector import IncrementalPage
+from src.ingest_skips import SkipRecorder
 from src.models import JsonValue
 
 if TYPE_CHECKING:
@@ -29,7 +30,7 @@ if TYPE_CHECKING:
 logger = logging.getLogger(__name__)
 
 
-class WhatsAdminIncrementalConnector:
+class WhatsAdminIncrementalConnector(SkipRecorder):
     """IncrementalConnector for WhatsAdmin API chat ingestion."""
 
     def __init__(
@@ -145,6 +146,7 @@ class WhatsAdminIncrementalConnector:
                 for message in chat.messages
             ]
             if not messages:
+                self.record_skip("empty_content", locator=f"chats#chat_id={chat.chat_id}")
                 continue
             participants = [
                 _Participant(item.jid, item.phone, item.name, item.role)

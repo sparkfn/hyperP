@@ -65,11 +65,12 @@ from src.connectors.whatsapp.connector import (
     _phone_from_jid,
 )
 from src.connectors.whatsapp.connector import (
-    _build_envelope as build_whatsapp_envelope,
+    _build_envelopes as build_whatsapp_envelopes,
 )
 from src.connectors.whatsapp.connector import (
     _ChatBundle as WhatsAppChatBundle,
 )
+from src.ingest_skips import ConnectorSkip
 from src.loyalty_points import normalize_loyalty_field
 from src.models import JsonValue
 
@@ -304,11 +305,21 @@ class FundboxSalesDumpConnector(SourceConnector):
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
         builder = FundboxSalesConnector()
-        eligible_orders = (
-            row
-            for row in _table_rows(self._dump_path, "orders", FUNDBOX_TABLES)
-            if str(row.status or "") in FUNDBOX_ORDER_STATUSES
-        )
+
+        def _filter_orders(rows: Iterator[DumpRow]) -> Iterator[DumpRow]:
+            for row in rows:
+                if str(row.status or "") not in FUNDBOX_ORDER_STATUSES:
+                    self.record_skip(
+                        "order_status_excluded",
+                        source_record_id=(
+                            f"fundbox-order-{row.id}" if row.id is not None else None
+                        ),
+                        locator=f"orders#id={row.id}",
+                    )
+                    continue
+                yield row
+
+        eligible_orders = _filter_orders(_table_rows(self._dump_path, "orders", FUNDBOX_TABLES))
         for order_batch in _dump_row_batches(eligible_orders):
             order_ids = {_row_int(row, "id") for row in order_batch}
             user_ids = {_row_int(row, "user_id") for row in order_batch}
@@ -385,13 +396,33 @@ class WhatsAppDumpConnector(SourceConnector):
             str(row.id): str(row.name or "")
             for row in _table_rows(self._dump_path, "orgs", WHATSAPP_TABLES)
         }
-        sessions = (
-            row
-            for row in _table_rows(self._dump_path, "sessions", WHATSAPP_TABLES)
-            if str(row.status or "") == "ready"
-            and str(row.org_id or "") in org_name_by_id
-            and row.whatsapp_user_id
-        )
+
+        def _filter_sessions(rows: Iterator[DumpRow]) -> Iterator[DumpRow]:
+            for row in rows:
+                if str(row.status or "") != "ready":
+                    self.record_skip(
+                        "session_status_excluded",
+                        source_record_id=None,
+                        locator=f"sessions#id={row.id}",
+                    )
+                    continue
+                if str(row.org_id or "") not in org_name_by_id:
+                    self.record_skip(
+                        "org_unmapped",
+                        source_record_id=None,
+                        locator=f"sessions#id={row.id}",
+                    )
+                    continue
+                if not row.whatsapp_user_id:
+                    self.record_skip(
+                        "missing_whatsapp_user_id",
+                        source_record_id=None,
+                        locator=f"sessions#id={row.id}",
+                    )
+                    continue
+                yield row
+
+        sessions = _filter_sessions(_table_rows(self._dump_path, "sessions", WHATSAPP_TABLES))
         for session_batch in _dump_row_batches(sessions):
             sessions_by_user: dict[str, list[DumpRow]] = {}
             for session in session_batch:
@@ -442,6 +473,11 @@ class WhatsAppDumpConnector(SourceConnector):
             chat_id = str(chat.id or "")
             messages = [row.as_object_dict() for row in messages_by_chat.get(chat_id, [])]
             if not messages:
+                self.record_skip(
+                    "empty_content",
+                    source_record_id=None,
+                    locator=f"chats#id={chat_id}",
+                )
                 continue
             chat_name = str(chat.name or "")
             participants = _whatsapp_participants(
@@ -454,6 +490,11 @@ class WhatsAppDumpConnector(SourceConnector):
                 org_name = org_name_by_id.get(str(session.org_id or ""), "")
                 tenant = ORG_TO_ENTITY.get(org_name)
                 if tenant is None:
+                    self.record_skip(
+                        "org_unmapped",
+                        source_record_id=None,
+                        locator=f"sessions#id={session.id}",
+                    )
                     continue
                 bundles.append(
                     WhatsAppChatBundle(
@@ -469,7 +510,7 @@ class WhatsAppDumpConnector(SourceConnector):
                         session_phone=_phone_from_jid(whatsapp_uid),
                     )
                 )
-        yield from _extract_whatsapp_dump_bundles(bundles)
+        yield from _extract_whatsapp_dump_bundles(bundles, on_skip=self.record_skip)
 
 
 class BitrixDumpConnector(SourceConnector):
@@ -545,10 +586,20 @@ class BitrixDumpConnector(SourceConnector):
             deal_id = _row_int(chat, "deal_id")
             deal = deals.get(deal_id)
             if deal is None:
+                self.record_skip(
+                    "orphan_or_deleted_parent",
+                    source_record_id=None,
+                    locator=f"chats#id={_row_int(chat, 'id')},deal_id={deal_id}",
+                )
                 continue
             category_name = categories.get(_int_value(deal.get("category_id")), "")
             entity = CATEGORY_TO_ENTITY.get(category_name)
             if entity is None:
+                self.record_skip(
+                    "crm_category_missing",
+                    source_record_id=None,
+                    locator=f"chats#id={_row_int(chat, 'id')},category={category_name}",
+                )
                 continue
             chat_id = _row_int(chat, "id")
             bundles.append(
@@ -576,13 +627,27 @@ class BitrixDumpConnector(SourceConnector):
             chat_batch_size(),
             run_extraction_batch,
         ):
-            if extraction is not None:
-                envelope = self._builder._build_envelope(
-                    bundle=bundles[bundle_index],
-                    extraction=extraction,
+            bundle = bundles[bundle_index]
+            if extraction is None:
+                self.record_skip(
+                    "extraction_failed",
+                    source_record_id=None,
+                    locator=f"bitrix-chat-{bundle.chat_id}",
                 )
-                if envelope is not None:
-                    yield envelope
+                continue
+            envelopes = self._builder._build_envelopes(
+                bundle=bundle,
+                extraction=extraction,
+            )
+            if envelopes:
+                yield envelopes[0]
+                chat_key = f"bitrix-chat-{bundle.chat_id}"
+                for i in range(2, len(envelopes) + 1):
+                    self.record_skip(
+                        "dump_secondary_person_dropped",
+                        source_record_id=None,
+                        locator=f"{chat_key}#person-{i}",
+                    )
 
 
 class EkoDumpConnector(SourceConnector):
@@ -595,10 +660,23 @@ class EkoDumpConnector(SourceConnector):
         return "eko_phppos"
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
-        customers = (
-            row
-            for row in _table_rows(self._dump_path, "phppos_customers", PHPPOS_TABLES)
-            if _int_value(row.deleted) == 0
+        def _filter_customers(rows: Iterator[DumpRow]) -> Iterator[DumpRow]:
+            for row in rows:
+                if _int_value(row.deleted) != 0:
+                    self.record_skip(
+                        "deleted_customer",
+                        source_record_id=(
+                            f"eko_phppos-customer-{row.person_id}"
+                            if row.person_id is not None
+                            else None
+                        ),
+                        locator=f"phppos_customers#id={row.id}",
+                    )
+                    continue
+                yield row
+
+        customers = _filter_customers(
+            _table_rows(self._dump_path, "phppos_customers", PHPPOS_TABLES)
         )
         for customer_batch in _dump_row_batches(customers):
             person_ids = {_row_int(row, "person_id") for row in customer_batch}
@@ -616,6 +694,12 @@ class EkoDumpConnector(SourceConnector):
                 person = people.get(_row_int(customer, "person_id"))
                 if person is not None:
                     yield EkoConnector._build_one(_join_eko_row(person, customer))
+                else:
+                    self.record_skip(
+                        "missing_person_row",
+                        source_record_id=None,
+                        locator=f"phppos_customers#id={customer.id},person_id={customer.person_id}",
+                    )
 
 
 class SpeedZoneDumpConnector(SourceConnector):
@@ -628,14 +712,27 @@ class SpeedZoneDumpConnector(SourceConnector):
         return "speedzone_phppos"
 
     def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
-        customers = (
-            row
-            for row in _table_rows(
+        def _filter_customers(rows: Iterator[DumpRow]) -> Iterator[DumpRow]:
+            for row in rows:
+                if _int_value(row.deleted) != 0:
+                    self.record_skip(
+                        "deleted_customer",
+                        source_record_id=(
+                            f"speedzone_phppos-customer-{row.person_id}"
+                            if row.person_id is not None
+                            else None
+                        ),
+                        locator=f"phppos_customers#id={row.id}",
+                    )
+                    continue
+                yield row
+
+        customers = _filter_customers(
+            _table_rows(
                 self._dump_path,
                 "phppos_customers",
                 SPEEDZONE_PHPPOS_TABLES,
             )
-            if _int_value(row.deleted) == 0
         )
         for customer_batch in _dump_row_batches(customers):
             person_ids = {_row_int(row, "person_id") for row in customer_batch}
@@ -654,6 +751,12 @@ class SpeedZoneDumpConnector(SourceConnector):
                 if person is not None:
                     yield SpeedZoneConnector._build_envelope_with_customer(
                         _join_speedzone_row(person, customer)
+                    )
+                else:
+                    self.record_skip(
+                        "missing_person_row",
+                        source_record_id=None,
+                        locator=f"phppos_customers#id={customer.id},person_id={customer.person_id}",
                     )
 
 
@@ -714,6 +817,7 @@ def _contact_is_relevant(row: DumpRow, jids_by_user: Mapping[str, set[str]]) -> 
 
 def _extract_whatsapp_dump_bundles(
     bundles: list[WhatsAppChatBundle],
+    on_skip: Callable[[ConnectorSkip], None] | None = None,
 ) -> Iterator[dict[str, JsonValue]]:
     for bundle_index, extraction in _run_batches(
         [bundle.msg_text for bundle in bundles],
@@ -721,14 +825,33 @@ def _extract_whatsapp_dump_bundles(
         chat_batch_size(),
         run_extraction_batch,
     ):
+        bundle = bundles[bundle_index]
         if extraction is None:
+            if on_skip is not None:
+                on_skip(
+                    ConnectorSkip(
+                        reason="extraction_failed",
+                        source_record_id=None,
+                        locator=f"whatsapp-chat-{bundle.chat_id}",
+                    )
+                )
             continue
-        envelope = build_whatsapp_envelope(
-            bundle=bundles[bundle_index],
+        envelopes = build_whatsapp_envelopes(
+            bundle=bundle,
             extraction=extraction,
         )
-        if envelope is not None:
-            yield envelope
+        if envelopes:
+            yield envelopes[0]
+            chat_key = f"whatsapp-chat-{bundle.chat_id}"
+            if on_skip is not None:
+                for i in range(2, len(envelopes) + 1):
+                    on_skip(
+                        ConnectorSkip(
+                            reason="dump_secondary_person_dropped",
+                            source_record_id=None,
+                            locator=f"{chat_key}#person-{i}",
+                        )
+                    )
 
 
 def _row_int(row: DumpRow, key: str) -> int:

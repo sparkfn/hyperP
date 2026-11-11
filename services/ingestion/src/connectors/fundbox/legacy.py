@@ -39,6 +39,13 @@ class FundboxLegacyConnector(FundboxConnectorBase):
         for chunk in self._chunked(self._stream(conn, primary_stmt), self._resolved_chunk_size()):
             user_ids = [row.user_id for row in chunk if row.user_id is not None]
             excluded_user_ids = self._fetch_excluded_user_ids(conn, user_ids)
+            for row in chunk:
+                if row.user_id is not None and row.user_id in excluded_user_ids:
+                    self.record_skip(
+                        "internal_user",
+                        source_record_id=f"fundbox-legacy-{row.id}",
+                        locator=f"log_legacy_profiles#id={row.id}",
+                    )
             eligible_chunk = [
                 row for row in chunk if row.user_id is None or row.user_id not in excluded_user_ids
             ]

@@ -358,6 +358,13 @@ SET ir.status = $status,
     ir.finished_at = datetime(),
     ir.record_count = $record_count,
     ir.rejected_count = $rejected_count,
+    ir.emitted_count = coalesce($emitted_count, ir.emitted_count),
+    ir.persisted_count = coalesce($persisted_count, ir.persisted_count),
+    ir.duplicate_count = coalesce($duplicate_count, ir.duplicate_count),
+    ir.pipeline_skip_count = coalesce($pipeline_skip_count, ir.pipeline_skip_count),
+    ir.connector_skip_count = coalesce($connector_skip_count, ir.connector_skip_count),
+    ir.record_error_count = coalesce($record_error_count, ir.record_error_count),
+    ir.skip_ledger_reconciled = coalesce($skip_ledger_reconciled, ir.skip_ledger_reconciled),
     ir.watermark_end = $watermark_end
 """
 

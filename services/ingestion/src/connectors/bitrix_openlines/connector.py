@@ -226,6 +226,11 @@ class BitrixOpenLinesConnector(SourceConnector):
                         continue
                     entity_key = self._included_crm_deal_entity_key(deal, included_categories)
                     if entity_key is None:
+                        self.record_skip(
+                            "crm_category_missing",
+                            source_record_id=deal_source_record_id,
+                            locator=f"crm_deals#id={deal.id}",
+                        )
                         continue
                     self._emitted_crm_deal_ids.add(deal_source_record_id)
                     yield build_crm_deal_envelope(
@@ -338,10 +343,20 @@ class BitrixOpenLinesConnector(SourceConnector):
         self._counters.chats_scanned += 1
         if self._no_config_selectable:
             self._counters.chats_skipped_by_config += 1
+            self.record_skip(
+                "crm_category_missing",
+                source_record_id=None,
+                locator=f"openlines_chats#id={reference.chat_id}",
+            )
             return None
         dialog, needs_caching = self._resolve_dialog(reference)
         if dialog.config_id not in line_names:
             self._counters.chats_skipped_by_config += 1
+            self.record_skip(
+                "crm_category_missing",
+                source_record_id=None,
+                locator=f"openlines_chats#id={reference.chat_id},config_id={dialog.config_id}",
+            )
             logger.warning(
                 "Skipping Bitrix Open Lines chat %s: config %s is inactive or unavailable",
                 reference.chat_id,
@@ -353,6 +368,11 @@ class BitrixOpenLinesConnector(SourceConnector):
         entity = mapped_entity(dialog.config_id, channel_type, self._config)
         if entity is None:
             self._counters.chats_skipped_by_config += 1
+            self.record_skip(
+                "crm_category_missing",
+                source_record_id=None,
+                locator=f"openlines_chats#id={reference.chat_id},config_id={dialog.config_id}",
+            )
             logger.warning(
                 "Skipping Bitrix Open Lines chat %s: config %s is not selected or mapped",
                 reference.chat_id,
@@ -362,6 +382,11 @@ class BitrixOpenLinesConnector(SourceConnector):
             return None
         messages = self._messages_for(reference)
         if not messages:
+            self.record_skip(
+                "empty_content",
+                source_record_id=None,
+                locator=f"openlines_chats#id={reference.chat_id}",
+            )
             return None
         last_message_at = max(message.date for message in messages)
         effective_changed_at = (

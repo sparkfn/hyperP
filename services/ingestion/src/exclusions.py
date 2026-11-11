@@ -9,6 +9,7 @@ from src.connectors.chat_helpers import (
     ExtractedPossiblePerson,
     ExtractedStrongIdentifier,
     ExtractionResult,
+    possible_persons_from_extraction,
 )
 from src.exclusion_config import ExclusionFile, VehicleIdentifierExclusion
 from src.normalizers.email import normalize_email
@@ -245,3 +246,12 @@ def filter_extraction(
     filtered["possible_persons"] = possible_persons
     filtered["strong_identifiers"] = strong_identifiers
     return filtered
+
+
+def excluded_person_ordinals(extraction: ExtractionResult, context: ExclusionContext) -> list[int]:
+    """1-based positions, in possible-person order, of the people ``context`` excludes."""
+    return [
+        index
+        for index, person in enumerate(possible_persons_from_extraction(extraction), start=1)
+        if is_excluded_possible_person(person, context)
+    ]

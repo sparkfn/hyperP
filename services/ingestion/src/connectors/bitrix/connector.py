@@ -16,7 +16,7 @@ The category links the chat to a known tenant (EkoSG, Speedzone, etc.).
 from __future__ import annotations
 
 import logging
-from collections.abc import Iterator
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Protocol, cast
@@ -57,7 +57,12 @@ from src.connectors.chat_helpers import (
     weak_identifiers_payload,
 )
 from src.exclusion_config import ExclusionFile
-from src.exclusions import build_exclusion_context, filter_extraction
+from src.exclusions import (
+    build_exclusion_context,
+    excluded_person_ordinals,
+    filter_extraction,
+)
+from src.ingest_skips import ConnectorSkip
 from src.ingestion_config import get_ingestion_config
 from src.models import JsonValue
 
@@ -174,6 +179,11 @@ class BitrixChatConnector(SourceConnector):
         category_name = getattr(category, "name", "") or ""
         entity = CATEGORY_TO_ENTITY.get(category_name)
         if entity is None:
+            self.record_skip(
+                "crm_category_missing",
+                source_record_id=None,
+                locator=f"chats#id={chat_row.id},category={category_name}",
+            )
             return None
         chat_id = int(chat_row.id)
         return _ChatBundle(
@@ -214,6 +224,11 @@ class BitrixChatConnector(SourceConnector):
             results = run_extraction_batch(texts[start:end])
             for bundle, extraction in zip(batch, results, strict=True):
                 if extraction is None:
+                    self.record_skip(
+                        "extraction_failed",
+                        source_record_id=None,
+                        locator=f"bitrix-chat-{bundle.chat_id}",
+                    )
                     logger.warning("LLM extraction failed for chat %s", bundle.chat_id)
                     continue
                 yield from self._build_envelopes(
@@ -223,6 +238,7 @@ class BitrixChatConnector(SourceConnector):
                     company_email_addresses=company_email_addresses,
                     internal_person_names=internal_person_names,
                     file_exclusions=file_exclusions,
+                    on_skip=self.record_skip,
                 )
 
     def _load_deal(self, conn: Connection, deal_id: int | None) -> dict[str, object] | None:
@@ -331,6 +347,7 @@ class BitrixChatConnector(SourceConnector):
         company_email_addresses: list[str] | None = None,
         internal_person_names: list[str] | None = None,
         file_exclusions: ExclusionFile | None = None,
+        on_skip: Callable[[ConnectorSkip], None] | None = None,
     ) -> dict[str, JsonValue] | None:
         envelopes = self._build_envelopes(
             bundle=bundle,
@@ -339,6 +356,7 @@ class BitrixChatConnector(SourceConnector):
             company_email_addresses=company_email_addresses,
             internal_person_names=internal_person_names,
             file_exclusions=file_exclusions,
+            on_skip=on_skip,
         )
         return envelopes[0] if envelopes else None
 
@@ -354,6 +372,7 @@ class BitrixChatConnector(SourceConnector):
         source_record_prefix: str = "bitrix-chat",
         platform: str = "bitrix",
         extra_raw_payload: dict[str, JsonValue] | None = None,
+        on_skip: Callable[[ConnectorSkip], None] | None = None,
     ) -> list[dict[str, JsonValue]]:
         from src.connectors.fundbox.builders import build_envelope
 
@@ -367,23 +386,38 @@ class BitrixChatConnector(SourceConnector):
             source_ids=list(base_exclusions.source_ids),
             vehicle_identifiers=list(base_exclusions.vehicle_identifiers),
         )
+        exclusion_ctx = build_exclusion_context(
+            company_mobile_numbers=[] if company_mobile_numbers is None else company_mobile_numbers,
+            company_email_addresses=[]
+            if company_email_addresses is None
+            else company_email_addresses,
+            internal_person_names=[] if internal_person_names is None else internal_person_names,
+            file_exclusions=bundle_exclusions,
+        )
         filtered = filter_extraction(
             extraction,
-            build_exclusion_context(
-                company_mobile_numbers=[]
-                if company_mobile_numbers is None
-                else company_mobile_numbers,
-                company_email_addresses=[]
-                if company_email_addresses is None
-                else company_email_addresses,
-                internal_person_names=[]
-                if internal_person_names is None
-                else internal_person_names,
-                file_exclusions=bundle_exclusions,
-            ),
+            exclusion_ctx,
         )
+        chat_key = f"{source_record_prefix}-{bundle.chat_id}"
         if filtered is None:
+            if on_skip is not None:
+                on_skip(
+                    ConnectorSkip(
+                        reason="person_excluded",
+                        source_record_id=None,
+                        locator=chat_key,
+                    )
+                )
             return []
+        if on_skip is not None:
+            for ordinal in excluded_person_ordinals(extraction, exclusion_ctx):
+                on_skip(
+                    ConnectorSkip(
+                        reason="person_excluded",
+                        source_record_id=None,
+                        locator=f"{chat_key}#excluded-person-{ordinal}",
+                    )
+                )
         extraction = filtered
 
         chat_id = str(bundle.chat_id)

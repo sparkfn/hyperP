@@ -23,6 +23,7 @@ from src.connectors.bitrix_openlines.connector import build_crm_deal_envelope
 from src.connectors.bitrix_openlines.models import CrmContact, CrmDeal
 from src.graph.bitrix_deal_scope import CurrentDealScope
 from src.graph.client import Neo4jClient
+from src.graph.queries.ingest_skips import WRITE_INGEST_SKIPS
 from src.models import RecordType, SourceRecordEnvelope
 from src.resumable import CheckpointDescriptor
 
@@ -144,9 +145,20 @@ class _Pipeline:
 T = TypeVar("T")
 
 
+class _RecordingTx:
+    def __init__(self) -> None:
+        self.runs: list[tuple[str, dict[str, object]]] = []
+
+    def run(self, query: str, **kwargs: object) -> None:
+        self.runs.append((query, kwargs))
+
+
 class _WriteThroughGraph:
+    def __init__(self) -> None:
+        self.tx = _RecordingTx()
+
     def execute_write(self, work: Callable[[ManagedTransaction], T]) -> T:
-        return work(cast(ManagedTransaction, object()))
+        return work(cast(ManagedTransaction, self.tx))
 
 
 @dataclass
@@ -215,6 +227,7 @@ def test_known_owner_refresh_serializes_out_of_scope_observed_at(
         raw_payload={"ID": "7", "CATEGORY_ID": "99", "STAGE_ID": "C99:NEW"},
     )
     client = _OutOfScopeClient(deal)
+    graph = _WriteThroughGraph()
     scope_recorder = Mock(return_value={})
     terminal_recorder = Mock()
 
@@ -226,7 +239,7 @@ def test_known_owner_refresh_serializes_out_of_scope_observed_at(
     context = _context()
     summary = refresh_known_owner_set(
         client,
-        cast(Neo4jClient, _WriteThroughGraph()),
+        cast(Neo4jClient, graph),
         membership=KnownOwnerMembershipSet(
             generation_id="generation-1",
             membership_set_id="owners-1",
@@ -238,6 +251,17 @@ def test_known_owner_refresh_serializes_out_of_scope_observed_at(
         entity_by_category_id={"2": "eko"},
         source_instance_id=None,
     )
+
+    [(skip_query, skip_params)] = graph.tx.runs
+    assert skip_query == WRITE_INGEST_SKIPS
+    assert skip_params["control_instance_id"] == context.fence_context.control_instance_id
+    [skip] = cast(list[dict[str, object]], skip_params["rows"])
+    assert (skip["stage"], skip["reason"], skip["source_record_id"]) == (
+        "pipeline",
+        "excluded_out_of_scope",
+        "bitrix-crm-deal-7",
+    )
+    assert skip["ingest_run_id"] == context.fence_context.ingest_run_id
 
     scope_recorder.assert_called_once()
     scope_call = scope_recorder.call_args
@@ -256,7 +280,8 @@ def test_known_owner_refresh_serializes_out_of_scope_observed_at(
     assert envelope.observed_at == expected_observed_at
     assert envelope.source_record_id == "bitrix-crm-deal-7"
     assert envelope.record_type == RecordType.CRM_DEAL
-    assert result.dropped is True
+    assert result.excluded is True
+    assert result.skip_reason == "excluded_out_of_scope"
     assert terminal_call.kwargs["context"] == context
     assert terminal_call.kwargs["disposition"] == "excluded_out_of_scope"
     assert terminal_call.kwargs["scope_state"] == "out_of_scope"

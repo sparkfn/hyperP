@@ -1,10 +1,16 @@
 from __future__ import annotations
 
-from src.connectors.chat_helpers import ExtractedPerson, ExtractedTransaction, ExtractionResult
+from src.connectors.chat_helpers import (
+    ExtractedPerson,
+    ExtractedPossiblePerson,
+    ExtractedTransaction,
+    ExtractionResult,
+)
 from src.exclusion_config import ExclusionFile
 from src.exclusions import (
     ExclusionContext,
     build_exclusion_context,
+    excluded_person_ordinals,
     filter_extraction,
     is_excluded_email,
     is_excluded_name,
@@ -196,3 +202,46 @@ def test_vehicle_exclusion_requires_same_product_and_identifier() -> None:
 
     assert not is_excluded_vehicle_observation(different_serial, context)
     assert not is_excluded_vehicle_observation(different_product, context)
+
+
+def test_excluded_person_ordinals_matches_excluded_phone_and_possible_persons() -> None:
+    context = ExclusionContext(phones=frozenset({"+6581111111"}))
+    extraction: ExtractionResult = {
+        "confidence": 0.9,
+        "summary": "test",
+        "persons": [],
+        "possible_persons": [
+            ExtractedPossiblePerson(name="Person One", phone="+6581111111"),
+            ExtractedPossiblePerson(name="Person Two", phone="+6592222222"),
+            ExtractedPossiblePerson(name="Person Three", phone="+6581111111"),
+        ],
+        "transactions": [],
+        "chat_members": [],
+        "inquiries": [],
+        "strong_identifiers": [],
+        "weak_identifiers": [],
+        "customer_sentiment": None,
+    }
+    ordinals = excluded_person_ordinals(extraction, context)
+    assert ordinals == [1, 3]
+
+
+def test_excluded_person_ordinals_works_with_legacy_persons_only() -> None:
+    context = ExclusionContext(phones=frozenset({"+6581111111"}))
+    extraction: ExtractionResult = {
+        "confidence": 0.9,
+        "summary": "legacy test",
+        "persons": [
+            ExtractedPerson(name="Allowed Person", phone="+6599999999"),
+            ExtractedPerson(name="Excluded Person", phone="+6581111111"),
+        ],
+        "possible_persons": [],
+        "transactions": [],
+        "chat_members": [],
+        "inquiries": [],
+        "strong_identifiers": [],
+        "weak_identifiers": [],
+        "customer_sentiment": None,
+    }
+    ordinals = excluded_person_ordinals(extraction, context)
+    assert ordinals == [2]
