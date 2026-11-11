@@ -197,8 +197,10 @@ machine clients.
   - `nric`: trim surrounding whitespace, remove leading junk `x`/`X` markers,
     and uppercase; preserve a trailing `X`, which may be a check letter. No
     checksum validation is implied.
-  - `phone`: normalized E.164, with Singapore as the default region for local
-    numbers.
+  - `phone`: normalized E.164. Ingestion prefers the source record's region
+    hint before falling back to Singapore (`SG`) for local numbers; a caller
+    lacking the relevant region must not treat a local-number miss as an
+    authoritative negative.
   - `email`: trim and lowercase; Gmail/Googlemail local-part dots and `+tags`
     are removed and the domain is folded to `gmail.com`.
   - Other supported machine types use their canonical stored value;

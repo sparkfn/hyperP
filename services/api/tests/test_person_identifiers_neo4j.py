@@ -24,6 +24,7 @@ from src.graph.queries.persons import (
     GET_PERSON_IDENTIFIERS,
 )
 from src.repositories.neo4j._utils import record_to_dict
+from src.types import Person
 
 
 @dataclass(frozen=True)
@@ -313,6 +314,8 @@ def test_find_person_by_identifier_matches_exact_effective_active_links(
     merged_person_id = f"person-merged-{run_id}"
     wrong_type_person_id = f"person-wrong-type-{run_id}"
     wrong_value_person_id = f"person-wrong-value-{run_id}"
+    newer_pk_1 = f"newer-sr-1-{run_id}"
+    newer_pk_2 = f"newer-sr-2-{run_id}"
 
     with neo4j_driver.driver.session() as session:
         session.run(
@@ -359,7 +362,28 @@ def test_find_person_by_identifier_matches_exact_effective_active_links(
               updated_at: datetime('2026-08-20T00:02:00Z'),
               _person_identifiers_test_run: $test_run_id
             })
-            CREATE (newer)-[:IDENTIFIED_BY {is_active: true}]->(target)
+            CREATE (newer_sr1:SourceRecord {
+              source_record_pk: $newer_pk_1,
+              lifecycle_status: 'active',
+              record_type: 'identity',
+              link_status: 'linked',
+              _person_identifiers_test_run: $test_run_id
+            })
+            CREATE (newer_sr2:SourceRecord {
+              source_record_pk: $newer_pk_2,
+              lifecycle_status: 'active',
+              record_type: 'identity',
+              link_status: 'linked',
+              _person_identifiers_test_run: $test_run_id
+            })
+            CREATE (newer)-[:IDENTIFIED_BY {
+              is_active: true, source_record_pk: $newer_pk_1
+            }]->(target)
+            CREATE (newer)-[:IDENTIFIED_BY {
+              is_active: true, source_record_pk: $newer_pk_2
+            }]->(target)
+            CREATE (newer_sr1)-[:LINKED_TO {is_active: true}]->(newer)
+            CREATE (newer_sr2)-[:LINKED_TO {is_active: true}]->(newer)
             CREATE (older)-[:IDENTIFIED_BY]->(target)
             CREATE (inactive)-[:IDENTIFIED_BY {is_active: false}]->(target)
             CREATE (merged)-[:IDENTIFIED_BY {is_active: true}]->(target)
@@ -375,22 +399,28 @@ def test_find_person_by_identifier_matches_exact_effective_active_links(
             merged_person_id=merged_person_id,
             wrong_type_person_id=wrong_type_person_id,
             wrong_value_person_id=wrong_value_person_id,
+            newer_pk_1=newer_pk_1,
+            newer_pk_2=newer_pk_2,
         ).consume()
 
-        def person_ids(identifier_type: str, value: str) -> list[str]:
+        def find_persons(identifier_type: str, value: str) -> list[Person]:
             result = session.run(
                 FIND_PERSON_BY_IDENTIFIER, identifier_type=identifier_type, value=value
             )
             return [
-                map_person(record_to_dict(record.keys(), list(record.values()))).person_id
+                map_person(record_to_dict(record.keys(), list(record.values())))
                 for record in result
             ]
 
-        target_ids = person_ids("nric", target_value)
-        missing_ids = person_ids("nric", f"absent-{run_id}")
-        wrong_type_ids = person_ids("phone", target_value)
-        wrong_value_ids = person_ids("nric", wrong_value)
+        target_persons = find_persons("nric", target_value)
+        target_ids = [person.person_id for person in target_persons]
+        missing_ids = [person.person_id for person in find_persons("nric", f"absent-{run_id}")]
+        wrong_type_ids = [person.person_id for person in find_persons("phone", target_value)]
+        wrong_value_ids = [person.person_id for person in find_persons("nric", wrong_value)]
 
+    newer_person, older_person = target_persons
+    assert newer_person.source_record_count == 2
+    assert older_person.source_record_count == 0
     assert target_ids == [newer_person_id, older_person_id]
     assert missing_ids == []
     assert wrong_type_ids == [wrong_type_person_id]

@@ -36,8 +36,10 @@ _MACHINE_PERSON_SEARCH_DESCRIPTION = (
     "`identifier_type` values: `phone`, `email`, `nric`, `external_customer_id`, "
     "`membership_id`, `crm_contact_id`, `loyalty_id`, `custom`. Matching compares the "
     "canonical normalized value stored by ingestion, so callers must send the normalized "
-    "value. Results are unpaginated, ordered by `updated_at` descending, and exclude only "
-    "Persons with status `merged`."
+    "value. Exact identifier search results are unpaginated, ordered by `updated_at` "
+    "descending, and exclude only Persons with status `merged`. A `q`-only request uses "
+    "the existing paginated fuzzy search (`cursor`/`limit`, `meta.next_cursor`), and its "
+    "empty result is not an authoritative identifier negative."
 )
 
 

@@ -13,7 +13,7 @@ WHERE coalesce(link.is_active, true) = true
   AND (sr.history_family IS NULL OR sr.history_family = 'activity')
   AND (sr.lifecycle_status = 'active'
     OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
-WITH p, addr, count(sr) AS source_record_count
+WITH p, addr, count(DISTINCT sr) AS source_record_count
 CALL {
   WITH p
   OPTIONAL MATCH (p)-[p_identifier:IDENTIFIED_BY]->(:Identifier)

@@ -1521,12 +1521,17 @@ paths:
         and `custom`. Matching compares the canonical normalized value stored by
         ingestion, so callers must send the normalized value.
 
-        A successful request returns every non-merged Person linked to the
-        matching Identifier through an effective-active link (including legacy
-        links with no `is_active` property), ordered by `updated_at` descending
-        and unpaginated. Because merged Persons and inactive links are excluded,
-        only a complete, nonblank, correctly normalized request makes an empty
-        `data` array authoritative. HyperP currently implements no
+        For exact identifier searches, a successful request returns every
+        non-merged Person linked to the matching Identifier through an
+        effective-active link (including legacy links with no `is_active`
+        property), ordered by `updated_at` descending and unpaginated. Because
+        merged Persons and inactive links are excluded, only a complete,
+        nonblank, correctly normalized request makes an empty `data` array
+        authoritative.
+
+        A `q`-only request uses the existing paginated fuzzy search
+        (`cursor`/`limit`, `meta.next_cursor`), and its empty result is not an
+        authoritative identifier negative. HyperP currently implements no
         endpoint-specific request quota or search `429` contract for this
         handler; callers should use bounded request rates/concurrency and
         exponential backoff for transient failures.
