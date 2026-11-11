@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from unittest.mock import patch
 
 import pytest
 from fastapi import FastAPI
@@ -160,7 +161,34 @@ def test_mcp_oauth_token_tool_accepts_mcp_json_arguments() -> None:
     response = client.post("/v1/oauth/token", json={})
 
     assert response.status_code == 400
+    assert "Sunset" not in response.headers
     assert response.json()["error_description"] == "Missing required form field: grant_type."
+
+
+def test_mcp_source_oauth_operations_are_not_deprecated() -> None:
+    paths = build_mcp_source_app().openapi()["paths"]
+    jwks_operation = paths["/v1/oauth/jwks"]["get"]
+    token_operation = paths["/v1/oauth/token"]["post"]
+
+    assert jwks_operation["operationId"] == "jwks_v1_oauth_jwks_get"
+    assert jwks_operation["summary"] == "Jwks"
+    assert (
+        jwks_operation["description"]
+        == "Return public signing keys for HyperP-issued access tokens."
+    )
+    assert "deprecated" not in jwks_operation
+    assert token_operation["operationId"] == "token_v1_oauth_token_post"
+    assert "deprecated" not in token_operation
+
+
+def test_mcp_source_jwks_response_has_no_sunset_header() -> None:
+    client = TestClient(build_mcp_source_app())
+
+    with patch("src.routes.oauth.build_jwks", return_value={"keys": []}):
+        response = client.get("/v1/oauth/jwks")
+
+    assert response.status_code == 200
+    assert "Sunset" not in response.headers
 
 
 def test_mcp_transport_requires_an_authenticated_principal() -> None:

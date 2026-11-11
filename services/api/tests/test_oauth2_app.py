@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from datetime import UTC, datetime
 from unittest.mock import AsyncMock, patch
 
@@ -133,6 +134,7 @@ def test_oauth2_token_endpoint_issues_access_token() -> None:
 
     assert res.status_code == 200
     assert res.headers["Cache-Control"] == "no-store"
+    assert "Sunset" not in res.headers
     assert res.json()["access_token"] == "jwt-token"
     assert res.json()["scope"] == "persons:read"
 
@@ -145,7 +147,23 @@ def test_oauth2_jwks_endpoint_returns_keys() -> None:
         res = client.get("/jwks")
 
     assert res.status_code == 200
+    assert "Sunset" not in res.headers
     assert res.json() == {"keys": []}
+
+
+def test_oauth2_openapi_token_and_jwks_operations_are_not_deprecated() -> None:
+    paths = build_oauth2_app().openapi()["paths"]
+    token_operation = paths["/token"]["post"]
+    jwks_operation = paths["/jwks"]["get"]
+
+    assert token_operation["operationId"] == "token_token_post"
+    assert token_operation["summary"] == "Token"
+    assert "deprecated" not in token_operation
+    assert jwks_operation["operationId"] == "jwks_jwks_get"
+    assert jwks_operation["summary"] == "Jwks"
+    assert "deprecated" not in jwks_operation
+    assert "Deprecated" not in json.dumps(token_operation)
+    assert "Deprecated" not in json.dumps(jwks_operation)
 
 
 def test_oauth2_persons_list_allows_oauth_client_with_persons_read() -> None:

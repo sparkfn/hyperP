@@ -1,12 +1,14 @@
-"""OAuth2 client-credentials endpoints."""
+"""OAuth2 client-credentials endpoints (root /v1/oauth spelling deprecated: use /oauth2/v1)."""
 
 from __future__ import annotations
 
 import time
 import uuid
+from collections.abc import Callable, Coroutine
 
-from fastapi import APIRouter, Form, status
+from fastapi import APIRouter, FastAPI, Form, Request, Response, status
 from fastapi.responses import JSONResponse
+from fastapi.routing import APIRoute
 
 from src.auth.oauth_client_models import OAuthTokenResponse
 from src.auth.oauth_clients import (
@@ -17,7 +19,41 @@ from src.auth.oauth_clients import (
 from src.auth.oauth_token_registry import register_token
 from src.auth.oauth_tokens import JsonWebKeySet, build_jwks, issue_client_access_token
 
-router = APIRouter(prefix="/v1/oauth", tags=["OAuth"])
+# RFC 8594 Sunset for the deprecated root /v1/oauth routes. Proposed date (issue #480);
+# a fixed constant keeps responses and tests deterministic.
+SUNSET_HTTP_DATE = "Thu, 01 Jul 2027 00:00:00 GMT"
+
+
+class LegacyOAuthRoute(APIRoute):
+    """Root-only route class adding ``Sunset``; copy_router_routes copies endpoints only."""
+
+    def get_route_handler(self) -> Callable[[Request], Coroutine[object, object, Response]]:
+        handler = super().get_route_handler()
+
+        async def sunset_handler(request: Request) -> Response:
+            response = await handler(request)
+            response.headers["Sunset"] = SUNSET_HTTP_DATE
+            return response
+
+        return sunset_handler
+
+
+router = APIRouter(prefix="/v1/oauth", tags=["OAuth"], route_class=LegacyOAuthRoute)
+
+_ROOT_SUCCESSORS: dict[str, str] = {
+    "/v1/oauth/token": "POST /oauth2/v1/token (externally /api/oauth2/v1/token)",
+    "/v1/oauth/jwks": "GET /oauth2/v1/jwks (externally /api/oauth2/v1/jwks)",
+}
+
+
+def mark_root_routes_deprecated(app: FastAPI) -> None:
+    """Flag the root /v1/oauth registrations deprecated; copied routes keep their metadata."""
+    for route in app.routes:
+        if isinstance(route, APIRoute) and route.path in _ROOT_SUCCESSORS:
+            successor = _ROOT_SUCCESSORS[route.path]
+            route.deprecated = True
+            route.summary = f"{route.name.title()}. Deprecated: use {successor}."
+
 
 _NO_CACHE_HEADERS: dict[str, str] = {
     "Cache-Control": "no-store",

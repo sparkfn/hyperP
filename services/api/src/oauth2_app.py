@@ -1,6 +1,6 @@
 """Machine-facing OAuth2 FastAPI sub-application (mounted at /oauth2/v1).
 
-Re-exposes the OAuth2 client-credentials token flow plus a read-only person
+Serves the canonical /token and /jwks flow (root /v1/oauth is deprecated) plus a read-only person
 list/detail surface for server-to-server callers. The token and JWKS endpoints
 are unauthenticated (they bootstrap auth); the person endpoints accept HyperP
 OAuth2 client credentials only — human/Google principals are rejected.

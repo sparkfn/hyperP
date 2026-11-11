@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime, parsedate_to_datetime
 from unittest.mock import AsyncMock, patch
 
 import pytest
 from fastapi import HTTPException, Request
+from fastapi.routing import APIRoute
 from fastapi.security import HTTPAuthorizationCredentials
 from fastapi.testclient import TestClient
 from src.app import build_app
@@ -22,6 +24,8 @@ from src.auth.models import AuthUser
 from src.auth.oauth_client_models import OAuthClient, OAuthClientSecret
 from src.auth.oauth_tokens import OAuthClientClaims
 from src.frontend_app import build_frontend_app
+from src.mcp_app import build_mcp_source_app
+from src.oauth2_app import build_oauth2_app
 from src.repositories.deps import (
     get_admin_repo,
     get_entity_repo,
@@ -44,6 +48,7 @@ from src.repositories.protocols.ingest import (
 from src.repositories.protocols.person import PersonListFilters, PersonPage, PersonRepository
 from src.repositories.protocols.report import ReportRepository
 from src.repositories.protocols.review import ReviewListFilters, ReviewRepository
+from src.routes import oauth as oauth_routes
 from src.types import (
     AuditEvent,
     ConnectionType,
@@ -65,6 +70,7 @@ from src.types import (
 )
 from src.types_reports import ReportDetail, ReportResult, ReportSummary
 from src.types_requests import IngestRecord, IngestRunUpdateRequest
+from starlette.routing import BaseRoute
 
 
 def _client(
@@ -706,7 +712,180 @@ def test_jwks_endpoint_returns_keys() -> None:
         res = client.get("/v1/oauth/jwks")
 
     assert res.status_code == 200
+    assert res.headers["Sunset"] == oauth_routes.SUNSET_HTTP_DATE
     assert res.json() == {"keys": []}
+
+
+_TOKEN_CLIENT_OK: tuple[OAuthClient, list[str]] = (_client(), ["persons:read"])
+_TOKEN_CLIENT_NO_SECRET: tuple[OAuthClient, list[str]] = (
+    _client().model_copy(update={"secrets": []}),
+    ["persons:read"],
+)
+_VALID_FORM: dict[str, str] = {
+    "grant_type": "client_credentials",
+    "client_id": "hpc_test",
+    "client_secret": "hps_secret",
+}
+
+
+@pytest.mark.parametrize("path", ["/v1/oauth/token", "/oauth2/v1/token"])
+@pytest.mark.parametrize(
+    ("form", "validated", "expected_status", "expected_body"),
+    [
+        pytest.param(
+            {"client_id": "hpc_test", "client_secret": "hps_secret"},
+            _TOKEN_CLIENT_OK,
+            400,
+            {
+                "error": "invalid_request",
+                "error_description": "Missing required form field: grant_type.",
+            },
+            id="missing-grant-type",
+        ),
+        pytest.param(
+            {"grant_type": "client_credentials", "client_secret": "hps_secret"},
+            _TOKEN_CLIENT_OK,
+            400,
+            {
+                "error": "invalid_request",
+                "error_description": "Missing required form field: client_id.",
+            },
+            id="missing-client-id",
+        ),
+        pytest.param(
+            {"grant_type": "client_credentials", "client_id": "hpc_test"},
+            _TOKEN_CLIENT_OK,
+            400,
+            {
+                "error": "invalid_request",
+                "error_description": "Missing required form field: client_secret.",
+            },
+            id="missing-client-secret",
+        ),
+        pytest.param(
+            {**_VALID_FORM, "grant_type": "password"},
+            _TOKEN_CLIENT_OK,
+            400,
+            {
+                "error": "unsupported_grant_type",
+                "error_description": "Only grant_type=client_credentials is supported.",
+            },
+            id="unsupported-grant-type",
+        ),
+        pytest.param(
+            _VALID_FORM,
+            None,
+            401,
+            {"error": "invalid_client", "error_description": "Invalid client credentials."},
+            id="bad-credentials",
+        ),
+        pytest.param(
+            {**_VALID_FORM, "scope": "persons:write"},
+            _TOKEN_CLIENT_OK,
+            400,
+            {
+                "error": "invalid_scope",
+                "error_description": "Requested scope is not assigned to this client.",
+            },
+            id="unassigned-scope",
+        ),
+        pytest.param(
+            _VALID_FORM,
+            _TOKEN_CLIENT_NO_SECRET,
+            401,
+            {"error": "invalid_client", "error_description": "Invalid client credentials."},
+            id="no-active-secret",
+        ),
+        pytest.param(
+            {**_VALID_FORM, "scope": "persons:read"},
+            _TOKEN_CLIENT_OK,
+            200,
+            {
+                "access_token": "jwt-token",
+                "token_type": "Bearer",
+                "expires_in": 900,
+                "scope": "persons:read",
+            },
+            id="success",
+        ),
+    ],
+)
+def test_token_outcomes_are_identical_across_spellings_except_sunset(
+    path: str,
+    form: dict[str, str],
+    validated: tuple[OAuthClient, list[str]] | None,
+    expected_status: int,
+    expected_body: dict[str, str | int],
+) -> None:
+    client = TestClient(build_app())
+    expected_sunset = oauth_routes.SUNSET_HTTP_DATE if path == "/v1/oauth/token" else None
+
+    with (
+        patch(
+            "src.routes.oauth.validate_client_credentials",
+            new=AsyncMock(return_value=validated),
+        ),
+        patch("src.routes.oauth.issue_client_access_token", return_value="jwt-token"),
+        patch("src.routes.oauth.register_token", new=AsyncMock(return_value=None)),
+    ):
+        res = client.post(path, data=form)
+
+    assert res.status_code == expected_status
+    assert res.json() == expected_body
+    assert res.headers["Cache-Control"] == "no-store"
+    assert res.headers["Pragma"] == "no-cache"
+    assert res.headers.get("Sunset") == expected_sunset
+
+
+def test_legacy_sunset_is_rfc_http_date_in_utc() -> None:
+    client = TestClient(build_app())
+
+    with patch("src.routes.oauth.build_jwks", return_value={"keys": []}):
+        res = client.get("/v1/oauth/jwks")
+
+    value = res.headers["Sunset"]
+    assert value == "Thu, 01 Jul 2027 00:00:00 GMT"
+    parsed = parsedate_to_datetime(value)
+    assert parsed.tzinfo is not None
+    assert parsed.utcoffset() == timedelta(0)
+    assert parsed == datetime(2027, 7, 1, tzinfo=UTC)
+    assert format_datetime(parsed, usegmt=True) == value
+
+
+def _api_routes_by_path(routes: list[BaseRoute]) -> dict[str, APIRoute]:
+    return {route.path: route for route in routes if isinstance(route, APIRoute)}
+
+
+def test_only_root_oauth_registrations_are_marked_deprecated() -> None:
+    root = _api_routes_by_path(build_app().routes)
+    shared = _api_routes_by_path(oauth_routes.router.routes)
+    canonical = _api_routes_by_path(build_oauth2_app().routes)
+    mcp = _api_routes_by_path(build_mcp_source_app().routes)
+    legacy_summaries = (
+        (
+            "/v1/oauth/token",
+            "Token. Deprecated: use POST /oauth2/v1/token (externally /api/oauth2/v1/token).",
+        ),
+        (
+            "/v1/oauth/jwks",
+            "Jwks. Deprecated: use GET /oauth2/v1/jwks (externally /api/oauth2/v1/jwks).",
+        ),
+    )
+
+    for path, summary in legacy_summaries:
+        assert isinstance(root[path], oauth_routes.LegacyOAuthRoute)
+        assert root[path].deprecated is True
+        assert root[path].summary == summary
+        assert not shared[path].deprecated
+        assert shared[path].summary is None
+        assert type(mcp[path]) is APIRoute
+        assert not mcp[path].deprecated
+    for path in ("/token", "/jwks"):
+        assert type(canonical[path]) is APIRoute
+        assert not canonical[path].deprecated
+        assert canonical[path].summary is None
+    assert mcp["/v1/oauth/jwks"].summary is None
+    assert mcp["/v1/oauth/jwks"].endpoint is oauth_routes.jwks
 
 
 def test_events_route_rejects_oauth_client_without_persons_read_scope_before_repo_call() -> None:

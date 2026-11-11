@@ -7,18 +7,22 @@ import json
 import time
 from datetime import UTC, datetime
 from typing import TypedDict
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 import pytest
 from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import padding, rsa
-from src.auth.oauth_client_models import OAuthClient
+from fastapi.testclient import TestClient
+from src.app import build_app
+from src.auth.oauth_client_models import OAuthClient, OAuthClientSecret
 from src.auth.oauth_tokens import (
+    JsonWebKeySet,
     OAuthClientClaims,
     build_jwks,
     issue_client_access_token,
     verify_client_access_token,
 )
+from src.routes.oauth import SUNSET_HTTP_DATE
 
 
 class JwtHeaderFixture(TypedDict):
@@ -305,3 +309,69 @@ def test_future_nbf_beyond_skew_is_rejected() -> None:
     ):
         with pytest.raises(ValueError, match="not yet valid"):
             verify_client_access_token(token)
+
+
+def test_legacy_and_canonical_spellings_issue_verifiable_tokens_and_jwks() -> None:
+    private_pem, public_pem = _pem_pair()
+    registered_client = _client().model_copy(
+        update={
+            "secrets": [
+                OAuthClientSecret(
+                    secret_id="sec_t1",
+                    secret_prefix="hps_xxxxxx",
+                    created_at=datetime.now(UTC).replace(tzinfo=None),
+                    revoked_at=None,
+                    last_used_at=None,
+                )
+            ]
+        }
+    )
+    client = TestClient(build_app())
+    jwks_bodies: list[JsonWebKeySet] = []
+
+    with (
+        patch("src.auth.oauth_tokens.config.oauth_private_key_pem", private_pem),
+        patch("src.auth.oauth_tokens.config.oauth_public_key_pem", public_pem),
+        patch("src.auth.oauth_tokens.config.oauth_active_key_id", "kid-test"),
+        patch("src.auth.oauth_tokens.config.oauth_issuer", "http://issuer"),
+        patch("src.auth.oauth_tokens.config.oauth_audience", "hyperp-api"),
+        patch(
+            "src.routes.oauth.validate_client_credentials",
+            new=AsyncMock(return_value=(registered_client, ["persons:read"])),
+        ),
+        patch("src.routes.oauth.register_token", new=AsyncMock(return_value=None)),
+    ):
+        for token_path, jwks_path, legacy in (
+            ("/v1/oauth/token", "/v1/oauth/jwks", True),
+            ("/oauth2/v1/token", "/oauth2/v1/jwks", False),
+        ):
+            expected_sunset = SUNSET_HTTP_DATE if legacy else None
+
+            token_res = client.post(
+                token_path,
+                data={
+                    "grant_type": "client_credentials",
+                    "client_id": "hpc_test",
+                    "client_secret": "hps_secret",
+                },
+            )
+            assert token_res.status_code == 200
+            assert token_res.headers.get("Sunset") == expected_sunset
+            claims = verify_client_access_token(token_res.json()["access_token"])
+            assert claims.client_id == "hpc_test"
+            assert claims.scopes == ["persons:read"]
+            assert claims.secret_id == "sec_t1"
+            assert claims.aud == "hyperp-api"
+
+            jwks_res = client.get(jwks_path)
+            assert jwks_res.status_code == 200
+            assert jwks_res.headers.get("Sunset") == expected_sunset
+            keys = jwks_res.json()["keys"]
+            assert len(keys) == 1
+            assert keys[0]["kid"] == "kid-test"
+            assert keys[0]["alg"] == "RS256"
+            assert keys[0]["kty"] == "RSA"
+            assert keys[0]["use"] == "sig"
+            jwks_bodies.append(jwks_res.json())
+
+    assert jwks_bodies[0] == jwks_bodies[1]
