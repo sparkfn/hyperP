@@ -83,6 +83,10 @@ _AUDIT_READERS: Final[frozenset[str]] = frozenset(
         "ingestion/graph/queries/projection_sync.py:PROJECTION_PERSON_LIST_ROWS",
         "ingestion/graph/queries/projection_sync.py:PROJECTION_PERSON_SOURCE_RECORDS",
         "ingestion/graph/queries/projection_sync.py:PROJECTION_SUMMARY_COUNTERS",
+        # Assertion backfill/audit fall back to a record's own IDENTIFIED_BY evidence when its
+        # payload is unreadable; retired projections are still that record's immutable evidence.
+        "ingestion/graph/queries/identity_assertions.py:AUDIT_ASSERTION_PAGE",
+        "ingestion/graph/queries/identity_assertions.py:BACKFILL_ASSERTION_PAGE",
         # Identifier detail intentionally presents retired projections as
         # evidence, including their is_active state and provenance.
         "api/graph/queries/persons.py:GET_PERSON_IDENTIFIERS",

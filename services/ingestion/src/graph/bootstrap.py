@@ -241,6 +241,11 @@ MATCH_ONLY_SOURCE_KEYS: frozenset[str] = frozenset(
     source["source_key"] for source in _SOURCE_SYSTEMS if source.get("match_only")
 )
 
+#: Sources that can create a new Person, derived from the same bootstrap seeds.
+PROMOTES_PERSON_SOURCE_KEYS: frozenset[str] = frozenset(
+    source["source_key"] for source in _SOURCE_SYSTEMS if not source.get("match_only")
+)
+
 
 #: Source system NRIC field trust tier mapping.
 #: Derived from ``_SOURCE_SYSTEMS`` so the source_key -> trust tier mapping
