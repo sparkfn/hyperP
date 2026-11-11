@@ -10,7 +10,9 @@ from pydantic import BaseModel, Field, model_validator
 from src.repositories.protocols.merge import GoldenProfileSelection
 from src.types import (
     ApiReviewActionType,
+    BulkReviewActionType,
     GoldenFieldName,
+    ReviewActionReasonCode,
     TrustTier,
 )
 
@@ -63,7 +65,16 @@ class ReviewActionMetadata(BaseModel):
 class ReviewActionRequest(BaseModel):
     action_type: ApiReviewActionType
     notes: str | None = None
+    reason_code: ReviewActionReasonCode | None = None
     metadata: ReviewActionMetadata = Field(default_factory=ReviewActionMetadata)
+
+
+class BulkReviewActionRequest(BaseModel):
+    review_case_ids: list[str]
+    action_type: BulkReviewActionType
+    reason_code: ReviewActionReasonCode
+    notes: str | None = None
+    follow_up_at: str | None = None
 
 
 class ManualMergeRequest(BaseModel):

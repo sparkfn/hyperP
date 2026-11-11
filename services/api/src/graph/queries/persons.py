@@ -786,7 +786,8 @@ OPTIONAL MATCH (md)-[:ABOUT_RIGHT]->(right)
 OPTIONAL MATCH (rc:ReviewCase)-[:FOR_DECISION]->(md)
 RETURN md {
   .match_decision_id, .engine_type, .engine_version, .policy_version,
-  .decision, .confidence, .reasons, .blocking_conflicts, .created_at
+  .decision, .confidence, .reasons, .blocking_conflicts,
+  .review_suppressed, .suppressed_reason, .created_at
 } AS match_decision,
 left.person_id AS left_person_id,
 right.person_id AS right_person_id,

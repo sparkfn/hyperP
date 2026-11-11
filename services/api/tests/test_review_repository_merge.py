@@ -4,6 +4,7 @@ import hashlib
 import json
 from collections.abc import AsyncIterator, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from typing import cast
 
 import pytest
@@ -39,9 +40,15 @@ from src.graph.queries import (
 )
 from src.graph.queries.identity_link_revisions import APPEND_IDENTITY_LINK_REVISIONS
 from src.repositories.neo4j import review as review_module
-from src.repositories.neo4j.review import _action_tx
+from src.repositories.neo4j.review import (
+    Neo4jReviewRepository,
+    _action_tx,
+    classify_review_age_bucket,
+    reset_review_resolution_counters,
+)
 from src.repositories.neo4j.sales_staging import canonical_staging_hash, validate_sales_stage
 from src.repositories.protocols.merge import GoldenProfileSelection
+from src.repositories.protocols.review import ActionResult
 from src.types import ApiReviewActionType
 
 type ReviewCaseRecord = dict[str, str | None]
@@ -1133,6 +1140,7 @@ class _LifecycleTx:
         close_succeeds: bool = True,
         source_system_key: str = "bitrix",
         source_record_id: str = "contact-1",
+        created_at: str | None = None,
     ) -> None:
         self.expected_old = expected_old
         self.active_old = active_old
@@ -1151,6 +1159,7 @@ class _LifecycleTx:
         self.close_succeeds = close_succeeds
         self.source_system_key = source_system_key
         self.source_record_id = source_record_id
+        self.created_at = created_at
         self.calls: list[tuple[str, Mapping[str, object]]] = []
         self.events: list[str] = []
 
@@ -1216,6 +1225,7 @@ class _LifecycleTx:
                         "review_case_id": "case-1",
                         "queue_state": params["new_state"],
                         "resolution": params.get("resolution"),
+                        "created_at": self.created_at,
                     }
                 }
             )
@@ -1634,3 +1644,866 @@ async def test_close_loss_after_lifecycle_mutation_aborts_transaction(
         await _submit_lifecycle(tx, action)
     assert tx.events[0] == "claim"
     assert tx.events[-1] == "close"
+
+
+# ── Pair-audit merge guard, generic resolve, auditing, bulk outcomes ────────
+
+_PERSON_PAIR_RECORD: Mapping[str, object] = {
+    "engine_type": "heuristic",
+    "left_person_id": "person-a",
+    "right_person_id": "person-b",
+    "has_no_source_record": True,
+}
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "persons_record",
+    [
+        {
+            "engine_type": "pair_audit",
+            "left_person_id": "person-a",
+            "right_person_id": "person-b",
+            "has_no_source_record": True,
+        },
+        {
+            "engine_type": "pair_audit",
+            "left_person_id": None,
+            "right_person_id": "person-b",
+            "has_no_source_record": False,
+        },
+        {
+            "engine_type": "pair_audit",
+            "left_person_id": None,
+            "right_person_id": None,
+            "has_no_source_record": True,
+        },
+    ],
+)
+async def test_pair_audit_merge_is_rejected_before_any_fallback(
+    persons_record: Mapping[str, object],
+) -> None:
+    tx = _Tx([persons_record])
+
+    result = await _action_tx(
+        cast(AsyncManagedTransaction, tx),
+        "case-1",
+        ApiReviewActionType.MERGE.value,
+        "resolved",
+        "merge",
+        None,
+        None,
+        "reviewer@example.com",
+        None,
+        [],
+    )
+
+    assert result == {"pair_audit_merge_disabled": True}
+    # The guard runs before the pending-record and sales-record fallbacks.
+    assert [call.query for call in tx.calls] == [GET_PERSONS_FOR_REVIEW_MERGE]
+
+
+@pytest.mark.asyncio
+async def test_generic_resolve_closes_a_two_person_case_without_merging() -> None:
+    tx = _Tx(
+        [
+            dict(_PERSON_PAIR_RECORD),
+            {
+                "review_case": {
+                    "review_case_id": "case-1",
+                    "queue_state": "resolved",
+                    "resolution": "resolve",
+                }
+            },
+        ]
+    )
+
+    result = await _action_tx(
+        cast(AsyncManagedTransaction, tx),
+        "case-1",
+        ApiReviewActionType.RESOLVE.value,
+        "resolved",
+        "resolve",
+        None,
+        None,
+        "reviewer@example.com",
+        None,
+        [],
+    )
+
+    assert result == {
+        "review_case_id": "case-1",
+        "queue_state": "resolved",
+        "resolution": "resolve",
+        "redirected_review_case_ids": [],
+    }
+    queries = [call.query for call in tx.calls]
+    assert CREATE_NO_MATCH_LOCK_FROM_REVIEW not in queries
+    assert EXECUTE_MANUAL_MERGE not in queries
+    assert queries == [
+        GET_PERSONS_FOR_REVIEW_MERGE,
+        build_review_action_cypher("resolve", None, include_audit_fields=True),
+    ]
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    "persons_record",
+    [
+        None,
+        {
+            "engine_type": "heuristic",
+            "left_person_id": None,
+            "right_person_id": "person-b",
+            "has_no_source_record": True,
+        },
+        {
+            "engine_type": "heuristic",
+            "left_person_id": "person-a",
+            "right_person_id": None,
+            "has_no_source_record": True,
+        },
+        {
+            "engine_type": "heuristic",
+            "left_person_id": "person-a",
+            "right_person_id": "person-b",
+            "has_no_source_record": False,
+        },
+        {
+            "engine_type": "heuristic",
+            "left_person_id": "person-a",
+            "right_person_id": "person-b",
+        },
+        {
+            "engine_type": "heuristic",
+            "left_person_id": "person-a",
+            "right_person_id": "person-b",
+            "has_no_source_record": None,
+        },
+        {
+            "engine_type": "pair_audit",
+            "left_person_id": "person-a",
+            "right_person_id": "person-b",
+            "has_no_source_record": False,
+        },
+    ],
+)
+async def test_generic_resolve_requires_two_persons_and_no_source_record(
+    persons_record: Mapping[str, object] | None,
+) -> None:
+    tx = _Tx([persons_record])
+
+    result = await _action_tx(
+        cast(AsyncManagedTransaction, tx),
+        "case-1",
+        ApiReviewActionType.RESOLVE.value,
+        "resolved",
+        "resolve",
+        None,
+        None,
+        "reviewer@example.com",
+        None,
+        [],
+    )
+
+    assert result == {"resolve_not_applicable": True}
+    assert [call.query for call in tx.calls] == [GET_PERSONS_FOR_REVIEW_MERGE]
+
+
+@pytest.mark.asyncio
+async def test_legacy_action_without_reason_code_preserves_params_and_audit_json() -> None:
+    tx = _Tx(
+        [
+            {
+                "review_case": {
+                    "review_case_id": "case-1",
+                    "queue_state": "deferred",
+                    "resolution": None,
+                }
+            }
+        ]
+    )
+
+    await _action_tx(
+        cast(AsyncManagedTransaction, tx),
+        "case-1",
+        ApiReviewActionType.DEFER.value,
+        "deferred",
+        None,
+        "later",
+        "2026-07-20T00:00:00Z",
+        "reviewer@example.com",
+        None,
+        [],
+    )
+
+    close_call = tx.calls[-1]
+    assert close_call.query == build_review_action_cypher(None, "2026-07-20T00:00:00Z")
+    assert set(close_call.params) == {
+        "review_case_id",
+        "new_state",
+        "resolution",
+        "follow_up_at",
+        "action_json",
+    }
+    entry = json.loads(cast(str, close_call.params["action_json"]))
+    assert set(entry) == {"action_type", "actor_type", "actor_id", "notes", "created_at"}
+    assert entry["action_type"] == "defer"
+    assert entry["notes"] == "later"
+
+
+@pytest.mark.asyncio
+async def test_legacy_merge_without_reason_code_preserves_exact_cypher_and_params() -> None:
+    tx = _Tx(
+        [
+            {"left_person_id": "person-a", "right_person_id": "person-b"},
+            {"absorbed": "person-a", "survivor": "person-b"},
+            {"is_locked": False},
+            {
+                "review_case": {
+                    "review_case_id": "case-1",
+                    "queue_state": "resolved",
+                    "resolution": "merge",
+                }
+            },
+            {"merge_event_id": "merge-1", "created_at": "2026-08-26T00:00:00+00:00"},
+        ]
+    )
+
+    await _action_tx(
+        cast(AsyncManagedTransaction, tx),
+        "case-1",
+        ApiReviewActionType.MERGE.value,
+        "resolved",
+        "merge",
+        "same person",
+        None,
+        "reviewer@example.com",
+        "person-b",
+        [],
+    )
+
+    close_call = next(
+        call for call in tx.calls if call.query == build_review_action_cypher("merge", None)
+    )
+    assert set(close_call.params) == {
+        "review_case_id",
+        "new_state",
+        "resolution",
+        "follow_up_at",
+        "action_json",
+    }
+    assert "rc.resolved_by" not in close_call.query
+    assert "rc.resolution_reason_code" not in close_call.query
+    entry = json.loads(cast(str, close_call.params["action_json"]))
+    assert "reason_code" not in entry
+
+
+@pytest.mark.asyncio
+async def test_reason_coded_action_sets_audit_fields_on_the_review_case() -> None:
+    tx = _Tx(
+        [
+            dict(_PERSON_PAIR_RECORD),
+            {
+                "review_case": {
+                    "review_case_id": "case-1",
+                    "queue_state": "resolved",
+                    "resolution": "resolve",
+                }
+            },
+        ]
+    )
+
+    await _action_tx(
+        cast(AsyncManagedTransaction, tx),
+        "case-1",
+        ApiReviewActionType.RESOLVE.value,
+        "resolved",
+        "resolve",
+        None,
+        None,
+        "reviewer@example.com",
+        None,
+        [],
+        reason_code="confirmed_match",
+    )
+
+    close_call = tx.calls[-1]
+    assert "rc.resolved_by = $actor_id" in close_call.query
+    assert "rc.resolution_reason_code = $reason_code" in close_call.query
+    assert close_call.params["actor_id"] == "reviewer@example.com"
+    assert close_call.params["reason_code"] == "confirmed_match"
+    entry = json.loads(cast(str, close_call.params["action_json"]))
+    assert entry["reason_code"] == "confirmed_match"
+
+
+@pytest.mark.asyncio
+async def test_reason_coded_defer_keeps_the_reason_code_out_of_the_node_fields() -> None:
+    tx = _Tx(
+        [
+            {
+                "review_case": {
+                    "review_case_id": "case-1",
+                    "queue_state": "deferred",
+                    "resolution": None,
+                }
+            }
+        ]
+    )
+
+    await _action_tx(
+        cast(AsyncManagedTransaction, tx),
+        "case-1",
+        ApiReviewActionType.DEFER.value,
+        "deferred",
+        None,
+        None,
+        "2026-07-20T00:00:00Z",
+        "reviewer@example.com",
+        None,
+        [],
+        reason_code="awaiting_verification",
+    )
+
+    close_call = tx.calls[-1]
+    assert "rc.resolved_by" not in close_call.query
+    assert "rc.resolution_reason_code" not in close_call.query
+    assert "actor_id" not in close_call.params
+    assert "reason_code" not in close_call.params
+    entry = json.loads(cast(str, close_call.params["action_json"]))
+    assert entry["reason_code"] == "awaiting_verification"
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("action_type", "new_state", "resolution"),
+    [
+        (ApiReviewActionType.EXPIRE.value, "expired", "expired"),
+        (ApiReviewActionType.DISMISS.value, "dismissed", "dismissed"),
+        (ApiReviewActionType.REJECT.value, "resolved", "reject"),
+    ],
+)
+async def test_reason_coded_terminal_actions_set_the_audit_fields(
+    action_type: str,
+    new_state: str,
+    resolution: str,
+) -> None:
+    records: list[Mapping[str, object] | None] = []
+    if action_type == ApiReviewActionType.REJECT.value:
+        # A reject without pending or sales evidence closes the case directly.
+        records.extend([None, None])
+    records.append(
+        {
+            "review_case": {
+                "review_case_id": "case-1",
+                "queue_state": new_state,
+                "resolution": resolution,
+            }
+        }
+    )
+    tx = _Tx(records)
+
+    await _action_tx(
+        cast(AsyncManagedTransaction, tx),
+        "case-1",
+        action_type,
+        new_state,
+        resolution,
+        "reviewed",
+        None,
+        "reviewer@example.com",
+        None,
+        [],
+        reason_code="confirmed_distinct",
+    )
+
+    close_call = next(call for call in tx.calls if "SET rc.queue_state" in call.query)
+    assert "rc.resolved_by = $actor_id" in close_call.query
+    assert "rc.resolution_reason_code = $reason_code" in close_call.query
+    assert close_call.params["actor_id"] == "reviewer@example.com"
+    assert close_call.params["reason_code"] == "confirmed_distinct"
+    entry = json.loads(cast(str, close_call.params["action_json"]))
+    assert entry["action_type"] == action_type
+    assert entry["reason_code"] == "confirmed_distinct"
+
+
+@pytest.mark.asyncio
+async def test_reason_coded_person_pair_merge_sets_the_audit_fields() -> None:
+    tx = _Tx(
+        [
+            dict(_PERSON_PAIR_RECORD),
+            {"absorbed": "person-a", "survivor": "person-b"},
+            {"is_locked": False},
+            {
+                "review_case": {
+                    "review_case_id": "case-1",
+                    "queue_state": "resolved",
+                    "resolution": "merge",
+                }
+            },
+            {"merge_event_id": "merge-1", "created_at": "2026-08-26T00:00:00+00:00"},
+        ]
+    )
+
+    await _action_tx(
+        cast(AsyncManagedTransaction, tx),
+        "case-1",
+        ApiReviewActionType.MERGE.value,
+        "resolved",
+        "merge",
+        "same person",
+        None,
+        "reviewer@example.com",
+        "person-b",
+        [],
+        reason_code="confirmed_match",
+    )
+
+    close_call = next(call for call in tx.calls if "SET rc.queue_state" in call.query)
+    assert "rc.resolved_by = $actor_id" in close_call.query
+    assert "rc.resolution_reason_code = $reason_code" in close_call.query
+    assert close_call.params["actor_id"] == "reviewer@example.com"
+    assert close_call.params["reason_code"] == "confirmed_match"
+    entry = json.loads(cast(str, close_call.params["action_json"]))
+    assert entry["reason_code"] == "confirmed_match"
+
+
+@pytest.mark.asyncio
+async def test_reason_coded_pending_record_merge_sets_the_audit_fields(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tx = _LifecycleTx(expected_old="active-v1", active_old="active-v1")
+
+    async def recompute(_tx: object, _person_id: str, _invalidate: bool) -> None:
+        return None
+
+    monkeypatch.setattr(review_module, "recompute_golden_profile_tx", recompute)
+
+    await _action_tx(
+        cast(AsyncManagedTransaction, tx),
+        "case-1",
+        ApiReviewActionType.MERGE.value,
+        "resolved",
+        "merge",
+        "same person",
+        None,
+        "reviewer@example.com",
+        None,
+        [],
+        reason_code="confirmed_match",
+    )
+
+    close_query, close_params = next(
+        (query, params) for query, params in tx.calls if "SET rc.queue_state" in query
+    )
+    assert "rc.resolved_by = $actor_id" in close_query
+    assert "rc.resolution_reason_code = $reason_code" in close_query
+    assert close_params["actor_id"] == "reviewer@example.com"
+    assert close_params["reason_code"] == "confirmed_match"
+    entry = json.loads(cast(str, close_params["action_json"]))
+    assert entry["reason_code"] == "confirmed_match"
+
+
+@pytest.mark.asyncio
+async def test_reason_coded_sales_merge_sets_the_audit_fields() -> None:
+    tx = _Tx(
+        [
+            None,  # GET_PERSONS_FOR_REVIEW_MERGE
+            None,  # GET_PENDING_REVIEW_RECORD
+            {"source_record_pk": "sr-42"},
+            {
+                "claim_token": "claim-1",
+                "claim_version": 1,
+                "claim_status": "open",
+                "claimed_by": "reviewer@example.com",
+            },
+            None,  # LINK_REVIEW_SALES_PURCHASED_ORDER
+            None,  # LINK_REVIEW_SALES_BOUGHT_VEHICLE
+            {"source_record_pk": "sr-42"},
+            {
+                "review_case": {
+                    "review_case_id": "rc-sales",
+                    "queue_state": "resolved",
+                    "resolution": "merge",
+                }
+            },
+        ]
+    )
+
+    await _action_tx(
+        cast(AsyncManagedTransaction, tx),
+        "rc-sales",
+        ApiReviewActionType.MERGE.value,
+        "resolved",
+        "merge",
+        "approved",
+        None,
+        "reviewer@example.com",
+        None,
+        [],
+        reason_code="confirmed_match",
+    )
+
+    close_call = tx.calls[-1]
+    assert "rc.resolved_by = $actor_id" in close_call.query
+    assert "rc.resolution_reason_code = $reason_code" in close_call.query
+    assert close_call.params["actor_id"] == "reviewer@example.com"
+    assert close_call.params["reason_code"] == "confirmed_match"
+    entry = json.loads(cast(str, close_call.params["action_json"]))
+    assert entry["reason_code"] == "confirmed_match"
+
+
+@pytest.mark.asyncio
+async def test_created_at_is_carried_out_of_every_close_path() -> None:
+    created_at = "2026-08-26T00:00:00+00:00"
+
+    sales_tx = _Tx(
+        [
+            None,  # GET_PERSONS_FOR_REVIEW_MERGE
+            None,  # GET_PENDING_REVIEW_RECORD
+            {"source_record_pk": "sr-42"},
+            {
+                "claim_token": "claim-1",
+                "claim_version": 1,
+                "claim_status": "open",
+                "claimed_by": "reviewer@example.com",
+            },
+            None,  # LINK_REVIEW_SALES_PURCHASED_ORDER
+            None,  # LINK_REVIEW_SALES_BOUGHT_VEHICLE
+            {"source_record_pk": "sr-42"},
+            {
+                "review_case": {
+                    "review_case_id": "rc-sales",
+                    "queue_state": "resolved",
+                    "resolution": "merge",
+                    "created_at": created_at,
+                }
+            },
+        ]
+    )
+    sales_result = await _action_tx(
+        cast(AsyncManagedTransaction, sales_tx),
+        "rc-sales",
+        ApiReviewActionType.MERGE.value,
+        "resolved",
+        "merge",
+        None,
+        None,
+        "reviewer@example.com",
+        None,
+        [],
+    )
+    assert sales_result is not None
+    assert sales_result["created_at"] == created_at
+
+    action_tx = _Tx(
+        [
+            dict(_PERSON_PAIR_RECORD),
+            {
+                "review_case": {
+                    "review_case_id": "case-1",
+                    "queue_state": "resolved",
+                    "resolution": "resolve",
+                    "created_at": created_at,
+                }
+            },
+        ]
+    )
+    action_result = await _action_tx(
+        cast(AsyncManagedTransaction, action_tx),
+        "case-1",
+        ApiReviewActionType.RESOLVE.value,
+        "resolved",
+        "resolve",
+        None,
+        None,
+        "reviewer@example.com",
+        None,
+        [],
+    )
+    assert action_result is not None
+    assert action_result["created_at"] == created_at
+
+
+@pytest.mark.asyncio
+async def test_pending_record_close_carries_created_at(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    created_at = "2026-08-26T00:00:00+00:00"
+    tx = _LifecycleTx(
+        expected_old="active-v1",
+        active_old="active-v1",
+        created_at=created_at,
+    )
+
+    async def recompute(_tx: object, _person_id: str, _invalidate: bool) -> None:
+        return None
+
+    monkeypatch.setattr(review_module, "recompute_golden_profile_tx", recompute)
+
+    result = await _submit_lifecycle(tx, ApiReviewActionType.MERGE)
+
+    assert result["created_at"] == created_at
+
+
+def test_review_age_bucket_classification() -> None:
+    assert classify_review_age_bucket(None) == "unknown"
+    assert classify_review_age_bucket(0.0) == "lt_1d"
+    assert classify_review_age_bucket(0.99) == "lt_1d"
+    assert classify_review_age_bucket(1.0) == "1d_to_7d"
+    assert classify_review_age_bucket(6.99) == "1d_to_7d"
+    assert classify_review_age_bucket(7.0) == "7d_to_30d"
+    assert classify_review_age_bucket(29.99) == "7d_to_30d"
+    assert classify_review_age_bucket(30.0) == "gte_30d"
+
+
+def test_review_age_days_normalizes_to_utc_and_rejects_invalid_input() -> None:
+    now = datetime.now(UTC)
+
+    aware = review_module._compute_review_age_days(now.isoformat())
+    naive = review_module._compute_review_age_days(now.replace(tzinfo=None).isoformat())
+
+    assert aware is not None and aware < 0.001
+    assert naive is not None and naive < 0.001
+    assert review_module._compute_review_age_days("not-a-date") is None
+    assert review_module._compute_review_age_days(None) is None
+
+
+class _FakeWriteSession:
+    """Session facade that runs the transaction function against a fake tx."""
+
+    def __init__(self, tx: _Tx) -> None:
+        self._tx = tx
+
+    async def __aenter__(self) -> _FakeWriteSession:
+        return self
+
+    async def __aexit__(self, *_args: object) -> None:
+        return None
+
+    async def execute_write(
+        self, transaction_function: object, *args: object, **kwargs: object
+    ) -> object:
+        return await transaction_function(self._tx, *args, **kwargs)  # type: ignore[operator]
+
+
+@pytest.mark.asyncio
+async def test_submit_action_records_post_commit_resolution_and_age_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    reset_review_resolution_counters()
+    created_at = datetime.now(UTC).isoformat()
+    tx = _Tx(
+        [
+            dict(_PERSON_PAIR_RECORD),
+            {
+                "review_case": {
+                    "review_case_id": "case-1",
+                    "queue_state": "resolved",
+                    "resolution": "resolve",
+                    "created_at": created_at,
+                }
+            },
+        ]
+    )
+
+    def fake_get_session(*, write: bool = False) -> _FakeWriteSession:
+        assert write is True
+        return _FakeWriteSession(tx)
+
+    monkeypatch.setattr(review_module, "get_session", fake_get_session)
+
+    repo = Neo4jReviewRepository()
+    result = await repo.submit_action(
+        "case-1",
+        ApiReviewActionType.RESOLVE.value,
+        "resolved",
+        "resolve",
+        None,
+        None,
+        "reviewer@example.com",
+        None,
+        [],
+        reason_code="confirmed_match",
+    )
+
+    assert result is not None
+    assert result["created_at"] == created_at
+    assert sum(review_module.REVIEW_RESOLUTION_COUNTER.values()) == 1
+    (resolution_key,) = review_module.REVIEW_RESOLUTION_COUNTER
+    assert resolution_key[:3] == ("resolved", "resolve", "confirmed_match")
+    assert sum(review_module.REVIEW_AGE_BUCKET_COUNTER.values()) == 1
+    (age_key,) = review_module.REVIEW_AGE_BUCKET_COUNTER
+    assert age_key[:2] == ("resolved", "lt_1d")
+    reset_review_resolution_counters()
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize(
+    ("records", "survivor_person_id"),
+    [
+        (
+            [
+                {
+                    "engine_type": "pair_audit",
+                    "left_person_id": "person-a",
+                    "right_person_id": "person-b",
+                    "has_no_source_record": True,
+                }
+            ],
+            None,
+        ),
+        ([{"left_person_id": "person-a", "right_person_id": "person-b"}], "person-c"),
+    ],
+)
+async def test_rejected_actions_record_no_transition_metrics(
+    monkeypatch: pytest.MonkeyPatch,
+    records: list[Mapping[str, object]],
+    survivor_person_id: str | None,
+) -> None:
+    reset_review_resolution_counters()
+    tx = _Tx(records)
+
+    def fake_get_session(*, write: bool = False) -> _FakeWriteSession:
+        return _FakeWriteSession(tx)
+
+    monkeypatch.setattr(review_module, "get_session", fake_get_session)
+
+    repo = Neo4jReviewRepository()
+    result = await repo.submit_action(
+        "case-1",
+        ApiReviewActionType.MERGE.value,
+        "resolved",
+        "merge",
+        None,
+        None,
+        "reviewer@example.com",
+        survivor_person_id,
+        [],
+    )
+
+    assert result is not None
+    assert "review_case_id" not in result
+    assert not review_module.REVIEW_RESOLUTION_COUNTER
+    assert not review_module.REVIEW_AGE_BUCKET_COUNTER
+    reset_review_resolution_counters()
+
+
+class _StubReviewRepository(Neo4jReviewRepository):
+    """Repository stub that returns canned single-case action results."""
+
+    def __init__(
+        self,
+        outcomes: Mapping[str, ActionResult | None],
+        raising: set[str] | None = None,
+    ) -> None:
+        self._outcomes = outcomes
+        self._raising = raising or set()
+        self.calls: list[str] = []
+
+    async def submit_action(
+        self,
+        review_case_id: str,
+        action_type: str,
+        new_state: str,
+        resolution: str | None,
+        notes: str | None,
+        follow_up_at: str | None,
+        actor_id: str,
+        survivor_person_id: str | None,
+        golden_profile_selections: list[GoldenProfileSelection],
+        *,
+        reason_code: str | None = None,
+    ) -> ActionResult | None:
+        self.calls.append(review_case_id)
+        if review_case_id in self._raising:
+            raise RuntimeError("commit outcome unknown")
+        return self._outcomes.get(review_case_id)
+
+
+@pytest.mark.asyncio
+async def test_submit_bulk_action_reports_per_item_outcomes() -> None:
+    repo = _StubReviewRepository(
+        outcomes={
+            "case-ok": ActionResult(
+                review_case_id="case-ok",
+                queue_state="resolved",
+                resolution="resolve",
+            ),
+            "case-missing": None,
+            "case-merged": ActionResult(merge_not_applicable=True),
+            "case-unresolvable": ActionResult(resolve_not_applicable=True),
+        },
+        raising={"case-boom"},
+    )
+
+    outcome = await repo.submit_bulk_action(
+        [
+            "case-ok",
+            "case-ok",
+            "case-missing",
+            "case-merged",
+            "case-unresolvable",
+            "case-boom",
+        ],
+        "resolve",
+        "resolved",
+        "resolve",
+        None,
+        None,
+        "reviewer@example.com",
+        "confirmed_match",
+    )
+
+    assert outcome["items"] == [
+        {
+            "review_case_id": "case-ok",
+            "status": "updated",
+            "queue_state": "resolved",
+            "resolution": "resolve",
+            "error_code": None,
+        },
+        {
+            "review_case_id": "case-ok",
+            "status": "error",
+            "queue_state": None,
+            "resolution": None,
+            "error_code": "duplicate_review_case_id",
+        },
+        {
+            "review_case_id": "case-missing",
+            "status": "error",
+            "queue_state": None,
+            "resolution": None,
+            "error_code": "review_case_not_found",
+        },
+        {
+            "review_case_id": "case-merged",
+            "status": "error",
+            "queue_state": None,
+            "resolution": None,
+            "error_code": "action_not_applicable",
+        },
+        {
+            "review_case_id": "case-unresolvable",
+            "status": "error",
+            "queue_state": None,
+            "resolution": None,
+            "error_code": "resolve_not_applicable",
+        },
+        {
+            "review_case_id": "case-boom",
+            "status": "error",
+            "queue_state": None,
+            "resolution": None,
+            "error_code": "outcome_unknown",
+        },
+    ]
+    # The duplicate id is rejected without a second single-case submission.
+    assert repo.calls == [
+        "case-ok",
+        "case-missing",
+        "case-merged",
+        "case-unresolvable",
+        "case-boom",
+    ]

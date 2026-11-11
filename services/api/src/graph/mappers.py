@@ -687,6 +687,8 @@ def map_match_decision(record: GraphRecord) -> MatchDecision:
         review_case_id=to_optional_str(record.get("review_case_id")),
         review_case_queue_state=to_optional_str(record.get("review_case_queue_state")),
         review_case_assigned_to=to_optional_str(record.get("review_case_assigned_to")),
+        review_suppressed=bool(md.get("review_suppressed", False)),
+        suppressed_reason=to_optional_str(md.get("suppressed_reason")),
     )
 
 
@@ -708,6 +710,8 @@ def map_review_case_summary(record: GraphRecord) -> ReviewCaseSummary:
         right_person_id=to_optional_str(record.get("right_person_id")),
         right_person_name=to_optional_str(record.get("right_person_name")),
         right_person_status=to_optional_str(record.get("right_person_status")),
+        resolved_by=to_optional_str(rc.get("resolved_by")),
+        resolution_reason_code=to_optional_str(rc.get("resolution_reason_code")),
         match_decision=MatchDecisionSummary(
             match_decision_id=to_str(md.get("match_decision_id")),
             engine_type=to_str(md.get("engine_type")),
@@ -990,6 +994,8 @@ def map_review_case_detail(record: GraphRecord) -> ReviewCaseDetail:
         sla_due_at=to_iso_or_none(rc.get("sla_due_at")),
         resolution=to_optional_str(rc.get("resolution")),
         resolved_at=to_iso_or_none(rc.get("resolved_at")),
+        resolved_by=to_optional_str(rc.get("resolved_by")),
+        resolution_reason_code=to_optional_str(rc.get("resolution_reason_code")),
         actions=actions,
         match_decision=map_match_decision(record),
         comparison_left=_map_comparison_entity(
