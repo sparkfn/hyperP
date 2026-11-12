@@ -17,7 +17,8 @@ def test_spike_route_is_default_off_and_resolves_at_request_time() -> None:
     assert "set $rust_spike_upstream rust-read:3002;" in spike
     assert "rewrite ^/api/spike/v1/(.*)$ /v1/$1 break;" in spike
     assert "proxy_pass         http://$rust_spike_upstream;" in spike
-    assert "upstream rust-read" not in config
+    # No static upstream block: it would resolve rust-read at nginx startup.
+    assert re.search(r"^\s*upstream\s+rust-read\b", config, re.MULTILINE) is None
 
 
 def test_template_substitution_does_not_replace_nginx_runtime_variables() -> None:
