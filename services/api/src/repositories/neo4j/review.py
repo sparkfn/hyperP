@@ -139,7 +139,12 @@ def _optional_text(record: Mapping[str, object], key: str) -> str | None:
     return value if isinstance(value, str) else None
 
 
-def _reason_params(reason_code: str | None, resolution: str | None) -> dict[str, str]:
+class _ReviewAuditParams(TypedDict, total=False):
+    reason_code: str
+    actor_id: str
+
+
+def _reason_params(reason_code: str | None, resolution: str | None) -> _ReviewAuditParams:
     """Extra Cypher parameters for a reason-coded close.
 
     The reason code is only bound when the close sets a resolution, matching
@@ -1236,7 +1241,7 @@ async def _action_tx(
         )
         record = await result.single()
     else:
-        audit_params: dict[str, str] = _reason_params(reason_code, resolution)
+        audit_params: _ReviewAuditParams = _reason_params(reason_code, resolution)
         if include_audit_fields and resolution is not None:
             audit_params["actor_id"] = actor_id
         result = await tx.run(
