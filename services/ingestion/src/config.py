@@ -44,6 +44,10 @@ class Settings(BaseSettings):
     batch_size: int = 500
     review_policy: Literal["off", "v2_weak_signal_park"] = "off"
 
+    # NRIC hashing / encryption -----------------------------------------------
+    nric_hmac_key: str = ""
+    nric_hmac_key_version: str = "v1"
+
     # Celery / queue ----------------------------------------------------------
     celery_broker_url: str = "redis://redis:6379/0"
     celery_result_backend: str = "redis://redis:6379/1"

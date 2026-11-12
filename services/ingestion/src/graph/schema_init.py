@@ -12,6 +12,8 @@ from __future__ import annotations
 import logging
 from pathlib import Path
 
+from neo4j import Session
+
 from src.graph.client import Neo4jClient
 from src.graph.identifier_scope_schema import apply_identifier_scope_schema_transition
 from src.graph.queries.bitrix_backfill import CREATE_BITRIX_BACKFILL_CONSTRAINTS
@@ -30,6 +32,10 @@ from src.graph.queries.crm_history_authority import CREATE_CRM_HISTORY_AUTHORITY
 from src.graph.queries.crm_stage_backfill import CREATE_CRM_STAGE_BACKFILL_CONSTRAINTS
 from src.graph.queries.identifier_scope_schema import CREATE_IDENTIFIER_IDENTITY_SCOPE_UNIQUE
 from src.graph.queries.identity_link_revisions import CREATE_IDENTITY_LINK_SCHEMA
+from src.graph.queries.maintenance import (
+    DROP_PERSON_NAME_SEARCH_FULLTEXT_INDEX,
+    SHOW_PERSON_NAME_SEARCH_FULLTEXT_INDEX,
+)
 from src.graph.queries.stage_history_ingestion import (
     CREATE_STAGE_HISTORY_INGESTION_CONSTRAINTS,
 )
@@ -147,6 +153,17 @@ def _split_statements(script: str) -> list[str]:
     return [s.strip() for s in body.split(";") if s.strip()]
 
 
+def _drop_legacy_nric_fulltext_index(session: Session) -> None:
+    """Drop person_name_search index if it still indexes preferred_nric."""
+    res = session.run(SHOW_PERSON_NAME_SEARCH_FULLTEXT_INDEX)
+    record = res.single()
+    if record is not None:
+        props = record["properties"]
+        if isinstance(props, list) and "preferred_nric" in props:
+            logger.info("Dropping legacy person_name_search index indexing preferred_nric")
+            session.run(DROP_PERSON_NAME_SEARCH_FULLTEXT_INDEX).consume()
+
+
 def apply_schema(client: Neo4jClient) -> int:
     """Apply every statement in init.cypher to the connected Neo4j instance.
 
@@ -164,6 +181,9 @@ def apply_schema(client: Neo4jClient) -> int:
     with client.session() as session:
         for stmt in DROP_BOUNDED_INGESTION_SCHEMA:
             session.run(stmt).consume()
+
+        _drop_legacy_nric_fulltext_index(session)
+
         for stmt in statements:
             session.run(stmt).consume()
     logger.info("Schema applied (%d statements, idempotent)", len(statements))

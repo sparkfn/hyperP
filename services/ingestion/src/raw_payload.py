@@ -1,4 +1,4 @@
-"""Shared decoder for the ``raw_payload`` value stored on ``SourceRecord`` nodes.
+"""Shared decoder and scrubber for ``raw_payload`` stored on ``SourceRecord`` nodes.
 
 ``raw_payload`` is written as a JSON string — Neo4j cannot store a nested MAP as
 a node property — so every reader that fetches ``sr.raw_payload`` from a Cypher
@@ -13,11 +13,17 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from typing import cast
 
-from src.models import JsonValue
+from src.models import JsonValue, SourceRecordEnvelope
+from src.normalizers.nric import mask_nric, normalize_nric
 
 logger = logging.getLogger(__name__)
+
+_NRIC_REGEX = re.compile(r"(?i)[STFG]\d{7}[A-Z]")
+_NRIC_KEY_NAMES = frozenset({"nric", "customer_nric", "ic_number", "identification_number"})
+MIN_COLLECTED_NRIC_TOKEN_LEN = 8
 
 
 def decode_raw_payload(raw: object) -> dict[str, JsonValue] | None:
@@ -37,3 +43,75 @@ def decode_raw_payload(raw: object) -> dict[str, JsonValue] | None:
     except (ValueError, RecursionError):
         return None
     return parsed if isinstance(parsed, dict) else None
+
+
+def scrub_nric_strings(
+    val: JsonValue,
+    collected_tokens: frozenset[str] = frozenset(),
+) -> JsonValue:
+    """Recursively mask NRIC values in any JSON data structure.
+
+    Pass 1: replace any known collected NRIC tokens (case-insensitive).
+    Pass 2: replace any remaining regex matches for ``[STFG]\\d{7}[A-Z]``.
+    """
+    if isinstance(val, str):
+        result = val
+        for tok in collected_tokens:
+            if not tok or len(tok) < MIN_COLLECTED_NRIC_TOKEN_LEN:
+                continue
+            # Case-insensitive replacement of the exact token with masked form
+            pattern = re.compile(re.escape(tok), re.IGNORECASE)
+            result = pattern.sub(lambda m: mask_nric(m.group(0)), result)
+        # Regex pass for free-text NRICs
+        return _NRIC_REGEX.sub(lambda m: mask_nric(m.group(0)), result)
+    if isinstance(val, list):
+        return cast(JsonValue, [scrub_nric_strings(item, collected_tokens) for item in val])
+    if isinstance(val, dict):
+        return cast(
+            JsonValue,
+            {k: scrub_nric_strings(v, collected_tokens) for k, v in val.items()},
+        )
+    return val
+
+
+def _collect_nric_tokens(envelope: SourceRecordEnvelope) -> set[str]:
+    """Collect known raw/canonical NRIC strings from envelope and payload keys."""
+    tokens: set[str] = set()
+    for ident in envelope.identifiers:
+        if ident.type.lower().strip() == "nric":
+            tokens.add(ident.value.strip())
+            canonical, _ = normalize_nric(ident.value)
+            if canonical:
+                tokens.add(canonical)
+
+    def _walk(obj: object) -> None:
+        if isinstance(obj, dict):
+            for k, v in obj.items():
+                if k.lower() in _NRIC_KEY_NAMES and isinstance(v, str):
+                    s = v.strip()
+                    tokens.add(s)
+                    canonical, _ = normalize_nric(s)
+                    if canonical:
+                        tokens.add(canonical)
+                _walk(v)
+        elif isinstance(obj, list):
+            for item in obj:
+                _walk(item)
+
+    _walk(envelope.raw_payload)
+    return tokens
+
+
+def serialize_raw_payload(envelope: SourceRecordEnvelope) -> str:
+    """Serialize envelope.raw_payload to a JSON string with all NRIC strings masked.
+
+    Pass 1: Collected envelope NRIC identifiers (raw + canonical) and values under
+            named NRIC keys ({nric, customer_nric, ic_number, identification_number}).
+    Pass 2: Free-text regex [STFG]\\d{7}[A-Z] over every string leaf.
+    """
+    collected = frozenset(_collect_nric_tokens(envelope))
+    scrubbed = scrub_nric_strings(
+        cast(JsonValue, envelope.raw_payload),
+        collected_tokens=collected,
+    )
+    return json.dumps(scrubbed, default=str)

@@ -482,6 +482,10 @@ class NormalizedIdentifier(BaseModel):
     source_instance_id: str | None = None
     is_verified: bool = False
     quality_flag: QualityFlag = QualityFlag.VALID
+    nric_masked: str | None = None
+    checksum_valid: bool | None = None
+    nric_key_version: str | None = None
+    nric_plaintext: str | None = Field(default=None, exclude=True, repr=False)
 
 
 class NormalizedAddress(BaseModel):

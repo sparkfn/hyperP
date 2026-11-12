@@ -1143,6 +1143,7 @@ version = "0.1.0"
 source = { virtual = "services/ingestion" }
 dependencies = [
     { name = "celery", extra = ["redis"] },
+    { name = "cryptography" },
     { name = "httpx" },
     { name = "neo4j" },
     { name = "paramiko" },
@@ -1161,6 +1162,7 @@ dependencies = [
 [package.metadata]
 requires-dist = [
     { name = "celery", extras = ["redis"], specifier = ">=5.4,<6" },
+    { name = "cryptography", specifier = ">=42,<47" },
     { name = "httpx", specifier = ">=0.27,<1" },
     { name = "neo4j", specifier = ">=5.20,<6" },
     { name = "paramiko", specifier = ">=3.4,<4" },

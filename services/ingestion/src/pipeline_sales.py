@@ -35,7 +35,7 @@ from src.models import (
 from src.normalizers.clean import str_or_none
 from src.pipeline_writes import create_review_case_if_needed, persist_match_decision
 from src.profile_analysis_dirty import mark_profile_analysis_dirty
-from src.raw_payload import decode_raw_payload
+from src.raw_payload import decode_raw_payload, serialize_raw_payload
 from src.record_lifecycle import (
     DuplicateVersion,
     PlannedVersion,
@@ -348,7 +348,7 @@ def _create_sales_source_record(
         link_status=link_status,
         observed_at=envelope.observed_at,
         record_hash=envelope.record_hash,
-        raw_payload=json.dumps(envelope.raw_payload, default=str),
+        raw_payload=serialize_raw_payload(envelope),
         normalized_payload=json.dumps({}, default=str),
         crm_deal_stage_id=None,
         source_entity_type=None,

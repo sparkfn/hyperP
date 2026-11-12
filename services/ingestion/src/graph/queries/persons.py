@@ -27,9 +27,19 @@ MERGE (id:Identifier {
 ON CREATE SET
     id.identifier_id = randomUUID(),
     id.source_instance_id = input.source_instance_id,
+    id.hashed_value = input.hashed_value,
+    id.nric_masked = input.nric_masked,
+    id.checksum_valid = input.checksum_valid,
+    id.nric_key_version = input.nric_key_version,
+    id.nric_encrypted = input.nric_encrypted,
     id.created_at = datetime()
 ON MATCH SET
-    id.source_instance_id = input.source_instance_id
+    id.source_instance_id = input.source_instance_id,
+    id.hashed_value = coalesce(input.hashed_value, id.hashed_value),
+    id.nric_masked = coalesce(input.nric_masked, id.nric_masked),
+    id.checksum_valid = coalesce(input.checksum_valid, id.checksum_valid),
+    id.nric_key_version = coalesce(input.nric_key_version, id.nric_key_version),
+    id.nric_encrypted = coalesce(id.nric_encrypted, input.nric_encrypted)
 RETURN count(id) AS upserted_count
 """
 
@@ -240,6 +250,7 @@ WHERE coalesce(rel.is_active, true) = true
 OPTIONAL MATCH (src:SourceRecord {source_record_pk: rel.source_record_pk})
 RETURN id.identifier_type AS identifier_type,
        id.normalized_value AS normalized_value,
+       id.nric_masked AS nric_masked,
        rel.is_verified AS is_verified,
        rel.last_confirmed_at AS last_confirmed_at,
        src.record_type AS source_record_type
@@ -337,6 +348,7 @@ CALL (p) {
       OR (identifier_source.lifecycle_status IS NULL AND identifier_source.is_latest = true))
   RETURN collect(CASE WHEN identifier IS NULL THEN null ELSE {
     identifier_type: identifier_node.identifier_type, normalized_value: identifier_node.normalized_value,
+    nric_masked: identifier_node.nric_masked,
     is_verified: identifier.is_verified, last_confirmed_at: toString(identifier.last_confirmed_at),
     source_record_pk: identifier.source_record_pk
   } END) AS identifiers
