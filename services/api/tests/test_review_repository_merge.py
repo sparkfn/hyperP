@@ -1184,8 +1184,12 @@ class _LifecycleTx:
         self.created_at = created_at
         self.calls: list[tuple[str, Mapping[str, object]]] = []
         self.events: list[str] = []
+        self.summary_calls: list[str] = []
 
     async def run(self, query: str, **params: object) -> _StateResult:
+        if is_summary_capture_query(query) or is_summary_apply_query(query):
+            self.summary_calls.append(query)
+            return _StateResult(SUMMARY_APPLY_ROW if is_summary_apply_query(query) else None)
         self.calls.append((query, params))
         if query == GET_PERSONS_FOR_REVIEW_MERGE:
             return _StateResult(None)
