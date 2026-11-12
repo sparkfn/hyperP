@@ -8,7 +8,7 @@ import logging
 from collections import Counter
 from collections.abc import Mapping
 from datetime import UTC, datetime
-from typing import TypedDict, TypeVar
+from typing import TypedDict
 
 from neo4j import AsyncManagedTransaction, Record
 
@@ -102,7 +102,6 @@ logger = logging.getLogger(__name__)
 REVIEW_RESOLUTION_COUNTER: Counter[tuple[str, str, str, str]] = Counter()
 REVIEW_AGE_BUCKET_COUNTER: Counter[tuple[str, str, str]] = Counter()
 _MAX_REVIEW_COUNTER_KEYS = 512
-_CounterKey = TypeVar("_CounterKey", bound=tuple[str, ...])
 
 # Action types whose close always records the reviewer audit fields, even when
 # no reason code was supplied.
@@ -197,7 +196,9 @@ def _compute_review_age_days(created_at_iso: str | None) -> float | None:
     return max(0.0, (datetime.now(UTC) - created_utc).total_seconds() / 86400.0)
 
 
-def _prune_counter(counter: Counter[_CounterKey], max_keys: int = _MAX_REVIEW_COUNTER_KEYS) -> None:
+def _prune_counter[CounterKey: tuple[str, ...]](
+    counter: Counter[CounterKey], max_keys: int = _MAX_REVIEW_COUNTER_KEYS
+) -> None:
     """Keep process-local telemetry bounded, evicting the oldest UTC day first."""
     while len(counter) > max_keys:
         oldest_day = min(key[-1] for key in counter)
