@@ -11,7 +11,6 @@ import logging
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
-from typing import TypeVar
 
 from neo4j import ManagedTransaction
 
@@ -61,7 +60,6 @@ WEAK_SIGNAL_REASON_CODES: frozenset[str] = frozenset(
 REVIEW_CASES_CREATED_COUNTER: Counter[tuple[str, str, str, str]] = Counter()
 REVIEW_DECISIONS_SUPPRESSED_COUNTER: Counter[tuple[str, str, str]] = Counter()
 _MAX_REVIEW_COUNTER_KEYS = 512
-_CounterKey = TypeVar("_CounterKey", bound=tuple[str, ...])
 
 
 def _weak_reason_code(reason: str) -> str | None:
@@ -128,7 +126,9 @@ def classify_created_case_reason(match_result: MatchResult) -> str:
     return "other"
 
 
-def _prune_counter(counter: Counter[_CounterKey], max_keys: int = _MAX_REVIEW_COUNTER_KEYS) -> None:
+def _prune_counter[CounterKey: tuple[str, ...]](
+    counter: Counter[CounterKey], max_keys: int = _MAX_REVIEW_COUNTER_KEYS
+) -> None:
     """Keep process-local telemetry bounded, evicting the oldest UTC day first."""
     while len(counter) > max_keys:
         oldest_day = min(key[-1] for key in counter)
