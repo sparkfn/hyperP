@@ -650,8 +650,10 @@ export function BulkReviewActionsPanel({
     setRefreshFailed(!refreshed);
     trackUnknownOutcome(ids, refreshed);
     setSuccess(null);
+    const messageDetail = detail.trimEnd();
+    const sentenceSeparator = /[.!?]$/.test(messageDetail) ? " " : ". ";
     setError(
-      `${detail} The commit outcome for ${ids.length} submitted review case(s) is unknown. ` +
+      `${messageDetail}${sentenceSeparator}The commit outcome for ${ids.length} submitted review case(s) is unknown. ` +
         (refreshed
           ? "The review queue was reloaded — verify these review cases before retrying."
           : "The review queue could not be reloaded — reload it before retrying."),
