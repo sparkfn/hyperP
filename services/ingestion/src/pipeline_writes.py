@@ -278,6 +278,9 @@ def find_candidates(
         )
         # Transition candidate generation: find legacy plaintext holders using plaintext carrier.
         # Removed after L2 rehash backfill.
+        # rebase(#490): same carrier dependency as matching.deterministic._check_government_id;
+        # the A3 follow-up must restore carrier-equivalence for rows rebuilt without
+        # ``nric_plaintext`` so they still reach legacy-plaintext candidates.
         if ident.identifier_type == "nric" and ident.nric_plaintext:
             identifier_rows.append(
                 {
