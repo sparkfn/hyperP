@@ -223,7 +223,7 @@ export interface paths {
         };
         /**
          * Get person-listing summary counts
-         * @description Returns the all-profile, high-risk, high-value, and no-contact counts shown above the authenticated person listing. Counts exclude merged persons and are calculated in one aggregate graph read.
+         * @description Returns the all-profile, high-risk, high-value, and no-contact counts shown above the authenticated person listing. Counts exclude merged persons and are served from the maintained counter when ready, with the authoritative aggregate query as fallback.
          */
         get: operations["getPersonListSummary"];
         put?: never;

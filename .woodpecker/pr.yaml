@@ -120,6 +120,11 @@ steps:
       HYPERP_NEO4J_PERSON_LIST_TEST_PASSWORD: ci-census-migration-api
       HYPERP_NEO4J_PERSON_LIST_TEST_SERVICE_HOST: neo4j-census-migration-api
       HYPERP_NEO4J_PERSON_LIST_TEST_ALLOW_SCHEMA_MUTATION: "1"
+      HYPERP_NEO4J_PERSON_LIST_SUMMARY_TEST_URI: bolt://neo4j-census-migration-api:7687
+      HYPERP_NEO4J_PERSON_LIST_SUMMARY_TEST_USER: neo4j
+      HYPERP_NEO4J_PERSON_LIST_SUMMARY_TEST_PASSWORD: ci-census-migration-api
+      HYPERP_NEO4J_PERSON_LIST_SUMMARY_TEST_SERVICE_HOST: neo4j-census-migration-api
+      HYPERP_NEO4J_PERSON_LIST_SUMMARY_TEST_REQUIRED: "1"
       HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_URI: bolt://neo4j-census-migration-api:7687
       HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_USER: neo4j
       HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_PASSWORD: ci-census-migration-api
@@ -153,8 +158,9 @@ steps:
       - uv sync --frozen --group dev --package profile-unifier-api --package profile-unifier-ingestion
       - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_URI --user-env HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_USER --password-env HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_PASSWORD --timeout-seconds 90
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_identifier_scope_schema_neo4j.py -q
-      - uv run --package profile-unifier-api pytest services/api/tests/test_person_identifiers_neo4j.py services/api/tests/test_person_crm_metrics_neo4j.py services/api/tests/test_persons_list_neo4j_234.py services/api/tests/test_persons_list_possible_match_neo4j.py services/api/tests/test_persons_list_plan_neo4j.py services/api/tests/test_identity_link_revisions_neo4j.py services/api/tests/test_person_graph_neo4j.py -q
+      - uv run --package profile-unifier-api pytest services/api/tests/test_person_identifiers_neo4j.py services/api/tests/test_person_crm_metrics_neo4j.py services/api/tests/test_persons_list_neo4j_234.py services/api/tests/test_persons_list_possible_match_neo4j.py services/api/tests/test_persons_list_plan_neo4j.py services/api/tests/test_identity_link_revisions_neo4j.py services/api/tests/test_person_graph_neo4j.py services/api/tests/test_person_list_summary_neo4j.py -q
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_person_completeness_migration_neo4j.py services/ingestion/tests/test_loyalty_points_migration_neo4j.py services/ingestion/tests/test_crm_deal_count_migration_neo4j.py services/ingestion/tests/test_ingestion_control_instance_migration_neo4j.py services/ingestion/tests/test_identifier_scope_migrations_neo4j.py services/ingestion/tests/test_identity_link_revision_baseline_neo4j.py services/ingestion/tests/test_standalone_crm_census_neo4j.py services/ingestion/tests/test_standalone_crm_lane_a_schema_neo4j.py services/ingestion/tests/test_standalone_crm_source_child_integration_neo4j.py services/ingestion/tests/test_crm_company_membership_neo4j.py -q
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_person_list_summary_neo4j.py -q -s
       - python scripts/ci_selection_manifest.py query-manifest --workflow .woodpecker/pr.yaml
 
   - name: neo4j-tenant-mapping-checks

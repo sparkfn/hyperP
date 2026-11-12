@@ -532,7 +532,8 @@ paths:
       description: >-
         Returns the all-profile, high-risk, high-value, and no-contact counts
         shown above the authenticated person listing. Counts exclude merged
-        persons and are calculated in one aggregate graph read.
+        persons and are served from the maintained counter when ready, with the
+        authoritative aggregate query as fallback.
       security:
         - bearerAuth: []
       parameters:
