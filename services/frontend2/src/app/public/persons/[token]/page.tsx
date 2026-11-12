@@ -21,11 +21,6 @@ function formatAmount(amount: number | null, currency: string | null): string {
   }).format(amount);
 }
 
-function maskNric(nric: string | null): string {
-  if (!nric) return "—";
-  return nric.length >= 4 ? `****${nric.slice(-4)}` : "****";
-}
-
 
 export default async function PublicPersonPage({ params }: PageProps): Promise<ReactElement> {
   const { token } = await params;
@@ -65,7 +60,7 @@ export default async function PublicPersonPage({ params }: PageProps): Promise<R
             <h1 className={styles.personName}>{person.preferred_full_name ?? "Unknown"}</h1>
             <div className={styles.personMeta}>
               {person.preferred_dob && <span>{formatDob(person.preferred_dob)}</span>}
-              {person.preferred_nric && <span>{maskNric(person.preferred_nric)}</span>}
+              {person.preferred_nric && <span>{person.preferred_nric}</span>}
               <span className={`${styles.statusBadge} ${styles[`status_${person.status}`]}`}>
                 {person.status}
               </span>
@@ -88,7 +83,7 @@ export default async function PublicPersonPage({ params }: PageProps): Promise<R
             {person.preferred_nric && (
               <div className={styles.fieldGroup}>
                 <div className={styles.fieldLabel}>NRIC</div>
-                <div className={styles.fieldValue}>{maskNric(person.preferred_nric)}</div>
+                <div className={styles.fieldValue}>{person.preferred_nric}</div>
               </div>
             )}
             {person.preferred_address && (
