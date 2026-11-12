@@ -224,6 +224,13 @@ class Settings(BaseSettings):
     whatsadmin_api_retry_base_delay_seconds: float = Field(default=1.0, ge=0)
 
     @model_validator(mode="after")
+    def _validate_projection_spike(self) -> Settings:
+        """Require a projection DSN only while the Rust spike is enabled."""
+        if self.rust_spike_enabled and not self.projection_postgres_dsn.get_secret_value().strip():
+            raise ValueError("PROJECTION_POSTGRES_DSN is required when RUST_SPIKE_ENABLED is set")
+        return self
+
+    @model_validator(mode="after")
     def _validate_enabled_whatsadmin_entities(self) -> Settings:
         enabled_keys: tuple[tuple[str, bool, SecretStr], ...] = (
             ("eko", self.whatsadmin_eko_enabled, self.whatsadmin_eko_api_key),
@@ -257,6 +264,14 @@ class Settings(BaseSettings):
     # tuning (timeout/delay/retries) lives in this file's `llm` block; LLM
     # GPT and ProClaude provider credentials are read from the environment.
     ingestion_config_file: str = ""
+
+    # Rust read-projection spike (#491) -------------------------------------
+    # Disabled by default. When enabled, the lifecycle worker mirrors person
+    # and identity-link state into the disposable Postgres projection read by
+    # the Rust spike. The DSN is required only while the spike is enabled.
+    rust_spike_enabled: bool = False
+    projection_sync_interval_seconds: int = Field(default=30, ge=1)
+    projection_postgres_dsn: SecretStr = SecretStr("")
 
     # Birthday greeting task -------------------------------------------------
     # Daily Celery beat job that sends a WhatsApp birthday message to every

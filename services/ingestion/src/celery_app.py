@@ -30,6 +30,7 @@ celery_app = Celery(
         "src.standalone_crm_schedule_tasks",
         "src.stage_history_tasks",
         "src.crm_deal_identity_repair_tasks",
+        "src.projection_sync",
     ],
 )
 
@@ -53,6 +54,7 @@ celery_app.conf.update(
         "src.tasks.materialize_knows_task": {"queue": LIFECYCLE_QUEUE},
         "src.tasks.send_birthday_messages_task": {"queue": MISCELLANEOUS_QUEUE},
         "src.tasks.recalculate_pair_audit_match_task": {"queue": MISCELLANEOUS_QUEUE},
+        "src.projection_sync.projection_sync_task": {"queue": LIFECYCLE_QUEUE},
     },
     broker_transport_options={
         "visibility_timeout": settings.celery_broker_visibility_timeout,
@@ -108,6 +110,17 @@ if settings.birthday_task_enabled:
         ),
         "args": (),
         "options": {"queue": MISCELLANEOUS_QUEUE},
+    }
+
+if settings.rust_spike_enabled:
+    _beat_schedule["projection-sync"] = {
+        "task": "src.projection_sync.projection_sync_task",
+        "schedule": float(settings.projection_sync_interval_seconds),
+        "args": (),
+        "options": {
+            "queue": LIFECYCLE_QUEUE,
+            "expires": float(settings.projection_sync_interval_seconds),
+        },
     }
 
 celery_app.conf.beat_schedule = _beat_schedule

@@ -27,6 +27,7 @@ def test_worker_concurrency_and_task_routes_are_fixed_in_code() -> None:
         "src.tasks.materialize_knows_task": {"queue": "lifecycle"},
         "src.tasks.send_birthday_messages_task": {"queue": "miscellaneous"},
         "src.tasks.recalculate_pair_audit_match_task": {"queue": "miscellaneous"},
+        "src.projection_sync.projection_sync_task": {"queue": "lifecycle"},
     }
     assert materialize_knows_task.soft_time_limit == 300
     assert materialize_knows_task.time_limit == 330
