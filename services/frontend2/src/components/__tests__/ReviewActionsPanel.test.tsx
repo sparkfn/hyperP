@@ -7,7 +7,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 
 import type { Person } from "@/lib/api-types";
 import type { PersonSourceRecord } from "@/lib/api-types-person";
-import type { BulkReviewActionItemResult } from "@/lib/api-types-ops";
+import type { BulkReviewActionItemResult, ReviewCaseSummary } from "@/lib/api-types-ops";
 import ReviewActionsPanel, { BulkReviewActionsPanel } from "../ReviewActionsPanel";
 import { bffFetch } from "@/lib/api-client";
 
@@ -259,6 +259,51 @@ describe("ReviewActionsPanel pair-audit guard", () => {
       .mock.calls.find(([path]) => String(path).includes("/review-cases/case-1/actions"));
     const body: unknown = JSON.parse(String(postCall?.[1]?.body));
     expect(body).toMatchObject({ action_type: "reject" });
+  });
+
+  it("applies the pair-audit guard when the engine type comes from the case summary", async () => {
+    // The person page feeds the panel with `match_decision.engine_type` of the
+    // review case it shows, so a pair-audit case must disable merge there too.
+    vi.mocked(bffFetch).mockImplementation(async (path: string) => {
+      throw new Error(`Unexpected path: ${path}`);
+    });
+
+    const reviewCase: ReviewCaseSummary = {
+      review_case_id: "case-1",
+      queue_state: "open",
+      priority: 1,
+      assigned_to: null,
+      follow_up_at: null,
+      sla_due_at: null,
+      resolution: null,
+      resolved_at: null,
+      left_person_id: "person-a",
+      right_person_id: "person-b",
+      match_decision: {
+        match_decision_id: "md-1",
+        engine_type: "pair_audit",
+        decision: "review",
+        confidence: 0.9,
+      },
+    };
+
+    render(
+      <ReviewActionsPanel
+        reviewCaseId={reviewCase.review_case_id}
+        queueState={reviewCase.queue_state}
+        assignedTo={reviewCase.assigned_to}
+        leftPersonId={reviewCase.left_person_id ?? null}
+        rightPersonId={reviewCase.right_person_id ?? null}
+        engineType={reviewCase.match_decision.engine_type}
+        onChanged={async () => undefined}
+      />,
+    );
+
+    const actionSelect = screen.getByLabelText("Action type") as HTMLSelectElement;
+    await waitFor(() => expect(actionSelect.value).toBe("reject"));
+    const mergeOption = within(actionSelect).getByRole("option", { name: "Merge" }) as HTMLOptionElement;
+    expect(mergeOption.disabled).toBe(true);
+    expect(screen.getByText("Merge is disabled for pair-audit cases.")).toBeTruthy();
   });
 
   it("cancels in-flight merge choices and blocks submission when the engine turns pair-audit", async () => {

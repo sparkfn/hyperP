@@ -2400,6 +2400,8 @@ class _StubReviewRepository(Neo4jReviewRepository):
         self._outcomes = outcomes
         self._raising = raising or set()
         self.calls: list[str] = []
+        # (action_type, new_state, resolution, follow_up_at, actor_id, reason_code)
+        self.forwarded: list[tuple[str, str, str | None, str | None, str, str | None]] = []
 
     async def submit_action(
         self,
@@ -2416,6 +2418,9 @@ class _StubReviewRepository(Neo4jReviewRepository):
         reason_code: str | None = None,
     ) -> ActionResult | None:
         self.calls.append(review_case_id)
+        self.forwarded.append(
+            (action_type, new_state, resolution, follow_up_at, actor_id, reason_code)
+        )
         if review_case_id in self._raising:
             raise RuntimeError("commit outcome unknown")
         return self._outcomes.get(review_case_id)
@@ -2450,7 +2455,7 @@ async def test_submit_bulk_action_reports_per_item_outcomes() -> None:
         "resolved",
         "resolve",
         None,
-        None,
+        "2026-04-15T12:00:00Z",
         "reviewer@example.com",
         "confirmed_match",
     )
@@ -2507,3 +2512,14 @@ async def test_submit_bulk_action_reports_per_item_outcomes() -> None:
         "case-unresolvable",
         "case-boom",
     ]
+    # The bulk arguments — including the audit fields — reach the single-case
+    # action unchanged, so a dropped reason_code or a mis-forwarded
+    # follow-up timestamp cannot pass unnoticed.
+    assert repo.forwarded[0] == (
+        "resolve",
+        "resolved",
+        "resolve",
+        "2026-04-15T12:00:00Z",
+        "reviewer@example.com",
+        "confirmed_match",
+    )
