@@ -35,6 +35,18 @@ services:
       NEO4J_server_memory_heap_initial__size: 128m
       NEO4J_server_memory_heap_max__size: 384m
       NEO4J_server_memory_pagecache_size: 128m
+  - name: postgres-spike-python
+    image: postgres:16.10-bookworm
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ci-spike
+      POSTGRES_DB: postgres
+  - name: postgres-spike-rust
+    image: postgres:16.10-bookworm
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: ci-spike
+      POSTGRES_DB: postgres
 
 steps:
   - name: python-checks
@@ -79,10 +91,11 @@ steps:
       HYPERP_NEO4J_ACTIVE_PUBLICATION_TEST_USER: neo4j
       HYPERP_NEO4J_ACTIVE_PUBLICATION_TEST_PASSWORD: ci-projection
       HYPERP_NEO4J_ACTIVE_PUBLICATION_TEST_SERVICE_HOST: neo4j-projection
+      PROJECTION_TEST_POSTGRES_DSN: postgresql://postgres:ci-spike@postgres-spike-python:5432/postgres
     commands:
       - uv sync --frozen --package profile-unifier-api --package profile-unifier-ingestion
       - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_URI --user-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_USER --password-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD --timeout-seconds 90
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_projection_repository_neo4j.py services/ingestion/tests/test_crm_tenant_activation_neo4j.py services/ingestion/tests/test_active_publication_fencing_neo4j.py -q
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_projection_repository_neo4j.py services/ingestion/tests/test_crm_tenant_activation_neo4j.py services/ingestion/tests/test_active_publication_fencing_neo4j.py services/ingestion/tests/test_projection_sync_postgres.py -q
       - python scripts/ci_selection_manifest.py query-manifest --workflow .woodpecker/main.yaml
 
   - name: neo4j-census-migration-api-checks
@@ -155,6 +168,31 @@ steps:
       - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_URI --user-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_USER --password-env HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST_PASSWORD --timeout-seconds 90
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_preparation.py services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_lifecycle.py services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_freshness_integrity.py services/ingestion/tests/test_crm_tenant_mapping_repository_neo4j_strictness.py -q
       - python scripts/ci_selection_manifest.py query-manifest --workflow .woodpecker/main.yaml
+
+  - name: rust-read-checks
+    image: rust:1.88.0-bookworm
+    depends_on: []
+    environment:
+      PGHOST: postgres-spike-rust
+      PGUSER: postgres
+      PGPASSWORD: ci-spike
+      PGDATABASE: postgres
+      POSTGRES_USER: postgres
+      POSTGRES_DB: postgres
+      RUST_SPIKE_READ_PASSWORD: ci-spike-reader
+      RUST_READ_TEST_DATABASE_URL: postgres://spike_reader:ci-spike-reader@postgres-spike-rust:5432/postgres
+      RUST_READ_TEST_WRITER_URL: postgres://postgres:ci-spike@postgres-spike-rust:5432/postgres
+      HYPERP_RUST_READ_TEST_DISPOSABLE: "1"
+      RUST_SPIKE_BEARER_TOKEN: test-bearer
+      RUST_SPIKE_CURSOR_SECRET: test-cursor-secret
+    commands:
+      - apt-get update -qq
+      - apt-get install -y -qq --no-install-recommends postgresql-client
+      - for attempt in $(seq 1 60); do pg_isready -q && break; sleep 1; done
+      - pg_isready
+      - psql -v ON_ERROR_STOP=1 -f services/rust-read/postgres/01-schema.sql
+      - bash services/rust-read/postgres/02-read-only-role.sh
+      - cargo test --locked --manifest-path services/rust-read/Cargo.toml
 
   - name: frontend-build
     image: node:22-bookworm

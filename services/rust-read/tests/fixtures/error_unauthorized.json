@@ -1,0 +1,12 @@
+{
+  "error": {
+    "code": "unauthorized",
+    "message": "Invalid bearer token.",
+    "details": null
+  },
+  "meta": {
+    "request_id": "req-test-0001",
+    "next_cursor": null,
+    "total_count": null
+  }
+}

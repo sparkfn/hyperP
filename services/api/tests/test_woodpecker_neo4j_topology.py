@@ -195,7 +195,24 @@ def test_workflows_keep_active_pr_main_boundaries_and_dependency_semantics() -> 
         document = _workflow(name)
         steps = _steps(document)
         frontend = "frontend-checks" if name == "pr.yaml" else "frontend-build"
-        assert set(steps) == {"python-checks", *_SHARDS, frontend}
+        assert set(steps) == {"python-checks", *_SHARDS, "rust-read-checks", frontend}
+        assert steps["rust-read-checks"]["depends_on"] == []
+        assert steps["rust-read-checks"]["image"] == "rust:1.88.0-bookworm"
+        rust_commands = _commands(steps["rust-read-checks"])
+        assert rust_commands[-3:] == (
+            "psql -v ON_ERROR_STOP=1 -f services/rust-read/postgres/01-schema.sql",
+            "bash services/rust-read/postgres/02-read-only-role.sh",
+            "cargo test --locked --manifest-path services/rust-read/Cargo.toml",
+        )
+        rust_env = _environment(steps["rust-read-checks"])
+        assert rust_env["HYPERP_RUST_READ_TEST_DISPOSABLE"] == "1"
+        assert rust_env["PGHOST"] == "postgres-spike-rust"
+        assert rust_env["RUST_READ_TEST_DATABASE_URL"] == (
+            "postgres://spike_reader:ci-spike-reader@postgres-spike-rust:5432/postgres"
+        )
+        assert rust_env["RUST_READ_TEST_WRITER_URL"] == (
+            "postgres://postgres:ci-spike@postgres-spike-rust:5432/postgres"
+        )
         expected_when = {"event": ["pull_request"]}
         if name == "main.yaml":
             expected_when = {"event": ["push"], "branch": ["main"]}
@@ -274,7 +291,15 @@ def test_neo4j_services_are_isolated_and_each_has_retained_consumers() -> None:
             for service in services
             if isinstance(service, dict)
         }
-        assert set(by_name) == set(expected_services)
+        assert set(by_name) == {
+            *expected_services, "postgres-spike-python", "postgres-spike-rust"
+        }
+        for postgres_name in ("postgres-spike-python", "postgres-spike-rust"):
+            postgres = by_name[postgres_name]
+            assert postgres["image"] == "postgres:16.10-bookworm"
+            assert postgres["environment"] == {
+                "POSTGRES_USER": "postgres", "POSTGRES_PASSWORD": "ci-spike", "POSTGRES_DB": "postgres"
+            }
         for service_name, password in expected_services.items():
             service = by_name[service_name]
             assert service.get("image") == "neo4j:5.26-community"
@@ -412,6 +437,7 @@ _EXPECTED_QUERY_TEST_PATHS = frozenset(
         "services/ingestion/tests/test_ingestion_control_instance_migration_neo4j.py",
         "services/ingestion/tests/test_loyalty_points_migration_neo4j.py",
         "services/ingestion/tests/test_person_completeness_migration_neo4j.py",
+        "services/ingestion/tests/test_projection_sync_postgres.py",
         "services/ingestion/tests/test_standalone_crm_census_neo4j.py",
         "services/ingestion/tests/test_standalone_crm_lane_a_schema_neo4j.py",
         "services/ingestion/tests/test_standalone_crm_source_child_integration_neo4j.py",
@@ -591,7 +617,7 @@ def _assert_query_service_bindings(document: dict[str, object]) -> None:
     passwords = {
         str(service["name"]): str(service["environment"]["NEO4J_AUTH"]).split("/", 1)[1]
         for service in services
-        if isinstance(service, dict)
+        if isinstance(service, dict) and str(service.get("name", "")).startswith("neo4j-")
     }
     steps = _steps(document)
     expected_services = {

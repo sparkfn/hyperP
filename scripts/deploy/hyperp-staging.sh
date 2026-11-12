@@ -587,7 +587,9 @@ if (( ${#RUNNING_RECREATE_SERVICE_ARRAY[@]} == 0 && \
 fi
 
 if [[ "${RESTART_WEB}" == true ]]; then
-  "${COMPOSE[@]}" restart web
+  # Compose changes can alter web's template mount, environment, or networks.
+  # A container restart alone would retain its old configuration.
+  "${COMPOSE[@]}" up -d --no-deps --force-recreate web
 else
   printf '%s\n' '[hyperp-staging] web dependencies unchanged; skipping web restart'
 fi

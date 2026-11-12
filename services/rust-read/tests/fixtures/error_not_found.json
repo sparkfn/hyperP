@@ -1,0 +1,12 @@
+{
+  "error": {
+    "code": "person_not_found",
+    "message": "Person not found.",
+    "details": null
+  },
+  "meta": {
+    "request_id": "req-test-0001",
+    "next_cursor": null,
+    "total_count": null
+  }
+}

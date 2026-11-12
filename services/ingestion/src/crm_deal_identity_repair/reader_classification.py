@@ -71,6 +71,18 @@ _AUDIT_READERS: Final[frozenset[str]] = frozenset(
         "ingestion/graph/queries/crm_tenant_mapping.py:READ_TOPOLOGY_VIOLATIONS",
         "ingestion/graph/queries/crm_tenant_projection_mapping_guard.py:VALIDATE_MAPPING_PROOF_GUARD",
         "ingestion/graph/queries/merge.py:GET_AFFECTED_SOURCE_RECORDS",
+        # The Rust spike's projection queries are read-only audit copies of the API
+        # list/detail views: they mirror graph state into a disposable Postgres
+        # projection (#491) and never repair or write relationships.
+        "ingestion/graph/queries/projection_sync.py:PROJECTION_CHANGED_PERSON_IDS",
+        "ingestion/graph/queries/projection_sync.py:PROJECTION_NEIGHBOUR_PERSON_IDS",
+        "ingestion/graph/queries/projection_sync.py:PROJECTION_PERSON_ADDRESSES",
+        "ingestion/graph/queries/projection_sync.py:PROJECTION_PERSON_CONNECTIONS",
+        "ingestion/graph/queries/projection_sync.py:PROJECTION_PERSON_DETAIL_ROWS",
+        "ingestion/graph/queries/projection_sync.py:PROJECTION_PERSON_IDENTIFIERS",
+        "ingestion/graph/queries/projection_sync.py:PROJECTION_PERSON_LIST_ROWS",
+        "ingestion/graph/queries/projection_sync.py:PROJECTION_PERSON_SOURCE_RECORDS",
+        "ingestion/graph/queries/projection_sync.py:PROJECTION_SUMMARY_COUNTERS",
         # Identifier detail intentionally presents retired projections as
         # evidence, including their is_active state and provenance.
         "api/graph/queries/persons.py:GET_PERSON_IDENTIFIERS",
