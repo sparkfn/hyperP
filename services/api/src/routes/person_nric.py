@@ -8,14 +8,14 @@ from fastapi import APIRouter, Depends, Request
 
 from src.auth.deps import require_human_admin
 from src.auth.models import AuthUser
-from src.http_utils import ApiResponse, envelope, http_error, request_id
+from src.http_utils import envelope, http_error, request_id
 from src.nric import NricKeyUnavailableError
 from src.repositories.deps import get_nric_repo
 from src.repositories.protocols.nric import (
     NricRevealRepository,
     NricUnavailableError,
 )
-from src.types import NricReveal, NricRevealRequest
+from src.types import ApiResponse, NricReveal, NricRevealRequest
 
 logger = logging.getLogger(__name__)
 

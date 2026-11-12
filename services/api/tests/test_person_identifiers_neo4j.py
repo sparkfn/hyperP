@@ -252,7 +252,7 @@ def test_identifiers_query_executes_and_preserves_provenance_variants(
         ("phone", phone_value),
         ("email", email_value),
         ("phone", dangling_value),
-        ("nric", legacy_value),
+        ("nric", "•••••••••"),
     ]
     assert [item.is_verified for item in identifiers] == [True, False, False, False]
     assert [(record["identifier_type"], record["normalized_value"]) for record in first_page] == [
