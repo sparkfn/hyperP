@@ -297,10 +297,10 @@ class PersonListSummaryDeltaCollector:
             identifier for identifier in deal_element_ids if identifier
         )
         snapshot = await capture(tx, new_person_ids, new_deal_pks, new_deal_element_ids)
-        for person_id, contribution in snapshot.persons.items():
-            self._before_persons.setdefault(person_id, contribution)
-        for deal_key, contribution in snapshot.deals.items():
-            self._before_deals.setdefault(deal_key, contribution)
+        for person_id, person_contribution in snapshot.persons.items():
+            self._before_persons.setdefault(person_id, person_contribution)
+        for deal_key, deal_contribution in snapshot.deals.items():
+            self._before_deals.setdefault(deal_key, deal_contribution)
 
     def mark_new(
         self,

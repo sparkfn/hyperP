@@ -451,10 +451,13 @@ async def test_unmerge_revalidates_survivor_after_a_concurrent_merge(
             WITH phone
             MATCH (absorbed:Person {{person_id: $absorbed_id}})
             CREATE (absorbed)-[:IDENTIFIED_BY {{is_active: true, is_verified: true,
-              quality_flag: 'valid', last_confirmed_at: datetime()}}]->(phone)
+              quality_flag: 'valid', last_confirmed_at: datetime(),
+              source_system_key: 'summary_test',
+              source_record_pk: $source_record_pk}}]->(phone)
             """,
             third_id=third_person_id,
             identifier_id=f"summary-identifier-{neo4j_graph.run_id}",
+            source_record_pk=f"summary-source-{neo4j_graph.run_id}",
             phone=phone,
             run_id=neo4j_graph.run_id,
             absorbed_id=absorbed_id,
