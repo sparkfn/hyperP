@@ -116,6 +116,9 @@ x-ingestion-env: &ingestion-env
   SALES_PREDICTION_REPOSITORY_SHA: ${SALES_PREDICTION_REPOSITORY_SHA:-}
   SALES_PREDICTION_IMAGE_DIGEST: ${SALES_PREDICTION_IMAGE_DIGEST:-}
   TZ: ${TZ:-UTC}
+  RUST_SPIKE_ENABLED: ${RUST_SPIKE_ENABLED:-0}
+  PROJECTION_SYNC_INTERVAL_SECONDS: ${PROJECTION_SYNC_INTERVAL_SECONDS:-30}
+  PROJECTION_POSTGRES_DSN: ${PROJECTION_POSTGRES_DSN:-}
 
 services:
   intelligence:
@@ -284,14 +287,17 @@ services:
     image: nginx:1.27-alpine
     cpus: 0.25
     mem_limit: 128M
+    environment:
+      RUST_SPIKE_ENABLED: ${RUST_SPIKE_ENABLED:-0}
+      NGINX_ENVSUBST_FILTER: '^RUST_SPIKE_ENABLED$$'
     volumes:
-      - ../../services/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../../services/nginx/nginx.conf:/etc/nginx/templates/default.conf.template:ro
     depends_on:
       - api
       - frontend2
-
     networks:
       - default
+      - rust-spike
       - traefik
 
   ingestion-worker:
@@ -355,6 +361,9 @@ services:
       - --loglevel=info
       - --queues=lifecycle,miscellaneous
       - --concurrency=${LIFECYCLE_WORKER_CONCURRENCY:-1}
+    networks:
+      - default
+      - rust-spike
 
   beat:
     build:
@@ -378,10 +387,51 @@ services:
       - --loglevel=info
       - --schedule=/var/celerybeat/schedule
 
+  rust-spike-pg:
+    profiles: ["rust-spike"]
+    image: postgres:16.10-bookworm
+    environment:
+      POSTGRES_USER: spike_writer
+      POSTGRES_DB: spike_projection
+      POSTGRES_PASSWORD: ${RUST_SPIKE_POSTGRES_PASSWORD:-}
+      RUST_SPIKE_READ_PASSWORD: ${RUST_SPIKE_READ_PASSWORD:-}
+    volumes:
+      - rust-spike-pg-data:/var/lib/postgresql/data
+      - ../../services/rust-read/postgres/01-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ../../services/rust-read/postgres/02-read-only-role.sh:/docker-entrypoint-initdb.d/02-read-only-role.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - rust-spike
+
+  rust-read:
+    profiles: ["rust-spike"]
+    build:
+      context: ../..
+      dockerfile: services/rust-read/Dockerfile
+    cpus: 1.0
+    mem_limit: 256M
+    environment:
+      DATABASE_URL: ${RUST_SPIKE_DATABASE_URL:-}
+      RUST_SPIKE_BEARER_TOKEN: ${RUST_SPIKE_BEARER_TOKEN:-}
+      RUST_SPIKE_CURSOR_SECRET: ${RUST_SPIKE_CURSOR_SECRET:-}
+    depends_on:
+      rust-spike-pg:
+        condition: service_healthy
+    networks:
+      - rust-spike
+
 networks:
+  default:
+  rust-spike:
+    internal: true
   traefik:
     external: true
     name: traefik
 
 volumes:
+  rust-spike-pg-data:
   intelligence-data:
