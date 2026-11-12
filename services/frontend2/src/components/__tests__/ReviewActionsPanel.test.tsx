@@ -3,7 +3,7 @@
 import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import React from "react";
-import { afterEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 import type { Person } from "@/lib/api-types";
 import type { PersonSourceRecord } from "@/lib/api-types-person";
@@ -83,6 +83,10 @@ function renderPanel(): void {
     />,
   );
 }
+
+beforeEach(() => {
+  vi.stubGlobal("React", React);
+});
 
 afterEach(() => {
   cleanup();

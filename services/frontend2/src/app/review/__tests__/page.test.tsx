@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { cleanup, render, screen, waitFor } from "@testing-library/react";
+import { cleanup, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import React, { type ReactElement, type ReactNode } from "react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
@@ -262,7 +262,9 @@ describe("review queue bulk actions", () => {
     render(<ReviewPage />);
     await screen.findByText("Alpha Person");
     await user.click(stateFilterPill());
-    await user.click(screen.getByRole("button", { name: "Assigned" }));
+    const popover = stateFilterPill().nextElementSibling;
+    if (!(popover instanceof HTMLElement)) throw new Error("State filter popover not found");
+    await user.click(within(popover).getByRole("button", { name: "Assigned" }));
 
     await waitFor(() => expect(selectAllCheckbox().disabled).toBe(true));
     expect(screen.queryByLabelText("Select review case case-a")).toBeNull();
