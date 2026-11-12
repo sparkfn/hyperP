@@ -63,7 +63,6 @@ from src.graph.queries.person_list_summary import (
     ENSURE_PERSON_LIST_SUMMARY_COUNTER,
     PERSON_LIST_SUMMARY_COUNTER_KEY,
 )
-from src.graph.queries.source_records import CREATE_SOURCE_RECORD_IDENTITY_LOCK_CONSTRAINT
 from src.graph.queries.staging_reset import STAGING_RESET_CLEAR_GRAPH
 from src.models import JsonValue, SourceRecordEnvelope
 from src.pipeline import IngestPipeline
@@ -76,6 +75,14 @@ from src.pipeline_sales import (
     propose_vehicle_matches_for_pending_sales,
 )
 from src.retirement import retire_source_evidence
+
+#: Test-local copy of the identity-lock uniqueness constraint DDL. The ingestion
+#: service does not ship this statement, so the suite declares it here.
+CREATE_SOURCE_RECORD_IDENTITY_LOCK_CONSTRAINT = (
+    "CREATE CONSTRAINT source_record_identity_lock_triple_unique IF NOT EXISTS "
+    "FOR (lock:SourceRecordIdentityLock) REQUIRE "
+    "(lock.source_system, lock.source_instance_id, lock.source_record_id) IS UNIQUE"
+)
 
 _URI_ENV = "HYPERP_NEO4J_PERSON_LIST_SUMMARY_TEST_URI"
 _USER_ENV = "HYPERP_NEO4J_PERSON_LIST_SUMMARY_TEST_USER"

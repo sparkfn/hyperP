@@ -465,6 +465,7 @@ WITH c,
      all_deals_valid,
      monthly_valid,
      month_current,
+     current_time,
      {_MONTH_MARKER} AS final_month_key
 WITH c,
      current_month_key,
