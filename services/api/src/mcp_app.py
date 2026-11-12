@@ -11,7 +11,11 @@ from pydantic import BaseModel
 from src.auth.deps import require_active_user
 from src.auth.oauth_client_models import OAuthTokenResponse
 from src.error_handlers import register_error_handlers
-from src.route_catalog import FRONTEND_ROUTERS, ROOT_ROUTERS
+from src.route_catalog import (
+    FRONTEND_ROUTERS,
+    MCP_FRONTEND_EXCLUDED_OPERATION_IDS,
+    ROOT_ROUTERS,
+)
 from src.router_copy import copy_router_routes
 from src.routes import oauth as oauth_routes
 
@@ -82,7 +86,12 @@ def build_mcp_source_app() -> FastAPI:
     frontend_dependencies: list[DependsMarker] = [Depends(require_active_user)]
 
     for router in FRONTEND_ROUTERS:
-        copy_router_routes(app, router, dependencies=frontend_dependencies)
+        copy_router_routes(
+            app,
+            router,
+            dependencies=frontend_dependencies,
+            excluded_operation_ids=MCP_FRONTEND_EXCLUDED_OPERATION_IDS,
+        )
     _copy_root_routes(app)
 
     register_error_handlers(app)

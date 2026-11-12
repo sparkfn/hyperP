@@ -16,6 +16,7 @@ from src.repositories.neo4j.event import Neo4jEventRepository
 from src.repositories.neo4j.identity_link_revision import Neo4jIdentityLinkRevisionRepository
 from src.repositories.neo4j.ingest import Neo4jIngestRepository
 from src.repositories.neo4j.merge import Neo4jMergeRepository
+from src.repositories.neo4j.nric import Neo4jNricRevealRepository
 from src.repositories.neo4j.person import Neo4jPersonRepository
 from src.repositories.neo4j.report import Neo4jReportRepository
 from src.repositories.neo4j.review import Neo4jReviewRepository
@@ -29,6 +30,7 @@ from src.repositories.protocols.event import EventRepository
 from src.repositories.protocols.identity_link_revision import IdentityLinkRevisionRepository
 from src.repositories.protocols.ingest import IngestRepository
 from src.repositories.protocols.merge import MergeRepository
+from src.repositories.protocols.nric import NricRevealRepository
 from src.repositories.protocols.person import PersonRepository
 from src.repositories.protocols.report import ReportRepository
 from src.repositories.protocols.review import ReviewRepository
@@ -48,6 +50,7 @@ _ingest_repo: IngestRepository = Neo4jIngestRepository()
 _crm_deal_metrics_repo: CrmDealMetricsRepository = Neo4jCrmDealMetricsRepository()
 _crm_activity_metrics_repo: CrmActivityMetricsRepository = BitrixCrmActivityRepository(config)
 _identity_link_revision_repo: IdentityLinkRevisionRepository = Neo4jIdentityLinkRevisionRepository()
+_nric_repo: NricRevealRepository = Neo4jNricRevealRepository()
 
 
 def get_person_repo() -> PersonRepository:
@@ -100,3 +103,7 @@ def get_crm_activity_metrics_repo() -> CrmActivityMetricsRepository:
 
 def get_identity_link_revision_repo() -> IdentityLinkRevisionRepository:
     return _identity_link_revision_repo
+
+
+def get_nric_repo() -> NricRevealRepository:
+    return _nric_repo

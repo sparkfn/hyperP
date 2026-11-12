@@ -28,6 +28,7 @@ from src.graph.queries import (
     UPDATE_GOLDEN_FIELDS,
 )
 from src.identity_link_revisions import append_merge_affected_revisions
+from src.nric import format_masked_nric
 from src.repositories.neo4j._merge_side_effects import (
     apply_merge_review_side_effects,
     revert_merge_review_side_effects,
@@ -172,7 +173,6 @@ VALID_LITERAL_GOLDEN_FIELDS: frozenset[str] = frozenset(
         "preferred_dob",
         "preferred_phone",
         "preferred_email",
-        "preferred_nric",
     }
 )
 
@@ -226,6 +226,10 @@ async def _apply_golden_profile_selections_tx(
                     "value": to_str(record["address_id"]),
                 }
             )
+        elif field_name == "preferred_nric":
+            masked = format_masked_nric(selection["selected_value"])
+            if masked is not None:
+                updates.append({"field_name": field_name, "value": masked})
         else:
             updates.append({"field_name": field_name, "value": selection["selected_value"]})
     if updates:

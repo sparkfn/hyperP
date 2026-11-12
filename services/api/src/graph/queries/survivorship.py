@@ -42,6 +42,7 @@ GET_BEST_IDENTIFIER = """
 MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY]->(id:Identifier {identifier_type: $identifier_type})
 WHERE coalesce(rel.is_active, true) = true
 RETURN id.normalized_value AS normalized_value,
+       id.nric_masked AS nric_masked,
        rel.is_verified AS is_verified,
        rel.last_confirmed_at AS last_confirmed_at
 ORDER BY rel.is_verified DESC, rel.last_confirmed_at DESC
@@ -102,7 +103,8 @@ RETURN f.attribute_value AS value
 GET_IDENTIFIER_VALUE_FOR_SR = """
 MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY {source_record_pk: $source_record_pk}]->(id:Identifier {identifier_type: $identifier_type})
 WHERE coalesce(rel.is_active, true) = true
-RETURN id.normalized_value AS value
+RETURN id.normalized_value AS value,
+       id.nric_masked AS nric_masked
 LIMIT 1
 """
 
@@ -168,6 +170,7 @@ CALL {
     source_kind: 'identifier',
     identifier_type: id.identifier_type,
     value: id.normalized_value,
+    nric_masked: id.nric_masked,
     address_id: null,
     source_record_pk: rel.source_record_pk,
     source_system: ss.source_key,

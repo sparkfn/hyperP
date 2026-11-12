@@ -78,6 +78,7 @@ from src.graph.queries import (
     get_graph_query,
     get_node_graph_query,
 )
+from src.nric import canonical_nric, nric_digest
 from src.repositories.protocols.person import PersonListFilters, PersonPage
 from src.request_timing import create_detached_task
 from src.types import (
@@ -397,9 +398,15 @@ class Neo4jPersonRepository:
         )
 
     async def search_by_identifier(self, identifier_type: str, value: str) -> list[Person]:
+        if identifier_type == "nric":
+            canonical = canonical_nric(value)
+            digest = nric_digest(canonical)
+            values = [digest, canonical] if digest is not None else [canonical]
+        else:
+            values = [value]
         async with get_session() as session:
             result = await session.run(
-                FIND_PERSON_BY_IDENTIFIER, identifier_type=identifier_type, value=value
+                FIND_PERSON_BY_IDENTIFIER, identifier_type=identifier_type, values=values
             )
             records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
         return [map_person(rec) for rec in records]

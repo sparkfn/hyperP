@@ -76,6 +76,10 @@ from src.graph.queries.merge import (
     REVERT_PERSON_PAIR_REDIRECTS_RIGHT,
     REVERT_RECORD_PERSON_CASE_REDIRECTS,
 )
+from src.graph.queries.nric import (
+    CREATE_NRIC_REVEAL_EVENT,
+    GET_PERSON_NRIC_IDENTIFIERS,
+)
 from src.graph.queries.persons import (
     COUNT_PERSON_AUDIT,
     COUNT_PERSON_BANKRUPTCY_CASES,
@@ -193,6 +197,8 @@ __all__ = [
     "ACTIVATE_PENDING_REVIEW_RECORD",
     "CLAIM_PENDING_REVIEW_RESOLUTION",
     "ASSIGN_REVIEW_CASE",
+    "CREATE_NRIC_REVEAL_EVENT",
+    "GET_PERSON_NRIC_IDENTIFIERS",
     "build_review_action_cypher",
     "build_claimed_review_action_cypher",
     "COUNT_PERSON_AUDIT",

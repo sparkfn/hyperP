@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 FIND_PERSON_BY_IDENTIFIER = """
-MATCH (id:Identifier {identifier_type: $identifier_type, normalized_value: $value})
-  <-[lookup_identifier:IDENTIFIED_BY]-(p:Person)
+MATCH (id:Identifier {identifier_type: $identifier_type})
+WHERE id.normalized_value IN $values
+MATCH (id)<-[lookup_identifier:IDENTIFIED_BY]-(p:Person)
 WHERE coalesce(lookup_identifier.is_active, true) = true
   AND p.status <> 'merged'
+WITH DISTINCT p
 OPTIONAL MATCH (addr:Address {address_id: p.preferred_address_id})
 OPTIONAL MATCH (sr:SourceRecord)-[link:LINKED_TO]->(p)
 WHERE coalesce(link.is_active, true) = true
@@ -273,7 +275,11 @@ WHERE coalesce(p_identifier.is_active, true) = true
   AND other.person_id <> p.person_id
   AND other.status <> 'merged'
   AND ($identifier_type IS NULL OR id.identifier_type = $identifier_type)
-WITH other, collect(DISTINCT {identifier_type: id.identifier_type, normalized_value: id.normalized_value}) AS shared_identifiers
+WITH other, collect(DISTINCT {
+  identifier_type: id.identifier_type,
+  normalized_value: id.normalized_value,
+  nric_masked: id.nric_masked
+}) AS shared_identifiers
 RETURN other.person_id AS person_id,
        other.status AS status,
        other.preferred_full_name AS preferred_full_name,
@@ -583,6 +589,7 @@ CALL {
 }
 RETURN item.identifier.identifier_type AS identifier_type,
        item.identifier.normalized_value AS normalized_value,
+       item.identifier.nric_masked AS nric_masked,
        item.is_active AS is_active,
        item.is_verified AS is_verified,
        item.last_confirmed_at AS last_confirmed_at,
@@ -617,7 +624,8 @@ RETURN other.person_id AS person_id,
        other.profile_completeness_score AS profile_completeness_score,
        collect(DISTINCT {
          identifier_type: id.identifier_type,
-         normalized_value: id.normalized_value
+         normalized_value: id.normalized_value,
+         nric_masked: id.nric_masked
        }) AS identifiers
 ORDER BY preferred_full_name, person_id
 SKIP $skip LIMIT $limit
@@ -763,6 +771,7 @@ RETURN candidate.person_id AS candidate_person_id,
        candidate.preferred_full_name AS candidate_name,
        id.identifier_type AS identifier_type,
        id.normalized_value AS normalized_value,
+       id.nric_masked AS nric_masked,
        candidate_source_records AS candidate_source_records,
        current_person_source_records AS current_person_source_records
 ORDER BY id.identifier_type, id.normalized_value

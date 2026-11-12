@@ -752,3 +752,15 @@ class ListedPerson(EntityPerson):
     # so the frontend does no date parsing/formatting. See format_display_dob.
     preferred_dob_display: str = "—"
     preferred_dob_invalid: bool = False
+
+
+class NricRevealRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class NricReveal(BaseModel):
+    person_id: str
+    reveal_id: str
+    revealed_at: str
+    values: list[str] = Field(default_factory=list)
+    unavailable_count: int = Field(ge=0)
