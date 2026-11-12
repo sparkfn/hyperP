@@ -191,20 +191,24 @@ machine clients.
   `custom`. Arbitrary persisted identifier keys accepted by the human search
   surface are rejected on this machine route.
 - Matching is exact `(identifier_type, normalized_value)` equality against the
-  canonical value stored by ingestion. HyperP performs no server-side
-  normalization for this endpoint; callers must send the stored normalized
-  value:
-  - `nric`: trim surrounding whitespace, remove leading junk `x`/`X` markers,
-    and uppercase; preserve a trailing `X`, which may be a check letter. No
-    checksum validation is implied.
+  canonical value stored by ingestion. For non-NRIC types, callers must send the
+  stored normalized value:
   - `phone`: normalized E.164. Ingestion prefers the source record's region
     hint before falling back to Singapore (`SG`) for local numbers; a caller
     lacking the relevant region must not treat a local-number miss as an
     authoritative negative.
   - `email`: trim and lowercase; Gmail/Googlemail local-part dots and `+tags`
     are removed and the domain is folded to `gmail.com`.
+  - `nric`: for `nric`, the server canonicalizes input (trimming surrounding
+    whitespace, stripping leading `x`/`X` markers, and uppercasing) and matches
+    against both HMAC-SHA256 digests and legacy records server-side, so callers
+    may supply plaintext or canonical NRIC.
   - Other supported machine types use their canonical stored value;
     ingestion's generic fallback trims surrounding whitespace.
+
+All read surfaces (including `/oauth2/v1`) return masked NRIC values (e.g. `S••••567D`).
+Plaintext NRIC is never returned on normal read endpoints. Machine clients receive masked
+values as intended PDPA behavior.
 
 A successful lookup returns `200` with `data` as a `Person[]` (`[]` when no
 eligible Person matches), a populated `meta.request_id`, and null
@@ -687,7 +691,7 @@ Operational search for canonical persons.
   `partner_account_id` and dynamic social keys are also accepted. Human/MCP
   search is not limited to the machine identifier vocabulary.
 - `value`: optional exact search value
-- `q`: optional free-text search for name or display fields
+- `q`: optional free-text search (min 3 chars) across name, email, and phone (NRIC is not indexed for fulltext search)
 - `source_system`: optional source filter
 - `status`: optional person status filter
 - `cursor`: optional pagination cursor
@@ -777,6 +781,53 @@ Supported expansions:
   }
 }
 ```
+
+## POST /v1/persons/{person_id}/nric/reveal
+
+Perform an audited reveal of active NRIC identifiers for an active person.
+
+### Authorization
+
+- Human administrator only (`admin` role via Google ID token).
+- Non-admin human users and all OAuth2 machine clients receive `403 forbidden`.
+- Intentionally excluded from the MCP tool catalog.
+
+### Request Body
+
+```json
+{
+  "reason": "Compliance verification for regulatory audit"
+}
+```
+
+- `reason` (string, required): 1 to 500 characters justifying the reveal. The reason is scrubbed of any raw NRIC tokens before being recorded to the audit event.
+
+### Response
+
+```json
+{
+  "data": {
+    "person_id": "7af4b5f5-34c1-4f22-9e2d-95ea8ff3b8c7",
+    "reveal_id": "8bf5c6f6-45d2-4e33-ae3e-06fb9ff4c9d8",
+    "revealed_at": "2026-05-01T08:30:00Z",
+    "values": ["S1234567D"],
+    "unavailable_count": 0
+  },
+  "meta": {
+    "request_id": "req-abcdef123"
+  }
+}
+```
+
+- `values` (array of strings): Deduplicated, sorted plaintext NRICs decrypted from active NRIC identifiers.
+- `unavailable_count` (integer, min 0): Count of active digest-shaped NRIC identifiers that lacked usable ciphertext.
+
+### Error Codes
+
+- `404 person_not_found`: Person not found or status is `merged`.
+- `503 nric_key_unavailable`: `NRIC_HMAC_KEY` is not configured or ciphertext token is invalid.
+- `503 nric_unavailable`: All NRIC values for the person are unavailable (no usable ciphertext; no audit event is written).
+- `500 nric_reveal_failed`: Database error during reveal or audit event write.
 
 ## GET /v1/persons/{person_id}/source-records
 
