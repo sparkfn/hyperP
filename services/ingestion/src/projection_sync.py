@@ -296,7 +296,9 @@ def _identity_stream_ready(graph: ProjectionGraph) -> bool:
     return baseline is not None and migration is not None
 
 
-@celery_app.task(name="src.projection_sync.projection_sync_task")
+@celery_app.task(  # type: ignore[untyped-decorator]  # Celery ships no type stubs
+    name="src.projection_sync.projection_sync_task",
+)
 def projection_sync_task() -> dict[str, object]:
     """Project the graph into the Postgres read projection.
 
