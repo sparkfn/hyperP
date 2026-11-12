@@ -8,11 +8,13 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
 
 from neo4j import ManagedTransaction
 
+from src.config import get_settings
 from src.graph import queries
 from src.graph.crm_deal_count import recompute_person_crm_deal_counts
 from src.identifier_scopes import (
@@ -26,6 +28,7 @@ from src.models import (
     ChatOutcome,
     ChatPurpose,
     ChatTone,
+    EngineType,
     JsonValue,
     MatchDecision,
     MatchResult,
@@ -50,6 +53,126 @@ _CHAT_CLASSIFICATION_TYPES: dict[str, type[StrEnum]] = {
     "outcome": ChatOutcome,
     "difficulty": ChatDifficulty,
 }
+
+WEAK_SIGNAL_REASON_CODES: frozenset[str] = frozenset(
+    {"unverified_phone", "unverified_email", "phone_near_match", "email_near_match"}
+)
+REVIEW_CASES_CREATED_COUNTER: Counter[tuple[str, str, str, str]] = Counter()
+REVIEW_DECISIONS_SUPPRESSED_COUNTER: Counter[tuple[str, str, str]] = Counter()
+_MAX_REVIEW_COUNTER_KEYS = 512
+
+
+def _weak_reason_code(reason: str) -> str | None:
+    """Map only the approved weak phone/email reason formats to their codes."""
+    if reason == "unverified_phone" or reason.startswith("Phone match (unverified:"):
+        return "unverified_phone"
+    if reason == "unverified_email" or reason.startswith("Email match (unverified:"):
+        return "unverified_email"
+    if reason == "phone_near_match" or reason.startswith("Phone near-match ("):
+        return "phone_near_match"
+    if reason == "email_near_match" or reason.startswith("Email near-match ("):
+        return "email_near_match"
+    return None
+
+
+def weak_signal_suppressed_reason(match_result: MatchResult) -> str | None:
+    """Return a suppression code only for heuristic weak-only REVIEW decisions."""
+    if (
+        match_result.decision != MatchDecision.REVIEW
+        or match_result.engine_type != EngineType.HEURISTIC
+        or not match_result.reasons
+        or match_result.review_candidate_person_ids
+    ):
+        return None
+    codes = [_weak_reason_code(reason) for reason in match_result.reasons]
+    if any(code is None for code in codes):
+        return None
+    weak_codes = [code for code in codes if code is not None]
+    if any(code not in WEAK_SIGNAL_REASON_CODES for code in weak_codes):
+        return None
+    unique_codes = sorted(set(weak_codes))
+    if len(unique_codes) == 1:
+        return unique_codes[0]
+    return "weak_signal_combination"
+
+
+def classify_created_case_reason(match_result: MatchResult) -> str:
+    """Classify a created ReviewCase reason using a fixed telemetry priority."""
+    reasons = match_result.reasons
+    if match_result.review_candidate_person_ids or any(
+        "crm" in reason.lower() for reason in reasons
+    ):
+        return "crm_ambiguity"
+    if any(
+        any(
+            token in reason.lower()
+            for token in ("prior_owners", "prior person", "continuity", "owner_change")
+        )
+        for reason in reasons
+    ):
+        return "continuity_reassignment"
+    if any(reason.startswith("DOB conflict:") for reason in reasons):
+        return "dob_conflict"
+    if any(reason.startswith("Strong name mismatch") for reason in reasons):
+        return "name_mismatch"
+    if any(
+        reason.startswith(("High name similarity", "Medium name similarity")) for reason in reasons
+    ):
+        return "name_similarity"
+    if any(reason.startswith("DOB exact match") for reason in reasons):
+        return "dob_match"
+    if reasons and all(_weak_reason_code(reason) is not None for reason in reasons):
+        return "weak_signal"
+    return "other"
+
+
+def _prune_counter[CounterKey: tuple[str, ...]](
+    counter: Counter[CounterKey], max_keys: int = _MAX_REVIEW_COUNTER_KEYS
+) -> None:
+    """Keep process-local telemetry bounded, evicting the oldest UTC day first."""
+    while len(counter) > max_keys:
+        oldest_day = min(key[-1] for key in counter)
+        oldest_key = next(key for key in counter if key[-1] == oldest_day)
+        del counter[oldest_key]
+
+
+def record_review_case_created(
+    *,
+    review_case_id: str,
+    match_decision_id: str | None,
+    engine_type: str,
+    reason_code: str,
+    source_system: str,
+) -> None:
+    """Record best-effort, bounded telemetry after a ReviewCase write succeeds."""
+    day_utc = datetime.now(UTC).date().isoformat()
+    REVIEW_CASES_CREATED_COUNTER[(engine_type, reason_code, source_system, day_utc)] += 1
+    _prune_counter(REVIEW_CASES_CREATED_COUNTER)
+    logger.info(
+        "review_case_created event=review_case_created review_case_id=%s "
+        "match_decision_id=%s engine_type=%s reason_code=%s source_system=%s day_utc=%s",
+        review_case_id,
+        match_decision_id,
+        engine_type,
+        reason_code,
+        source_system,
+        day_utc,
+        extra={
+            "event": "review_case_created",
+            "review_case_id": review_case_id,
+            "match_decision_id": match_decision_id,
+            "engine_type": engine_type,
+            "reason_code": reason_code,
+            "source_system": source_system,
+            "day_utc": day_utc,
+        },
+    )
+
+
+def reset_review_counters() -> None:
+    """Clear process-local review telemetry counters."""
+    REVIEW_CASES_CREATED_COUNTER.clear()
+    REVIEW_DECISIONS_SUPPRESSED_COUNTER.clear()
 
 
 # --- Step 3: ensure shared nodes exist ------------------------------------
@@ -412,10 +535,44 @@ def create_review_case_if_needed(
     tx: ManagedTransaction,
     match_result: MatchResult,
     match_decision_id: str,
+    *,
+    source_system: str = "unknown",
 ) -> str | None:
     """Step 7d: create a ReviewCase when the engine returns REVIEW."""
     if match_result.decision != MatchDecision.REVIEW:
         return None
+    if get_settings().review_policy == "v2_weak_signal_park":
+        suppressed_reason = weak_signal_suppressed_reason(match_result)
+        if suppressed_reason is not None:
+            suppressed_record = tx.run(
+                queries.SUPPRESS_MATCH_DECISION_REVIEW,
+                match_decision_id=match_decision_id,
+                suppressed_reason=suppressed_reason,
+            ).single()
+            if suppressed_record is None:
+                raise RuntimeError(
+                    "SUPPRESS_MATCH_DECISION_REVIEW matched no MatchDecision "
+                    f"for {match_decision_id}"
+                )
+            day_utc = datetime.now(UTC).date().isoformat()
+            REVIEW_DECISIONS_SUPPRESSED_COUNTER[(suppressed_reason, source_system, day_utc)] += 1
+            _prune_counter(REVIEW_DECISIONS_SUPPRESSED_COUNTER)
+            logger.info(
+                "review_decision_suppressed event=review_decision_suppressed "
+                "match_decision_id=%s suppressed_reason=%s source_system=%s day_utc=%s",
+                match_decision_id,
+                suppressed_reason,
+                source_system,
+                day_utc,
+                extra={
+                    "event": "review_decision_suppressed",
+                    "match_decision_id": match_decision_id,
+                    "suppressed_reason": suppressed_reason,
+                    "source_system": source_system,
+                    "day_utc": day_utc,
+                },
+            )
+            return None
     sla_due_at = (datetime.now(UTC) + timedelta(days=7)).isoformat()
     rc_result = tx.run(
         queries.CREATE_REVIEW_CASE,
@@ -430,6 +587,13 @@ def create_review_case_if_needed(
         "Created ReviewCase %s for MatchDecision %s",
         review_case_id,
         match_decision_id,
+    )
+    record_review_case_created(
+        review_case_id=review_case_id,
+        match_decision_id=match_decision_id,
+        engine_type=match_result.engine_type.value,
+        reason_code=classify_created_case_reason(match_result),
+        source_system=source_system,
     )
     return review_case_id
 

@@ -32,6 +32,7 @@ from src.pipeline_person_merge import (
     merge_person_pair,
     select_survivor,
 )
+from src.pipeline_writes import record_review_case_created
 
 logger = logging.getLogger(__name__)
 
@@ -257,4 +258,15 @@ def _open_review_case(
     ).single()
     if record is None:
         return None
-    return _PairOutcome(kind="review_case", id=str(record["review_case_id"]))
+    review_case_id = str(record["review_case_id"])
+    match_decision_id = (
+        str(record["match_decision_id"]) if record.get("match_decision_id") is not None else None
+    )
+    record_review_case_created(
+        review_case_id=review_case_id,
+        match_decision_id=match_decision_id,
+        engine_type="pair_audit",
+        reason_code="shared_identifier_bridge",
+        source_system="pair_audit_bridge",
+    )
+    return _PairOutcome(kind="review_case", id=review_case_id)

@@ -77,6 +77,9 @@ class QueueState(StrEnum):
     DEFERRED = "deferred"
     RESOLVED = "resolved"
     CANCELLED = "cancelled"
+    EXPIRED = "expired"
+    DISMISSED = "dismissed"
+    SUPERSEDED_BY_POLICY = "superseded_by_policy"
 
 
 class LinkStatus(StrEnum):
@@ -94,6 +97,45 @@ class ApiReviewActionType(StrEnum):
     DEFER = "defer"
     ESCALATE = "escalate"
     MANUAL_NO_MATCH = "manual_no_match"
+    RESOLVE = "resolve"
+    EXPIRE = "expire"
+    DISMISS = "dismiss"
+
+
+class BulkReviewActionType(StrEnum):
+    RESOLVE = "resolve"
+    REJECT = "reject"
+    DEFER = "defer"
+    EXPIRE = "expire"
+    DISMISS = "dismiss"
+
+
+class ReviewReasonCode(StrEnum):
+    UNVERIFIED_PHONE = "unverified_phone"
+    UNVERIFIED_EMAIL = "unverified_email"
+    PHONE_NEAR_MATCH = "phone_near_match"
+    EMAIL_NEAR_MATCH = "email_near_match"
+    WEAK_SIGNAL_COMBINATION = "weak_signal_combination"
+    CRM_AMBIGUITY = "crm_ambiguity"
+    CONTINUITY_REASSIGNMENT = "continuity_reassignment"
+    DOB_CONFLICT = "dob_conflict"
+    NAME_MISMATCH = "name_mismatch"
+    NAME_SIMILARITY = "name_similarity"
+    DOB_MATCH = "dob_match"
+    SHARED_IDENTIFIER_BRIDGE = "shared_identifier_bridge"
+    WEAK_SIGNAL = "weak_signal"
+    OTHER = "other"
+
+
+class ReviewActionReasonCode(StrEnum):
+    CONFIRMED_MATCH = "confirmed_match"
+    CONFIRMED_DISTINCT = "confirmed_distinct"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    PARKED_WEAK_SIGNAL = "parked_weak_signal"
+    STALE_EXPIRED = "stale_expired"
+    AWAITING_VERIFICATION = "awaiting_verification"
+    PAIR_AUDIT_RETIRED_IN_V2 = "pair_audit_retired_in_v2"
+    OTHER = "other"
 
 
 class ConnectionType(StrEnum):
@@ -438,6 +480,8 @@ class MatchDecision(BaseModel):
     review_case_id: str | None = None
     review_case_queue_state: str | None = None
     review_case_assigned_to: str | None = None
+    review_suppressed: bool = False
+    suppressed_reason: str | None = None
 
 
 class ReviewCaseSummary(BaseModel):
@@ -455,6 +499,8 @@ class ReviewCaseSummary(BaseModel):
     right_person_id: str | None = None
     right_person_name: str | None = None
     right_person_status: str | None = None
+    resolved_by: str | None = None
+    resolution_reason_code: str | None = None
     match_decision: MatchDecisionSummary
 
 
@@ -520,6 +566,8 @@ class ReviewCaseDetail(BaseModel):
     sla_due_at: str | None = None
     resolution: str | None = None
     resolved_at: str | None = None
+    resolved_by: str | None = None
+    resolution_reason_code: str | None = None
     actions: list[dict[str, str | None]] = Field(default_factory=list)
     match_decision: MatchDecision
     comparison_left: PersonComparisonEntity | None = None

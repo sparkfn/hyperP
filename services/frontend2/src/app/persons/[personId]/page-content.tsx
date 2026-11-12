@@ -2965,6 +2965,7 @@ export function MatchesTab({ personId, currentPerson, currentIdentifiers, active
                 rightPersonId={reviewActionCase.right_person_id ?? null}
                 leftPersonStatus={reviewActionCase.left_person_status ?? null}
                 rightPersonStatus={reviewActionCase.right_person_status ?? null}
+                engineType={reviewActionCase.match_decision.engine_type}
                 onActionDone={(success) => {
                   if (success) setReviewActionDirty(true);
                 }}

@@ -674,7 +674,12 @@ def test_blocked_canonical_owner_persists_durable_pending_review() -> None:
     link.assert_not_called()
     assert persist.call_args.kwargs["lifecycle_status"].value == "pending_review"
     persist_decision.assert_called_once_with(tx, quarantine, "deal-sr")
-    create_review.assert_called_once_with(tx, quarantine, "decision-1")
+    create_review.assert_called_once_with(
+        tx,
+        quarantine,
+        "decision-1",
+        source_system="bitrix_chat",
+    )
 
 
 def test_crm_multi_merge_persists_provisional_link_without_identity_evidence() -> None:

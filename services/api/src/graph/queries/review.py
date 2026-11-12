@@ -30,7 +30,8 @@ WITH rc, md, left, right
 """
 
 # Queue states that count as closed for the `resolved` and `overdue_sla` filters.
-_CLOSED_STATES = "['resolved', 'cancelled']"
+_CLOSED_STATES = "['resolved', 'cancelled', 'expired', 'dismissed', 'superseded_by_policy']"
+_TERMINAL_DISPOSITION_STATES = "['expired', 'dismissed', 'superseded_by_policy']"
 
 # Person-pair cases have no involved SourceRecord and remain actionable. If a
 # case does involve source evidence, every such record must still be pending or
@@ -71,7 +72,8 @@ _FILTER_CONDITIONS: dict[str, str] = {
 
 
 def _review_filter_clause(active_filters: frozenset[str]) -> str:
-    conditions = [_INVOLVED_SOURCE_IS_PENDING.rstrip()]
+    pending_source = _INVOLVED_SOURCE_IS_PENDING.rstrip()
+    conditions = [f"(rc.queue_state IN {_TERMINAL_DISPOSITION_STATES} OR {pending_source})"]
     conditions.extend(
         _FILTER_CONDITIONS[key] for key in _FILTER_CONDITIONS if key in active_filters
     )
@@ -119,6 +121,7 @@ _REVIEW_RETURN = """
 RETURN rc {
   .review_case_id, .queue_state, .priority, .assigned_to,
   .follow_up_at, .sla_due_at, .resolution, .resolved_at,
+  .resolved_by, .resolution_reason_code,
   .actions, .created_at, .updated_at
 } AS review_case,
 md {
@@ -220,12 +223,13 @@ WITH rc, md, left, right, left_addr, right_addr, left_src, right_src,
 RETURN rc {
   .review_case_id, .queue_state, .priority, .assigned_to,
   .follow_up_at, .sla_due_at, .resolution, .resolved_at,
+  .resolved_by, .resolution_reason_code,
   .actions, .created_at, .updated_at
 } AS review_case,
 md {
   .match_decision_id, .engine_type, .engine_version, .policy_version,
   .decision, .confidence, .reasons, .blocking_conflicts,
-  .review_candidate_person_ids, .created_at
+  .review_candidate_person_ids, .review_suppressed, .suppressed_reason, .created_at
 } AS match_decision,
 CASE WHEN left:Person THEN 'person'
      WHEN left:SourceRecord THEN 'source_record'
@@ -313,17 +317,21 @@ LIMIT 1
 
 GET_PERSONS_FOR_REVIEW_MERGE = """
 MATCH (rc:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->(md:MatchDecision)
-MATCH (md)-[:ABOUT_LEFT]->(left:Person)
-MATCH (md)-[:ABOUT_RIGHT]->(right:Person)
+OPTIONAL MATCH (md)-[:ABOUT_LEFT]->(left:Person)
+OPTIONAL MATCH (md)-[:ABOUT_RIGHT]->(right:Person)
 RETURN
+  md.engine_type AS engine_type,
   left.person_id AS left_person_id,
   right.person_id AS right_person_id,
-  size([x IN [left.preferred_full_name, left.preferred_phone, left.preferred_email,
-              left.preferred_dob, left.preferred_nric, left.preferred_address_id]
-        WHERE x IS NOT NULL]) AS left_completion,
-  size([x IN [right.preferred_full_name, right.preferred_phone, right.preferred_email,
-              right.preferred_dob, right.preferred_nric, right.preferred_address_id]
-        WHERE x IS NOT NULL]) AS right_completion
+  CASE WHEN left IS NULL THEN 0
+       ELSE size([x IN [left.preferred_full_name, left.preferred_phone, left.preferred_email,
+                        left.preferred_dob, left.preferred_nric, left.preferred_address_id]
+                  WHERE x IS NOT NULL]) END AS left_completion,
+  CASE WHEN right IS NULL THEN 0
+       ELSE size([x IN [right.preferred_full_name, right.preferred_phone, right.preferred_email,
+                        right.preferred_dob, right.preferred_nric, right.preferred_address_id]
+                  WHERE x IS NOT NULL]) END AS right_completion,
+  NOT EXISTS { MATCH (md)-[:ABOUT_LEFT|ABOUT_RIGHT]->(:SourceRecord) } AS has_no_source_record
 """
 
 CREATE_NO_MATCH_LOCK_FROM_REVIEW = """
@@ -348,6 +356,9 @@ CREATE (a)-[:NO_MATCH_LOCK {
 def build_review_action_cypher(
     resolution: str | None,
     follow_up_at: str | None,
+    *,
+    include_audit_fields: bool = False,
+    has_reason_code: bool = False,
 ) -> LiteralString:
     """Build the SET clause for a review-case action."""
     clauses: list[LiteralString] = [
@@ -358,6 +369,10 @@ def build_review_action_cypher(
     if resolution is not None:
         clauses.append("rc.resolution = $resolution")
         clauses.append("rc.resolved_at = datetime()")
+        if include_audit_fields:
+            clauses.append("rc.resolved_by = $actor_id")
+            if has_reason_code:
+                clauses.append("rc.resolution_reason_code = $reason_code")
     if follow_up_at is not None:
         clauses.append("rc.follow_up_at = datetime($follow_up_at)")
     joined: LiteralString = ", ".join(clauses)
@@ -366,16 +381,24 @@ def build_review_action_cypher(
         "WHERE rc.queue_state IN ['open', 'assigned', 'deferred'] "
         "AND " + _INVOLVED_SOURCE_IS_PENDING + " "
         "SET " + joined + " "
-        "RETURN rc {.review_case_id, .queue_state, .resolution} AS review_case"
+        "RETURN rc {.review_case_id, .queue_state, .resolution, .created_at} AS review_case"
     )
 
 
 def build_claimed_review_action_cypher(
     resolution: str | None,
     follow_up_at: str | None,
+    *,
+    include_audit_fields: bool = False,
+    has_reason_code: bool = False,
 ) -> LiteralString:
     """Build a close guarded by the stable claim acquired before side effects."""
-    query = build_review_action_cypher(resolution, follow_up_at)
+    query = build_review_action_cypher(
+        resolution,
+        follow_up_at,
+        include_audit_fields=include_audit_fields,
+        has_reason_code=has_reason_code,
+    )
     eligibility = "WHERE rc.queue_state IN ['open', 'assigned', 'deferred'] AND "
     claim_guard = (
         "WHERE rc.queue_state = $claim_status "

@@ -84,7 +84,7 @@ def _match_decision_exists() -> str:
     AND EXISTS { (md)-[:ABOUT_RIGHT]->(:Person) }
     AND EXISTS {
       (rc:ReviewCase)-[:FOR_DECISION]->(md)
-      WHERE NOT rc.queue_state IN ['resolved', 'cancelled']
+      WHERE NOT rc.queue_state IN ['resolved', 'cancelled', 'expired', 'dismissed', 'superseded_by_policy']
     }
 }"""
 

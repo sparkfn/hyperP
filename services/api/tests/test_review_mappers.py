@@ -1,6 +1,13 @@
 from __future__ import annotations
 
-from src.graph.mappers import _map_sales_summary, map_review_case_detail
+from src.graph.mappers import (
+    _map_sales_summary,
+    map_match_decision,
+    map_review_case_detail,
+    map_review_case_summary,
+)
+from src.graph.queries.persons import GET_PERSON_MATCHES
+from src.graph.queries.review import GET_REVIEW_CASE
 from src.types import NonVehicleLine, SalesOrderSummary, SalesVehicleSummary
 
 # ---------------------------------------------------------------------------
@@ -251,3 +258,93 @@ def test_map_review_case_detail_sales_order_none_gives_no_summary() -> None:
     detail = map_review_case_detail(record)  # type: ignore[arg-type]
     assert detail.comparison_left is not None
     assert detail.comparison_left.sales_summary is None
+
+
+# ---------------------------------------------------------------------------
+# Suppression flags and review audit fields
+# ---------------------------------------------------------------------------
+
+
+def test_map_match_decision_maps_review_suppressed_and_suppressed_reason() -> None:
+    record = {
+        "match_decision": {
+            "match_decision_id": "md-1",
+            "engine_type": "heuristic",
+            "review_suppressed": True,
+            "suppressed_reason": "unverified_phone",
+        }
+    }
+
+    decision = map_match_decision(record)  # type: ignore[arg-type]
+
+    assert decision.review_suppressed is True
+    assert decision.suppressed_reason == "unverified_phone"
+
+
+def test_map_match_decision_defaults_review_suppressed_to_false() -> None:
+    record = {"match_decision": {"match_decision_id": "md-2"}}
+
+    decision = map_match_decision(record)  # type: ignore[arg-type]
+
+    assert decision.review_suppressed is False
+    assert decision.suppressed_reason is None
+
+
+def test_map_review_case_summary_maps_audit_fields() -> None:
+    record = {
+        "review_case": {
+            "review_case_id": "rc-1",
+            "queue_state": "resolved",
+            "priority": 5,
+            "resolved_by": "reviewer@example.com",
+            "resolution_reason_code": "confirmed_distinct",
+        },
+        "match_decision": {
+            "match_decision_id": "md-1",
+            "engine_type": "heuristic",
+            "decision": "review",
+            "confidence": 0.7,
+        },
+    }
+
+    summary = map_review_case_summary(record)  # type: ignore[arg-type]
+
+    assert summary.resolved_by == "reviewer@example.com"
+    assert summary.resolution_reason_code == "confirmed_distinct"
+
+
+def test_map_review_case_summary_audit_fields_default_to_none() -> None:
+    record = {
+        "review_case": {"review_case_id": "rc-1", "queue_state": "open"},
+        "match_decision": {"match_decision_id": "md-1"},
+    }
+
+    summary = map_review_case_summary(record)  # type: ignore[arg-type]
+
+    assert summary.resolved_by is None
+    assert summary.resolution_reason_code is None
+
+
+def test_map_review_case_detail_maps_audit_fields() -> None:
+    record = _base_record()
+    review_case = record["review_case"]
+    assert isinstance(review_case, dict)
+    review_case["resolved_by"] = "reviewer@example.com"
+    review_case["resolution_reason_code"] = "stale_expired"
+
+    detail = map_review_case_detail(record)  # type: ignore[arg-type]
+
+    assert detail.resolved_by == "reviewer@example.com"
+    assert detail.resolution_reason_code == "stale_expired"
+
+
+def test_match_decision_queries_project_suppression_fields() -> None:
+    assert ".review_suppressed" in GET_PERSON_MATCHES
+    assert ".suppressed_reason" in GET_PERSON_MATCHES
+    assert ".review_suppressed" in GET_REVIEW_CASE
+    assert ".suppressed_reason" in GET_REVIEW_CASE
+
+
+def test_review_case_queries_project_audit_fields() -> None:
+    assert ".resolved_by" in GET_REVIEW_CASE
+    assert ".resolution_reason_code" in GET_REVIEW_CASE

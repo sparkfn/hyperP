@@ -194,12 +194,50 @@ export const REVIEW_ACTION_TYPES: readonly ReviewActionType[] = [
   "manual_no_match",
 ] as const;
 
+// Bulk actions apply to many review cases at once and never merge people.
+// Mirrors services/api/src/types.py BulkReviewActionType.
+export type BulkReviewActionType = "resolve" | "reject" | "defer" | "expire" | "dismiss";
+
+export const BULK_REVIEW_ACTION_TYPES: readonly BulkReviewActionType[] = [
+  "resolve",
+  "reject",
+  "defer",
+  "expire",
+  "dismiss",
+] as const;
+
+// Audit reason code required on every bulk action.
+// Mirrors services/api/src/types.py ReviewActionReasonCode.
+export type ReviewActionReasonCode =
+  | "confirmed_match"
+  | "confirmed_distinct"
+  | "insufficient_evidence"
+  | "parked_weak_signal"
+  | "stale_expired"
+  | "awaiting_verification"
+  | "pair_audit_retired_in_v2"
+  | "other";
+
+export const REVIEW_ACTION_REASON_CODES: readonly ReviewActionReasonCode[] = [
+  "confirmed_match",
+  "confirmed_distinct",
+  "insufficient_evidence",
+  "parked_weak_signal",
+  "stale_expired",
+  "awaiting_verification",
+  "pair_audit_retired_in_v2",
+  "other",
+] as const;
+
 export type QueueState =
   | "open"
   | "assigned"
   | "deferred"
   | "resolved"
-  | "cancelled";
+  | "cancelled"
+  | "expired"
+  | "dismissed"
+  | "superseded_by_policy";
 
 export const QUEUE_STATES: readonly QueueState[] = [
   "open",
@@ -207,10 +245,28 @@ export const QUEUE_STATES: readonly QueueState[] = [
   "deferred",
   "resolved",
   "cancelled",
+  "expired",
+  "dismissed",
+  "superseded_by_policy",
 ] as const;
 
 export function isQueueState(value: string): value is QueueState {
   return (QUEUE_STATES as readonly string[]).includes(value);
+}
+
+// States that close a review case: no further reviewer action is accepted.
+// Mirrors the API's closed-state set (resolved, cancelled, expired, dismissed,
+// superseded_by_policy).
+export const TERMINAL_QUEUE_STATES: readonly QueueState[] = [
+  "resolved",
+  "cancelled",
+  "expired",
+  "dismissed",
+  "superseded_by_policy",
+] as const;
+
+export function isTerminalQueueState(value: string): boolean {
+  return (TERMINAL_QUEUE_STATES as readonly string[]).includes(value);
 }
 
 export interface MatchDecisionSummary {
@@ -229,6 +285,8 @@ export interface ReviewCaseSummary {
   sla_due_at: string | null;
   resolution: string | null;
   resolved_at: string | null;
+  resolved_by?: string | null;
+  resolution_reason_code?: string | null;
   left_person_id?: string | null;
   left_person_name?: string | null;
   left_person_status?: string | null;
@@ -251,6 +309,8 @@ export interface ReviewMatchDecision {
   created_at: string;
   left_person_id: string | null;
   right_person_id: string | null;
+  review_suppressed?: boolean;
+  suppressed_reason?: string | null;
 }
 
 export interface ReviewAddressSummary {
@@ -296,6 +356,8 @@ export interface ReviewCaseDetail {
   sla_due_at: string | null;
   resolution: string | null;
   resolved_at: string | null;
+  resolved_by?: string | null;
+  resolution_reason_code?: string | null;
   actions: ReviewCaseActionEntry[];
   match_decision: ReviewMatchDecision;
   comparison_left: PersonComparisonEntity | null;
@@ -334,6 +396,33 @@ export interface ReviewActionResponse {
   queue_state: string;
   resolution: string | null;
 }
+
+// --- Bulk review actions ---
+// Mirrors services/api/src/types_requests.py BulkReviewActionRequest and the
+// per-item outcome returned by POST /v1/review-cases/bulk-actions.
+
+export interface BulkReviewActionRequestBody {
+  review_case_ids: string[];
+  action_type: BulkReviewActionType;
+  reason_code: ReviewActionReasonCode;
+  notes?: string | null;
+  follow_up_at?: string | null;
+}
+
+export interface BulkReviewActionItemResult {
+  review_case_id: string;
+  status: "updated" | "error";
+  queue_state: string | null;
+  resolution: string | null;
+  error_code: string | null;
+}
+
+export interface BulkReviewActionResponse {
+  items: BulkReviewActionItemResult[];
+}
+
+// The API rejects bulk requests with more than 100 review case ids.
+export const MAX_BULK_REVIEW_CASE_IDS = 100;
 
 export interface HealthResponse {
   status: string;

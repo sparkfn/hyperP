@@ -577,6 +577,43 @@ def test_has_any_match_keeps_identifier_branch_anchored_on_person() -> None:
     assert "<-[am_id:IDENTIFIED_BY]-(am:Person)" in query
 
 
+# Every terminal disposition closes a review case. Both copies of the
+# "open review case" predicate — the system_match_count metric and the
+# has_any_match / has_system_match filters — must exclude all of them, so a
+# closed case neither inflates the count nor satisfies the match filters.
+_OPEN_REVIEW_PREDICATE = (
+    "WHERE NOT rc.queue_state IN "
+    "['resolved', 'cancelled', 'expired', 'dismissed', 'superseded_by_policy']"
+)
+_STALE_OPEN_REVIEW_PREDICATE = "WHERE NOT rc.queue_state IN ['resolved', 'cancelled']"
+
+
+def test_open_review_predicates_exclude_terminal_queue_states() -> None:
+    # The metric copy is the only one present without the match filters.
+    metric_query = build_list_persons_query(
+        "system_match_count",
+        "desc",
+        has_q=False,
+    )
+    assert metric_query.count(_OPEN_REVIEW_PREDICATE) == 1
+    assert _STALE_OPEN_REVIEW_PREDICATE not in metric_query
+
+    # The filter copy is emitted by has_system_match and has_any_match.
+    filter_query = build_list_persons_query(
+        "profile_completeness_score",
+        "desc",
+        has_q=False,
+        active_filters=frozenset({"has_any_match", "has_system_match"}),
+    )
+    count_query = build_count_persons_query(
+        has_q=False,
+        active_filters=frozenset({"has_any_match", "has_system_match"}),
+    )
+    for query in (filter_query, count_query):
+        assert _OPEN_REVIEW_PREDICATE in query
+        assert _STALE_OPEN_REVIEW_PREDICATE not in query
+
+
 def test_entity_and_mode_requires_every_key() -> None:
     # AND mode emits ALL(... EXISTS ...) per key (intersection); it must NOT use
     # the OR `entity_key IN $entity_keys` form. Guards the persons-list entity

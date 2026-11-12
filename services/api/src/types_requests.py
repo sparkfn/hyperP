@@ -2,15 +2,18 @@
 
 from __future__ import annotations
 
+from datetime import datetime
 from pathlib import PurePosixPath
 from typing import Literal
 
-from pydantic import BaseModel, Field, model_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 from src.repositories.protocols.merge import GoldenProfileSelection
 from src.types import (
     ApiReviewActionType,
+    BulkReviewActionType,
     GoldenFieldName,
+    ReviewActionReasonCode,
     TrustTier,
 )
 
@@ -63,7 +66,36 @@ class ReviewActionMetadata(BaseModel):
 class ReviewActionRequest(BaseModel):
     action_type: ApiReviewActionType
     notes: str | None = None
+    reason_code: ReviewActionReasonCode | None = None
     metadata: ReviewActionMetadata = Field(default_factory=ReviewActionMetadata)
+
+
+class BulkReviewActionRequest(BaseModel):
+    review_case_ids: list[str]
+    action_type: BulkReviewActionType
+    reason_code: ReviewActionReasonCode
+    notes: str | None = None
+    follow_up_at: str | None = None
+
+    @field_validator("follow_up_at")
+    @classmethod
+    def validate_follow_up_at(cls, value: str | None) -> str | None:
+        """Reject a malformed follow-up timestamp before any write starts.
+
+        The bulk path applies one action to many cases; a timestamp the
+        database cannot parse would otherwise fail per item and be reported as
+        an indeterminate commit. The original string is returned unchanged so
+        the query layer keeps receiving exactly what the caller sent.
+        """
+        if value is None:
+            return None
+        if "T" not in value:
+            raise ValueError("follow_up_at must be an ISO datetime")
+        try:
+            datetime.fromisoformat(value.replace("Z", "+00:00"))
+        except ValueError as exc:
+            raise ValueError("follow_up_at must be an ISO datetime") from exc
+        return value
 
 
 class ManualMergeRequest(BaseModel):

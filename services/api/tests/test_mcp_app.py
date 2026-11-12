@@ -90,6 +90,10 @@ def test_mcp_tools_match_every_canonical_api_operation() -> None:
     tool_names = {tool.name for tool in mcp.tools}
 
     assert tool_names == operation_ids
+    # The bulk review action keeps its own stable operation id so the MCP
+    # tool name cannot drift with the route path.
+    assert "submit_bulk_review_action" in operation_ids
+    assert "submit_bulk_review_action" in tool_names
 
 
 def _initialize_mcp(client: TestClient) -> str:

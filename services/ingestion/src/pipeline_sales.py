@@ -1171,7 +1171,12 @@ def _propose_one_pending_sale(
             return False
         review_result = build_vehicle_review_result(candidates)
         decision_id = persist_match_decision(tx, review_result, source_record_pk)
-        create_review_case_if_needed(tx, review_result, decision_id)
+        create_review_case_if_needed(
+            tx,
+            review_result,
+            decision_id,
+            source_system=source_system_key,
+        )
         tx.run(queries.MARK_SALES_RECORD_PENDING_REVIEW, source_record_pk=source_record_pk)
         return True
 
