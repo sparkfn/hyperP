@@ -6,6 +6,7 @@ from dataclasses import FrozenInstanceError
 from typing import cast
 
 import pytest
+from _txmock import summary_counter_result
 from neo4j import ManagedTransaction
 from src.graph import queries
 from src.graph.schema_init import LIFECYCLE_CONSTRAINTS
@@ -40,6 +41,9 @@ class _FakeTx:
         self.calls: list[tuple[str, dict[str, object]]] = []
 
     def run(self, query: str, **kwargs: object) -> _FakeResult:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self.calls.append((query, kwargs))
         return next(self._results)
 

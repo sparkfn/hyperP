@@ -313,7 +313,21 @@ CALL (migration, identity_key, source_system, source_record_id, active_version) 
        } OR EXISTS {
          MATCH (key_owner:SourceRecord {source_version_key: canonical_key})
          WHERE key_owner <> version
-       } THEN stable_pk ELSE '' END AS duplicate_discriminator
+       } THEN stable_pk ELSE '' END AS duplicate_discriminator,
+       elementId(version) AS deal_element_id,
+       coalesce((version.record_type = 'crm_deal'
+        AND (version.lifecycle_status = 'active'
+             OR (version.lifecycle_status IS NULL AND version.is_latest = true))
+        AND EXISTS {
+          MATCH (version)-[deal_link:LINKED_TO]->(linked_person:Person)
+          WHERE coalesce(deal_link.is_active, true) = true
+            AND linked_person.status IS NOT NULL
+            AND linked_person.status <> 'merged'
+        }), false) AS before_qualifying
+  WITH version, stable_pk, identity_key, active_version, canonical_key,
+       duplicate_discriminator, deal_element_id, before_qualifying,
+       CASE WHEN before_qualifying THEN toString(version.observed_at) ELSE null END
+         AS before_observed_at
   SET version.source_version_key =
         'sv1:' +
         toString(size(version.migration_source_system)) + ':' +
@@ -333,12 +347,17 @@ CALL (migration, identity_key, source_system, source_record_id, active_version) 
       version.is_latest = coalesce(version = active_version, false),
       version.migration_applied_for = $migration_key
   RETURN count(version) AS updated,
-         max(stable_pk) AS next_cursor
+         max(stable_pk) AS next_cursor,
+         collect({
+           deal_element_id: deal_element_id,
+           qualifying: before_qualifying,
+           observed_at: before_observed_at
+         }) AS before_deals
 }
 FOREACH (_ IN CASE WHEN next_cursor IS NULL THEN [] ELSE [1] END |
   SET migration.current_version_cursor = next_cursor)
 SET migration.updated_records = coalesce(migration.updated_records, 0) + updated
-RETURN updated
+RETURN updated, before_deals
 """
 
 

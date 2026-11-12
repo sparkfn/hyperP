@@ -31,6 +31,7 @@ from src.graph.bitrix_deal_scope import DealScopeObservation, record_scope_batch
 from src.graph.bootstrap import MATCH_ONLY_SOURCE_KEYS
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control import assert_active_bitrix_fence
+from src.graph.person_list_summary_deltas import PersonListSummaryDeltaCollector
 from src.identity_link_revisions import IdentityLinkDesiredRevision, append_identity_link_revisions
 from src.matching.deterministic import prefetch_no_match_lock_owners
 from src.matching.engine import MatchEngine, ambiguous_prior_owners_result
@@ -114,6 +115,23 @@ def _is_match_only_record(source_key: str, record_type: RecordType) -> bool:
         or record_type in MATCH_ONLY_RECORD_TYPES
         or record_type not in PERSON_CREATING_RECORD_TYPES
     )
+
+
+def _persons_touched_by_match(
+    match_result: MatchResult,
+    candidates: list[CandidateResult],
+) -> list[str]:
+    """Return every existing Person this transaction may write to."""
+    person_ids: set[str] = {candidate.person_id for candidate in candidates}
+    for person_id in (
+        match_result.matched_person_id,
+        match_result.proposed_person_id,
+        *match_result.additional_linked_person_ids,
+        *match_result.review_candidate_person_ids,
+    ):
+        if person_id:
+            person_ids.add(person_id)
+    return sorted(person_ids)
 
 
 logger = logging.getLogger(__name__)
@@ -309,6 +327,7 @@ class IngestPipeline:
         active_exclusion_context = (
             exclusion_context if exclusion_context is not None else ExclusionContext()
         )
+        collector = PersonListSummaryDeltaCollector()
         if lifecycle_plan is None:
             lifecycle_plan = PlannedVersion(
                 version=int(envelope.source_record_version or "1"),
@@ -316,8 +335,25 @@ class IngestPipeline:
                 prior_person_ids=(),
                 pending_to_reject=None,
             )
-        if lifecycle_plan.pending_to_reject is not None:
-            reject_replaced_pending(tx, lifecycle_plan.pending_to_reject)
+        pending_to_reject = lifecycle_plan.pending_to_reject
+        # Capture the state of everything this transaction may change before
+        # the first write: the prior owners and the source records whose
+        # lifecycle the transaction replaces.
+        collector.capture_before(
+            tx,
+            person_ids=lifecycle_plan.prior_person_ids,
+            source_record_pks=tuple(
+                source_record_pk
+                for source_record_pk in (
+                    lifecycle_plan.active_source_record_pk,
+                    pending_to_reject,
+                )
+                if source_record_pk
+            ),
+        )
+        rejected_pending = pending_to_reject is not None
+        if pending_to_reject is not None:
+            reject_replaced_pending(tx, pending_to_reject)
         activation_blueprint = self._activation_blueprint(
             envelope,
             active_exclusion_context,
@@ -368,6 +404,8 @@ class IngestPipeline:
                     "Dropping CRM deal %s: contacts do not resolve to one existing person",
                     envelope.source_record_id,
                 )
+                if rejected_pending:
+                    collector.finalize(tx)
                 return IngestResult(
                     source_record_id=envelope.source_record_id,
                     ingest_run_id=ingest_run_id,
@@ -413,6 +451,8 @@ class IngestPipeline:
                 envelope.source_system,
                 match_result.decision.value,
             )
+            if rejected_pending:
+                collector.finalize(tx)
             return IngestResult(
                 source_record_id=envelope.source_record_id,
                 ingest_run_id=ingest_run_id,
@@ -424,7 +464,7 @@ class IngestPipeline:
                 envelope.source_record_id,
                 match_result.reasons,
             )
-            return self._persist_unlinked_review(
+            quarantine_result = self._persist_unlinked_review(
                 tx,
                 envelope=envelope,
                 identifiers=person_identifiers,
@@ -434,10 +474,21 @@ class IngestPipeline:
                 ingest_run_id=ingest_run_id,
                 lifecycle_plan=lifecycle_plan,
                 activation_blueprint=activation_blueprint,
+                collector=collector,
             )
+            collector.finalize(tx)
+            return quarantine_result
+        # Capture every existing Person this transaction may write to before
+        # the first Person write.
+        collector.capture_before(
+            tx,
+            person_ids=_persons_touched_by_match(match_result, candidates),
+        )
         if not continuity_fast_path:
             upsert_nodes(tx, person_identifiers, addresses)
         person_id, is_new_person = self._resolve_person(tx, match_result, candidates)
+        if is_new_person:
+            collector.mark_new(person_ids=[person_id])
         source_record_pk = persist_source_record(
             tx,
             envelope=envelope,
@@ -452,6 +503,7 @@ class IngestPipeline:
             activation_blueprint=activation_blueprint,
             control_instance_id=self._control_instance_id,
         )
+        collector.mark_new(source_record_pks=[source_record_pk])
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
         review_case_id = create_review_case_if_needed(
             tx,
@@ -614,7 +666,12 @@ class IngestPipeline:
             if not continuity_fast_path:
                 for affected_person_id in sorted(affected_person_ids):
                     compute_golden_profile(tx, affected_person_id)
-                audit_person_pairs(tx, person_identifiers, envelope.record_type)
+                audit_person_pairs(
+                    tx,
+                    person_identifiers,
+                    envelope.record_type,
+                    collector=collector,
+                )
             mark_profile_analysis_dirty(
                 tx,
                 source_record_pks=(
@@ -647,6 +704,7 @@ class IngestPipeline:
             match_result.decision.value,
             len(candidates),
         )
+        collector.finalize(tx)
         return IngestResult(
             source_record_id=envelope.source_record_id,
             source_record_pk=source_record_pk,
@@ -926,6 +984,7 @@ class IngestPipeline:
         ingest_run_id: str | None,
         lifecycle_plan: PlannedVersion,
         activation_blueprint: dict[str, JsonValue],
+        collector: PersonListSummaryDeltaCollector,
     ) -> IngestResult:
         source_record_pk = persist_source_record(
             tx,
@@ -942,6 +1001,7 @@ class IngestPipeline:
             link_status="blocked",
             control_instance_id=self._control_instance_id,
         )
+        collector.mark_new(source_record_pks=[source_record_pk])
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
         review_case_id = create_review_case_if_needed(
             tx,

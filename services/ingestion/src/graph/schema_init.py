@@ -36,6 +36,11 @@ from src.graph.queries.maintenance import (
     DROP_PERSON_NAME_SEARCH_FULLTEXT_INDEX,
     SHOW_PERSON_NAME_SEARCH_FULLTEXT_INDEX,
 )
+from src.graph.queries.person_list_summary import (
+    CREATE_PERSON_LIST_SUMMARY_COUNTER_CONSTRAINT,
+    ENSURE_PERSON_LIST_SUMMARY_COUNTER,
+    PERSON_LIST_SUMMARY_COUNTER_KEY,
+)
 from src.graph.queries.stage_history_ingestion import (
     CREATE_STAGE_HISTORY_INGESTION_CONSTRAINTS,
 )
@@ -78,6 +83,7 @@ ON (sr.source_version_key)""",
     *CREATE_STANDALONE_CRM_CENSUS_CONSTRAINTS,
     *CREATE_STANDALONE_CRM_LANE_A_CONSTRAINTS,
     *CREATE_IDENTITY_LINK_SCHEMA,
+    CREATE_PERSON_LIST_SUMMARY_COUNTER_CONSTRAINT,
     """CREATE CONSTRAINT ingestion_reset_generation_unique IF NOT EXISTS
 FOR (reset:IngestionResetGeneration)
 REQUIRE (reset.environment, reset.generation) IS UNIQUE""",
@@ -167,9 +173,12 @@ def _drop_legacy_nric_fulltext_index(session: Session) -> None:
 def apply_schema(client: Neo4jClient) -> int:
     """Apply every statement in init.cypher to the connected Neo4j instance.
 
-    Returns the number of statements executed. Each statement runs in its own
-    auto-commit transaction because Neo4j requires schema changes to be
-    isolated from data changes.
+    Returns the number of schema statements executed. Each statement runs in
+    its own auto-commit transaction because Neo4j requires schema changes to
+    be isolated from data changes.
+
+    The person-list summary counter singleton is ensured afterwards so the
+    bootstrap precedes any writer that contributes to it.
     """
     path = _find_init_cypher()
     statements = [
@@ -187,7 +196,23 @@ def apply_schema(client: Neo4jClient) -> int:
         for stmt in statements:
             session.run(stmt).consume()
     logger.info("Schema applied (%d statements, idempotent)", len(statements))
+    ensure_person_list_summary_counter(client)
     return len(statements)
+
+
+def ensure_person_list_summary_counter(client: Neo4jClient) -> None:
+    """Ensure the person-list summary counter singleton exists.
+
+    The singleton is created unready and is never promoted here: neither a
+    concurrent bootstrap nor an ordinary restart may reset or publish an
+    already-initialized counter. The six values are published exclusively by
+    the explicit backfill/reconciliation path.
+    """
+    with client.session() as session:
+        session.run(
+            ENSURE_PERSON_LIST_SUMMARY_COUNTER,
+            key=PERSON_LIST_SUMMARY_COUNTER_KEY,
+        ).consume()
 
 
 def apply_deferred_source_record_constraints(client: Neo4jClient) -> int:

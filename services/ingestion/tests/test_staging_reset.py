@@ -11,9 +11,10 @@ from typing import cast
 from unittest.mock import patch
 
 import pytest
+from _txmock import summary_counter_result
 from neo4j import ManagedTransaction
-
 from src.config import Settings
+from src.graph.queries.person_list_summary import INVALIDATE_PERSON_LIST_SUMMARY
 from src.graph.queries.staging_reset import STAGING_RESET_CLEAR_GRAPH
 from src.staging_reset import (
     _BATCH_SIZE,
@@ -87,6 +88,9 @@ class _FakeTx:
         self.params: dict[str, object] = {}
 
     def run(self, query: str, **params: object) -> _FakeResult:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self.query = query
         self.params = params
         return _FakeResult(self._deleted)
@@ -211,9 +215,7 @@ def test_guard_refuses_hostname_env() -> None:
 
 def test_guard_refuses_neo4j_production_host() -> None:
     with _guard_environment():
-        error = _check_environment_guard(
-            _settings(neo4j_uri="bolt://neo4j.prod.internal:7687")
-        )
+        error = _check_environment_guard(_settings(neo4j_uri="bolt://neo4j.prod.internal:7687"))
     assert error is not None
     assert "neo4j_uri" in error
 
@@ -296,11 +298,19 @@ def test_graph_clear_query_excludes_preserved() -> None:
         "WHERE NOT n:Entity AND NOT n:SourceSystem "
         "AND NOT n:User "
         "AND NOT n:OAuthClient AND NOT n:OAuthClientSecret "
+        "AND NOT n:PersonListSummaryCounter "
         "WITH n LIMIT $batch_size "
         "DETACH DELETE n "
         "RETURN count(*) AS deleted"
     )
-    for label in ("Entity", "SourceSystem", "User", "OAuthClient", "OAuthClientSecret"):
+    for label in (
+        "Entity",
+        "SourceSystem",
+        "User",
+        "OAuthClient",
+        "OAuthClientSecret",
+        "PersonListSummaryCounter",
+    ):
         assert f"NOT n:{label}" in STAGING_RESET_CLEAR_GRAPH
     assert STAGING_RESET_CLEAR_GRAPH.count("$") == 1
 
@@ -421,7 +431,8 @@ def test_graph_client_closed_on_success() -> None:
 
 
 def test_graph_client_closed_on_error() -> None:
-    client = _FakeGraphClient(["bad"])
+    # The invalidation consumes the first transaction, the clear the second.
+    client = _FakeGraphClient(["bad", "bad"])
     with (
         _guard_environment(),
         patch("src.staging_reset.get_settings", return_value=_settings()),
@@ -439,7 +450,8 @@ def test_graph_client_closed_on_error() -> None:
 
 def test_main_success_logs_timestamps(caplog: pytest.LogCaptureFixture) -> None:
     settings = _settings()
-    client = _FakeGraphClient([12, 0])
+    # The counter invalidation runs first and consumes the first transaction.
+    client = _FakeGraphClient([0, 12, 0])
     fake_redis = _FakeRedis()
     with (
         _guard_environment(),
@@ -459,3 +471,25 @@ def test_main_success_logs_timestamps(caplog: pytest.LogCaptureFixture) -> None:
     assert len(complete) == 1 and _ISO_TIMESTAMP.search(complete[0])
     assert "12 graph nodes deleted" in complete[0]
     assert f"{len(_CELERY_QUEUE_KEYS)} Redis keys deleted" in complete[0]
+
+
+def test_reset_invalidates_the_counter_before_the_first_deletion(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    settings = _settings()
+    client = _FakeGraphClient([0, 12, 0])
+    with (
+        _guard_environment(),
+        patch("src.staging_reset.get_settings", return_value=settings),
+        patch("src.staging_reset.Neo4jClient", return_value=client),
+        patch("src.staging_reset.redis.Redis.from_url", return_value=_FakeRedis()),
+        caplog.at_level(logging.INFO, logger="src.staging_reset"),
+    ):
+        assert main(["--confirm"]) == 0
+
+    # The counter is invalidated first, then the graph is cleared: the reset
+    # never deletes data while a stale counter could still be served.
+    assert client.queries[0] == INVALIDATE_PERSON_LIST_SUMMARY
+    assert client.queries[1:] == [STAGING_RESET_CLEAR_GRAPH] * 2
+    messages = [record.getMessage() for record in caplog.records]
+    assert any("Person-list summary counter invalidated" in message for message in messages)

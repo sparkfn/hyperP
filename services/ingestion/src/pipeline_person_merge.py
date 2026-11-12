@@ -9,6 +9,7 @@ from neo4j import ManagedTransaction
 from src.golden_profile import compute_golden_profile
 from src.graph import queries
 from src.graph.crm_deal_count import recompute_person_crm_deal_counts
+from src.graph.person_list_summary_deltas import PersonListSummaryDeltaCollector
 from src.profile_analysis_dirty import mark_profile_analysis_dirty
 
 
@@ -81,8 +82,13 @@ def merge_person_pair(
     survivor_id: str,
     match_decision_id: str,
     reason: str,
+    collector: PersonListSummaryDeltaCollector,
 ) -> str:
-    """Rewire an absorbed person into its survivor and return the merge-event id."""
+    """Rewire an absorbed person into its survivor and return the merge-event id.
+
+    The collector is required and is never finalized here: the caller owns the
+    summary-delta maintenance for the whole transaction.
+    """
     affected_person_ids = _profile_analysis_merge_person_ids(
         tx,
         absorbed_id=absorbed_id,
@@ -93,6 +99,13 @@ def merge_person_pair(
         for record in tx.run(queries.GET_AFFECTED_SOURCE_RECORDS, person_id=absorbed_id)
         if isinstance((source_record_pk := record.get("source_record_pk")), str)
         and source_record_pk
+    )
+    # Capture the merge participants and the records that move with them
+    # before the first rewire, status or profile mutation.
+    collector.capture_before(
+        tx,
+        person_ids=[absorbed_id, survivor_id],
+        source_record_pks=affected_source_record_pks,
     )
     record = tx.run(
         queries.CREATE_MERGE_EVENT_AUTO_MERGE,

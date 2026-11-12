@@ -502,6 +502,7 @@ GET_REVIEW_SALES_RECORD = """
 MATCH (rc:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->(md:MatchDecision)
 MATCH (md)-[:ABOUT_LEFT]->(sr:SourceRecord {record_type: 'sales'})
 RETURN sr.source_record_pk AS source_record_pk,
+       sr.expected_active_source_record_pk AS expected_active_source_record_pk,
        sr.lifecycle_status AS lifecycle_status,
        coalesce(sr.staged_sales_ready, false) AS staged_sales_ready
 """

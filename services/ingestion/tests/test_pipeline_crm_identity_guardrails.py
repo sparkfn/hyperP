@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+from _txmock import summary_counter_result
 from neo4j import ManagedTransaction
 from src.connectors.bitrix_openlines.connector import build_crm_deal_envelope
 from src.connectors.bitrix_openlines.crm_identity_policy import (
@@ -60,6 +61,9 @@ class _Tx:
         self._blocked_owners = blocked_owners or {}
 
     def run(self, query: str, **_kwargs: object) -> _Rows:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         if "candidate_person_id" in query and "NO_MATCH_LOCK" in query:
             return _Rows(
                 [
@@ -83,6 +87,9 @@ class _Tx:
 
 class _NameMismatchTx:
     def run(self, query: str, **_kwargs: object) -> _Rows:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         if "is_locked" in query:
             return _Rows([{"is_locked": False}])
         if "owner_person_id" in query:

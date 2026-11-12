@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING, cast
 from unittest.mock import patch
 
 import pytest
-from _txmock import _RecordingTx
+from _txmock import _RecordingTx, _SummaryCounterResult, summary_counter_result
 from neo4j import ManagedTransaction
 from src.connectors.eko.sales import EkoSalesConnector
 from src.exclusions import ExclusionContext
@@ -81,6 +81,9 @@ class _Tx(_RecordingTx):
         )
 
     def run(self, query: str, **kwargs: object) -> _Result:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self._record(query, kwargs)
         # FIND_VEHICLE_CANDIDATES_FOR_SALES: unique fragment.
         if "INVOLVES_VEHICLE {source_record_pk: $sales_source_record_pk}" in query:
@@ -442,7 +445,10 @@ class _VehicleTx(_RecordingTx):
         super().__init__()
         self._row: dict[str, object] = {"vehicle_id": vehicle_id, "conflict": conflict}
 
-    def run(self, query: str, **kwargs: object) -> _VehicleResult:
+    def run(self, query: str, **kwargs: object) -> _VehicleResult | _SummaryCounterResult:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self._record(query, kwargs)
         return _VehicleResult(self._row)
 
@@ -450,7 +456,10 @@ class _VehicleTx(_RecordingTx):
 class _OrderTx(_RecordingTx):
     """Recording tx for ``_merge_order`` tests: returns a canned order_id row."""
 
-    def run(self, query: str, **kwargs: object) -> _VehicleResult:
+    def run(self, query: str, **kwargs: object) -> _VehicleResult | _SummaryCounterResult:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self._record(query, kwargs)
         return _VehicleResult({"order_id": "o-1"})
 
@@ -777,6 +786,9 @@ class _DrainTx(_RecordingTx):
         self._person_id = person_id
 
     def run(self, query: str, **kwargs: object) -> _Result:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self._record(query, kwargs)
         if "FOR_CUSTOMER_RECORD" in query and "identity_source_record_id" in kwargs:
             # LINK_SALES_TO_IDENTITY_RECORD — no result needed.

@@ -9,6 +9,11 @@ from typing import cast
 
 import pytest
 from neo4j import AsyncManagedTransaction
+from person_list_summary_doubles import (
+    SUMMARY_APPLY_ROW,
+    is_summary_apply_query,
+    is_summary_capture_query,
+)
 from src.graph.queries import (
     ACTIVATE_PENDING_REVIEW_RECORD,
     ASSIGN_REVIEW_CASE,
@@ -39,6 +44,11 @@ from src.graph.queries import (
     build_review_action_cypher,
 )
 from src.graph.queries.identity_link_revisions import APPEND_IDENTITY_LINK_REVISIONS
+from src.graph.queries.person_list_summary import (
+    APPLY_PERSON_LIST_SUMMARY_DELTAS,
+    CAPTURE_PERSON_SUMMARY_CONTRIBUTIONS,
+    FIND_DEAL_ELEMENT_IDS_FOR_PERSONS,
+)
 from src.repositories.neo4j import review as review_module
 from src.repositories.neo4j.review import (
     Neo4jReviewRepository,
@@ -151,8 +161,12 @@ class _Tx:
     def __init__(self, records: Sequence[Record | None]) -> None:
         self._records: list[Record | None] = list(records)
         self.calls: list[_Call] = []
+        self.summary_calls: list[str] = []
 
     async def run(self, query: str, **params: object) -> _AsyncResult:
+        if is_summary_capture_query(query) or is_summary_apply_query(query):
+            self.summary_calls.append(query)
+            return _AsyncResult(SUMMARY_APPLY_ROW if is_summary_apply_query(query) else None)
         self.calls.append(_Call(query=query, params=params))
         record = self._records.pop(0) if self._records else None
         return _AsyncResult(record)
@@ -241,6 +255,14 @@ async def test_review_merge_uses_requested_survivor_person() -> None:
         "survivor_id": "person-b",
         "merge_event_id": "merge-1",
     }
+    # The maintained summary counter is captured immediately before the merge
+    # and published once after the profile recompute.
+    assert tx.summary_calls == [
+        FIND_DEAL_ELEMENT_IDS_FOR_PERSONS,
+        CAPTURE_PERSON_SUMMARY_CONTRIBUTIONS,
+        CAPTURE_PERSON_SUMMARY_CONTRIBUTIONS,
+        APPLY_PERSON_LIST_SUMMARY_DELTAS,
+    ]
 
 
 @pytest.mark.asyncio

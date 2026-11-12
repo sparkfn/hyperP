@@ -92,6 +92,35 @@ RETURN [person_id IN collect(DISTINCT neighbor.person_id)
 """
 
 
+LOCK_SOURCE_RECORD_IDENTITY = """
+MERGE (lock:SourceRecordIdentityLock {
+    source_system: $source_system,
+    source_instance_id: $source_instance_id,
+    source_record_id: $source_record_id
+})
+SET lock.locked_at = datetime()
+RETURN lock.locked_at AS locked_at
+"""
+
+
+FIND_SOURCE_IDENTITY_DEAL_ELEMENT_IDS = """
+MATCH (sr:SourceRecord {
+    source_instance_id: $source_instance_id,
+    source_record_id: $source_record_id
+})-[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})
+WHERE sr.record_type = 'crm_deal'
+  AND (sr.lifecycle_status IN ['active', 'pending_review']
+       OR (sr.lifecycle_status IS NULL AND sr.is_latest = true))
+  AND NOT (
+    (sr.ingested_at IS NOT NULL
+        AND sr.ingested_at > datetime($reconciliation_snapshot_at))
+    OR (sr.activated_at IS NOT NULL
+        AND sr.activated_at > datetime($reconciliation_snapshot_at))
+  )
+RETURN elementId(sr) AS deal_element_id
+"""
+
+
 RETIRE_SOURCE_EVIDENCE = """
 MERGE (lock:SourceRecordIdentityLock {
     source_system: $source_system,

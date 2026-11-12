@@ -7,6 +7,7 @@ import logging
 from neo4j import ManagedTransaction
 
 from src.graph.client import Neo4jClient
+from src.graph.person_list_summary_deltas import PersonListSummaryDeltaCollector
 from src.models import (
     IngestResult,
     MatchDecision,
@@ -50,6 +51,17 @@ def ingest_address_record(
                 skipped_duplicate=True,
                 ingest_run_id=ingest_run_id,
             )
+        collector = PersonListSummaryDeltaCollector()
+        # Capture the replaced version and its owners before the first write.
+        collector.capture_before(
+            tx,
+            person_ids=plan.prior_person_ids,
+            source_record_pks=tuple(
+                source_record_pk
+                for source_record_pk in (plan.active_source_record_pk, plan.pending_to_reject)
+                if source_record_pk
+            ),
+        )
         if plan.pending_to_reject is not None:
             reject_replaced_pending(tx, plan.pending_to_reject)
         envelope.source_record_version = str(plan.version)
@@ -70,6 +82,7 @@ def ingest_address_record(
             lifecycle_status=SourceRecordLifecycleStatus.PENDING_REVIEW,
             expected_active_source_record_pk=plan.active_source_record_pk,
         )
+        collector.mark_new(source_record_pks=[source_record_pk])
         link_source_record_to_address(
             tx,
             envelope=envelope,
@@ -90,6 +103,7 @@ def ingest_address_record(
             envelope.source_record_id,
             envelope.attributes.get("postal_code"),
         )
+        collector.finalize(tx)
         return IngestResult(
             source_record_id=envelope.source_record_id,
             source_record_pk=source_record_pk,

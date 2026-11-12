@@ -7,6 +7,7 @@ from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+from _txmock import summary_counter_result
 from neo4j import ManagedTransaction
 from src.graph import queries
 from src.models import MatchDecision, MatchResult, RecordType, SourceRecordEnvelope
@@ -28,6 +29,9 @@ class _Rows:
 
 class _Tx:
     def run(self, query: str, **params: object) -> _Rows:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         assert query == queries.RETIRE_IDENTITY_PROJECTIONS
         assert params == {"source_record_pk": "old-sr"}
         return _Rows()
@@ -39,6 +43,9 @@ def test_retire_identity_projections_returns_sorted_distinct_owners() -> None:
 
 class _ScopedTx:
     def run(self, query: str, **params: object) -> _Rows:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         assert query == queries.RETIRE_IDENTITY_PROJECTIONS_FOR_PERSONS
         assert params == {
             "source_record_pk": "old-sr",
@@ -136,6 +143,9 @@ class _DecisionTx:
         self.calls: list[tuple[str, dict[str, object]]] = []
 
     def run(self, query: str, **params: object) -> _DecisionResult:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self.calls.append((query, params))
         if query == queries.CREATE_MATCH_DECISION:
             return _DecisionResult({"match_decision_id": "decision-1"})
@@ -313,6 +323,9 @@ class _DuplicateTx:
         self.calls: list[str] = []
 
     def run(self, query: str, **_params: object) -> _LifecycleRows:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self.calls.append(query)
         if query != queries.LOCK_AND_GET_SOURCE_STATE:
             raise AssertionError("duplicate ingestion must stop after the lifecycle lock read")
