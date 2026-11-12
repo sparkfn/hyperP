@@ -1,0 +1,93 @@
+{
+  "data": [
+    {
+      "person_id": "p-0001",
+      "status": "active",
+      "is_high_value": true,
+      "is_high_risk": false,
+      "preferred_full_name": "Alice Tan",
+      "preferred_phone": "+6591234567",
+      "preferred_email": "alice@example.com",
+      "preferred_dob": "1990-04-02",
+      "preferred_address": {
+        "address_id": "a-1",
+        "unit_number": "#12-34",
+        "street_number": "123",
+        "street_name": "Orchard Road",
+        "city": "Singapore",
+        "postal_code": "238801",
+        "country_code": "SG",
+        "normalized_full": "123 orchard road #12-34 singapore 238801 sg"
+      },
+      "preferred_nric": "S****123A",
+      "preferred_race_ethnicity": "chinese",
+      "profile_completeness_score": 0.9,
+      "golden_profile_computed_at": "2026-01-05T09:31:00Z",
+      "golden_profile_version": "gp-v7",
+      "source_record_count": 2,
+      "connection_count": 1,
+      "lifetime_value": 1250.5,
+      "loyalty": [
+        {
+          "source_system": "eko_phppos",
+          "points": 120,
+          "disable_loyalty": false,
+          "current_spend_for_points": 120.0,
+          "current_sales_for_discount": 300.0,
+          "observed_at": "2026-01-04T10:00:00Z"
+        }
+      ],
+      "vehicles": [
+        {
+          "vehicle_id": "v-9",
+          "product": "Helmet",
+          "product_sku": "SKU-9",
+          "manufacturer": "Arai",
+          "model": "RX-7",
+          "lta_tag": "SBA1234A",
+          "serial_number": "SN-9",
+          "relationship": "OWNS",
+          "is_active": true,
+          "conflict_flag": false,
+          "observed_at": "2026-01-03T08:00:00Z"
+        }
+      ],
+      "created_at": "2025-12-01T00:00:00Z",
+      "updated_at": "2026-01-05T09:30:00Z",
+      "phone_confidence": 1.0,
+      "entities": [
+        {
+          "entity_key": "eko",
+          "display_name": "Eko Pharmacy",
+          "entity_type": "pharmacy",
+          "country_code": "SG",
+          "is_active": true,
+          "source_record_count": 1
+        },
+        {
+          "entity_key": "speedzone",
+          "display_name": "Speedzone",
+          "entity_type": "retail",
+          "country_code": "SG",
+          "is_active": true,
+          "source_record_count": 1
+        }
+      ],
+      "entity_count": 2,
+      "identifier_count": 3,
+      "possible_match_count": 1,
+      "system_match_count": 0,
+      "order_count": 0,
+      "crm_deal_count": 4,
+      "bankruptcy_case_count": 0,
+      "preferred_dob_display": "02 Apr 1990",
+      "preferred_dob_invalid": false
+    }
+  ],
+  "meta": {
+    "request_id": "req-fixture-list",
+    "next_cursor": "MjA=",
+    "total_count": 1
+  },
+  "display_items": null
+}

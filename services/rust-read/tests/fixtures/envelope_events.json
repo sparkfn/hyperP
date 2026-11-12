@@ -1,0 +1,44 @@
+{
+  "data": [
+    {
+      "event_id": "ev-1",
+      "global_revision": 1,
+      "source_system": "bitrix_chat",
+      "source_instance_id": "bitrix-prod",
+      "source_entity_type": "deal",
+      "source_entity_id": "deal-1",
+      "identity_policy_version": "crm_deal_identity_v2",
+      "link_status": "resolved",
+      "hyperp_person_id": "p-0001",
+      "resolution_kind": "baseline",
+      "resolution_revision": 1,
+      "effective_at": "2026-01-05T09:30:00Z",
+      "match_decision_id": "md-1",
+      "review_case_id": null,
+      "supersedes_event_id": null
+    },
+    {
+      "event_id": "ev-2",
+      "global_revision": 2,
+      "source_system": "bitrix_chat",
+      "source_instance_id": "bitrix-prod",
+      "source_entity_type": "deal",
+      "source_entity_id": "deal-2",
+      "identity_policy_version": "crm_deal_identity_v2",
+      "link_status": "unresolved",
+      "hyperp_person_id": null,
+      "resolution_kind": "manual_no_match",
+      "resolution_revision": 1,
+      "effective_at": "2026-01-05T09:35:00Z",
+      "match_decision_id": null,
+      "review_case_id": "rc-1",
+      "supersedes_event_id": null
+    }
+  ],
+  "meta": {
+    "request_id": "req-fixture-events",
+    "next_cursor": null,
+    "total_count": null
+  },
+  "through_revision": 2
+}
