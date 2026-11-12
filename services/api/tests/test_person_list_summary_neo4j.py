@@ -121,6 +121,17 @@ def neo4j_graph() -> Iterator[_TestGraph]:
     finally:
         if connected:
             with driver.session() as session:
+                # Golden-profile recomputation creates MergeEvents that are not
+                # themselves tagged. Tag those attached to this run's nodes
+                # first, so the delete below removes them too.
+                session.run(
+                    f"""
+                    MATCH (event:MergeEvent)-[:ABSORBED|SURVIVOR|AFFECTED_RECORD]->(node)
+                    WHERE node.{_RUN_PROPERTY} = $run_id
+                    SET event.{_RUN_PROPERTY} = $run_id
+                    """,
+                    run_id=run_id,
+                ).consume()
                 session.run(
                     f"MATCH (node {{{_RUN_PROPERTY}: $run_id}}) DETACH DELETE node",
                     run_id=run_id,
@@ -417,12 +428,16 @@ async def test_manual_merge_repository_keeps_counter_equal_to_authority(
 
     assert outcome.merge_event_id is not None
     with neo4j_graph.driver.session() as session:
+        # Tag every MergeEvent that belongs to this test's two Persons, not
+        # just the reported outcome event, so fixture cleanup removes them all.
         session.run(
-            """
-            MATCH (event:MergeEvent {merge_event_id: $merge_event_id})
-            SET event._person_list_summary_api_test_run = $run_id
+            f"""
+            MATCH (event:MergeEvent)-[:ABSORBED|SURVIVOR]->(person:Person)
+            WHERE person.person_id IN [$absorbed_id, $survivor_id]
+            SET event.{_RUN_PROPERTY} = $run_id
             """,
-            merge_event_id=outcome.merge_event_id,
+            absorbed_id=absorbed_id,
+            survivor_id=survivor_id,
             run_id=neo4j_graph.run_id,
         ).consume()
 

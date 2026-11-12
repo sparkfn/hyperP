@@ -470,6 +470,7 @@ WITH c,
      current_month_key,
      scan_month,
      monthly_delta,
+     current_time,
      (ready_valid AND active_valid AND high_risk_valid AND high_value_valid
        AND no_contact_valid) AS core_applicable,
      (ready_valid AND all_deals_valid) AS all_deals_applicable,

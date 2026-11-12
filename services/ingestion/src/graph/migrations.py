@@ -13,7 +13,7 @@ import time
 import uuid
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Literal, TypedDict, cast
 
 from neo4j import ManagedTransaction, Record
 
@@ -234,6 +234,14 @@ OPTIONAL MATCH (legacy)-[legacy_ownership:OPERATED_BY]->(:Entity)
 DELETE ownership, legacy_ownership
 RETURN count(ownership) + count(legacy_ownership) AS removed
 """
+
+
+class _LeaseParams(TypedDict):
+    """Lease parameters accepted by the source-record lifecycle migration queries."""
+
+    migration_key: str
+    owner_id: str
+    lease_seconds: int
 
 
 _MigrationPhase = Literal["prepare", "migrate", "cleanup"]
@@ -556,7 +564,7 @@ def _required_phase(record: Record | None) -> _MigrationPhase:
     return cast(_MigrationPhase, value)
 
 
-def _lease_params(owner_id: str) -> dict[str, object]:
+def _lease_params(owner_id: str) -> _LeaseParams:
     return {
         "migration_key": SOURCE_RECORD_LIFECYCLE_MIGRATION_KEY,
         "owner_id": owner_id,
