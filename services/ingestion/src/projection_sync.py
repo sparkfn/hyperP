@@ -154,8 +154,10 @@ def _append_identity_revisions(
     """Append the identity-link revisions after the stored cursor.
 
     Revisions are appended in order and the cursor only advances over a
-    contiguous run: a gap in the graph stream stops the append so the Rust
-    reader surfaces the gap instead of silently skipping a revision.
+    contiguous run. A gap in the graph stream stops the append: the projection
+    stalls at the last contiguous revision and logs an error, so no revision is
+    skipped. Rust never sees the gap; it serves the stalled prefix until the
+    graph stream is repaired.
     """
     appended = 0
     cursor = current_revision

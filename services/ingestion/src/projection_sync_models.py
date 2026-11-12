@@ -151,7 +151,7 @@ class PersonProjectionRow:
     preferred_nric: str | None
     preferred_address_id: str | None
     updated_at: datetime | None
-    profile_completeness_score: float
+    profile_completeness_score: float | None
     is_high_value: bool
     is_high_risk: bool
     source_record_count: int

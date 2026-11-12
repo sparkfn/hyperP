@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import subprocess
 import sys
 from datetime import UTC, datetime, timedelta
@@ -18,12 +19,15 @@ import pytest
 from pydantic import ValidationError
 from src.celery_app import celery_app
 from src.config import Settings
+from src.graph.client import Neo4jClient
+from src.graph.queries.projection_sync import PROJECTION_NEIGHBOUR_PERSON_IDS
 from src.projection_sync import (
     MARK_OVERLAP_SECONDS,
     projection_sync_task,
     run_projection_sync,
 )
 from src.projection_sync_graph import ProjectionGraph
+from src.projection_sync_mapper import build_detail_payload, build_list_payload, build_person_row
 from src.projection_sync_models import (
     ChildRows,
     IdentityLinkRevisionRow,
@@ -306,6 +310,43 @@ def test_the_task_runs_when_the_rust_spike_is_enabled(
 
     assert result["skipped"] is False
     assert result["persons_written"] == 0
+
+
+class _CannedClient(Neo4jClient):
+    """A Neo4j client stand-in whose reads return canned Cypher result rows."""
+
+    def __init__(self, rows: list[dict[str, object]]) -> None:
+        """Hold the canned rows without opening a driver."""
+        self.rows = rows
+
+    def execute_read(self, work: object, **session_kwargs: object) -> list[dict[str, object]]:
+        """Return the canned rows instead of running the transaction function."""
+        return self.rows
+
+
+def test_neighbour_ids_are_read_from_the_column_the_cypher_returns() -> None:
+    match = re.search(
+        r"^RETURN DISTINCT (\w+)(?: AS (\w+))?$", PROJECTION_NEIGHBOUR_PERSON_IDS, re.MULTILINE
+    )
+    assert match is not None
+    column = match.group(2) or match.group(1)
+    assert column == "person_id"
+
+    graph = ProjectionGraph(_CannedClient([{column: "p2"}, {column: "p3"}]))
+
+    assert graph.neighbour_person_ids(["p1"]) == ["p2", "p3"]
+
+
+def test_a_null_completeness_score_is_stored_as_null_while_the_payloads_keep_zero() -> None:
+    person = {**_person_map("p1"), "profile_completeness_score": None}
+    list_row = {**_list_row("p1"), "person": person}
+    detail_row = {**_detail_row("p1"), "person": person}
+
+    row = build_person_row(list_row, build_list_payload(list_row), build_detail_payload(detail_row))
+
+    assert row.profile_completeness_score is None
+    assert row.list_payload["profile_completeness_score"] == 0.0
+    assert row.detail_payload["profile_completeness_score"] == 0.0
 
 
 def test_the_first_run_backfills_every_person() -> None:

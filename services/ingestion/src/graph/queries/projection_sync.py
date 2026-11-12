@@ -104,8 +104,8 @@ OPTIONAL MATCH (p)-[knows_rel:KNOWS]-(knows_neighbour:Person)
     AND coalesce(knows_rel.is_active, true) = true
 WITH p, ident_ids, addr_ids, collect(DISTINCT knows_neighbour.person_id) AS knows_ids
 UNWIND ident_ids + addr_ids + knows_ids AS neighbour_id
-RETURN DISTINCT neighbour_id
-ORDER BY neighbour_id
+RETURN DISTINCT neighbour_id AS person_id
+ORDER BY person_id
 """
 
 # --- Keyset paging over the whole Person id space --------------------------

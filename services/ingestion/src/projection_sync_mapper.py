@@ -175,7 +175,8 @@ def build_person_row(
         preferred_nric=to_optional_str(person.get("preferred_nric")),
         preferred_address_id=to_optional_str(list_row.get("preferred_address_id")),
         updated_at=to_utc_datetime(person.get("updated_at")),
-        profile_completeness_score=to_float(person.get("profile_completeness_score")),
+        # The column keeps NULL (the API list excludes it); the JSON payloads keep 0.0.
+        profile_completeness_score=to_optional_float(person.get("profile_completeness_score")),
         is_high_value=to_bool(person.get("is_high_value")),
         is_high_risk=to_bool(person.get("is_high_risk")),
         source_record_count=to_int(list_row.get("source_record_count")),

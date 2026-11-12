@@ -115,8 +115,21 @@ the volume first.
   differently) for some of these.
 - Text ordering uses the PostgreSQL database collation; Neo4j orders by code point.
 - `summary` and `person detail` reject any query string with 400 (FastAPI ignores extras).
+- Source records without a `FROM_SOURCE` SourceSystem are not projected, so the `entity_key` and
+  `source_record_type` filters (which FastAPI can satisfy through `OWNED_BY` or the record alone)
+  can differ from FastAPI for such records.
+- `person.crm_deal_count` is `NOT NULL DEFAULT 0` and a missing graph value is projected as `0`.
+  FastAPI leaves it `NULL`, so a person with no stored count is excluded from the
+  `sort_by=crm_deal_count` list and from `crm_deal_count_min`/`crm_deal_count_max` there, but is
+  listed here as `0`.
+- A person with no completeness score is stored as `NULL` and left out of the default list, as in
+  FastAPI; its list/detail payload still reports `0.0`.
 
 ## Known limitation
+
+Changed-person discovery is one `OR`-of-`EXISTS` predicate over the timestamps the ingestion writers
+stamp, plus one-hop neighbours; its cost and the p99 freshness target are measured in L4 (#498), not
+here.
 
 Hard-deleted non-Person graph elements that leave no timestamped affected-Person signal are not
 reconciled by the incremental projection. Recover with a full projection reset (remove the

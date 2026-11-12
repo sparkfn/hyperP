@@ -201,9 +201,11 @@ _UPSERT_STATE: Final = text(
         CAST(:summary AS jsonb)
     )
     ON CONFLICT (id) DO UPDATE SET
-        high_water = EXCLUDED.high_water,
-        last_success = EXCLUDED.last_success,
-        current_revision = EXCLUDED.current_revision,
+        high_water = GREATEST(public.summary_counter.high_water, EXCLUDED.high_water),
+        last_success = GREATEST(public.summary_counter.last_success, EXCLUDED.last_success),
+        current_revision = GREATEST(
+            public.summary_counter.current_revision, EXCLUDED.current_revision
+        ),
         identity_stream_ready = EXCLUDED.identity_stream_ready,
         summary = EXCLUDED.summary
     """

@@ -421,6 +421,40 @@ def test_the_summary_counter_stays_a_singleton(
             )
 
 
+def test_an_older_run_cannot_move_the_projection_state_backwards(
+    writer: ProjectionPostgresWriter,
+) -> None:
+    counters = SummaryCounters(
+        all_profiles_count=1,
+        high_risk_count=0,
+        high_value_count=0,
+        no_contact_count=0,
+        deals_this_month_count=0,
+        all_deals_count=0,
+    )
+    newer = datetime(2026, 1, 3, tzinfo=UTC)
+    older = datetime(2026, 1, 2, tzinfo=UTC)
+    writer.write_state(
+        ProjectionState(
+            high_water=newer, last_success=newer, current_revision=9, identity_stream_ready=True
+        ),
+        counters,
+    )
+
+    writer.write_state(
+        ProjectionState(
+            high_water=older, last_success=older, current_revision=4, identity_stream_ready=True
+        ),
+        counters,
+    )
+
+    state = writer.read_state()
+    assert state is not None
+    assert state.high_water == newer
+    assert state.last_success == newer
+    assert state.current_revision == 9
+
+
 def _snapshot(engine: Engine, person_id: str) -> tuple[object, ...]:
     """Return the projected rows of one person as a comparable tuple."""
     person = _rows(

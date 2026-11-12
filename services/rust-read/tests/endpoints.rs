@@ -463,6 +463,42 @@ async fn list_scenarios(app: &Router, fixtures: &Fixtures) {
     assert_eq!(body["error"]["code"], "invalid_request");
 }
 
+/// A person without a completeness score is left out of the default (score-sorted) list and
+/// its total, like the FastAPI list, but a text search still finds it.
+async fn null_score_scenarios(app: &Router, fixtures: &Fixtures, writer: &PgPool) {
+    let unscored = list_variant(
+        &fixtures.list_item,
+        "p-0004",
+        "active",
+        0.0,
+        false,
+        "Dana Quill",
+    );
+    let unscored_detail = detail_variant(&fixtures.detail, "p-0004", "active");
+    insert_person(writer, &unscored, None, &unscored_detail).await;
+    sqlx::query("UPDATE person SET profile_completeness_score = NULL WHERE person_id = 'p-0004'")
+        .execute(writer)
+        .await
+        .expect("clear completeness score");
+
+    let (status, body) = call(app, "/v1/persons", Some(TOKEN), REQUEST_ID).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(
+        rows(&body),
+        vec![fixtures.list_item.clone(), fixtures.second_item.clone()]
+    );
+    assert_eq!(body["meta"]["total_count"], json!(2));
+
+    let (status, body) = call(app, "/v1/persons?q=dana", Some(TOKEN), REQUEST_ID).await;
+    assert_eq!(status, StatusCode::OK);
+    assert_eq!(rows(&body), vec![unscored]);
+
+    sqlx::query("DELETE FROM person WHERE person_id = 'p-0004'")
+        .execute(writer)
+        .await
+        .expect("remove the unscored person");
+}
+
 async fn detail_scenarios(app: &Router, fixtures: &Fixtures) {
     // A merged person resolves one hop to the canonical payload, not its own row.
     let (status, body) = call(app, "/v1/persons/p-0003", Some(TOKEN), REQUEST_ID).await;
@@ -682,5 +718,6 @@ async fn postgres_projection_endpoints_match_the_fixtures() {
     detail_scenarios(&app, &fixtures).await;
     let snapshot_cursor = snapshot_scenarios(&app, &fixtures, &writer).await;
     events_scenarios(&app, &fixtures, &writer, &snapshot_cursor).await;
+    null_score_scenarios(&app, &fixtures, &writer).await;
     isolation(&reader).await;
 }
