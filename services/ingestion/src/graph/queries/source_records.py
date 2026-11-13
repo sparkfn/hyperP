@@ -238,6 +238,21 @@ SET sr.attribution_status = $attribution_status,
         WHEN $attribution_status IS NULL THEN sr.attribution_eval_at
         ELSE datetime()
     END
+WITH sr
+OPTIONAL MATCH (sr)-[:FROM_SOURCE]->(:SourceSystem)<-[:FROM_SOURCE]-(prior:SourceRecord {
+    source_instance_id: sr.source_instance_id,
+    source_record_id: sr.source_record_id,
+    lifecycle_status: 'parked'
+})
+WHERE $reeval_pending = true
+  AND prior <> sr
+  AND prior.reeval_pending = true
+  AND toInteger(coalesce(prior.source_record_version, '0'))
+      < toInteger(coalesce(sr.source_record_version, '0'))
+FOREACH (obsolete IN CASE WHEN prior IS NULL THEN [] ELSE [prior] END |
+    SET obsolete.reeval_pending = false,
+        obsolete.attribution_eval_at = datetime()
+)
 """
 
 PROMOTE_STAGED_SOURCE_RECORD = """

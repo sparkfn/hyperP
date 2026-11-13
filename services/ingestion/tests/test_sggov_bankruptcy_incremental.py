@@ -10,6 +10,7 @@ import pytest
 from src.connectors.sggov.bankruptcy_incremental import (
     SGGovernmentBankruptcyIncrementalConnector,
 )
+from src.graph.queries.ingest_skips import RECONCILE_INGEST_RUN_ACCOUNTING
 from src.incremental_connector import IncrementalConnector
 from src.watermark_store import load_watermark
 
@@ -267,10 +268,10 @@ def test_incremental_connector_registered_in_task_registry() -> None:
 
 
 class _Result:
-    def __init__(self, data: dict[str, str] | None = None) -> None:
+    def __init__(self, data: dict[str, object] | None = None) -> None:
         self._data = data
 
-    def single(self) -> dict[str, str] | None:
+    def single(self) -> dict[str, object] | None:
         return self._data
 
 
@@ -280,6 +281,20 @@ class _Transaction:
 
     def run(self, query: str, **params: object) -> _Result:
         self.calls.append((query, params))
+        if query == RECONCILE_INGEST_RUN_ACCOUNTING:
+            return _Result(
+                {
+                    "emitted_count": 0,
+                    "persisted_count": 0,
+                    "duplicate_count": 0,
+                    "pipeline_skip_count": 0,
+                    "connector_skip_count": 0,
+                    "record_error_count": 0,
+                    "stored_skips": 0,
+                    "expected_skips": 0,
+                    "reconciled": True,
+                }
+            )
         if "CREATE_INGEST_RUN" in query or "CREATE" in query:
             return _Result({"ingest_run_id": "test-run-1"})
         return _Result(None)

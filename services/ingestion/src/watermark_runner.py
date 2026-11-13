@@ -214,7 +214,8 @@ def run_incremental(
             if isinstance(connector, SkipReporter):
                 ledger.add_connector_skips(connector.drain_skips())
             if time_window_closing() or shutdown_signal():
-                ledger.reconcile()
+                if not ledger.reconcile():
+                    raise RuntimeError(f"Skip ledger reconciliation failed for run {ingest_run_id}")
                 _finalize_run(
                     graph_client,
                     ingest_run_id,
@@ -256,7 +257,8 @@ def run_incremental(
             if not page.has_more:
                 if isinstance(connector, SkipReporter):
                     ledger.add_connector_skips(connector.drain_skips())
-                ledger.reconcile()
+                if not ledger.reconcile():
+                    raise RuntimeError(f"Skip ledger reconciliation failed for run {ingest_run_id}")
                 watermark_end_iso = (
                     max_updated_at.isoformat() if max_updated_at is not None else None
                 )

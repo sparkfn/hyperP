@@ -14,6 +14,8 @@ from src.graph.queries.identity_assertions import (
     ASSERT_ADDRESSES,
     ASSERT_FACTS,
     ASSERT_IDENTIFIERS,
+    MERGE_ASSERTION_ADDRESSES_BATCH,
+    MERGE_ASSERTION_IDENTIFIERS_BATCH,
 )
 from src.identity_assertions import (
     _parse_normalized_payload,
@@ -165,6 +167,20 @@ def test_write_assertions_runs_only_needed_upserts_and_immutable_assertions() ->
     assert all("ON MATCH SET" not in query for query in issued)
     assert all("ON CREATE SET" in query for query in issued)
     assert any(query == ASSERT_IDENTIFIERS for query, _ in tx.calls)
+
+    # The shadow upserts must not stamp v1 metadata on a node a later v1
+    # upsert would own: they only create the node and stamp its identity.
+    identifier_upsert = next(
+        query for query, _ in tx.calls if query == MERGE_ASSERTION_IDENTIFIERS_BATCH
+    )
+    assert "nric_masked" not in identifier_upsert
+    assert "source_instance_id" not in identifier_upsert
+
+    address_upsert = next(
+        query for query, _ in tx.calls if query == MERGE_ASSERTION_ADDRESSES_BATCH
+    )
+    for field in ("building_name", "city", "state_province", "normalized_full"):
+        assert field not in address_upsert
 
 
 class _QueryResult:
@@ -498,3 +514,38 @@ def test_empty_object_payload_with_no_identified_by_edges_has_no_mismatch() -> N
     )
     mismatches = audit_assertions(cast(Neo4jClient, client), batch_size=1)
     assert mismatches == []
+
+
+def test_invalid_payload_is_malformed_even_when_the_fallback_matches_the_stored_count() -> None:
+    fallback_identifiers: list[JsonValue] = [
+        {
+            "identifier_type": "phone",
+            "identifier_scope": "global",
+            "normalized_value": "+6591234567",
+            "source_instance_id": None,
+            "quality_flag": "valid",
+        }
+    ]
+    client = _FakeClient(
+        [
+            [
+                {
+                    "source_record_pk": "source-invalid-payload",
+                    "normalized_payload": "{not-json",
+                    "fallback_identifiers": fallback_identifiers,
+                    "identifier_count": 1,
+                    "address_count": 0,
+                    "fact_count": 0,
+                }
+            ],
+            [],
+        ]
+    )
+
+    mismatches = audit_assertions(cast(Neo4jClient, client), batch_size=1)
+
+    assert len(mismatches) == 1
+    assert mismatches[0].source_record_pk == "source-invalid-payload"
+    assert mismatches[0].malformed_entries == 1
+    assert mismatches[0].expected_identifiers == 1
+    assert mismatches[0].actual_identifiers == 1

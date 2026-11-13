@@ -345,6 +345,22 @@ def _assert_record(
     client.execute_write(_work)
 
 
+def _expected_rows(record: Mapping[str, object], source_record_pk: str) -> AssertionRows:
+    payload = _payload_or_fallback(record)
+    rows = assertion_rows(source_record_pk, payload)
+    stored = record.get("normalized_payload")
+    if stored not in (None, "") and _parse_normalized_payload(stored) is None:
+        # A non-empty payload that is not a JSON object is malformed even when the
+        # fallback identifiers account for every stored assertion.
+        rows = AssertionRows(
+            identifiers=rows.identifiers,
+            addresses=rows.addresses,
+            facts=rows.facts,
+            malformed=rows.malformed + 1,
+        )
+    return rows
+
+
 def backfill_assertions(client: Neo4jClient, batch_size: int = 500) -> int:
     """Backfill ASSERTS for active, pending, parked, and legacy-current records."""
     if batch_size < 1:
@@ -360,7 +376,7 @@ def backfill_assertions(client: Neo4jClient, batch_size: int = 500) -> int:
             if not isinstance(source_record_pk, str):
                 continue
             payload = _payload_or_fallback(record)
-            rows = assertion_rows(source_record_pk, payload)
+            rows = _expected_rows(record, source_record_pk)
             if rows.malformed > 0:
                 logger.warning(
                     "SourceRecord %s has %d malformed assertion entries in payload",
@@ -373,11 +389,6 @@ def backfill_assertions(client: Neo4jClient, batch_size: int = 500) -> int:
         if not isinstance(last_pk, str):
             return processed
         after_source_record_pk = last_pk
-
-
-def _expected_rows(record: Mapping[str, object], source_record_pk: str) -> AssertionRows:
-    payload = _payload_or_fallback(record)
-    return assertion_rows(source_record_pk, payload)
 
 
 def _count(record: Mapping[str, object], key: str) -> int:

@@ -400,8 +400,18 @@ def _build_envelopes(
         else bundle.chat_id
     )
     chat_key = f"whatsapp-chat-{scoped_chat_id}"
-    if filtered is None:
-        if on_skip is not None:
+    if on_skip is not None:
+        ordinals = excluded_person_ordinals(extraction, exclusion_ctx)
+        if ordinals:
+            for ordinal in ordinals:
+                on_skip(
+                    ConnectorSkip(
+                        reason="person_excluded",
+                        source_record_id=None,
+                        locator=f"{chat_key}#excluded-person-{ordinal}",
+                    )
+                )
+        elif filtered is None:
             on_skip(
                 ConnectorSkip(
                     reason="person_excluded",
@@ -409,16 +419,8 @@ def _build_envelopes(
                     locator=chat_key,
                 )
             )
+    if filtered is None:
         return []
-    if on_skip is not None:
-        for ordinal in excluded_person_ordinals(extraction, exclusion_ctx):
-            on_skip(
-                ConnectorSkip(
-                    reason="person_excluded",
-                    source_record_id=None,
-                    locator=f"{chat_key}#excluded-person-{ordinal}",
-                )
-            )
     extraction = filtered
 
     tx_payload = transactions_payload(extraction)

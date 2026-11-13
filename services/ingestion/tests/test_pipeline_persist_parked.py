@@ -262,6 +262,19 @@ def test_find_parked_query_contains_latest_version_guard() -> None:
     )
 
 
+def test_attribution_clears_reeval_pending_on_older_parked_versions() -> None:
+    assert "obsolete.reeval_pending = false" in SET_SOURCE_RECORD_ATTRIBUTION
+    assert "obsolete.attribution_eval_at = datetime()" in SET_SOURCE_RECORD_ATTRIBUTION
+    assert "lifecycle_status: 'parked'" in SET_SOURCE_RECORD_ATTRIBUTION
+    assert "source_instance_id: sr.source_instance_id" in SET_SOURCE_RECORD_ATTRIBUTION
+    assert "source_record_id: sr.source_record_id" in SET_SOURCE_RECORD_ATTRIBUTION
+    assert "prior.reeval_pending = true" in SET_SOURCE_RECORD_ATTRIBUTION
+    assert "$reeval_pending = true" in SET_SOURCE_RECORD_ATTRIBUTION
+    # Only an older version of the same record is cleared.
+    assert "prior <> sr" in SET_SOURCE_RECORD_ATTRIBUTION
+    assert "toInteger(coalesce(prior.source_record_version, '0'))" in SET_SOURCE_RECORD_ATTRIBUTION
+
+
 def test_reparking_the_same_hash_is_a_duplicate_without_writes() -> None:
     tx = _ParkedTx(parked_hit="sr-existing-parked")
 

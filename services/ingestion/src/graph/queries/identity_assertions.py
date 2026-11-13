@@ -21,12 +21,6 @@ MERGE (id:Identifier {
 })
 ON CREATE SET
     id.identifier_id = randomUUID(),
-    id.source_instance_id = input.source_instance_id,
-    id.hashed_value = input.hashed_value,
-    id.nric_masked = input.nric_masked,
-    id.checksum_valid = input.checksum_valid,
-    id.nric_key_version = input.nric_key_version,
-    id.nric_encrypted = input.nric_encrypted,
     id.created_at = datetime()
 RETURN count(id) AS upserted_count
 """
@@ -42,10 +36,6 @@ MERGE (addr:Address {
 })
 ON CREATE SET
     addr.address_id = randomUUID(),
-    addr.building_name = input.building_name,
-    addr.city = input.city,
-    addr.state_province = input.state_province,
-    addr.normalized_full = input.normalized_full,
     addr.created_at = datetime()
 RETURN count(addr) AS upserted_count
 """

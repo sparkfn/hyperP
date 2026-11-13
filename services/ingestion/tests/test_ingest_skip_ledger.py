@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Iterator
+from datetime import datetime
 from types import SimpleNamespace
 from typing import cast
 from unittest.mock import MagicMock
@@ -10,6 +12,19 @@ from unittest.mock import MagicMock
 import pytest
 from src.bitrix_ingestion_models import ExecutionContext
 from src.connectors.base import SourceConnector
+from src.connectors.bitrix.connector import (
+    BitrixChatConnector,
+)
+from src.connectors.bitrix.connector import (
+    _ChatBundle as BitrixChatBundle,
+)
+from src.connectors.chat_helpers import ExtractionResult
+from src.connectors.whatsapp.connector import (
+    _ChatBundle as WhatsAppChatBundle,
+)
+from src.connectors.whatsapp.connector import (
+    _build_envelopes as build_whatsapp_envelopes,
+)
 from src.exclusions import ExclusionContext
 from src.graph.client import Neo4jClient
 from src.graph.queries.ingest_skips import (
@@ -268,6 +283,143 @@ def _assert_attempt_is_balanced(params: dict[str, object], *, emitted: int) -> N
         + cast(int, params["pipeline_skip_count"])
         + cast(int, params["record_error_count"])
     )
+
+
+class _MidIterationFailureConnector(SourceConnector):
+    """Yields one record, then buffers a skip and fails before the next record."""
+
+    def get_source_key(self) -> str:
+        return "fundbox"
+
+    def fetch_records(self) -> Iterator[dict[str, JsonValue]]:
+        yield _raw_record(1)
+        self.record_skip("parse_drop", source_record_id=None, locator="row-2")
+        raise RuntimeError("mid-iteration failure")
+
+
+def test_connector_skip_is_drained_when_fetch_fails_before_the_next_record() -> None:
+    pipeline = MagicMock(spec=IngestPipeline)
+    pipeline.ingest.return_value = IngestResult(source_record_id="rec-1", person_id="p-1")
+
+    tx = _FakeTx()
+    client = _FakeClient(tx)
+    ledger = SkipLedger(client, "run-mid-failure", "fundbox")
+
+    with pytest.raises(RuntimeError, match="mid-iteration failure"):
+        _ingest_all_records(
+            client=client,
+            pipeline=pipeline,
+            connector=_MidIterationFailureConnector(),
+            ingest_run_id="run-mid-failure",
+            exclusion_context=ExclusionContext(),
+            ledger=ledger,
+        )
+
+    assert ledger.connector_skips == 1
+
+    ledger.flush_quietly()
+
+    skip_writes = [kwargs for query, kwargs in tx.calls if query == WRITE_INGEST_SKIPS]
+    assert len(skip_writes) == 1
+    rows = cast(list[dict[str, object]], skip_writes[0]["rows"])
+    assert len(rows) == 1
+    assert rows[0]["stage"] == "connector"
+    assert rows[0]["reason"] == "parse_drop"
+    assert rows[0]["source_record_id"] is None
+    assert rows[0]["locator"] == "row-2"
+
+    _assert_attempt_is_balanced(_durable_attempt(tx), emitted=1)
+
+
+def _excluded_extraction() -> ExtractionResult:
+    return ExtractionResult(
+        persons=[
+            {"name": "Excluded One", "phone": "+6588889999", "email": None},
+            {"name": "Excluded Two", "phone": "+6598765432", "email": None},
+        ],
+        possible_persons=[],
+        transactions=[],
+        chat_members=[],
+        inquiries=[],
+        strong_identifiers=[],
+        weak_identifiers=[],
+        summary=None,
+        customer_sentiment=None,
+        tone=None,
+        purpose=None,
+        outcome=None,
+        difficulty=None,
+        confidence=0.8,
+    )
+
+
+def _whatsapp_bundle() -> WhatsAppChatBundle:
+    return WhatsAppChatBundle(
+        chat_id="chat-1",
+        chat_name="Customer One",
+        session_id="session-1",
+        whatsapp_user_id="6568505434@c.us",
+        tenant="speedzone",
+        msg_text="conversation",
+        observed_at="2026-05-06T00:00:00",
+        participants=[],
+        message_endpoints=[],
+        session_phone="+6568505434",
+    )
+
+
+def _bitrix_bundle() -> BitrixChatBundle:
+    return BitrixChatBundle(
+        chat_id=1,
+        deal_id=2,
+        bitrix_chat_id="chat-1",
+        category_name="Speedzone",
+        last_message_at=datetime(2026, 5, 6),
+        created_at=datetime(2026, 5, 6),
+        entity="speedzone",
+        conv_text="conversation",
+        deal=None,
+        agents=[],
+    )
+
+
+_EXCLUDED_PHONES = ["+6588889999", "+6598765432"]
+
+
+def test_whatsapp_records_one_skip_per_excluded_person() -> None:
+    skips: list[ConnectorSkip] = []
+
+    envelopes = build_whatsapp_envelopes(
+        bundle=_whatsapp_bundle(),
+        extraction=_excluded_extraction(),
+        company_mobile_numbers=_EXCLUDED_PHONES,
+        on_skip=skips.append,
+    )
+
+    assert envelopes == []
+    assert [skip.locator for skip in skips] == [
+        "whatsapp-chat-chat-1#excluded-person-1",
+        "whatsapp-chat-chat-1#excluded-person-2",
+    ]
+    assert {skip.reason for skip in skips} == {"person_excluded"}
+
+
+def test_bitrix_records_one_skip_per_excluded_person() -> None:
+    skips: list[ConnectorSkip] = []
+
+    envelopes = BitrixChatConnector()._build_envelopes(
+        bundle=_bitrix_bundle(),
+        extraction=_excluded_extraction(),
+        company_mobile_numbers=_EXCLUDED_PHONES,
+        on_skip=skips.append,
+    )
+
+    assert envelopes == []
+    assert [skip.locator for skip in skips] == [
+        "bitrix-chat-1#excluded-person-1",
+        "bitrix-chat-1#excluded-person-2",
+    ]
+    assert {skip.reason for skip in skips} == {"person_excluded"}
 
 
 def _run_until_failure(
@@ -567,3 +719,50 @@ def test_failed_flush_keeps_rows_and_quiet_flush_never_raises() -> None:
 
     assert len(ledger._buffer) == 1
     assert ledger.reconcile() is False
+
+
+def test_run_ingestion_fails_closed_when_reconcile_returns_false(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    import src.main as main_module
+
+    class _ClientStub(_FakeClient):
+        def verify_connectivity(self) -> None:
+            return None
+
+        def close(self) -> None:
+            return None
+
+    tx = _FakeTx(skip_count=999)
+    client = _ClientStub(tx)
+    failed_runs: list[str] = []
+    finalized_runs: list[str] = []
+
+    monkeypatch.setattr(main_module, "get_settings", lambda: SimpleNamespace())
+    monkeypatch.setattr(main_module, "Neo4jClient", lambda _settings: client)
+    monkeypatch.setattr(main_module, "IngestPipeline", lambda *_a, **_kw: MagicMock())
+    monkeypatch.setattr(main_module, "_create_ingest_run", lambda *_a, **_kw: "run-reconcile-fail")
+    monkeypatch.setattr(main_module, "get_connector", lambda *_a, **_kw: _DummyConnector([]))
+    monkeypatch.setattr(main_module, "_load_exclusion_context", ExclusionContext)
+    monkeypatch.setattr(main_module, "drain_pending_customer_sales", lambda *_a, **_kw: 0)
+    monkeypatch.setattr(
+        main_module, "propose_vehicle_matches_for_pending_sales", lambda *_a, **_kw: 0
+    )
+    monkeypatch.setattr(
+        main_module,
+        "_mark_run_failed",
+        lambda _client, run_id, *_a, **_kw: failed_runs.append(run_id),
+    )
+    monkeypatch.setattr(
+        main_module,
+        "finalize_ingest_run",
+        lambda _client, run_id, *_a, **_kw: finalized_runs.append(run_id),
+    )
+
+    with pytest.raises(
+        RuntimeError, match="Skip ledger reconciliation failed for run run-reconcile-fail"
+    ):
+        main_module.run_ingestion("fundbox", mode="batch", initialize_graph=False)
+
+    assert failed_runs == ["run-reconcile-fail"]
+    assert finalized_runs == []
