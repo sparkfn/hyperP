@@ -173,11 +173,20 @@ class SkipLedger:
         )
 
     def add_connector_skips(self, skips: list[ConnectorSkip]) -> None:
+        if not skips:
+            return
         for skip in skips:
             self.connector_skips += 1
             self._buffer_skip(
-                "connector", self._source_key, skip.reason, skip.source_record_id, skip.locator
+                "connector",
+                self._source_key,
+                skip.reason,
+                skip.source_record_id,
+                skip.locator,
+                flush=False,
             )
+        if len(self._buffer) >= _FLUSH_BATCH_SIZE:
+            self.flush()
 
     def _buffer_skip(
         self,
@@ -186,6 +195,8 @@ class SkipLedger:
         reason: str,
         source_record_id: str | None,
         locator: str,
+        *,
+        flush: bool = True,
     ) -> None:
         key = (stage, source_system, reason, source_record_id or locator)
         occurrence = self._occurrences.get(key, 0)
@@ -201,7 +212,7 @@ class SkipLedger:
             attempt_key=self._attempt_key,
         )
         self._buffer.append(row)
-        if len(self._buffer) >= _FLUSH_BATCH_SIZE:
+        if flush and len(self._buffer) >= _FLUSH_BATCH_SIZE:
             self.flush()
 
     def flush(self) -> None:

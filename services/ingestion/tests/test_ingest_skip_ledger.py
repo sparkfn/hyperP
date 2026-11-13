@@ -766,3 +766,80 @@ def test_run_ingestion_fails_closed_when_reconcile_returns_false(
 
     assert failed_runs == ["run-reconcile-fail"]
     assert finalized_runs == []
+
+
+def test_connector_drain_over_500_skips_persists_tail_after_failed_flush_and_recovery() -> None:
+    """When a connector drain exceeds 500 skips and the triggered flush fails, all rows
+
+    remain buffered through finally draining an empty list, and persist on recovery.
+    """
+    tx = _FakeTx(skip_count=505)
+    client = _FlakyClient(tx, fail_writes=1)
+    ledger = SkipLedger(client, "run-drain-505", "fundbox", attempt_key="attempt-1")
+    pipeline = MagicMock(spec=IngestPipeline)
+
+    connector = _DummyConnector([_raw_record(1)])
+    for i in range(503):
+        connector.record_skip("bad_phone", source_record_id=f"rec-{i}", locator=f"row-{i}")
+    # Record duplicate skips with identical locator to test repeat occurrence numbering
+    connector.record_skip("duplicate_phone", locator="row-repeat")
+    connector.record_skip("duplicate_phone", locator="row-repeat")
+
+    with pytest.raises(ConnectionError, match="neo4j write dropped"):
+        _ingest_all_records(
+            client=client,
+            pipeline=pipeline,
+            connector=connector,
+            ingest_run_id="run-drain-505",
+            exclusion_context=ExclusionContext(),
+            ledger=ledger,
+        )
+
+    # All 505 skips were buffered before flush failed; finally block's drain of []
+    # preserved the buffer, did not retry prematurely, and preserved the exception.
+    assert ledger.connector_skips == 505
+    assert len(ledger._buffer) == 505
+    assert len(tx.calls) == 0
+
+    # Draining an empty list directly is a safe no-op that does not trigger flush
+    ledger.add_connector_skips([])
+    assert len(ledger._buffer) == 505
+
+    # Run owner's failure teardown recovers and flushes all 505 skips
+    ledger.flush_quietly()
+
+    assert len(ledger._buffer) == 0
+    assert ledger.connector_skips == 505
+
+    skip_writes = [kwargs for query, kwargs in tx.calls if query == WRITE_INGEST_SKIPS]
+    assert len(skip_writes) == 1
+    rows = cast(list[dict[str, object]], skip_writes[0]["rows"])
+    assert len(rows) == 505
+
+    # Each skip is persisted once with a unique skip_id
+    skip_ids = {cast(str, row["skip_id"]) for row in rows}
+    assert len(skip_ids) == 505
+
+    # Occurrence numbering for repeats was preserved across failure and recovery
+    repeat_rows = [r for r in rows if r["locator"] == "row-repeat"]
+    assert len(repeat_rows) == 2
+    assert repeat_rows[0]["skip_id"] != repeat_rows[1]["skip_id"]
+
+    attempt_writes = [kwargs for query, kwargs in tx.calls if query == WRITE_INGEST_ATTEMPT]
+    assert len(attempt_writes) == 1
+    assert attempt_writes[0]["connector_skip_count"] == 505
+    assert attempt_writes[0]["emitted_count"] == 0
+
+    tx.reconciliation = {
+        "emitted_count": 0,
+        "persisted_count": 0,
+        "duplicate_count": 0,
+        "pipeline_skip_count": 0,
+        "connector_skip_count": 505,
+        "record_error_count": 0,
+        "stored_skips": 505,
+        "expected_skips": 505,
+        "reconciled": True,
+    }
+    assert ledger.reconcile() is True
+    assert ledger.reconciled is True
