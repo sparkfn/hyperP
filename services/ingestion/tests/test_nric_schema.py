@@ -54,7 +54,7 @@ def test_conditional_drop_fulltext_index_when_preferred_nric_present() -> None:
 
     executed_statements: list[str] = []
 
-    def mock_run(stmt: str) -> MagicMock:
+    def mock_run(stmt: str, **kwargs: object) -> MagicMock:
         executed_statements.append(stmt)
         if stmt == SHOW_PERSON_NAME_SEARCH_FULLTEXT_INDEX:
             return mock_res
@@ -78,7 +78,7 @@ def test_conditional_drop_fulltext_index_not_dropped_when_clean() -> None:
 
     executed_statements: list[str] = []
 
-    def mock_run(stmt: str) -> MagicMock:
+    def mock_run(stmt: str, **kwargs: object) -> MagicMock:
         executed_statements.append(stmt)
         if stmt == SHOW_PERSON_NAME_SEARCH_FULLTEXT_INDEX:
             return mock_res
