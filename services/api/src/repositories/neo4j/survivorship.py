@@ -28,6 +28,7 @@ from src.graph.queries import (
     UPDATE_OVERRIDES,
     UPSERT_CUSTOM_ADDRESS,
 )
+from src.nric import format_masked_nric, mask_identifier_value
 from src.repositories.protocols.survivorship import (
     BatchOverrideResult,
     FieldOptionRow,
@@ -82,7 +83,7 @@ def _is_valid_custom_value(field_name: str, value: str) -> bool:
         except ValueError:
             return False
     if field_name == "preferred_nric":
-        return re.fullmatch(r"[A-Za-z0-9*\-\s]{4,32}", value) is not None
+        return False
     return True
 
 
@@ -165,6 +166,10 @@ async def _field_options_tx(session: TimedAsyncSession, person_id: str) -> Field
             source_system = to_optional_str(raw.get("source_system"))
             if value is None or field_name is None or source_record_pk is None:
                 continue
+            if field_name == "preferred_nric":
+                value = mask_identifier_value(
+                    "nric", value, to_optional_str(raw.get("nric_masked"))
+                )
             rows.append(
                 FieldOptionRow(
                     field_name=field_name,
@@ -183,7 +188,7 @@ async def _field_options_tx(session: TimedAsyncSession, person_id: str) -> Field
     preferred_dob = to_optional_str(record["preferred_dob"])
     preferred_phone = to_optional_str(record["preferred_phone"])
     preferred_email = to_optional_str(record["preferred_email"])
-    preferred_nric = to_optional_str(record["preferred_nric"])
+    preferred_nric = format_masked_nric(to_optional_str(record["preferred_nric"]))
     preferred_race_ethnicity = to_optional_str(record["preferred_race_ethnicity"])
     preferred_address_id = to_optional_str(record["preferred_address_id"])
     preferred_address_value = to_optional_str(record["preferred_address_value"])

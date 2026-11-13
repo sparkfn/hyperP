@@ -29,6 +29,7 @@ from src.graph.queries import (
     GET_PERSON_OVERRIDES,
     UPDATE_GOLDEN_PROFILE,
 )
+from src.nric import format_masked_nric, masked_for
 
 TRUST_RANK: dict[str, int] = {"tier_1": 1, "tier_2": 2, "tier_3": 3, "tier_4": 4}
 INVALID_QUALITY_FLAGS: frozenset[str] = frozenset({"invalid_format", "placeholder_value"})
@@ -172,7 +173,10 @@ async def derive_override_value(
         ).single()
         if record is None:
             return None
-        return DerivedValue(field_name, to_optional_str(record["value"]))
+        val = to_optional_str(record["value"])
+        if field_name == "preferred_nric":
+            val = masked_for(val, to_optional_str(record.get("nric_masked")))
+        return DerivedValue(field_name, val)
     record = await (
         await tx.run(
             GET_ADDRESS_FOR_SR,
@@ -238,6 +242,8 @@ async def _resolve_identifier(
     if override is not None:
         custom_value = override.get("custom_value")
         if custom_value:
+            if identifier_type == "nric":
+                return format_masked_nric(custom_value)
             return custom_value
         source_record_pk = override.get("source_record_pk")
         if source_record_pk:
@@ -252,12 +258,17 @@ async def _resolve_identifier(
             if record is not None:
                 value = to_optional_str(record["value"])
                 if value is not None:
+                    if identifier_type == "nric":
+                        return masked_for(value, to_optional_str(record.get("nric_masked")))
                     return value
     result = await tx.run(GET_BEST_IDENTIFIER, person_id=person_id, identifier_type=identifier_type)
     record = await result.single()
     if record is None:
         return None
-    return to_optional_str(record["normalized_value"])
+    val = to_optional_str(record["normalized_value"])
+    if identifier_type == "nric":
+        return masked_for(val, to_optional_str(record.get("nric_masked")))
+    return val
 
 
 async def _resolve_best_address(

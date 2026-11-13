@@ -35,7 +35,7 @@ from src.models import (
 from src.normalizers.clean import str_or_none
 from src.pipeline_writes import create_review_case_if_needed, persist_match_decision
 from src.profile_analysis_dirty import mark_profile_analysis_dirty
-from src.raw_payload import decode_raw_payload
+from src.raw_payload import decode_raw_payload, scrub_nric_strings, serialize_raw_payload
 from src.record_lifecycle import (
     DuplicateVersion,
     PlannedVersion,
@@ -60,6 +60,11 @@ def _staging_hash(value: object) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
     ).hexdigest()
+
+
+def _serialize_metadata(metadata: dict[str, JsonValue] | None) -> str:
+    """Serialize an Order or LineItem metadata map with NRIC strings scrubbed."""
+    return json.dumps(scrub_nric_strings(metadata or {}), default=str)
 
 
 class SalesPayloadError(ValueError):
@@ -348,7 +353,7 @@ def _create_sales_source_record(
         link_status=link_status,
         observed_at=envelope.observed_at,
         record_hash=envelope.record_hash,
-        raw_payload=json.dumps(envelope.raw_payload, default=str),
+        raw_payload=serialize_raw_payload(envelope),
         normalized_payload=json.dumps({}, default=str),
         crm_deal_stage_id=None,
         source_entity_type=None,
@@ -472,7 +477,7 @@ def _stage_sales_review_projections(
             "currency": "SGD",
             "discount_amount": line.get("discount_amount"),
             "tax_amount": line.get("tax_amount"),
-            "metadata": json.dumps(line.get("metadata", {}), default=str),
+            "metadata": _serialize_metadata(line.get("metadata")),
             "product_sku": product_values.get("sku"),
             "product_name": product_values.get("name"),
             "product_display_name": product_values.get("display_name")
@@ -527,7 +532,7 @@ def _stage_sales_review_projections(
         "total_amount": order.get("total_amount"),
         "currency": order.get("currency", "SGD"),
         "item_count": order.get("item_count"),
-        "metadata": json.dumps(order.get("metadata", {}), default=str),
+        "metadata": _serialize_metadata(order.get("metadata")),
         "non_vehicle_lines": json.dumps(
             _build_non_vehicle_lines(source_system_key, cast(list[JsonValue], typed_lines)),
             default=str,
@@ -663,7 +668,7 @@ def _merge_order(
         total_amount=order.get("total_amount"),
         currency=order.get("currency", "SGD"),
         item_count=order.get("item_count"),
-        metadata=json.dumps(order.get("metadata", {}), default=str),
+        metadata=_serialize_metadata(order.get("metadata")),
         # Neo4j cannot store LIST<MAP> node properties; store as JSON string.
         # The API mapper (Task 9) json.loads() this back to a list.
         non_vehicle_lines=json.dumps(non_vehicle_lines, default=str),
@@ -738,7 +743,7 @@ def _merge_line_item(
         currency="SGD",
         discount_amount=line.get("discount_amount"),
         tax_amount=line.get("tax_amount"),
-        metadata=json.dumps(line.get("metadata", {}), default=str),
+        metadata=_serialize_metadata(line.get("metadata")),
     )
 
 

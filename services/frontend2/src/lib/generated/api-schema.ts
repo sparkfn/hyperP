@@ -291,6 +291,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/persons/{person_id}/nric/reveal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Perform audited reveal of active NRIC identifiers
+         * @description Decrypt and return active plaintext NRIC identifiers for an active person.
+         *     Restricted to human administrators (requires role `admin`); rejected for
+         *     non-admin human users and all OAuth2 machine clients with `403 forbidden`.
+         *     Every successful reveal writes an immutable audit event (`NricRevealEvent`)
+         *     recording the actor, request timestamp, scrubbed reason, and value counts.
+         */
+        post: operations["reveal_person_nric"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/persons/{person_id}/source-records": {
         parameters: {
             query?: never;
@@ -2029,6 +2053,7 @@ export interface components {
             preferred_email?: string | null;
             preferred_dob?: string | null;
             preferred_address?: components["schemas"]["AddressSummary"] | null;
+            /** @description Masked national identification number (e.g. S••••567D). Plaintext is never exposed on read surfaces; human administrators may perform an audited reveal via POST /v1/persons/{person_id}/nric/reveal. */
             preferred_nric?: string | null;
             preferred_race_ethnicity?: string | null;
             /** @default 0 */
@@ -2137,6 +2162,21 @@ export interface components {
         };
         PersonDetailResponseEnvelope: {
             data: components["schemas"]["PersonDetail"];
+            meta: components["schemas"]["Meta"];
+        };
+        NricRevealRequest: {
+            /** @description Justification for accessing sensitive plaintext NRIC data. */
+            reason: string;
+        };
+        NricReveal: {
+            person_id: string;
+            reveal_id: string;
+            revealed_at: string;
+            values: string[];
+            unavailable_count: number;
+        };
+        NricRevealResponseEnvelope: {
+            data: components["schemas"]["NricReveal"];
             meta: components["schemas"]["Meta"];
         };
         /** @enum {string} */
@@ -2975,7 +3015,7 @@ export interface operations {
                 dob_day?: string;
                 /**
                  * @description Free-text search (min 3 chars) across `preferred_full_name`,
-                 *     `preferred_nric`, `preferred_email`, and `preferred_phone`.
+                 *     `preferred_email`, and `preferred_phone`.
                  * @example Tan Wei Ming
                  */
                 q?: string;
@@ -3212,6 +3252,39 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["PersonNotFound"];
+        };
+    };
+    reveal_person_nric: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path: {
+                person_id: components["parameters"]["PersonId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NricRevealRequest"];
+            };
+        };
+        responses: {
+            /** @description Audited NRIC reveal result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NricRevealResponseEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["PersonNotFound"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     getPersonSourceRecords: {
@@ -3932,7 +4005,7 @@ export interface operations {
             query?: {
                 /**
                  * @description Free-text search (min 3 chars) across `preferred_full_name`,
-                 *     `preferred_nric`, `preferred_email`, and `preferred_phone`.
+                 *     `preferred_email`, and `preferred_phone`.
                  * @example Tan Wei Ming
                  */
                 q?: string;

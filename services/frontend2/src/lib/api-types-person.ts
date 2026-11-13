@@ -383,3 +383,11 @@ export interface ProfileAnalysisRetryResult {
   retry_available_at: string | null;
   retry_available_at_display: string | null;
 }
+
+export interface NricReveal {
+  person_id: string;
+  reveal_id: string;
+  revealed_at: string;
+  values: string[];
+  unavailable_count: number;
+}

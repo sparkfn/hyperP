@@ -242,6 +242,16 @@ MATCH_ONLY_SOURCE_KEYS: frozenset[str] = frozenset(
 )
 
 
+#: Source system NRIC field trust tier mapping.
+#: Derived from ``_SOURCE_SYSTEMS`` so the source_key -> trust tier mapping
+#: has one source of truth.
+SOURCE_NRIC_TRUST: dict[str, str] = {
+    source["source_key"]: source["field_trust"].get("nric", "")
+    for source in _SOURCE_SYSTEMS
+    if "nric" in source.get("field_trust", {})
+}
+
+
 def bootstrap_entities_and_sources(client: Neo4jClient) -> None:
     """Upsert the Entity and SourceSystem nodes, with OPERATED_BY edges for
     entity-bound sources only.

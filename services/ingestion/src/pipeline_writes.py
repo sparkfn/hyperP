@@ -11,6 +11,7 @@ import logging
 from collections import Counter
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from typing import cast
 
 from neo4j import ManagedTransaction
 
@@ -41,7 +42,9 @@ from src.models import (
 from src.models import (
     NormalizedAddress as NormalizedAddressModel,
 )
+from src.normalizers.nric import encrypt_nric
 from src.pipeline_normalization import fanout_cap_for, is_usable
+from src.raw_payload import scrub_nric_strings, serialize_raw_payload
 from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID, effective_source_instance_id
 from src.source_version_keys import encode_source_version_key
 
@@ -178,14 +181,37 @@ def reset_review_counters() -> None:
 # --- Step 3: ensure shared nodes exist ------------------------------------
 
 
+def _nric_identifier_fields(ident: NormalizedIdentifier, hmac_key: str) -> dict[str, object]:
+    """Derive NRIC-specific fields for Identifier upsert."""
+    return {
+        "hashed_value": ident.normalized_value,
+        "nric_masked": ident.nric_masked,
+        "checksum_valid": ident.checksum_valid,
+        "nric_key_version": ident.nric_key_version,
+        "nric_encrypted": (
+            encrypt_nric(ident.nric_plaintext, hmac_key)
+            if ident.nric_plaintext and hmac_key
+            else None
+        ),
+    }
+
+
 def upsert_nodes(
     tx: ManagedTransaction,
     identifiers: list[NormalizedIdentifier],
     addresses: list[NormalizedAddressModel],
 ) -> None:
     """Step 3: ensure Identifier and Address nodes exist."""
-    identifier_rows = [
-        {
+    settings = get_settings()
+    # rebase(#490): populate NRIC metadata on assertion identifier rows. In #500,
+    # ``identity_assertions.write_assertions`` runs ``UPSERT_IDENTIFIERS_BATCH`` inside
+    # ``persist_source_record`` before ``upsert_nodes``; parked records that never reach
+    # ``upsert_nodes`` will otherwise create NRIC Identifier nodes with null metadata
+    # until ``_identifier_row`` populates ``hashed_value``, ``nric_masked``,
+    # ``checksum_valid``, ``nric_key_version``, and ``nric_encrypted``.
+    identifier_rows: list[dict[str, object]] = []
+    for ident in identifiers:
+        row: dict[str, object] = {
             "identifier_type": ident.identifier_type,
             "identifier_scope": identifier_scope(ident.identifier_type, ident.source_instance_id),
             "source_instance_id": source_instance_for_identifier(
@@ -193,8 +219,9 @@ def upsert_nodes(
             ),
             "normalized_value": ident.normalized_value,
         }
-        for ident in identifiers
-    ]
+        if ident.identifier_type == "nric":
+            row.update(_nric_identifier_fields(ident, settings.nric_hmac_key))
+        identifier_rows.append(row)
     if identifier_rows:
         tx.run(
             queries.UPSERT_IDENTIFIERS_BATCH,
@@ -242,15 +269,34 @@ def find_candidates(
         candidates.append(CandidateResult(person_id=person_id, source=source))
 
     usable_identifiers = [ident for ident in identifiers if is_usable(ident.quality_flag)]
-    identifier_rows = [
-        {
-            "input_index": index,
-            "identifier_type": ident.identifier_type,
-            "identifier_scope": identifier_scope(ident.identifier_type, ident.source_instance_id),
-            "normalized_value": ident.normalized_value,
-        }
-        for index, ident in enumerate(usable_identifiers)
-    ]
+    identifier_rows: list[dict[str, object]] = []
+    for index, ident in enumerate(usable_identifiers):
+        identifier_rows.append(
+            {
+                "input_index": index,
+                "identifier_type": ident.identifier_type,
+                "identifier_scope": identifier_scope(
+                    ident.identifier_type, ident.source_instance_id
+                ),
+                "normalized_value": ident.normalized_value,
+            }
+        )
+        # Transition candidate generation: find legacy plaintext holders using plaintext carrier.
+        # Removed after L2 rehash backfill.
+        # rebase(#490): same carrier dependency as matching.deterministic._check_government_id;
+        # the A3 follow-up must restore carrier-equivalence for rows rebuilt without
+        # ``nric_plaintext`` so they still reach legacy-plaintext candidates.
+        if ident.identifier_type == "nric" and ident.nric_plaintext:
+            identifier_rows.append(
+                {
+                    "input_index": index,
+                    "identifier_type": ident.identifier_type,
+                    "identifier_scope": identifier_scope(
+                        ident.identifier_type, ident.source_instance_id
+                    ),
+                    "normalized_value": ident.nric_plaintext,
+                }
+            )
     if identifier_rows:
         rows = tx.run(
             queries.FIND_CANDIDATES_BY_IDENTIFIERS_BATCH,
@@ -446,7 +492,7 @@ def persist_source_record(
         link_status=resolved_link_status,
         observed_at=envelope.observed_at,
         record_hash=envelope.record_hash,
-        raw_payload=json.dumps(envelope.raw_payload, default=str),
+        raw_payload=serialize_raw_payload(envelope),
         normalized_payload=json.dumps(normalized, default=str),
         crm_deal_stage_id=_crm_deal_stage_id(envelope),
         source_entity_type=envelope.source_entity_type,
@@ -598,6 +644,26 @@ def create_review_case_if_needed(
     return review_case_id
 
 
+def _identifier_payload(ident: NormalizedIdentifier) -> dict[str, JsonValue]:
+    """Serialize a NormalizedIdentifier for normalized_payload.
+
+    NRIC identifiers keep their mask/checksum/version metadata (nric_plaintext is excluded
+    by Field config). Non-NRIC identifiers exclude NRIC metadata to stay byte-identical.
+    """
+    if ident.identifier_type == "nric":
+        return cast(dict[str, JsonValue], ident.model_dump())
+    return cast(
+        dict[str, JsonValue],
+        ident.model_dump(
+            exclude={
+                "nric_masked",
+                "checksum_valid",
+                "nric_key_version",
+            }
+        ),
+    )
+
+
 def build_normalized_source_payload(
     *,
     envelope: SourceRecordEnvelope,
@@ -608,7 +674,7 @@ def build_normalized_source_payload(
 ) -> dict[str, JsonValue]:
     """Build the canonical normalized payload stored on a SourceRecord."""
     normalized: dict[str, JsonValue] = {
-        "identifiers": [i.model_dump() for i in identifiers],
+        "identifiers": [_identifier_payload(i) for i in identifiers],
         "address": addresses[0].model_dump() if addresses else None,
         "addresses": [address.model_dump() for address in addresses],
         "attributes": [a.model_dump() for a in attributes],
@@ -621,7 +687,9 @@ def build_normalized_source_payload(
         and isinstance(summary, str)
         and summary.strip()
     ):
-        normalized["summary"] = summary.strip()
+        scrubbed_summary = scrub_nric_strings(summary.strip())
+        if isinstance(scrubbed_summary, str):
+            normalized["summary"] = scrubbed_summary
     if envelope.record_type.value == "conversation":
         for key, enum_type in _CHAT_CLASSIFICATION_TYPES.items():
             value = envelope.raw_payload.get(key)
@@ -634,7 +702,7 @@ def build_normalized_source_payload(
         for key in ("customer_sentiment", "chat_members", "inquiries"):
             value = envelope.raw_payload.get(key)
             if value is not None:
-                normalized[key] = value
+                normalized[key] = scrub_nric_strings(value)
     return normalized
 
 

@@ -248,9 +248,9 @@ CREATE INDEX idx_bankruptcy_case_number IF NOT EXISTS
 CREATE INDEX idx_bankruptcy_event_date IF NOT EXISTS
   FOR (bc:BankruptcyCase) ON (bc.event_date);
 
-// Full-text search — name, NRIC, email, phone
+// Full-text search — name, email, phone
 CREATE FULLTEXT INDEX person_name_search IF NOT EXISTS
-  FOR (p:Person) ON EACH [p.preferred_full_name, p.preferred_nric, p.preferred_email, p.preferred_phone];
+  FOR (p:Person) ON EACH [p.preferred_full_name, p.preferred_email, p.preferred_phone];
 
 CREATE FULLTEXT INDEX address_full_search IF NOT EXISTS
   FOR (addr:Address) ON EACH [addr.normalized_full];

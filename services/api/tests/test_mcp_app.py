@@ -12,11 +12,12 @@ from fastapi.testclient import TestClient
 from src.app import build_app
 from src.auth.deps import get_current_user_or_oauth_client, require_active_user
 from src.auth.models import AuthUser
+from src.frontend_app import build_frontend_app
 from src.mcp_app import build_mcp_server, build_mcp_source_app
 from src.oauth2_app import build_oauth2_app
 from src.repositories.deps import get_entity_repo
 from src.repositories.protocols.entity import EntityRepository
-from src.route_catalog import MCP_OPERATION_EXCLUSIONS
+from src.route_catalog import MCP_FRONTEND_EXCLUDED_OPERATION_IDS, MCP_OPERATION_EXCLUSIONS
 from src.types import EntityFilterOption, EntityPerson, EntitySummary, SourceSystemSummary
 
 
@@ -242,4 +243,23 @@ def test_identity_link_oauth_operations_have_complete_mcp_exclusion_ledger() -> 
     assert {item.operation_id for item in ledger} == required
     assert all(item.reason.strip() for item in ledger)
     assert len(ledger) == len({item.operation_id for item in ledger})
-    assert {item.operation_id for item in MCP_OPERATION_EXCLUSIONS} <= oauth_operation_ids
+    assert {item.operation_id for item in ledger} <= oauth_operation_ids
+
+
+def test_frontend_mcp_exclusions_are_real_and_enforced() -> None:
+    frontend_ledger = [item for item in MCP_OPERATION_EXCLUSIONS if item.surface == "frontend"]
+    assert {item.operation_id for item in frontend_ledger} == {"reveal_person_nric"}
+    assert all(item.reason.strip() for item in frontend_ledger)
+    assert len(frontend_ledger) == len({item.operation_id for item in frontend_ledger})
+
+    frontend_operation_ids = _source_operation_ids(build_frontend_app())
+    mcp_source_app = build_mcp_source_app()
+    mcp_operation_ids = _source_operation_ids(mcp_source_app)
+
+    assert MCP_FRONTEND_EXCLUDED_OPERATION_IDS <= frontend_operation_ids
+    assert MCP_FRONTEND_EXCLUDED_OPERATION_IDS.isdisjoint(mcp_operation_ids)
+    assert (frontend_operation_ids - MCP_FRONTEND_EXCLUDED_OPERATION_IDS) <= mcp_operation_ids
+
+    mcp = build_mcp_server(mcp_source_app)
+    tool_names = {tool.name for tool in mcp.tools}
+    assert "reveal_person_nric" not in tool_names

@@ -106,16 +106,30 @@ natural.
 ```cypher
 CREATE (id:Identifier {
   identifier_id: randomUUID(),
-  identifier_type: 'phone',       // phone | email | government_id_hash |
+  identifier_type: 'phone',       // phone | email | nric |
                                    // external_customer_id | membership_id |
                                    // crm_contact_id | loyalty_id | custom
-  normalized_value: '+6591234567',
-  hashed_value: null,              // for sensitive IDs
+  normalized_value: '+6591234567', // for nric: 64-hex HMAC-SHA256 digest
+  hashed_value: null,              // for nric: same 64-hex digest
+  nric_masked: null,               // for nric: masked display string (e.g. S••••567D)
+  checksum_valid: null,            // for nric: boolean checksum validity flag
+  nric_key_version: null,          // for nric: key version slug (e.g. v1)
+  nric_encrypted: null,            // for nric: Fernet ciphertext of canonical NRIC
   created_at: datetime()
 })
 ```
 
-Constraint: at least one of `normalized_value` or `hashed_value` must be set.
+For `nric` identifiers, both `normalized_value` (the graph matching and uniqueness
+property) and `hashed_value` (sensitive identifier convention) store the 64-character
+hexadecimal HMAC-SHA256 digest. Format detection uses `is_nric_digest` (64 hex characters):
+digest-shaped values are keyed writes, while anything else represents legacy plaintext
+retained until Layer-2 rehash backfill.
+
+Key rotation requires an L2 controlled backfill prior to environment cut-over:
+decrypt `nric_encrypted` with the old key, re-hash and re-encrypt with the new key,
+rewrite both fields, merge duplicate Identifier nodes, then switch `NRIC_HMAC_KEY`.
+The secret key must be backed up in the secure secret store; losing it renders keyed
+records unmatchable and unrevealable.
 
 Why a node and not a property: identifiers are shared across persons, and
 querying "who else shares this phone" is a core traversal. Making identifiers
@@ -561,6 +575,27 @@ duplicates.
 Why a relationship: a lock exists only between two entities. It is checked
 during candidate evaluation by traversing from one person to the other. A
 standalone node with two pointer relationships is relational thinking.
+
+### Audited NRIC Reveals (`NricRevealEvent`)
+
+Immutable audit node created whenever an administrator reveals plaintext NRICs.
+
+```cypher
+CREATE (re:NricRevealEvent {
+  reveal_id: randomUUID(),
+  person_id: '<uuid>',
+  actor_email: 'admin@example.com',
+  reason: 'Compliance audit for customer review', // scrubbed of any raw NRIC tokens
+  request_id: '<request_id>',
+  revealed_at: datetime(),
+  value_count: 1,
+  unavailable_count: 0,
+  created_at: datetime()
+})-[:REVEALED_FOR]->(p:Person)
+```
+
+Why a dedicated node: regulatory access to plaintext PII requires permanent,
+tamper-evident audit lineage linked directly to the target Person.
 
 ### Survivorship Overrides
 

@@ -252,7 +252,7 @@ def test_identifiers_query_executes_and_preserves_provenance_variants(
         ("phone", phone_value),
         ("email", email_value),
         ("phone", dangling_value),
-        ("nric", legacy_value),
+        ("nric", "•••••••••"),
     ]
     assert [item.is_verified for item in identifiers] == [True, False, False, False]
     assert [(record["identifier_type"], record["normalized_value"]) for record in first_page] == [
@@ -405,7 +405,7 @@ def test_find_person_by_identifier_matches_exact_effective_active_links(
 
         def find_persons(identifier_type: str, value: str) -> list[Person]:
             result = session.run(
-                FIND_PERSON_BY_IDENTIFIER, identifier_type=identifier_type, value=value
+                FIND_PERSON_BY_IDENTIFIER, identifier_type=identifier_type, values=[value]
             )
             return [
                 map_person(record_to_dict(record.keys(), list(record.values())))

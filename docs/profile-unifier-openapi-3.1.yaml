@@ -373,7 +373,7 @@ paths:
           in: query
           description: |
             Free-text search (min 3 chars) across `preferred_full_name`,
-            `preferred_nric`, `preferred_email`, and `preferred_phone`.
+            `preferred_email`, and `preferred_phone`.
           schema:
             type: string
           example: "Tan Wei Ming"
@@ -614,6 +614,45 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/PersonNotFound'
+  /v1/persons/{person_id}/nric/reveal:
+    post:
+      tags: [Persons]
+      summary: Perform audited reveal of active NRIC identifiers
+      operationId: reveal_person_nric
+      description: |
+        Decrypt and return active plaintext NRIC identifiers for an active person.
+        Restricted to human administrators (requires role `admin`); rejected for
+        non-admin human users and all OAuth2 machine clients with `403 forbidden`.
+        Every successful reveal writes an immutable audit event (`NricRevealEvent`)
+        recording the actor, request timestamp, scrubbed reason, and value counts.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NricRevealRequest'
+      responses:
+        '200':
+          description: Audited NRIC reveal result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NricRevealResponseEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/PersonNotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /v1/persons/{person_id}/source-records:
     get:
       tags: [Persons]
@@ -1335,7 +1374,7 @@ paths:
           in: query
           description: |
             Free-text search (min 3 chars) across `preferred_full_name`,
-            `preferred_nric`, `preferred_email`, and `preferred_phone`.
+            `preferred_email`, and `preferred_phone`.
           schema:
             type: string
           example: "Tan Wei Ming"
@@ -1523,7 +1562,8 @@ paths:
         `identifier_type` values: `phone`, `email`, `nric`,
         `external_customer_id`, `membership_id`, `crm_contact_id`, `loyalty_id`,
         and `custom`. Matching compares the canonical normalized value stored by
-        ingestion, so callers must send the normalized value.
+        ingestion; for `nric`, input is canonicalized and keyed server-side against
+        both keyed digests and legacy records.
 
         For exact identifier searches, a successful request returns every
         non-merged Person linked to the matching Identifier through an
@@ -1554,8 +1594,10 @@ paths:
         - name: value
           in: query
           description: >-
-            Canonical normalized identifier value stored by ingestion. Must be
-            nonblank and supplied together with `identifier_type`.
+            Canonical normalized identifier value stored by ingestion; for
+            `nric`, plaintext or canonical values are canonicalized and keyed
+            server-side. Must be nonblank and supplied together with
+            `identifier_type`.
           schema:
             type: string
         - name: q
@@ -4124,7 +4166,12 @@ components:
           oneOf:
             - $ref: '#/components/schemas/AddressSummary'
             - type: 'null'
-        preferred_nric: {type: [string, 'null']}
+        preferred_nric:
+          type: [string, 'null']
+          description: >-
+            Masked national identification number (e.g. S••••567D). Plaintext
+            is never exposed on read surfaces; human administrators may perform
+            an audited reveal via POST /v1/persons/{person_id}/nric/reveal.
         preferred_race_ethnicity: {type: [string, 'null']}
         profile_completeness_score: {type: number, default: 0}
         golden_profile_computed_at: {type: [string, 'null']}
@@ -4290,6 +4337,43 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/PersonDetail'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    NricRevealRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: Justification for accessing sensitive plaintext NRIC data.
+      required: [reason]
+      additionalProperties: false
+    NricReveal:
+      type: object
+      properties:
+        person_id:
+          type: string
+        reveal_id:
+          type: string
+        revealed_at:
+          type: string
+        values:
+          type: array
+          items:
+            type: string
+        unavailable_count:
+          type: integer
+          minimum: 0
+      required: [person_id, reveal_id, revealed_at, values, unavailable_count]
+      additionalProperties: false
+    NricRevealResponseEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/NricReveal'
         meta:
           $ref: '#/components/schemas/Meta'
       required: [data, meta]

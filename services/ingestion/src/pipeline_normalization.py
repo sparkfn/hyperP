@@ -9,6 +9,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Callable
 
+from src.config import get_settings
 from src.identifier_scopes import source_instance_for_identifier
 from src.models import (
     NormalizedAddress as NormalizedAddressModel,
@@ -22,7 +23,12 @@ from src.models import (
 from src.normalizers.address import NormalizedAddress, normalize_address, normalize_raw_addresses
 from src.normalizers.email import normalize_email
 from src.normalizers.name import normalize_name
-from src.normalizers.nric import normalize_nric
+from src.normalizers.nric import (
+    mask_nric,
+    normalize_nric,
+    nric_checksum_valid,
+    nric_digest,
+)
 from src.normalizers.phone import normalize_phone
 
 logger = logging.getLogger(__name__)
@@ -102,6 +108,7 @@ def _normalize_phone_with_hint(
 def normalize_envelope_identifiers(
     envelope: SourceRecordEnvelope,
 ) -> list[NormalizedIdentifier]:
+    settings = get_settings()
     results: dict[tuple[str, str | None, str], NormalizedIdentifier] = {}
     for raw_id in envelope.identifiers:
         id_type = raw_id.type.lower().strip()
@@ -115,6 +122,26 @@ def normalize_envelope_identifiers(
             normalizer = _IDENTIFIER_NORMALIZERS.get(id_type, _passthrough_normalize)
             normalized, flag = normalizer(raw_id.value)
         if normalized:
+            nric_masked: str | None = None
+            checksum_valid: bool | None = None
+            nric_key_version: str | None = None
+            nric_plaintext: str | None = None
+            if id_type == "nric":
+                hmac_key = settings.nric_hmac_key
+                if not hmac_key:
+                    logger.warning(
+                        "nric_unkeyed source=%s record=%s",
+                        envelope.source_system,
+                        envelope.source_record_id,
+                    )
+                    continue
+                canonical = normalized
+                normalized = nric_digest(canonical, hmac_key)
+                nric_masked = mask_nric(canonical)
+                checksum_valid = nric_checksum_valid(canonical)
+                nric_key_version = settings.nric_hmac_key_version
+                nric_plaintext = canonical
+
             key = (id_type, source_instance_id, normalized)
             existing = results.get(key)
             if existing is None:
@@ -124,6 +151,10 @@ def normalize_envelope_identifiers(
                     source_instance_id=source_instance_id,
                     is_verified=raw_id.is_verified,
                     quality_flag=flag,
+                    nric_masked=nric_masked,
+                    checksum_valid=checksum_valid,
+                    nric_key_version=nric_key_version,
+                    nric_plaintext=nric_plaintext,
                 )
             else:
                 results[key] = existing.model_copy(
@@ -134,13 +165,22 @@ def normalize_envelope_identifiers(
                             if QualityFlag.VALID in {existing.quality_flag, flag}
                             else existing.quality_flag
                         ),
+                        "nric_masked": existing.nric_masked or nric_masked,
+                        "checksum_valid": (
+                            existing.checksum_valid
+                            if existing.checksum_valid is not None
+                            else checksum_valid
+                        ),
+                        "nric_key_version": existing.nric_key_version or nric_key_version,
+                        "nric_plaintext": existing.nric_plaintext or nric_plaintext,
                     }
                 )
         else:
+            log_val = mask_nric(raw_id.value) if id_type == "nric" else raw_id.value
             logger.warning(
                 "%s normalization failed for %s: %s",
                 id_type,
-                raw_id.value,
+                log_val,
                 flag,
             )
     return list(results.values())

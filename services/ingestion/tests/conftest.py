@@ -21,3 +21,4 @@ if str(_TESTS_ROOT) not in sys.path:
 # modules that import tasks can be collected without a real Neo4j connection.
 os.environ.setdefault("NEO4J_PASSWORD", "test-password")
 os.environ.setdefault("NEO4J_URI", "bolt://localhost:7687")
+os.environ.setdefault("NRIC_HMAC_KEY", "test-nric-hmac-key-v1")
