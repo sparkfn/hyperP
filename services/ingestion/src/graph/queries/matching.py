@@ -155,3 +155,10 @@ CREATE (rc:ReviewCase {
 })-[:FOR_DECISION]->(md)
 RETURN rc.review_case_id AS review_case_id
 """
+
+SUPPRESS_MATCH_DECISION_REVIEW = """
+MATCH (md:MatchDecision {match_decision_id: $match_decision_id})
+SET md.review_suppressed = true,
+    md.suppressed_reason = $suppressed_reason
+RETURN md.match_decision_id AS match_decision_id
+"""

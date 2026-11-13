@@ -2,8 +2,6 @@
 
 from __future__ import annotations
 
-import json
-
 from neo4j import ManagedTransaction, Record
 
 from src.bitrix_backfill_models import CoverageDisposition
@@ -19,6 +17,7 @@ from src.graph.queries.bitrix_backfill import (
 )
 from src.graph.queries.bitrix_deal_scope import GET_CURRENT_DEAL_SCOPE_BATCH
 from src.models import IngestResult, RecordType, SourceRecordEnvelope
+from src.raw_payload import serialize_raw_payload
 from src.record_lifecycle import load_locked_source_state
 from src.source_instances import (
     LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
@@ -142,7 +141,7 @@ def ingest_crm_history_record(
             parent_source_record_id=parent_ref.parent_source_record_id,
             observed_at=envelope.observed_at,
             record_hash=envelope.record_hash,
-            raw_payload=json.dumps(envelope.raw_payload, default=str),
+            raw_payload=serialize_raw_payload(envelope),
             history_family=history_family,
             history_kind=history_kind,
             history_source=history_source,
@@ -299,7 +298,7 @@ def ingest_call_record(
             parent_source_record_id=parent_ref.parent_source_record_id,
             observed_at=envelope.observed_at,
             record_hash=envelope.record_hash,
-            raw_payload=json.dumps(envelope.raw_payload, default=str),
+            raw_payload=serialize_raw_payload(envelope),
             crm_activity_id=crm_activity_id,
         ).single()
         if created is None:

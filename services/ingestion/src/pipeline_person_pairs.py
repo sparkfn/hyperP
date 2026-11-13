@@ -21,6 +21,7 @@ from typing import Literal
 from neo4j import ManagedTransaction
 
 from src.graph import queries
+from src.graph.person_list_summary_deltas import PersonListSummaryDeltaCollector
 from src.identifier_scopes import identifier_scope
 from src.matching.pair_score import score_person_pair
 from src.matching.thresholds import classify_confidence, has_hard_conflict, thresholds_for
@@ -32,6 +33,7 @@ from src.pipeline_person_merge import (
     merge_person_pair,
     select_survivor,
 )
+from src.pipeline_writes import record_review_case_created
 
 logger = logging.getLogger(__name__)
 
@@ -51,10 +53,15 @@ def audit_person_pairs(
     tx: ManagedTransaction,
     identifiers: list[NormalizedIdentifier],
     record_type: RecordType = RecordType.IDENTITY,
+    *,
+    collector: PersonListSummaryDeltaCollector,
 ) -> list[str]:
     """Open person↔person review cases for shared-identifier bridges.
 
     Returns the list of created ``review_case_id``s (may be empty).
+
+    The collector is required: an auto-merge inside the audit rewrites Person
+    nodes, and the caller owns the summary-delta maintenance for them.
     """
     created: list[str] = []
     merged: list[str] = []
@@ -93,7 +100,14 @@ def audit_person_pairs(
                 if pair in seen_pairs:
                     continue
                 seen_pairs.add(pair)
-                outcome = _process_pair(tx, pair[0], pair[1], ident, record_type)
+                outcome = _process_pair(
+                    tx,
+                    pair[0],
+                    pair[1],
+                    ident,
+                    record_type,
+                    collector=collector,
+                )
                 if outcome is None:
                     continue
                 if outcome.kind == "review_case":
@@ -114,6 +128,8 @@ def _process_pair(
     right_person_id: str,
     ident: NormalizedIdentifier,
     record_type: RecordType,
+    *,
+    collector: PersonListSummaryDeltaCollector,
 ) -> _PairOutcome | None:
     lock = tx.run(
         queries.CHECK_NO_MATCH_LOCK,
@@ -173,6 +189,7 @@ def _process_pair(
             confidence=score.confidence,
             reasons=reasons,
             feature_snapshot=feature_snapshot,
+            collector=collector,
         )
     if decision == MatchDecision.NO_MATCH:
         return None
@@ -196,6 +213,7 @@ def _auto_merge_pair(
     confidence: float,
     reasons: list[str],
     feature_snapshot: str,
+    collector: PersonListSummaryDeltaCollector,
 ) -> _PairOutcome:
     record = tx.run(
         queries.CREATE_MATCH_DECISION,
@@ -229,6 +247,7 @@ def _auto_merge_pair(
         survivor_id=survivor_id,
         match_decision_id=match_decision_id,
         reason="; ".join(reasons),
+        collector=collector,
     )
     return _PairOutcome(kind="merged", id=merge_event_id)
 
@@ -257,4 +276,15 @@ def _open_review_case(
     ).single()
     if record is None:
         return None
-    return _PairOutcome(kind="review_case", id=str(record["review_case_id"]))
+    review_case_id = str(record["review_case_id"])
+    match_decision_id = (
+        str(record["match_decision_id"]) if record.get("match_decision_id") is not None else None
+    )
+    record_review_case_created(
+        review_case_id=review_case_id,
+        match_decision_id=match_decision_id,
+        engine_type="pair_audit",
+        reason_code="shared_identifier_bridge",
+        source_system="pair_audit_bridge",
+    )
+    return _PairOutcome(kind="review_case", id=review_case_id)

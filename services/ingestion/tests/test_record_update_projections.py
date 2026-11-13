@@ -4,6 +4,11 @@ from contextlib import ExitStack
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+from _txmock import (
+    SUMMARY_APPLY_QUERY,
+    SUMMARY_CAPTURE_QUERIES,
+    summary_counter_result,
+)
 from neo4j import ManagedTransaction
 from src.graph import queries
 from src.models import MatchDecision, MatchResult, RecordType, SourceRecordEnvelope
@@ -41,10 +46,11 @@ def _run_conversation(
     events: list[str] = []
     tx_mock = MagicMock()
 
-    def record_query(query: str, **_params: object) -> MagicMock:
+    def record_query(query: str, **_params: object) -> object:
         if query == queries.RETIRE_KNOWS_PROJECTION:
             events.append("retire_knows")
-        return MagicMock()
+        counter = summary_counter_result(query)
+        return MagicMock() if counter is None else counter
 
     tx_mock.run.side_effect = record_query
     tx = cast(ManagedTransaction, tx_mock)
@@ -93,7 +99,11 @@ def test_accepted_conversation_retires_old_vehicle_mentions_before_writing_new()
 
 def test_pending_conversation_does_not_retire_or_create_vehicle_mentions() -> None:
     tx, writer, knows = _run_conversation(MatchDecision.REVIEW)
-    tx.run.assert_not_called()
+    assert [
+        call.args[0]
+        for call in tx.run.call_args_list
+        if call.args[0] not in SUMMARY_CAPTURE_QUERIES and call.args[0] != SUMMARY_APPLY_QUERY
+    ] == []
     writer.assert_not_called()
     knows.assert_not_called()
 

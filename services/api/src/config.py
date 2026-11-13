@@ -137,6 +137,7 @@ class AppConfig(BaseSettings):
     oauth_private_key_pem: str = Field(default="", alias="OAUTH_PRIVATE_KEY_PEM")
     oauth_public_key_pem: str = Field(default="", alias="OAUTH_PUBLIC_KEY_PEM")
     oauth_secret_hash_key: str = Field(default="", alias="OAUTH_SECRET_HASH_KEY")
+    nric_hmac_key: str = Field(default="", alias="NRIC_HMAC_KEY")
     # LLM service (OpenAI-compatible endpoint)
     llm_api_base_url: str = Field(
         default="https://api.openai.com",

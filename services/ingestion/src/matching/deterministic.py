@@ -65,11 +65,11 @@ LIMIT 1
 _PERSON_HAS_VALID_GOVT_ID = """
 MATCH (p:Person {person_id: $person_id})
       -[rel:IDENTIFIED_BY]->(id:Identifier {
-          identifier_type: 'nric',
-          normalized_value: $normalized_value
+          identifier_type: 'nric'
       })
 WHERE coalesce(rel.is_active, true) = true
   AND rel.quality_flag = 'valid'
+  AND id.normalized_value IN $values
 RETURN p.person_id AS person_id
 LIMIT 1
 """
@@ -81,7 +81,7 @@ MATCH (p:Person {person_id: $person_id})
       })
 WHERE coalesce(rel.is_active, true) = true
   AND rel.quality_flag = 'valid'
-  AND id.normalized_value <> $normalized_value
+  AND NOT id.normalized_value IN $values
 RETURN id.normalized_value AS conflicting_value
 LIMIT 1
 """
@@ -219,10 +219,20 @@ def _check_government_id(
         if i.identifier_type == "nric" and i.quality_flag == QualityFlag.VALID
     ]
     for govt_id in govt_ids:
+        # rebase(#490): legacy-plaintext equivalence depends on the in-memory ``nric_plaintext``
+        # carrier. A digest-only identifier (e.g. one C1 rebuilds from normalized_payload) misses
+        # a legacy-plaintext candidate in the valid query, then trips the conflict query below
+        # (hard NO_MATCH + durable lock). The A3 follow-up must restore carrier-equivalence
+        # before C1 feeds this check: carry the carrier, or normalize candidate values to
+        # digests in Python (plan §2).
+        values = [govt_id.normalized_value]
+        if govt_id.nric_plaintext:
+            values.append(govt_id.nric_plaintext)
+
         if tx.run(
             _PERSON_HAS_VALID_GOVT_ID,
             person_id=candidate_person_id,
-            normalized_value=govt_id.normalized_value,
+            values=values,
         ).single():
             logger.info(
                 "Deterministic hard merge: candidate %s shares govt ID hash",
@@ -239,7 +249,7 @@ def _check_government_id(
         if tx.run(
             _PERSON_HAS_CONFLICTING_GOVT_ID,
             person_id=candidate_person_id,
-            normalized_value=govt_id.normalized_value,
+            values=values,
         ).single():
             logger.info(
                 "Deterministic hard no-match: candidate %s has conflicting govt ID",

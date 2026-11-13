@@ -223,7 +223,7 @@ export interface paths {
         };
         /**
          * Get person-listing summary counts
-         * @description Returns the all-profile, high-risk, high-value, and no-contact counts shown above the authenticated person listing. Counts exclude merged persons and are calculated in one aggregate graph read.
+         * @description Returns the all-profile, high-risk, high-value, and no-contact counts shown above the authenticated person listing. Counts exclude merged persons and are served from the maintained counter when ready, with the authoritative aggregate query as fallback.
          */
         get: operations["getPersonListSummary"];
         put?: never;
@@ -285,6 +285,30 @@ export interface paths {
         get: operations["getPerson"];
         put?: never;
         post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/persons/{person_id}/nric/reveal": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Perform audited reveal of active NRIC identifiers
+         * @description Decrypt and return active plaintext NRIC identifiers for an active person.
+         *     Restricted to human administrators (requires role `admin`); rejected for
+         *     non-admin human users and all OAuth2 machine clients with `403 forbidden`.
+         *     Every successful reveal writes an immutable audit event (`NricRevealEvent`)
+         *     recording the actor, request timestamp, scrubbed reason, and value counts.
+         */
+        post: operations["reveal_person_nric"];
         delete?: never;
         options?: never;
         head?: never;
@@ -544,7 +568,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** Get recent match decisions related to a person */
+        /**
+         * Get recent match decisions related to a person
+         * @description Includes the `review_suppressed` and `suppressed_reason` fields, so a decision that the review policy parked instead of raising a review case is still visible here.
+         */
         get: operations["getPersonMatches"];
         put?: never;
         post?: never;
@@ -701,6 +728,48 @@ export interface paths {
          * @description Paginated generalized person list. Filters are combined with AND semantics; repeated entity/source keys use their corresponding mode. CRM deal bounds count distinct active Bitrix CRM deal source records and are inclusive.
          */
         get: operations["listPersonsMachine"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/oauth2/v1/persons/search": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Exact identifier lookup (machine surface)
+         * @description Exact `(identifier_type, normalized_value)` lookup for OAuth2 machine
+         *     clients. `identifier_type` and `value` must be supplied together with a
+         *     nonblank `value`; a partial pair, a blank `value`, or an unsupported
+         *     `identifier_type` returns `400 invalid_request`. Supported
+         *     `identifier_type` values: `phone`, `email`, `nric`,
+         *     `external_customer_id`, `membership_id`, `crm_contact_id`, `loyalty_id`,
+         *     and `custom`. Matching compares the canonical normalized value stored by
+         *     ingestion, so callers must send the normalized value.
+         *
+         *     For exact identifier searches, a successful request returns every
+         *     non-merged Person linked to the matching Identifier through an
+         *     effective-active link (including legacy links with no `is_active`
+         *     property), ordered by `updated_at` descending and unpaginated. Because
+         *     merged Persons and inactive links are excluded, only a complete,
+         *     nonblank, correctly normalized request makes an empty `data` array
+         *     authoritative.
+         *
+         *     A `q`-only request uses the existing paginated fuzzy search
+         *     (`cursor`/`limit`, `meta.next_cursor`), and its empty result is not an
+         *     authoritative identifier negative. HyperP currently implements no
+         *     endpoint-specific request quota or search `429` contract for this
+         *     handler; callers should use bounded request rates/concurrency and
+         *     exponential backoff for transient failures.
+         */
+        get: operations["searchPersonsMachine"];
         put?: never;
         post?: never;
         delete?: never;
@@ -880,7 +949,10 @@ export interface paths {
             path?: never;
             cookie?: never;
         };
-        /** List review cases */
+        /**
+         * List review cases
+         * @description A case that involves source-record evidence is listed only while that evidence is still pending. The terminal disposition states `expired`, `dismissed` and `superseded_by_policy` stay listed even after an involved source record later changes its lifecycle status.
+         */
         get: operations["listReviewCases"];
         put?: never;
         post?: never;
@@ -950,8 +1022,34 @@ export interface paths {
         };
         get?: never;
         put?: never;
-        /** Submit a review action */
+        /**
+         * Submit a review action
+         * @description `merge` is refused with `422 pair_audit_merge_disabled` when the case's match decision came from the `pair_audit` engine; refusing the merge does not by itself dispose of the case, which stays in its current queue state. `resolve` is refused with `422 resolve_not_applicable` unless the case links two persons and carries no source-record evidence. `expire` and `dismiss` close the case without deleting it.
+         */
         post: operations["createReviewAction"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/review-cases/bulk-actions": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Apply one review action to many review cases
+         * @description Applies a single action to a batch of review cases and reports one outcome per case, in the order the ids were submitted.
+         *     Every id is authorized before the first write: an admin may act on any case, and an employee must own at least one of the entities behind each listed case. A batch that includes a case outside the caller's entity scope is rejected without writing anything. Human principals only — machine OAuth clients cannot call this endpoint.
+         *     Each case is actioned in its own transaction, so one failing case does not abort the batch. A case that cannot be actioned is reported as an error item. `outcome_unknown` means the commit state of that one case was indeterminate: refresh the queue before retrying it.
+         *     This endpoint accepts no idempotency key and does not enforce request-level idempotency. A retried request re-applies the action and can append duplicate audit entries, so clients must not assume a repeat is a no-op. After an indeterminate outcome, refresh the queue to learn which cases actually changed before retrying anything.
+         */
+        post: operations["submit_bulk_review_action"];
         delete?: never;
         options?: never;
         head?: never;
@@ -1187,11 +1285,31 @@ export interface components {
         /** @enum {string} */
         PersonStatus: "active" | "merged" | "suppressed" | "retired";
         /** @enum {string} */
-        ReviewQueueState: "open" | "assigned" | "deferred" | "resolved" | "cancelled";
+        ReviewQueueState: "open" | "assigned" | "deferred" | "resolved" | "cancelled" | "expired" | "dismissed" | "superseded_by_policy";
         /** @enum {string} */
-        ReviewResolution: "merge" | "reject" | "manual_no_match" | "cancelled_superseded";
+        ReviewResolution: "merge" | "reject" | "manual_no_match" | "resolve" | "expired" | "dismissed" | "cancelled_superseded";
         /** @enum {string} */
-        ReviewActionType: "merge" | "reject" | "defer" | "escalate" | "manual_no_match";
+        ReviewActionType: "merge" | "reject" | "defer" | "escalate" | "manual_no_match" | "resolve" | "expire" | "dismiss";
+        /**
+         * @description Actions accepted by the bulk review endpoint. `merge` is deliberately excluded — a bulk batch never merges people.
+         * @enum {string}
+         */
+        BulkReviewActionType: "resolve" | "reject" | "defer" | "expire" | "dismiss";
+        /**
+         * @description Taxonomy for why a review case was raised. `unverified_phone`, `unverified_email`, `phone_near_match`, `email_near_match` and `weak_signal_combination` are the weak-signal codes that the `v2_weak_signal_park` review policy can suppress; `weak_signal` is the telemetry roll-up for a case whose reasons were all weak-signal.
+         * @enum {string}
+         */
+        ReviewReasonCode: "unverified_phone" | "unverified_email" | "phone_near_match" | "email_near_match" | "weak_signal_combination" | "crm_ambiguity" | "continuity_reassignment" | "dob_conflict" | "name_mismatch" | "name_similarity" | "dob_match" | "shared_identifier_bridge" | "weak_signal" | "other";
+        /**
+         * @description Taxonomy for why a reviewer closed or deferred a review case. Required on bulk review actions; optional on single-case review actions.
+         * @enum {string}
+         */
+        ReviewActionReasonCode: "confirmed_match" | "confirmed_distinct" | "insufficient_evidence" | "parked_weak_signal" | "stale_expired" | "awaiting_verification" | "pair_audit_retired_in_v2" | "other";
+        /**
+         * @description Per-item failure code of a bulk review action. `duplicate_review_case_id` — the id was already present earlier in the same request and was not actioned twice. `outcome_unknown` — the commit state was indeterminate, so refresh the queue before retrying that id. `review_case_not_found` — no such review case, or the case is no longer actionable (for example, it was already closed). `resolve_not_applicable` — the case does not link two persons without source-record evidence. `action_not_applicable` — the action could not be applied to this case (for example, the case could no longer be claimed).
+         * @enum {string}
+         */
+        BulkReviewActionErrorCode: "duplicate_review_case_id" | "outcome_unknown" | "review_case_not_found" | "resolve_not_applicable" | "action_not_applicable";
         PersonSummary: {
             /** Format: uuid */
             person_id: string;
@@ -1565,6 +1683,13 @@ export interface components {
             reasons: string[];
             blocking_conflicts: string[];
             review_candidate_person_ids: string[];
+            /**
+             * @description True when the review policy parked this decision instead of opening a review case. The decision itself is still persisted and still `review`.
+             * @default false
+             */
+            review_suppressed: boolean;
+            /** @description Weak-signal reason code recorded when `review_suppressed` is true (`unverified_phone`, `unverified_email`, `phone_near_match`, `email_near_match`, or `weak_signal_combination`). */
+            suppressed_reason?: string | null;
         };
         ReviewCaseSummary: {
             /** Format: uuid */
@@ -1577,6 +1702,10 @@ export interface components {
             /** Format: date-time */
             sla_due_at: string | null;
             resolution?: components["schemas"]["ReviewResolution"] | null;
+            /** @description Actor recorded when the case was closed by a reason-coded or `resolve`/`expire`/`dismiss` action. */
+            resolved_by?: string | null;
+            /** @description `ReviewActionReasonCode` recorded when the case was closed with a reason code. */
+            resolution_reason_code?: string | null;
             match_decision: components["schemas"]["MatchDecision"];
         };
         ReviewCaseDetail: components["schemas"]["ReviewCaseSummary"] & {
@@ -1764,9 +1893,23 @@ export interface components {
         ReviewActionRequest: {
             action_type: components["schemas"]["ReviewActionType"];
             notes?: string | null;
+            /** @description Optional audit reason code. When supplied together with a closing action, the case records `resolved_by` and `resolution_reason_code`. Omitting it keeps the legacy write shape unchanged. */
+            reason_code?: components["schemas"]["ReviewActionReasonCode"] | null;
             metadata?: {
                 [key: string]: unknown;
             };
+        };
+        BulkReviewActionRequest: {
+            /**
+             * Format: uuid
+             * @description Review cases to action, in the order the outcomes are reported. A repeated id is reported as `duplicate_review_case_id` and is actioned only once.
+             */
+            review_case_ids: string[];
+            action_type: components["schemas"]["BulkReviewActionType"];
+            reason_code: components["schemas"]["ReviewActionReasonCode"];
+            notes?: string | null;
+            /** Format: date-time */
+            follow_up_at?: string | null;
         };
         ManualMergeRequest: {
             /** Format: uuid */
@@ -1910,6 +2053,7 @@ export interface components {
             preferred_email?: string | null;
             preferred_dob?: string | null;
             preferred_address?: components["schemas"]["AddressSummary"] | null;
+            /** @description Masked national identification number (e.g. S••••567D). Plaintext is never exposed on read surfaces; human administrators may perform an audited reveal via POST /v1/persons/{person_id}/nric/reveal. */
             preferred_nric?: string | null;
             preferred_race_ethnicity?: string | null;
             /** @default 0 */
@@ -2002,6 +2146,7 @@ export interface components {
         PersonSearchResponseEnvelope: {
             data: components["schemas"]["Person"][];
             meta: components["schemas"]["Meta"];
+            display_items?: components["schemas"]["PopoverDisplayItem"][] | null;
         };
         PersonDetail: components["schemas"]["PersonSummary"] & {
             identifiers: {
@@ -2017,6 +2162,21 @@ export interface components {
         };
         PersonDetailResponseEnvelope: {
             data: components["schemas"]["PersonDetail"];
+            meta: components["schemas"]["Meta"];
+        };
+        NricRevealRequest: {
+            /** @description Justification for accessing sensitive plaintext NRIC data. */
+            reason: string;
+        };
+        NricReveal: {
+            person_id: string;
+            reveal_id: string;
+            revealed_at: string;
+            values: string[];
+            unavailable_count: number;
+        };
+        NricRevealResponseEnvelope: {
+            data: components["schemas"]["NricReveal"];
             meta: components["schemas"]["Meta"];
         };
         /** @enum {string} */
@@ -2280,6 +2440,22 @@ export interface components {
                 review_case_id: string;
                 queue_state: components["schemas"]["ReviewQueueState"];
                 resolution: components["schemas"]["ReviewResolution"] | null;
+            };
+            meta: components["schemas"]["Meta"];
+        };
+        BulkReviewActionItemResult: {
+            /** Format: uuid */
+            review_case_id: string;
+            /** @enum {string} */
+            status: "updated" | "error";
+            queue_state: components["schemas"]["ReviewQueueState"] | null;
+            resolution: components["schemas"]["ReviewResolution"] | null;
+            error_code: components["schemas"]["BulkReviewActionErrorCode"] | null;
+        };
+        BulkReviewActionResponseEnvelope: {
+            data: {
+                /** @description One outcome per submitted id, in submission order. */
+                items: components["schemas"]["BulkReviewActionItemResult"][];
             };
             meta: components["schemas"]["Meta"];
         };
@@ -2839,7 +3015,7 @@ export interface operations {
                 dob_day?: string;
                 /**
                  * @description Free-text search (min 3 chars) across `preferred_full_name`,
-                 *     `preferred_nric`, `preferred_email`, and `preferred_phone`.
+                 *     `preferred_email`, and `preferred_phone`.
                  * @example Tan Wei Ming
                  */
                 q?: string;
@@ -2949,7 +3125,8 @@ export interface operations {
     searchPersons: {
         parameters: {
             query?: {
-                identifier_type?: components["schemas"]["IdentifierType"];
+                /** @description Persisted identifier key. Common examples are `nric`, `phone`, and `email`; custom source keys such as `partner_account_id` and dynamic social keys are also accepted. Human search is not limited to the machine identifier vocabulary. */
+                identifier_type?: string;
                 value?: string;
                 q?: string;
                 status?: components["schemas"]["PersonStatus"];
@@ -3075,6 +3252,39 @@ export interface operations {
             };
             401: components["responses"]["Unauthorized"];
             404: components["responses"]["PersonNotFound"];
+        };
+    };
+    reveal_person_nric: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path: {
+                person_id: components["parameters"]["PersonId"];
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["NricRevealRequest"];
+            };
+        };
+        responses: {
+            /** @description Audited NRIC reveal result. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["NricRevealResponseEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["PersonNotFound"];
+            503: components["responses"]["ServiceUnavailable"];
         };
     };
     getPersonSourceRecords: {
@@ -3795,7 +4005,7 @@ export interface operations {
             query?: {
                 /**
                  * @description Free-text search (min 3 chars) across `preferred_full_name`,
-                 *     `preferred_nric`, `preferred_email`, and `preferred_phone`.
+                 *     `preferred_email`, and `preferred_phone`.
                  * @example Tan Wei Ming
                  */
                 q?: string;
@@ -3865,6 +4075,38 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ListedPersonListResponseEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    searchPersonsMachine: {
+        parameters: {
+            query?: {
+                /** @description Exact identifier type. Supported values: `phone`, `email`, `nric`, `external_customer_id`, `membership_id`, `crm_contact_id`, `loyalty_id`, and `custom`. Must be supplied together with a nonblank `value`; anything else returns `400 invalid_request`. */
+                identifier_type?: string;
+                /** @description Canonical normalized identifier value stored by ingestion. Must be nonblank and supplied together with `identifier_type`. */
+                value?: string;
+                q?: string;
+                status?: components["schemas"]["PersonStatus"];
+                cursor?: string;
+                limit?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Exact identifier lookup results. */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["PersonSearchResponseEnvelope"];
                 };
             };
             400: components["responses"]["BadRequest"];
@@ -4165,9 +4407,9 @@ export interface operations {
                 created_before?: string;
                 sla_due_after?: string;
                 sla_due_before?: string;
-                /** @description When true, only cases past their SLA and not yet resolved/cancelled. */
+                /** @description When true, only cases past their SLA and not yet in a closed state (resolved, cancelled, expired, dismissed, superseded_by_policy). */
                 overdue_sla?: boolean;
-                /** @description True for closed cases (queue_state resolved or cancelled); false for unresolved cases (open, assigned, deferred). */
+                /** @description True for closed cases (queue_state resolved, cancelled, expired, dismissed, or superseded_by_policy); false for unresolved cases (open, assigned, deferred). */
                 resolved?: boolean;
                 sort_by?: "priority" | "confidence" | "sla_due_at" | "created_at" | "updated_at" | "queue_state";
                 sort_order?: "asc" | "desc";
@@ -4303,6 +4545,36 @@ export interface operations {
             };
             404: components["responses"]["ReviewCaseNotFound"];
             409: components["responses"]["MergeBlocked"];
+            422: components["responses"]["UnprocessableEntity"];
+        };
+    };
+    submit_bulk_review_action: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["BulkReviewActionRequest"];
+            };
+        };
+        responses: {
+            /** @description Per-item outcomes */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["BulkReviewActionResponseEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
         };
     };
     manualMergePersons: {

@@ -93,10 +93,11 @@ identifiers with runs of `x`/`X` at the start or end (`xxx+6589251818`,
 - **NRIC** — strip **leading** `x`/`X` runs only, then upper-case every
   character (`xxxS7012164F` → `S7012164F`, `s8929303j` → `S8929303J`). The
   **trailing** character is left intact because a valid NRIC/FIN check letter may
-  itself be `X` (e.g. `F1234567X`). No checksum validation is performed. This
-  cleaned, upper-cased value is the canonical NRIC used for deterministic
-  government-ID matching (and is the value that salted-hash storage hashes, where
-  applied — so cleaning must happen before any hashing so equal NRICs hash equal).
+  itself be `X` (e.g. `F1234567X`). The checksum (S/T/F/G mod-11) is computed and
+  stored as `checksum_valid` but never enforced — a failing value is still ingested,
+  never dropped. This cleaned, upper-cased value is the canonical NRIC used for deterministic
+  government-ID matching (and is the value that keyed HMAC-SHA256 storage hashes
+  — so cleaning must happen before any hashing so equal NRICs hash equal).
 - **Email** — **not** cleaned. `x` is frequently a legitimate part of an email
   local part (names like `xabby@…`, handles like `xxangel86xx@…`, Apple relay
   addresses), so stripping it would corrupt real addresses.
@@ -258,13 +259,14 @@ section describes the model at a conceptual level.
 | Node | Purpose | Key properties |
 | --- | --- | --- |
 | **Person** | Canonical identity entity. Golden profile fields stored inline. | `person_id`, `status`, `preferred_full_name`, `preferred_phone`, `preferred_email`, `preferred_address_id`, `preferred_dob`, `profile_completeness_score`, `golden_profile_computed_at` |
-| **Identifier** | Shared identity signal (phone, email, govt ID hash, etc.). Multiple persons may connect to the same Identifier — this is the graph backbone for contact tracing. | `identifier_id`, `identifier_type`, `normalized_value`, `hashed_value` |
+| **Identifier** | Shared identity signal (phone, email, keyed govt ID HMAC digest, etc.). Multiple persons may connect to the same Identifier — this is the graph backbone for contact tracing. | `identifier_id`, `identifier_type`, `normalized_value`, `hashed_value`, `nric_masked`, `checksum_valid`, `nric_key_version`, `nric_encrypted` |
 | **Address** | Shared normalized address. Multiple persons may connect to the same Address — enables "who else lives here?" traversal. | `address_id`, `unit_number`, `street_number`, `street_name`, `city`, `postal_code`, `country_code`, `normalized_full` |
 | **SourceRecord** | Immutable version of raw input from an upstream system. Exactly one accepted version per source identity may be active. | `source_record_pk`, `source_record_id`, `source_record_version`, `record_type`, `lifecycle_status`, `link_status`, `record_hash`, `raw_payload`, `observed_at`, `ingested_at`, `extraction_confidence`, `extraction_method`, `conversation_ref` |
 | **SourceSystem** | Registered upstream system with field-level trust config. | `source_key`, `display_name`, `system_type`, `field_trust` (map) |
 | **MatchDecision** | Immutable decision from any engine path. | `match_decision_id`, `engine_type`, `engine_version`, `decision`, `confidence`, `reasons`, `blocking_conflicts`, `feature_snapshot`, `policy_version` |
 | **ReviewCase** | Human review queue item. Review actions stored as ordered list property. | `review_case_id`, `priority`, `queue_state`, `assigned_to`, `resolution`, `actions` (list of maps) |
 | **MergeEvent** | Immutable audit record for lifecycle changes. | `merge_event_id`, `event_type`, `actor_type`, `actor_id`, `reason`, `metadata` |
+| **NricRevealEvent** | Immutable audit record for administrator NRIC reveals. | `reveal_id`, `person_id`, `actor_email`, `reason`, `request_id`, `revealed_at`, `value_count`, `unavailable_count` |
 | **IngestRun** | Batch/backfill execution group. | `ingest_run_id`, `run_type`, `status`, `started_at`, `finished_at` |
 
 ### Relationships

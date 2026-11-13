@@ -95,6 +95,48 @@ adds a mandatory hop to every query for zero benefit. When the profile is
 recomputed, update in place — the computation is synchronous within the merge
 transaction anyway.
 
+### PersonListSummaryCounter
+
+A singleton maintained projection for the person-list summary endpoints. Its
+unique `key` is `global`; it stores the six aggregate values, readiness and
+reconciliation metadata. The API trusts the Person counts only while `ready`
+is true and their generation and values are valid. The CRM counts additionally
+require a current month marker. An explicit ingestion backfill publishes the
+initial values; startup and nightly reconciliation never activate an unready
+counter.
+
+```cypher
+MERGE (c:PersonListSummaryCounter {key: 'global'})
+ON CREATE SET c.ready = false,
+              c.generation = 0,
+              c.active_person_count = 0,
+              c.high_risk_count = 0,
+              c.high_value_count = 0,
+              c.no_contact_count = 0,
+              c.deals_this_month_count = 0,
+              c.all_deals_count = 0,
+              c.updated_at = datetime()
+```
+
+| Property | Meaning |
+| --- | --- |
+| `key` | Singleton key; always `global` and uniquely constrained. |
+| `active_person_count` | Persons with a non-null status other than `merged`; exposed as `all_profiles_count`. |
+| `high_risk_count` | Qualifying Persons with `is_high_risk = true`. |
+| `high_value_count` | Qualifying Persons with `is_high_value = true`. |
+| `no_contact_count` | Qualifying Persons whose `preferred_phone` and `preferred_email` are both null. |
+| `deals_this_month_count` | Distinct qualifying CRM deals observed since the current database month boundary. |
+| `all_deals_count` | Distinct qualifying CRM deals, regardless of observation month. |
+| `ready` | Boolean readiness gate; explicit backfill transitions an unready counter to ready. |
+| `generation` | Non-negative integer advanced when the projection is invalidated. |
+| `month` | Database month marker (`YYYY-MM`) for the month-scoped deal count. |
+| `updated_at` | Timestamp of the latest counter maintenance or publication. |
+
+The uniqueness constraint is `person_list_summary_counter_key_unique` on
+`PersonListSummaryCounter.key`. Counts are maintained transactionally by graph
+writers and reconciled from the authoritative aggregates nightly. A deal linked
+to multiple qualifying Persons contributes once to each deal count.
+
 ### Identifier
 
 Shared identifiers are the connective tissue of the graph and the key enabler
@@ -106,16 +148,30 @@ natural.
 ```cypher
 CREATE (id:Identifier {
   identifier_id: randomUUID(),
-  identifier_type: 'phone',       // phone | email | government_id_hash |
+  identifier_type: 'phone',       // phone | email | nric |
                                    // external_customer_id | membership_id |
                                    // crm_contact_id | loyalty_id | custom
-  normalized_value: '+6591234567',
-  hashed_value: null,              // for sensitive IDs
+  normalized_value: '+6591234567', // for nric: 64-hex HMAC-SHA256 digest
+  hashed_value: null,              // for nric: same 64-hex digest
+  nric_masked: null,               // for nric: masked display string (e.g. S••••567D)
+  checksum_valid: null,            // for nric: boolean checksum validity flag
+  nric_key_version: null,          // for nric: key version slug (e.g. v1)
+  nric_encrypted: null,            // for nric: Fernet ciphertext of canonical NRIC
   created_at: datetime()
 })
 ```
 
-Constraint: at least one of `normalized_value` or `hashed_value` must be set.
+For `nric` identifiers, both `normalized_value` (the graph matching and uniqueness
+property) and `hashed_value` (sensitive identifier convention) store the 64-character
+hexadecimal HMAC-SHA256 digest. Format detection uses `is_nric_digest` (64 hex characters):
+digest-shaped values are keyed writes, while anything else represents legacy plaintext
+retained until Layer-2 rehash backfill.
+
+Key rotation requires an L2 controlled backfill prior to environment cut-over:
+decrypt `nric_encrypted` with the old key, re-hash and re-encrypt with the new key,
+rewrite both fields, merge duplicate Identifier nodes, then switch `NRIC_HMAC_KEY`.
+The secret key must be backed up in the secure secret store; losing it renders keyed
+records unmatchable and unrevealable.
 
 Why a node and not a property: identifiers are shared across persons, and
 querying "who else shares this phone" is a core traversal. Making identifiers
@@ -328,12 +384,17 @@ CREATE (md:MatchDecision {
   engine_type: 'heuristic',       // deterministic | heuristic | llm | manual | pair_audit
   engine_version: 'v1.0.0',
   decision: 'review',             // merge | review | no_match
-  confidence: 0.78,
-  reasons: ['same phone', 'same DOB', 'highly similar name'],
+  confidence: 0.20,
+  reasons: ['Phone match (unverified: +0.20)'],
   blocking_conflicts: [],
   feature_snapshot: {},
   prompt_snapshot: null,
   policy_version: 'policy-2026-03-31',
+  // optional — written only when the review policy parks the decision
+  review_suppressed: true,
+  suppressed_reason: 'unverified_phone',  // unverified_phone | unverified_email |
+                                          // phone_near_match | email_near_match |
+                                          // weak_signal_combination
   created_at: datetime(),
   retention_expires_at: null
 })
@@ -342,18 +403,31 @@ CREATE (md:MatchDecision {
 Note: `reasons` and `blocking_conflicts` are native Neo4j lists.
 `feature_snapshot` is a native map.
 
+`review_suppressed` and `suppressed_reason` are optional properties, set only
+when the ingestion `REVIEW_POLICY=v2_weak_signal_park` policy parks a
+weak-signal `review` decision instead of opening a `ReviewCase`. The example
+above shows such a parked decision. The decision itself is still persisted and
+still carries `decision = 'review'`; only the review case is skipped. The
+source record stays `pending_review` and no evidence is attached to it — the
+decision is parked, not resolved. When the policy is off (the default) neither
+property is written.
+
 ### ReviewCase
 
 ```cypher
 CREATE (rc:ReviewCase {
   review_case_id: randomUUID(),
   priority: 100,
-  queue_state: 'open',            // open | assigned | deferred | resolved | cancelled
+  queue_state: 'open',            // open | assigned | deferred | resolved | cancelled |
+                                 // expired | dismissed | superseded_by_policy
   assigned_to: null,
   follow_up_at: null,
   sla_due_at: datetime(),
-  resolution: null,               // merge | reject | manual_no_match | cancelled_superseded
+  resolution: null,               // merge | reject | manual_no_match | resolve |
+                                 // expired | dismissed | cancelled_superseded
   resolved_at: null,
+  resolved_by: null,              // reviewer who closed the case
+  resolution_reason_code: null,   // audit reason code for the close
   // review actions stored as an ordered list of JSON strings — no separate node
   actions: [],
   created_at: datetime(),
@@ -375,9 +449,23 @@ SET rc.actions = rc.actions + [$action_json]
 ```
 
 The `review_action_type` values include both API-submitted actions (`merge`,
-`reject`, `defer`, `escalate`, `manual_no_match`) and system-recorded actions
-(`assign`, `unassign`, `cancel`, `reopen`). The API layer exposes only the
-API-submitted subset.
+`reject`, `defer`, `escalate`, `manual_no_match`, `resolve`, `expire`,
+`dismiss`) and system-recorded actions (`assign`, `unassign`, `cancel`,
+`reopen`). The API layer exposes only the API-submitted subset.
+
+A reason-coded action appends a `reason_code` key to its audit entry. A closing
+action — one that sets a resolution — additionally records the reviewer in
+`resolved_by` and, when a reason code was supplied, the code in
+`resolution_reason_code`. The two node properties are written only for
+reason-coded closes and for the `resolve`, `expire`, and `dismiss` actions; a
+legacy close without a reason code leaves both properties unset.
+
+`expired`, `dismissed`, and `superseded_by_policy` are terminal dispositions.
+The `expire` and `dismiss` actions close the case in place — they do not
+delete the `ReviewCase` node — and the case stays queryable even after an
+involved `SourceRecord` later changes its lifecycle status.
+`superseded_by_policy` is a state only: no API action transitions a case into
+it.
 
 **Merge side-effect provenance (nullable).** When a person merge closes or
 redirects a still-open case as a side effect, the case carries provenance so an
@@ -529,6 +617,27 @@ duplicates.
 Why a relationship: a lock exists only between two entities. It is checked
 during candidate evaluation by traversing from one person to the other. A
 standalone node with two pointer relationships is relational thinking.
+
+### Audited NRIC Reveals (`NricRevealEvent`)
+
+Immutable audit node created whenever an administrator reveals plaintext NRICs.
+
+```cypher
+CREATE (re:NricRevealEvent {
+  reveal_id: randomUUID(),
+  person_id: '<uuid>',
+  actor_email: 'admin@example.com',
+  reason: 'Compliance audit for customer review', // scrubbed of any raw NRIC tokens
+  request_id: '<request_id>',
+  revealed_at: datetime(),
+  value_count: 1,
+  unavailable_count: 0,
+  created_at: datetime()
+})-[:REVEALED_FOR]->(p:Person)
+```
+
+Why a dedicated node: regulatory access to plaintext PII requires permanent,
+tamper-evident audit lineage linked directly to the target Person.
 
 ### Survivorship Overrides
 

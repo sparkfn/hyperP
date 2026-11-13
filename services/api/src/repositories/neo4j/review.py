@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+from collections import Counter
 from collections.abc import Mapping
 from datetime import UTC, datetime
 from typing import TypedDict
@@ -13,13 +14,23 @@ from neo4j import AsyncManagedTransaction, Record
 
 from src.celery_client import enqueue_match_recalculation
 from src.graph.client import TimedAsyncSession, get_session
-from src.graph.converters import GraphRecord, to_int, to_optional_str, to_str
+from src.graph.converters import (
+    GraphRecord,
+    to_int,
+    to_iso_or_none,
+    to_optional_str,
+    to_str,
+)
 from src.graph.crm_deal_count import recompute_person_crm_deal_counts
 from src.graph.golden_profile import recompute_golden_profile_tx
 from src.graph.mappers import (
     map_possible_match_detail,
     map_review_case_detail,
     map_review_case_summary,
+)
+from src.graph.person_list_summary_deltas import (
+    PersonListSummaryDeltaCollector,
+    find_deal_element_ids_for_persons,
 )
 from src.graph.queries import (
     ACTIVATE_PENDING_REVIEW_RECORD,
@@ -68,7 +79,13 @@ from src.repositories.neo4j.merge import (
 )
 from src.repositories.neo4j.sales_staging import InvalidSalesStageError, validate_sales_stage
 from src.repositories.protocols.merge import GoldenProfileSelection
-from src.repositories.protocols.review import ActionResult, AssignResult, ReviewListFilters
+from src.repositories.protocols.review import (
+    ActionResult,
+    AssignResult,
+    BulkActionItemOutcome,
+    BulkActionOutcome,
+    ReviewListFilters,
+)
 from src.types import (
     ApiReviewActionType,
     ReviewCaseDetail,
@@ -83,22 +100,165 @@ from ._utils import record_to_dict, to_total
 _NON_CYPHER_KEYS: frozenset[str] = frozenset({"sort_by", "sort_order"})
 logger = logging.getLogger(__name__)
 
+# Post-commit review telemetry. The counters are process-local and bounded;
+# the API exposes no metrics endpoint, so the same dimensions are written into
+# the `review_case_transitioned` log line.
+REVIEW_RESOLUTION_COUNTER: Counter[tuple[str, str, str, str]] = Counter()
+REVIEW_AGE_BUCKET_COUNTER: Counter[tuple[str, str, str]] = Counter()
+_MAX_REVIEW_COUNTER_KEYS = 512
+
+# Action types whose close always records the reviewer audit fields, even when
+# no reason code was supplied.
+_AUDIT_FIELD_ACTIONS: frozenset[str] = frozenset({"resolve", "expire", "dismiss"})
+
 
 class _ReviewResolutionAbortError(RuntimeError):
     """Force the active Neo4j write transaction to roll back."""
 
 
-def _action_entry_json(action_type: str, actor_type: str, actor_id: str, notes: str | None) -> str:
+def _action_entry_json(
+    action_type: str,
+    actor_type: str,
+    actor_id: str,
+    notes: str | None,
+    *,
+    reason_code: str | None = None,
+) -> str:
     """Serialize one review-action audit entry; rc.actions stores JSON strings."""
-    return json.dumps(
-        {
-            "action_type": action_type,
-            "actor_type": actor_type,
-            "actor_id": actor_id,
-            "notes": notes,
-            "created_at": datetime.now(UTC).isoformat(),
-        }
+    entry: dict[str, str | None] = {
+        "action_type": action_type,
+        "actor_type": actor_type,
+        "actor_id": actor_id,
+        "notes": notes,
+        "created_at": datetime.now(UTC).isoformat(),
+    }
+    if reason_code is not None:
+        entry["reason_code"] = reason_code
+    return json.dumps(entry)
+
+
+def _optional_text(record: Mapping[str, object], key: str) -> str | None:
+    """Read an optional string field from a graph record."""
+    value = record.get(key)
+    return value if isinstance(value, str) else None
+
+
+class _ReviewAuditParams(TypedDict, total=False):
+    reason_code: str
+    actor_id: str
+
+
+def _reason_params(reason_code: str | None, resolution: str | None) -> _ReviewAuditParams:
+    """Extra Cypher parameters for a reason-coded close.
+
+    The reason code is only bound when the close sets a resolution, matching
+    the `rc.resolution_reason_code` SET clause.
+    """
+    if resolution is None or reason_code is None:
+        return {}
+    return {"reason_code": reason_code}
+
+
+def _has_two_person_sides(persons_record: Mapping[str, object]) -> bool:
+    """Return True when both sides of the decision are Person nodes."""
+    left_id = _optional_text(persons_record, "left_person_id")
+    right_id = _optional_text(persons_record, "right_person_id")
+    return bool(left_id) and bool(right_id)
+
+
+def _resolve_applicable(persons_record: Record | None) -> bool:
+    """A generic resolve needs two Person sides and no attached SourceRecord."""
+    if persons_record is None:
+        return False
+    if not _has_two_person_sides(persons_record):
+        return False
+    # Fail closed: the projection always carries the boolean, so an absent or
+    # false value means the case still has source-record evidence.
+    return persons_record.get("has_no_source_record") is True
+
+
+def classify_review_age_bucket(age_days: float | None) -> str:
+    """Bucket the age of a review case in days for the post-commit telemetry."""
+    if age_days is None:
+        return "unknown"
+    if age_days < 1.0:
+        return "lt_1d"
+    if age_days < 7.0:
+        return "1d_to_7d"
+    if age_days < 30.0:
+        return "7d_to_30d"
+    return "gte_30d"
+
+
+def _compute_review_age_days(created_at_iso: str | None) -> float | None:
+    """Return the UTC age in days of a review case, or None when unknown."""
+    if not created_at_iso:
+        return None
+    try:
+        parsed = datetime.fromisoformat(created_at_iso.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        created_utc = parsed.replace(tzinfo=UTC)
+    else:
+        created_utc = parsed.astimezone(UTC)
+    return max(0.0, (datetime.now(UTC) - created_utc).total_seconds() / 86400.0)
+
+
+def _prune_counter[CounterKey: tuple[str, ...]](
+    counter: Counter[CounterKey], max_keys: int = _MAX_REVIEW_COUNTER_KEYS
+) -> None:
+    """Keep process-local telemetry bounded, evicting the oldest UTC day first."""
+    while len(counter) > max_keys:
+        oldest_day = min(key[-1] for key in counter)
+        oldest_key = next(key for key in counter if key[-1] == oldest_day)
+        del counter[oldest_key]
+
+
+def _record_review_transition(result: ActionResult, *, reason_code: str | None) -> None:
+    """Record post-commit review telemetry for one successful transition."""
+    queue_state = result.get("queue_state", "")
+    resolution = result.get("resolution")
+    age_bucket = classify_review_age_bucket(_compute_review_age_days(result.get("created_at")))
+    day_utc = datetime.now(UTC).date().isoformat()
+    resolution_key = (queue_state, resolution or "none", reason_code or "none", day_utc)
+    REVIEW_RESOLUTION_COUNTER[resolution_key] += 1
+    _prune_counter(REVIEW_RESOLUTION_COUNTER)
+    REVIEW_AGE_BUCKET_COUNTER[(queue_state, age_bucket, day_utc)] += 1
+    _prune_counter(REVIEW_AGE_BUCKET_COUNTER)
+    logger.info(
+        "review_case_transitioned event=review_case_transitioned review_case_id=%s "
+        "queue_state=%s resolution=%s reason_code=%s age_bucket=%s day_utc=%s",
+        result.get("review_case_id", ""),
+        queue_state,
+        resolution or "none",
+        reason_code or "none",
+        age_bucket,
+        day_utc,
     )
+
+
+def reset_review_resolution_counters() -> None:
+    """Clear the process-local review resolution telemetry counters."""
+    REVIEW_RESOLUTION_COUNTER.clear()
+    REVIEW_AGE_BUCKET_COUNTER.clear()
+
+
+def _pending_person_ids(pending_record: Mapping[str, object]) -> list[str]:
+    """Return the Person ids the pending review record already involves.
+
+    The read is tolerant on purpose: the capture only widens the maintained
+    summary, so a malformed pending record must not fail the review action.
+    """
+    person_ids: set[str] = set()
+    for key in ("prior_person_ids", "review_candidate_person_ids"):
+        value = pending_record.get(key)
+        if isinstance(value, list):
+            person_ids.update(item for item in value if isinstance(item, str))
+    proposed_person_id = pending_record.get("proposed_person_id")
+    if isinstance(proposed_person_id, str) and proposed_person_id:
+        person_ids.add(proposed_person_id)
+    return sorted(person_ids)
 
 
 class Neo4jReviewRepository:
@@ -241,6 +401,8 @@ class Neo4jReviewRepository:
         actor_id: str,
         survivor_person_id: str | None,
         golden_profile_selections: list[GoldenProfileSelection],
+        *,
+        reason_code: str | None = None,
     ) -> ActionResult | None:
         if not are_valid_golden_profile_selections(golden_profile_selections):
             return ActionResult(merge_not_applicable=True)
@@ -257,6 +419,7 @@ class Neo4jReviewRepository:
                     actor_id,
                     survivor_person_id,
                     golden_profile_selections,
+                    reason_code=reason_code,
                 )
             except _ReviewResolutionAbortError:
                 return ActionResult(merge_not_applicable=True)
@@ -265,8 +428,93 @@ class Neo4jReviewRepository:
             return None
 
         enqueue_match_recalculation(result.get("redirected_review_case_ids", []))
+        # A rejected action (not applicable, blocked, pair-audit) carries no
+        # review case id and must not be counted as a transition.
+        if result.get("review_case_id"):
+            _record_review_transition(result, reason_code=reason_code)
 
         return result
+
+    async def submit_bulk_action(
+        self,
+        review_case_ids: list[str],
+        action_type: str,
+        new_state: str,
+        resolution: str | None,
+        notes: str | None,
+        follow_up_at: str | None,
+        actor_id: str,
+        reason_code: str,
+    ) -> BulkActionOutcome:
+        """Apply one action to many cases, reporting a per-item outcome.
+
+        Each case runs through the single-case action path, so the claim,
+        lifecycle and audit behaviour is identical to the single-case
+        endpoint. A case that cannot be actioned is reported as an error item
+        instead of aborting the batch.
+        """
+        items: list[BulkActionItemOutcome] = []
+        seen_ids: set[str] = set()
+        for review_case_id in review_case_ids:
+            if review_case_id in seen_ids:
+                items.append(_bulk_error_item(review_case_id, "duplicate_review_case_id"))
+                continue
+            seen_ids.add(review_case_id)
+            try:
+                result = await self.submit_action(
+                    review_case_id,
+                    action_type,
+                    new_state,
+                    resolution,
+                    notes,
+                    follow_up_at,
+                    actor_id,
+                    None,
+                    [],
+                    reason_code=reason_code,
+                )
+            except Exception:
+                # The commit state is indeterminate: the write may or may not
+                # have landed. The caller must refresh before retrying.
+                logger.exception(
+                    "Bulk review action outcome unknown for review_case_id=%s", review_case_id
+                )
+                items.append(_bulk_error_item(review_case_id, "outcome_unknown"))
+                continue
+            items.append(_bulk_item_outcome(review_case_id, result))
+        return BulkActionOutcome(items=items)
+
+
+def _bulk_error_item(review_case_id: str, error_code: str) -> BulkActionItemOutcome:
+    """Build the bulk outcome for a case that could not be actioned."""
+    return BulkActionItemOutcome(
+        review_case_id=review_case_id,
+        status="error",
+        queue_state=None,
+        resolution=None,
+        error_code=error_code,
+    )
+
+
+def _bulk_item_outcome(review_case_id: str, result: ActionResult | None) -> BulkActionItemOutcome:
+    """Map one single-case action result onto a bulk per-item outcome."""
+    if result is None:
+        return _bulk_error_item(review_case_id, "review_case_not_found")
+    if result.get("resolve_not_applicable"):
+        return _bulk_error_item(review_case_id, "resolve_not_applicable")
+    if (
+        result.get("merge_not_applicable")
+        or result.get("merge_blocked")
+        or result.get("pair_audit_merge_disabled")
+    ):
+        return _bulk_error_item(review_case_id, "action_not_applicable")
+    return BulkActionItemOutcome(
+        review_case_id=review_case_id,
+        status="updated",
+        queue_state=result.get("queue_state"),
+        resolution=result.get("resolution"),
+        error_code=None,
+    )
 
 
 async def _assign_tx(
@@ -318,12 +566,24 @@ async def _sales_link_merge_tx(
     action_type: str,
     actor_id: str,
     notes: str | None,
+    *,
+    reason_code: str | None = None,
 ) -> ActionResult:
     """Approve a sales-record review case: link Order+Units to the candidate Person."""
     sales_result = await tx.run(GET_REVIEW_SALES_RECORD, review_case_id=review_case_id)
     sales_record = await sales_result.single()
     if sales_record is None:
         return ActionResult(merge_not_applicable=True)
+    collector = PersonListSummaryDeltaCollector()
+    # Capture the sales record and the version it replaces: an approved sales
+    # record can replace an old distinct deal, and that deal stops counting.
+    await collector.capture_before(
+        tx,
+        source_record_pks=(
+            to_str(sales_record.get("source_record_pk")),
+            to_optional_str(sales_record.get("expected_active_source_record_pk")) or "",
+        ),
+    )
     claim = await _claim_review_action(tx, review_case_id, actor_id)
     if claim is None:
         return ActionResult(merge_not_applicable=True)
@@ -383,26 +643,38 @@ async def _sales_link_merge_tx(
         linked_result = await tx.run(MARK_REVIEW_SALES_RECORD_LINKED, review_case_id=review_case_id)
         if await linked_result.single() is None:
             return ActionResult(merge_not_applicable=True)
-    cypher = build_claimed_review_action_cypher(resolution, follow_up_at)
+    cypher = build_claimed_review_action_cypher(
+        resolution,
+        follow_up_at,
+        include_audit_fields=reason_code is not None or action_type in _AUDIT_FIELD_ACTIONS,
+        has_reason_code=resolution is not None and reason_code is not None,
+    )
     rc_result = await tx.run(
         cypher,
         review_case_id=review_case_id,
         new_state=new_state,
         resolution=resolution,
         follow_up_at=follow_up_at,
-        action_json=_action_entry_json(action_type, "reviewer", actor_id, notes),
+        action_json=_action_entry_json(
+            action_type, "reviewer", actor_id, notes, reason_code=reason_code
+        ),
         actor_id=actor_id,
+        **_reason_params(reason_code, resolution),
         **claim,
     )
     rc_record = await rc_result.single()
     if rc_record is None:
         raise _ReviewResolutionAbortError("review close lost after sales activation")
     rc = dict(rc_record["review_case"])
-    return ActionResult(
+    out = ActionResult(
         review_case_id=to_str(rc.get("review_case_id")),
         queue_state=to_str(rc.get("queue_state")),
         resolution=to_optional_str(rc.get("resolution")),
     )
+    if rc.get("created_at") is not None:
+        out["created_at"] = to_iso_or_none(rc.get("created_at"))
+    await collector.finalize(tx)
+    return out
 
 
 def _projection_items(
@@ -668,6 +940,8 @@ async def _pending_record_merge_tx(
     follow_up_at: str | None,
     actor_id: str,
     notes: str | None,
+    *,
+    reason_code: str | None = None,
 ) -> ActionResult | None:
     try:
         proposed_person_id = _required_str(pending_record, "proposed_person_id")
@@ -706,6 +980,16 @@ async def _pending_record_merge_tx(
         proposed_person_id = selected_person_id
     elif survivor_person_id is not None and survivor_person_id != proposed_person_id:
         return ActionResult(merge_not_applicable=True)
+    collector = PersonListSummaryDeltaCollector()
+    # Capture the pending record and the version it replaces before the
+    # activation, so the replaced version's contribution is known.
+    await collector.capture_before(
+        tx,
+        source_record_pks=(
+            pending_source_record_pk,
+            expected_active_source_record_pk or "",
+        ),
+    )
     claim = await _claim_review_action(tx, review_case_id, actor_id)
     if claim is None:
         return ActionResult(merge_not_applicable=True)
@@ -730,6 +1014,10 @@ async def _pending_record_merge_tx(
     affected = activated.get("affected_person_ids", [])
     if isinstance(affected, list):
         affected_person_ids = sorted({value for value in affected if isinstance(value, str)})
+        # Capture the affected Persons before the profile recompute: the
+        # activation does not change their preferred fields, so this snapshot
+        # is still the pre-recompute state.
+        await collector.capture_before(tx, person_ids=affected_person_ids)
         await recompute_person_crm_deal_counts(tx, affected_person_ids)
         for person_id in affected_person_ids:
             await recompute_golden_profile_tx(tx, person_id, False)
@@ -745,25 +1033,37 @@ async def _pending_record_merge_tx(
     if revision is not None:
         await append_identity_link_revisions(tx, [revision])
     action_result = await tx.run(
-        build_claimed_review_action_cypher(resolution, follow_up_at),
+        build_claimed_review_action_cypher(
+            resolution,
+            follow_up_at,
+            include_audit_fields=reason_code is not None,
+            has_reason_code=resolution is not None and reason_code is not None,
+        ),
         review_case_id=review_case_id,
         new_state=new_state,
         resolution=resolution,
         follow_up_at=follow_up_at,
-        action_json=_action_entry_json("merge", "reviewer", actor_id, notes),
+        action_json=_action_entry_json(
+            "merge", "reviewer", actor_id, notes, reason_code=reason_code
+        ),
         actor_id=actor_id,
+        **_reason_params(reason_code, resolution),
         **claim,
     )
     action_record = await action_result.single()
     if action_record is None:
         raise _ReviewResolutionAbortError("review close lost after lifecycle activation")
     review_case = dict(action_record["review_case"])
-    return ActionResult(
+    out = ActionResult(
         review_case_id=to_str(review_case.get("review_case_id")),
         queue_state=to_str(review_case.get("queue_state")),
         resolution=to_optional_str(review_case.get("resolution")),
         redirected_review_case_ids=[],
     )
+    if review_case.get("created_at") is not None:
+        out["created_at"] = to_iso_or_none(review_case.get("created_at"))
+    await collector.finalize(tx)
+    return out
 
 
 async def _action_tx(
@@ -777,6 +1077,8 @@ async def _action_tx(
     actor_id: str,
     survivor_person_id: str | None,
     golden_profile_selections: list[GoldenProfileSelection],
+    *,
+    reason_code: str | None = None,
 ) -> ActionResult | None:
     absorbed_id: str | None = None
     survivor_id: str | None = None
@@ -784,6 +1086,9 @@ async def _action_tx(
     claim: _ReviewClaim | None = None
     preloaded_action_record: Record | None = None
     record: Record | GraphRecord | None
+    include_audit_fields = reason_code is not None or action_type in _AUDIT_FIELD_ACTIONS
+    has_reason_code = resolution is not None and reason_code is not None
+    collector: PersonListSummaryDeltaCollector | None = None
 
     if action_type == ApiReviewActionType.MANUAL_NO_MATCH.value:
         pending_result = await tx.run(GET_PENDING_REVIEW_RECORD, review_case_id=review_case_id)
@@ -794,6 +1099,18 @@ async def _action_tx(
             claim = await _claim_review_action(tx, review_case_id, actor_id)
             if claim is None:
                 return ActionResult(merge_not_applicable=True)
+            collector = PersonListSummaryDeltaCollector()
+            # Capture the pending record, the version it replaces and the
+            # Persons it involves: the replaced version stops counting even
+            # though the pending record itself ends unresolved.
+            await collector.capture_before(
+                tx,
+                person_ids=_pending_person_ids(pending_record),
+                source_record_pks=(
+                    to_str(pending_record.get("pending_source_record_pk")),
+                    to_optional_str(pending_record.get("expected_active_source_record_pk")) or "",
+                ),
+            )
             no_match_result = await tx.run(
                 RESOLVE_PENDING_REVIEW_RECORD_NO_MATCH,
                 review_case_id=review_case_id,
@@ -824,6 +1141,15 @@ async def _action_tx(
             claim = await _claim_review_action(tx, review_case_id, actor_id)
             if claim is None:
                 return ActionResult(merge_not_applicable=True)
+            collector = PersonListSummaryDeltaCollector()
+            await collector.capture_before(
+                tx,
+                person_ids=_pending_person_ids(pending_record),
+                source_record_pks=(
+                    to_str(pending_record.get("pending_source_record_pk")),
+                    to_optional_str(pending_record.get("expected_active_source_record_pk")) or "",
+                ),
+            )
             rejected_result = await tx.run(
                 REJECT_PENDING_REVIEW_RECORD,
                 review_case_id=review_case_id,
@@ -848,6 +1174,16 @@ async def _action_tx(
                 claim = await _claim_review_action(tx, review_case_id, actor_id)
                 if claim is None:
                     return ActionResult(merge_not_applicable=True)
+                collector = PersonListSummaryDeltaCollector()
+                # Capture the sales record and the version it replaces: the
+                # replaced version stops counting when the sale is rejected.
+                await collector.capture_before(
+                    tx,
+                    source_record_pks=(
+                        to_str(sales_record.get("source_record_pk")),
+                        to_optional_str(sales_record.get("expected_active_source_record_pk")) or "",
+                    ),
+                )
                 if sales_record.get("lifecycle_status") == "pending_review":
                     rejected = await tx.run(
                         REJECT_STAGED_REVIEW_SALE,
@@ -864,10 +1200,22 @@ async def _action_tx(
                     )
                 lifecycle_mutated = True
 
-    if action_type == ApiReviewActionType.MERGE.value:
+    persons_record: Record | None = None
+    if action_type in (
+        ApiReviewActionType.MERGE.value,
+        ApiReviewActionType.RESOLVE.value,
+    ):
         persons_result = await tx.run(GET_PERSONS_FOR_REVIEW_MERGE, review_case_id=review_case_id)
         persons_record = await persons_result.single()
-        if persons_record is None:
+
+    if action_type == ApiReviewActionType.MERGE.value:
+        if (
+            persons_record is not None
+            and _optional_text(persons_record, "engine_type") == "pair_audit"
+        ):
+            # Pair-audit cases are retired by policy, never merged.
+            return ActionResult(pair_audit_merge_disabled=True)
+        if persons_record is None or not _has_two_person_sides(persons_record):
             pending_result = await tx.run(GET_PENDING_REVIEW_RECORD, review_case_id=review_case_id)
             pending_record = await pending_result.single()
             if pending_record is None:
@@ -880,6 +1228,7 @@ async def _action_tx(
                     action_type,
                     actor_id,
                     notes,
+                    reason_code=reason_code,
                 )
             return await _pending_record_merge_tx(
                 tx,
@@ -891,6 +1240,7 @@ async def _action_tx(
                 follow_up_at,
                 actor_id,
                 notes,
+                reason_code=reason_code,
             )
 
         left_id = to_str(persons_record["left_person_id"])
@@ -926,10 +1276,29 @@ async def _action_tx(
         if lock_record is not None and bool(lock_record["is_locked"]):
             return ActionResult(merge_blocked=True)
 
+    elif action_type == ApiReviewActionType.RESOLVE.value:
+        if not _resolve_applicable(persons_record):
+            # A generic resolve only closes a two-Person case that carries no
+            # source-record evidence; anything else is left untouched.
+            return ActionResult(resolve_not_applicable=True)
+
     cypher = (
-        build_claimed_review_action_cypher(resolution, follow_up_at)
+        build_claimed_review_action_cypher(
+            resolution,
+            follow_up_at,
+            include_audit_fields=include_audit_fields,
+            has_reason_code=has_reason_code,
+        )
         if lifecycle_mutated
-        else build_review_action_cypher(resolution, follow_up_at)
+        else build_review_action_cypher(
+            resolution,
+            follow_up_at,
+            include_audit_fields=include_audit_fields,
+            has_reason_code=has_reason_code,
+        )
+    )
+    action_json = _action_entry_json(
+        action_type, "reviewer", actor_id, notes, reason_code=reason_code
     )
     if preloaded_action_record is not None:
         record = preloaded_action_record
@@ -942,21 +1311,26 @@ async def _action_tx(
             new_state=new_state,
             resolution=resolution,
             follow_up_at=follow_up_at,
-            action_json=_action_entry_json(action_type, "reviewer", actor_id, notes),
+            action_json=action_json,
             actor_id=actor_id,
             claim_token=claim["claim_token"],
             claim_version=claim["claim_version"],
             claim_status=claim["claim_status"],
+            **_reason_params(reason_code, resolution),
         )
         record = await result.single()
     else:
+        audit_params: _ReviewAuditParams = _reason_params(reason_code, resolution)
+        if include_audit_fields and resolution is not None:
+            audit_params["actor_id"] = actor_id
         result = await tx.run(
             cypher,
             review_case_id=review_case_id,
             new_state=new_state,
             resolution=resolution,
             follow_up_at=follow_up_at,
-            action_json=_action_entry_json(action_type, "reviewer", actor_id, notes),
+            action_json=action_json,
+            **audit_params,
         )
         record = await result.single()
     if record is None:
@@ -974,6 +1348,8 @@ async def _action_tx(
         resolution=to_optional_str(rc.get("resolution")),
         redirected_review_case_ids=[],
     )
+    if rc.get("created_at") is not None:
+        out["created_at"] = to_iso_or_none(rc.get("created_at"))
 
     if action_type == ApiReviewActionType.MANUAL_NO_MATCH.value and not lifecycle_mutated:
         await tx.run(
@@ -984,6 +1360,16 @@ async def _action_tx(
         )
     elif action_type == ApiReviewActionType.MERGE.value and absorbed_id and survivor_id:
         left, right = _ordered_pair(absorbed_id, survivor_id)
+        collector = PersonListSummaryDeltaCollector()
+        # Capture both Persons and their distinct deals immediately before the
+        # merge rewires them.
+        await collector.capture_before(
+            tx,
+            person_ids=[absorbed_id, survivor_id],
+            deal_element_ids=await find_deal_element_ids_for_persons(
+                tx, [absorbed_id, survivor_id]
+            ),
+        )
         merge_result = await tx.run(
             EXECUTE_MANUAL_MERGE,
             from_id=absorbed_id,
@@ -1027,4 +1413,6 @@ async def _action_tx(
     ):
         await tx.run(MARK_REVIEW_SALES_RECORD_UNRESOLVED, review_case_id=review_case_id)
 
+    if collector is not None:
+        await collector.finalize(tx)
     return out

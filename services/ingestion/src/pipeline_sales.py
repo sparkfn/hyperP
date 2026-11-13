@@ -19,6 +19,7 @@ from src.exclusions import ExclusionContext, is_excluded_vehicle_observation
 from src.graph import queries
 from src.graph.bootstrap import SOURCE_KEY_TO_ENTITY
 from src.graph.client import Neo4jClient
+from src.graph.person_list_summary_deltas import PersonListSummaryDeltaCollector
 from src.loyalty_points import normalize_loyalty_field
 from src.matching.vehicle_heuristic import (
     VehicleCandidate,
@@ -35,7 +36,7 @@ from src.models import (
 from src.normalizers.clean import str_or_none
 from src.pipeline_writes import create_review_case_if_needed, persist_match_decision
 from src.profile_analysis_dirty import mark_profile_analysis_dirty
-from src.raw_payload import decode_raw_payload
+from src.raw_payload import decode_raw_payload, scrub_nric_strings, serialize_raw_payload
 from src.record_lifecycle import (
     DuplicateVersion,
     PlannedVersion,
@@ -60,6 +61,11 @@ def _staging_hash(value: object) -> str:
     return hashlib.sha256(
         json.dumps(value, sort_keys=True, separators=(",", ":"), default=str).encode()
     ).hexdigest()
+
+
+def _serialize_metadata(metadata: dict[str, JsonValue] | None) -> str:
+    """Serialize an Order or LineItem metadata map with NRIC strings scrubbed."""
+    return json.dumps(scrub_nric_strings(metadata or {}), default=str)
 
 
 class SalesPayloadError(ValueError):
@@ -146,6 +152,7 @@ def ingest_sales_record(
             ingest_run_id=ingest_run_id,
             lifecycle_plan=plan,
             exclusion_context=active_exclusion_context,
+            collector=PersonListSummaryDeltaCollector(),
         )
 
     with client.session() as session:
@@ -223,8 +230,28 @@ def _execute(
     ingest_run_id: str | None,
     lifecycle_plan: PlannedVersion,
     exclusion_context: ExclusionContext,
+    collector: PersonListSummaryDeltaCollector,
 ) -> IngestResult:
     source_system_key = envelope.source_system
+
+    def _finish(result: IngestResult) -> IngestResult:
+        """Publish the summary delta once, then return the ingest result."""
+        collector.finalize(tx)
+        return result
+
+    # Capture the replaced version and its owners before the first write.
+    collector.capture_before(
+        tx,
+        person_ids=lifecycle_plan.prior_person_ids,
+        source_record_pks=tuple(
+            source_record_pk
+            for source_record_pk in (
+                lifecycle_plan.active_source_record_pk,
+                lifecycle_plan.pending_to_reject,
+            )
+            if source_record_pk
+        ),
+    )
     if lifecycle_plan.pending_to_reject is not None:
         reject_replaced_pending(tx, lifecycle_plan.pending_to_reject)
     source_record_pk = _create_sales_source_record(
@@ -233,6 +260,7 @@ def _execute(
         link_status="pending_customer",
         expected_active_source_record_pk=lifecycle_plan.active_source_record_pk,
     )
+    collector.mark_new(source_record_pks=[source_record_pk])
     if ingest_run_id is not None:
         tx.run(
             queries.LINK_SOURCE_RECORD_TO_RUN,
@@ -244,10 +272,12 @@ def _execute(
         order, line_items, customer_link = _parse_sales_envelope(envelope.raw_payload)
     except SalesPayloadError as exc:
         _skip_sale_permanent(tx, pk=source_record_pk, reason=str(exc))
-        return IngestResult(
-            source_record_id=envelope.source_record_id,
-            source_record_pk=source_record_pk,
-            ingest_run_id=ingest_run_id,
+        return _finish(
+            IngestResult(
+                source_record_id=envelope.source_record_id,
+                source_record_pk=source_record_pk,
+                ingest_run_id=ingest_run_id,
+            )
         )
     if customer_link is None or (
         str_or_none(customer_link.get("identity_source_record_id")) is None
@@ -258,10 +288,12 @@ def _execute(
             pk=source_record_pk,
             reason="customer_link missing or required fields invalid",
         )
-        return IngestResult(
-            source_record_id=envelope.source_record_id,
-            source_record_pk=source_record_pk,
-            ingest_run_id=ingest_run_id,
+        return _finish(
+            IngestResult(
+                source_record_id=envelope.source_record_id,
+                source_record_pk=source_record_pk,
+                ingest_run_id=ingest_run_id,
+            )
         )
     source_order_id = str(order["source_order_id"])
     person_id = _resolve_and_link_customer(
@@ -272,12 +304,14 @@ def _execute(
         source_order_id=source_order_id,
     )
     if person_id is None:
-        return IngestResult(
-            source_record_id=envelope.source_record_id,
-            source_record_pk=source_record_pk,
-            is_new_person=False,
-            candidate_count=0,
-            ingest_run_id=ingest_run_id,
+        return _finish(
+            IngestResult(
+                source_record_id=envelope.source_record_id,
+                source_record_pk=source_record_pk,
+                is_new_person=False,
+                candidate_count=0,
+                ingest_run_id=ingest_run_id,
+            )
         )
     _finalize_accepted_sale(
         tx,
@@ -301,14 +335,16 @@ def _execute(
         "linked" if person_id is not None else "pending_customer",
     )
 
-    return IngestResult(
-        source_record_id=envelope.source_record_id,
-        source_record_pk=source_record_pk,
-        person_id=person_id,
-        is_new_person=False,
-        candidate_count=0,
-        match_decision=None,
-        ingest_run_id=ingest_run_id,
+    return _finish(
+        IngestResult(
+            source_record_id=envelope.source_record_id,
+            source_record_pk=source_record_pk,
+            person_id=person_id,
+            is_new_person=False,
+            candidate_count=0,
+            match_decision=None,
+            ingest_run_id=ingest_run_id,
+        )
     )
 
 
@@ -348,7 +384,7 @@ def _create_sales_source_record(
         link_status=link_status,
         observed_at=envelope.observed_at,
         record_hash=envelope.record_hash,
-        raw_payload=json.dumps(envelope.raw_payload, default=str),
+        raw_payload=serialize_raw_payload(envelope),
         normalized_payload=json.dumps({}, default=str),
         crm_deal_stage_id=None,
         source_entity_type=None,
@@ -472,7 +508,7 @@ def _stage_sales_review_projections(
             "currency": "SGD",
             "discount_amount": line.get("discount_amount"),
             "tax_amount": line.get("tax_amount"),
-            "metadata": json.dumps(line.get("metadata", {}), default=str),
+            "metadata": _serialize_metadata(line.get("metadata")),
             "product_sku": product_values.get("sku"),
             "product_name": product_values.get("name"),
             "product_display_name": product_values.get("display_name")
@@ -527,7 +563,7 @@ def _stage_sales_review_projections(
         "total_amount": order.get("total_amount"),
         "currency": order.get("currency", "SGD"),
         "item_count": order.get("item_count"),
-        "metadata": json.dumps(order.get("metadata", {}), default=str),
+        "metadata": _serialize_metadata(order.get("metadata")),
         "non_vehicle_lines": json.dumps(
             _build_non_vehicle_lines(source_system_key, cast(list[JsonValue], typed_lines)),
             default=str,
@@ -663,7 +699,7 @@ def _merge_order(
         total_amount=order.get("total_amount"),
         currency=order.get("currency", "SGD"),
         item_count=order.get("item_count"),
-        metadata=json.dumps(order.get("metadata", {}), default=str),
+        metadata=_serialize_metadata(order.get("metadata")),
         # Neo4j cannot store LIST<MAP> node properties; store as JSON string.
         # The API mapper (Task 9) json.loads() this back to a list.
         non_vehicle_lines=json.dumps(non_vehicle_lines, default=str),
@@ -738,7 +774,7 @@ def _merge_line_item(
         currency="SGD",
         discount_amount=line.get("discount_amount"),
         tax_amount=line.get("tax_amount"),
-        metadata=json.dumps(line.get("metadata", {}), default=str),
+        metadata=_serialize_metadata(line.get("metadata")),
     )
 
 
@@ -998,6 +1034,9 @@ def drain_pending_customer_sales(
     while True:
 
         def _work(tx: ManagedTransaction, _cursor: str = cursor) -> tuple[int, str | None]:
+            # One collector for the whole batch: the summary delta is published
+            # once, after every sale in the batch has been drained.
+            collector = PersonListSummaryDeltaCollector()
             rows = list(
                 tx.run(
                     queries.FIND_PENDING_CUSTOMER_SALES,
@@ -1010,6 +1049,15 @@ def drain_pending_customer_sales(
             newly_linked = 0
             for row in rows:
                 pk, ssk = _row_pk_and_ssk(row)
+                expected_active_pk = str_or_none(row.get("expected_active_source_record_pk"))
+                collector.capture_before(
+                    tx,
+                    source_record_pks=tuple(
+                        source_record_pk
+                        for source_record_pk in (pk, expected_active_pk)
+                        if source_record_pk
+                    ),
+                )
                 if ssk is None:
                     _skip_sale_permanent(tx, pk=pk, reason="source_system_key missing")
                     continue
@@ -1019,13 +1067,24 @@ def drain_pending_customer_sales(
                     continue
                 source_record_id = str_or_none(row.get("source_record_id"))
                 source_instance_id = str_or_none(row.get("source_instance_id"))
-                expected_active_pk = str_or_none(row.get("expected_active_source_record_pk"))
                 if source_record_id is None:
                     _skip_sale_permanent(tx, pk=pk, reason="source_record_id missing")
                     continue
                 state = load_locked_source_state(tx, ssk, source_record_id, source_instance_id)
                 if state.pending is None or state.pending.source_record_pk != pk:
                     continue
+                collector.capture_before(
+                    tx,
+                    person_ids=state.active.linked_person_ids if state.active else (),
+                    source_record_pks=tuple(
+                        source_record_pk
+                        for source_record_pk in (
+                            state.active.source_record_pk if state.active else None,
+                            state.pending.source_record_pk if state.pending else None,
+                        )
+                        if source_record_pk
+                    ),
+                )
                 if _drain_one_pending_sale(
                     tx,
                     pk,
@@ -1037,6 +1096,7 @@ def drain_pending_customer_sales(
                     source_instance_id=source_instance_id,
                 ):
                     newly_linked += 1
+            collector.finalize(tx)
             return newly_linked, str(rows[-1]["source_record_pk"])
 
         with client.session() as session:
@@ -1171,7 +1231,12 @@ def _propose_one_pending_sale(
             return False
         review_result = build_vehicle_review_result(candidates)
         decision_id = persist_match_decision(tx, review_result, source_record_pk)
-        create_review_case_if_needed(tx, review_result, decision_id)
+        create_review_case_if_needed(
+            tx,
+            review_result,
+            decision_id,
+            source_system=source_system_key,
+        )
         tx.run(queries.MARK_SALES_RECORD_PENDING_REVIEW, source_record_pk=source_record_pk)
         return True
 
@@ -1307,7 +1372,22 @@ def propose_vehicle_matches_for_pending_sales(
             state = load_locked_source_state(tx, _ssk, _source_record_id, _source_instance_id)
             if state.pending is None or state.pending.source_record_pk != _pk:
                 return False
-            return _propose_one_pending_sale(
+            collector = PersonListSummaryDeltaCollector()
+            collector.capture_before(
+                tx,
+                person_ids=state.active.linked_person_ids if state.active else (),
+                source_record_pks=tuple(
+                    source_record_pk
+                    for source_record_pk in (
+                        _pk,
+                        _expected_active_pk,
+                        state.active.source_record_pk if state.active else None,
+                        state.pending.source_record_pk if state.pending else None,
+                    )
+                    if source_record_pk
+                ),
+            )
+            proposed_one = _propose_one_pending_sale(
                 tx,
                 source_record_pk=_pk,
                 source_system_key=_ssk,
@@ -1320,6 +1400,8 @@ def propose_vehicle_matches_for_pending_sales(
                 expected_active_source_record_pk=_expected_active_pk,
                 raw_payload=_raw_payload,
             )
+            collector.finalize(tx)
+            return proposed_one
 
         with client.session() as session:
             if session.execute_write(_propose):

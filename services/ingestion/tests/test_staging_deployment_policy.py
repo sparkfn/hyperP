@@ -582,6 +582,12 @@ def test_dormant_intelligence_is_profiled_and_deploy_neutralizes_ambient_profile
     assert "rm -f intelligence" not in deployment
 
 
+def test_web_recreation_applies_changed_compose_mounts_and_networks() -> None:
+    deployment = _DEPLOY.read_text(encoding="utf-8")
+    assert '"${COMPOSE[@]}" up -d --no-deps --force-recreate web' in deployment
+    assert '"${COMPOSE[@]}" restart web' not in deployment
+
+
 def test_deployment_retains_active_publication_fencing_and_activity_retirement_guards() -> None:
     scheduled = (_ROOT / "services/ingestion/tests/test_scheduled_ingestion_tasks.py").read_text(
         encoding="utf-8"

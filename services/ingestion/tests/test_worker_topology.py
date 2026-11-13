@@ -24,9 +24,11 @@ def test_worker_concurrency_and_task_routes_are_fixed_in_code() -> None:
         "src.crm_deal_identity_repair_tasks.*": {"queue": "ingestion"},
         "src.stage_history_tasks.*": {"queue": "ingestion"},
         "src.tasks.reconcile_lifecycle_task": {"queue": "lifecycle"},
+        "src.tasks.reconcile_person_list_summary_task": {"queue": "lifecycle"},
         "src.tasks.materialize_knows_task": {"queue": "lifecycle"},
         "src.tasks.send_birthday_messages_task": {"queue": "miscellaneous"},
         "src.tasks.recalculate_pair_audit_match_task": {"queue": "miscellaneous"},
+        "src.projection_sync.projection_sync_task": {"queue": "lifecycle"},
     }
     assert materialize_knows_task.soft_time_limit == 300
     assert materialize_knows_task.time_limit == 330

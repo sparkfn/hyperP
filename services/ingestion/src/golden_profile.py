@@ -13,6 +13,7 @@ from src.golden_profile_authority_models import (
     GoldenProfileRecomputeResult,
 )
 from src.graph import queries
+from src.normalizers.nric import masked_for
 
 recompute_golden_profile_from_active_authority = (
     _active_authority.recompute_golden_profile_from_active_authority
@@ -52,6 +53,7 @@ class _LegacyIdentifier(TypedDict):
     normalized_value: str
     is_verified: bool
     last_confirmed_at: str | None
+    nric_masked: str | None
 
 
 class _LegacyAddress(TypedDict):
@@ -122,6 +124,7 @@ def _legacy_identifier(row: Record) -> _LegacyIdentifier:
         "normalized_value": _row_string(row, "normalized_value"),
         "is_verified": _row_bool(row, "is_verified"),
         "last_confirmed_at": _row_optional_string(row, "last_confirmed_at"),
+        "nric_masked": _row_optional_string(row, "nric_masked"),
     }
 
 
@@ -182,10 +185,13 @@ def _pick_best_identifier(identifiers: list[_LegacyIdentifier], identifier_type:
     matching = [item for item in identifiers if item["identifier_type"] == identifier_type]
     if not matching:
         return None
-    return max(
+    best = max(
         matching,
         key=lambda item: (item["is_verified"], item["last_confirmed_at"] or ""),
-    )["normalized_value"]
+    )
+    if identifier_type == "nric":
+        return masked_for(best["normalized_value"], best["nric_masked"])
+    return best["normalized_value"]
 
 
 def _pick_best_address(addresses: list[_LegacyAddress]) -> str | None:

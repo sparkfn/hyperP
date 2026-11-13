@@ -100,7 +100,15 @@ EXCEPTIONS: tuple[ComposeTransformation, ...] = (
     ),
     *(
         ComposeTransformation(("services", name, "build", "context"), ".", "../..")
-        for name in ("intelligence", "api", "frontend2", "ingestion-worker", "lifecycle-worker", "beat")
+        for name in (
+            "intelligence",
+            "api",
+            "frontend2",
+            "ingestion-worker",
+            "lifecycle-worker",
+            "beat",
+            "rust-read",
+        )
     ),
     ComposeTransformation(
         ("services", "api", "volumes"),
@@ -111,10 +119,27 @@ EXCEPTIONS: tuple[ComposeTransformation, ...] = (
     ComposeTransformation(("services", "web", "ports"), _volumes("${NGINX_PORT:-80}:80"), MISSING),
     ComposeTransformation(
         ("services", "web", "volumes"),
-        _volumes("./services/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro"),
-        _volumes("../../services/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro"),
+        _volumes("./services/nginx/nginx.conf:/etc/nginx/templates/default.conf.template:ro"),
+        _volumes("../../services/nginx/nginx.conf:/etc/nginx/templates/default.conf.template:ro"),
     ),
-    ComposeTransformation(("services", "web", "networks"), MISSING, _volumes("default", "traefik")),
+    ComposeTransformation(
+        ("services", "web", "networks"),
+        _volumes("default", "rust-spike"),
+        _volumes("default", "rust-spike", "traefik"),
+    ),
+    ComposeTransformation(
+        ("services", "rust-spike-pg", "volumes"),
+        _volumes(
+            "rust-spike-pg-data:/var/lib/postgresql/data",
+            "./services/rust-read/postgres/01-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro",
+            "./services/rust-read/postgres/02-read-only-role.sh:/docker-entrypoint-initdb.d/02-read-only-role.sh:ro",
+        ),
+        _volumes(
+            "rust-spike-pg-data:/var/lib/postgresql/data",
+            "../../services/rust-read/postgres/01-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro",
+            "../../services/rust-read/postgres/02-read-only-role.sh:/docker-entrypoint-initdb.d/02-read-only-role.sh:ro",
+        ),
+    ),
     ComposeTransformation(("services", "ingestion-worker", "build", "target"), MISSING, "base"),
     ComposeTransformation(
         ("services", "ingestion-worker", "env_file"),
@@ -137,9 +162,9 @@ EXCEPTIONS: tuple[ComposeTransformation, ...] = (
         _volumes("./data/celerybeat:/var/celerybeat", "../../config:/app/config:ro"),
     ),
     ComposeTransformation(
-        ("networks",),
+        ("networks", "traefik"),
         MISSING,
-        cast(ComposeValue, {"traefik": {"external": True, "name": "traefik"}}),
+        cast(ComposeValue, {"external": True, "name": "traefik"}),
     ),
 )
 
@@ -199,6 +224,42 @@ def test_root_and_staging_compose_documents_match_after_exact_exceptions() -> No
     _assert_contract(_read_compose(_STAGING_COMPOSE))
 
 
+def test_root_and_staging_neo4j_memory_tuning_matches() -> None:
+    """The Neo4j memory tuning is identical in both documents (issue #489)."""
+    for path in (_ROOT_COMPOSE, _STAGING_COMPOSE):
+        document = _read_compose(path)
+        services = document["services"]
+        assert isinstance(services, dict)
+        neo4j = services["neo4j"]
+        assert isinstance(neo4j, dict)
+        assert neo4j["mem_limit"] == "5G"
+        environment = neo4j["environment"]
+        assert isinstance(environment, dict)
+        assert environment["NEO4J_server_memory_heap_max__size"] == "1536m"
+        assert environment["NEO4J_server_memory_pagecache_size"] == "2g"
+        # The initial heap and the off-heap transaction memory are unchanged.
+        assert environment["NEO4J_server_memory_heap_initial__size"] == "512m"
+        assert environment["NEO4J_server_memory_off__heap_transaction__max__size"] == "512m"
+
+
+def test_neo4j_memory_tuning_needs_no_exception_entry() -> None:
+    """The tuned Neo4j block is identical, so the exception registry is unchanged."""
+    root = _read_compose(_ROOT_COMPOSE)
+    staging = _read_compose(_STAGING_COMPOSE)
+    root_services = root["services"]
+    staging_services = staging["services"]
+    assert isinstance(root_services, dict)
+    assert isinstance(staging_services, dict)
+    root_neo4j = root_services["neo4j"]
+    staging_neo4j = staging_services["neo4j"]
+    assert isinstance(root_neo4j, dict)
+    assert isinstance(staging_neo4j, dict)
+    assert root_neo4j == staging_neo4j
+    assert not any(
+        transformation.path[:2] == ("services", "neo4j") for transformation in EXCEPTIONS
+    )
+
+
 def test_staging_compose_critical_invariants() -> None:
     staging = _read_compose(_STAGING_COMPOSE)
     services = staging["services"]
@@ -213,6 +274,8 @@ def test_staging_compose_critical_invariants() -> None:
         "ingestion-worker",
         "lifecycle-worker",
         "beat",
+        "rust-spike-pg",
+        "rust-read",
     }
     intelligence = services["intelligence"]
     web = services["web"]
@@ -223,7 +286,8 @@ def test_staging_compose_critical_invariants() -> None:
     assert isinstance(beat, dict)
     assert isinstance(intelligence, dict)
     assert intelligence["build"] == {
-        "context": "../..", "dockerfile": "services/intelligence/Dockerfile"
+        "context": "../..",
+        "dockerfile": "services/intelligence/Dockerfile",
     }
     assert intelligence["profiles"] == ["intelligence"]
     assert intelligence["volumes"] == ["intelligence-data:/var/lib/intelligence"]
@@ -238,9 +302,9 @@ def test_staging_compose_critical_invariants() -> None:
     assert intelligence["tmpfs"] == ["/tmp:rw,noexec,nosuid,size=64m"]
     assert "ports" not in intelligence
     assert "depends_on" not in intelligence
-    assert staging["volumes"] == {"intelligence-data": None}
+    assert staging["volumes"] == {"rust-spike-pg-data": None, "intelligence-data": None}
     assert "ports" not in web
-    assert web["networks"] == ["default", "traefik"]
+    assert web["networks"] == ["default", "rust-spike", "traefik"]
     assert ingestion_worker["build"] == {
         "context": "../..",
         "dockerfile": "services/ingestion/Dockerfile",
@@ -278,12 +342,15 @@ def test_staging_compose_critical_invariants() -> None:
     assert lifecycle_worker["command"][-1] == "--concurrency=${LIFECYCLE_WORKER_CONCURRENCY:-1}"
     environment = staging["x-ingestion-env"]
     assert isinstance(environment, dict)
-    assert {key: environment[key] for key in (
-        "SCHEDULED_INGESTION_TIMEZONE",
-        "SCHEDULED_INGESTION_LOCAL_OPENING",
-        "SCHEDULED_INGESTION_LOCAL_CUTOFF",
-        "SCHEDULED_INGESTION_DRAIN_RESERVE_SECONDS",
-    )} == {
+    assert {
+        key: environment[key]
+        for key in (
+            "SCHEDULED_INGESTION_TIMEZONE",
+            "SCHEDULED_INGESTION_LOCAL_OPENING",
+            "SCHEDULED_INGESTION_LOCAL_CUTOFF",
+            "SCHEDULED_INGESTION_DRAIN_RESERVE_SECONDS",
+        )
+    } == {
         "SCHEDULED_INGESTION_TIMEZONE": "${SCHEDULED_INGESTION_TIMEZONE:-Asia/Singapore}",
         "SCHEDULED_INGESTION_LOCAL_OPENING": "${SCHEDULED_INGESTION_LOCAL_OPENING:-09:00}",
         "SCHEDULED_INGESTION_LOCAL_CUTOFF": "${SCHEDULED_INGESTION_LOCAL_CUTOFF:-23:00}",
@@ -291,7 +358,47 @@ def test_staging_compose_critical_invariants() -> None:
             "${SCHEDULED_INGESTION_DRAIN_RESERVE_SECONDS:-900}"
         ),
     }
-    assert staging["networks"] == {"traefik": {"external": True, "name": "traefik"}}
+    assert staging["networks"] == {
+        "default": None,
+        "rust-spike": {"internal": True},
+        "traefik": {"external": True, "name": "traefik"},
+    }
+
+
+def test_rust_spike_is_profiled_and_isolated_in_both_compose_files() -> None:
+    for document in (_read_compose(_ROOT_COMPOSE), _read_compose(_STAGING_COMPOSE)):
+        services = document["services"]
+        assert isinstance(services, dict)
+        pg = services["rust-spike-pg"]
+        reader = services["rust-read"]
+        web = services["web"]
+        worker = services["lifecycle-worker"]
+        assert all(isinstance(service, dict) for service in (pg, reader, web, worker))
+        assert isinstance(pg, dict) and isinstance(reader, dict)
+        assert isinstance(web, dict) and isinstance(worker, dict)
+        assert pg["profiles"] == reader["profiles"] == ["rust-spike"]
+        assert pg["networks"] == reader["networks"] == ["rust-spike"]
+        assert reader["cpus"] == 1.0
+        assert reader["mem_limit"] == "256M"
+        assert "ports" not in pg and "ports" not in reader
+        assert reader["depends_on"] == {"rust-spike-pg": {"condition": "service_healthy"}}
+        reader_env = reader["environment"]
+        assert isinstance(reader_env, dict)
+        assert set(reader_env) == {
+            "DATABASE_URL", "RUST_SPIKE_BEARER_TOKEN", "RUST_SPIKE_CURSOR_SECRET"
+        }
+        assert reader_env["DATABASE_URL"] == "${RUST_SPIKE_DATABASE_URL:-}"
+        assert "rust-spike" in web["networks"]
+        assert worker["networks"] == ["default", "rust-spike"]
+        for service in services.values():
+            assert isinstance(service, dict)
+            if service is not reader:
+                dependencies = service.get("depends_on", [])
+                assert "rust-read" not in dependencies and "rust-spike-pg" not in dependencies
+        env = document["x-ingestion-env"]
+        assert isinstance(env, dict)
+        assert env["RUST_SPIKE_ENABLED"] == "${RUST_SPIKE_ENABLED:-0}"
+        assert env["PROJECTION_SYNC_INTERVAL_SECONDS"] == "${PROJECTION_SYNC_INTERVAL_SECONDS:-30}"
 
 
 def test_unapproved_staging_mutation_fails_contract() -> None:

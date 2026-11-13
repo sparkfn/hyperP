@@ -7,8 +7,11 @@ requires an explicit ``--confirm`` acknowledgement.
 
 Invoke with ``python -m src.staging_reset --confirm``.
 
-Precondition: all ingestion workers must be stopped before running this tool;
-it does not stop workers or check for in-flight tasks.
+Precondition: all ingestion workers must be stopped, and the API service and
+every other graph writer must be quiesced, before running this tool; it does
+not stop workers or check for in-flight tasks. The person-list summary counter
+is invalidated before the first deletion batch, so the reset fails without
+deleting anything if that invalidation cannot be performed.
 """
 
 from __future__ import annotations
@@ -26,6 +29,7 @@ from neo4j import ManagedTransaction, Record
 
 from src.config import Settings, get_settings
 from src.graph.client import Neo4jClient
+from src.graph.person_list_summary import invalidate_person_list_summary
 from src.graph.queries.staging_reset import STAGING_RESET_CLEAR_GRAPH
 
 logger = logging.getLogger(__name__)
@@ -39,7 +43,8 @@ _BATCH_SIZE = 10_000
 _PROG = "python -m src.staging_reset"
 _DESCRIPTION = (
     "Clear all HyperP graph data nodes and ingestion Redis state, preserving "
-    "system configuration nodes. Stop all ingestion workers before running."
+    "system configuration nodes. Stop all ingestion workers and quiesce the "
+    "API and every other graph writer before running."
 )
 
 
@@ -171,6 +176,15 @@ def main(argv: list[str] | None = None) -> int:
 
     graph_client = Neo4jClient(settings)
     try:
+        try:
+            invalidation = invalidate_person_list_summary(graph_client)
+        except Exception as exc:
+            logger.error("Person-list summary counter invalidation failed: %s", exc)
+            return 1
+        logger.info(
+            "Person-list summary counter invalidated (generation %d) before graph reset.",
+            invalidation.generation,
+        )
         nodes_deleted = _clear_graph(graph_client)
     finally:
         graph_client.close()

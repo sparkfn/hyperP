@@ -3,7 +3,7 @@ from __future__ import annotations
 from collections.abc import Iterator
 from typing import cast
 
-from _txmock import _RecordingTx
+from _txmock import _RecordingTx, summary_counter_result
 from neo4j import ManagedTransaction
 from src.graph import queries
 from src.main import _is_address_only_source
@@ -43,6 +43,9 @@ class _Tx(_RecordingTx):
         super().__init__()
 
     def run(self, query: str, **kwargs: object) -> _Result:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self._record(query, kwargs)
         if "max_source_record_version" in query:
             return _Result(
@@ -230,6 +233,9 @@ class _LifecycleAddressTx(_RecordingTx):
         }
 
     def run(self, query: str, **kwargs: object) -> _Result:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self._record(query, kwargs)
         if query == queries.LOCK_AND_GET_SOURCE_STATE:
             rows = [row for row in (self.active, self.pending) if row is not None]

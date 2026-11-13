@@ -4,9 +4,10 @@ import json
 from collections.abc import Iterator
 from contextlib import ExitStack
 from typing import cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import DEFAULT, MagicMock, patch
 
 import pytest
+from _txmock import summary_counter_result
 from neo4j import ManagedTransaction
 from src.graph import queries
 from src.models import MatchDecision, MatchResult, RecordType, SourceRecordEnvelope
@@ -28,6 +29,9 @@ class _Rows:
 
 class _Tx:
     def run(self, query: str, **params: object) -> _Rows:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         assert query == queries.RETIRE_IDENTITY_PROJECTIONS
         assert params == {"source_record_pk": "old-sr"}
         return _Rows()
@@ -39,6 +43,9 @@ def test_retire_identity_projections_returns_sorted_distinct_owners() -> None:
 
 class _ScopedTx:
     def run(self, query: str, **params: object) -> _Rows:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         assert query == queries.RETIRE_IDENTITY_PROJECTIONS_FOR_PERSONS
         assert params == {
             "source_record_pk": "old-sr",
@@ -136,6 +143,9 @@ class _DecisionTx:
         self.calls: list[tuple[str, dict[str, object]]] = []
 
     def run(self, query: str, **params: object) -> _DecisionResult:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self.calls.append((query, params))
         if query == queries.CREATE_MATCH_DECISION:
             return _DecisionResult({"match_decision_id": "decision-1"})
@@ -172,7 +182,11 @@ def _envelope() -> SourceRecordEnvelope:
 
 def test_multi_owner_changed_update_stays_pending_without_active_side_effects() -> None:
     pipeline = IngestPipeline(cast(object, MagicMock()))
-    tx = cast(ManagedTransaction, MagicMock())
+    tx_mock = MagicMock()
+    tx_mock.run.side_effect = (
+        lambda query, *_args, **_kwargs: summary_counter_result(query) or DEFAULT
+    )
+    tx = cast(ManagedTransaction, tx_mock)
     plan = PlannedVersion(
         version=2,
         active_source_record_pk="old-sr",
@@ -261,7 +275,11 @@ def test_accepted_update_retires_activates_and_recomputes_complete_affected_set(
             )
         )
     )
-    tx = cast(ManagedTransaction, MagicMock())
+    tx_mock = MagicMock()
+    tx_mock.run.side_effect = (
+        lambda query, *_args, **_kwargs: summary_counter_result(query) or DEFAULT
+    )
+    tx = cast(ManagedTransaction, tx_mock)
     plan = PlannedVersion(2, old_pk, prior, None)
 
     with ExitStack() as stack:
@@ -313,6 +331,9 @@ class _DuplicateTx:
         self.calls: list[str] = []
 
     def run(self, query: str, **_params: object) -> _LifecycleRows:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self.calls.append(query)
         if query != queries.LOCK_AND_GET_SOURCE_STATE:
             raise AssertionError("duplicate ingestion must stop after the lifecycle lock read")
@@ -405,7 +426,11 @@ def _crm_normalized_payload() -> str:
 def test_unchanged_crm_identity_update_reuses_continuity_without_rematching() -> None:
     pipeline = IngestPipeline(cast(object, MagicMock()))
     pipeline._match_engine = MagicMock()
-    tx = cast(ManagedTransaction, MagicMock())
+    tx_mock = MagicMock()
+    tx_mock.run.side_effect = (
+        lambda query, *_args, **_kwargs: summary_counter_result(query) or DEFAULT
+    )
+    tx = cast(ManagedTransaction, tx_mock)
     envelope = _crm_deal_envelope()
     plan = PlannedVersion(
         version=2,
@@ -463,7 +488,11 @@ def test_crm_contact_change_uses_full_matching_and_projection_refresh() -> None:
             )
         )
     )
-    tx = cast(ManagedTransaction, MagicMock())
+    tx_mock = MagicMock()
+    tx_mock.run.side_effect = (
+        lambda query, *_args, **_kwargs: summary_counter_result(query) or DEFAULT
+    )
+    tx = cast(ManagedTransaction, tx_mock)
     envelope = _crm_deal_envelope(contact_ids=["contact-1"])
     prior_raw = dict(envelope.raw_payload)
     prior_raw["crm_contact_ids"] = ["contact-old"]

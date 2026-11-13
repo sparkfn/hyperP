@@ -4,6 +4,7 @@ x-ingestion-env: &ingestion-env
   NEO4J_USER: neo4j
   NEO4J_PASSWORD: ${NEO4J_PASSWORD:-changeme}
   LOG_LEVEL: ${LOG_LEVEL:-INFO}
+  REVIEW_POLICY: ${REVIEW_POLICY:-off}
   DUMPS_ROOT: /app/dumps
   BATCH_SIZE: ${BATCH_SIZE:-1000}
   CELERY_BROKER_URL: redis://redis:6379/0
@@ -115,6 +116,11 @@ x-ingestion-env: &ingestion-env
   SALES_PREDICTION_REPOSITORY_SHA: ${SALES_PREDICTION_REPOSITORY_SHA:-}
   SALES_PREDICTION_IMAGE_DIGEST: ${SALES_PREDICTION_IMAGE_DIGEST:-}
   TZ: ${TZ:-UTC}
+  RUST_SPIKE_ENABLED: ${RUST_SPIKE_ENABLED:-0}
+  PROJECTION_SYNC_INTERVAL_SECONDS: ${PROJECTION_SYNC_INTERVAL_SECONDS:-30}
+  PROJECTION_POSTGRES_DSN: ${PROJECTION_POSTGRES_DSN:-}
+  NRIC_HMAC_KEY: ${NRIC_HMAC_KEY:-}
+  NRIC_HMAC_KEY_VERSION: ${NRIC_HMAC_KEY_VERSION:-v1}
 
 services:
   intelligence:
@@ -166,7 +172,7 @@ services:
   neo4j:
     image: neo4j:5.26-community
     cpus: 2.0
-    mem_limit: 3G
+    mem_limit: 5G
     stop_grace_period: 30s
     ports:
       - "${NEO4J_HTTP_PORT:-7474}:7474"
@@ -175,8 +181,8 @@ services:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-changeme}
       NEO4J_PLUGINS: '[]'
       NEO4J_server_memory_heap_initial__size: 512m
-      NEO4J_server_memory_heap_max__size: 1g
-      NEO4J_server_memory_pagecache_size: 512m
+      NEO4J_server_memory_heap_max__size: 1536m
+      NEO4J_server_memory_pagecache_size: 2g
       NEO4J_server_memory_off__heap_transaction__max__size: 512m
       NEO4J_server_jvm_additional: --add-modules jdk.incubator.vector
     volumes:
@@ -225,6 +231,7 @@ services:
       OAUTH_PRIVATE_KEY_PEM: ${OAUTH_PRIVATE_KEY_PEM:-}
       OAUTH_PUBLIC_KEY_PEM: ${OAUTH_PUBLIC_KEY_PEM:-}
       OAUTH_SECRET_HASH_KEY: ${OAUTH_SECRET_HASH_KEY:-}
+      NRIC_HMAC_KEY: ${NRIC_HMAC_KEY:-}
       PROCLAUDE_API_BASE_URL: ${PROCLAUDE_API_BASE_URL:-}
       PROCLAUDE_API_KEY: ${PROCLAUDE_API_KEY:-}
       PROCLAUDE_DEFAULT_MODEL: ${PROCLAUDE_DEFAULT_MODEL:-}
@@ -283,14 +290,17 @@ services:
     image: nginx:1.27-alpine
     cpus: 0.25
     mem_limit: 128M
+    environment:
+      RUST_SPIKE_ENABLED: ${RUST_SPIKE_ENABLED:-0}
+      NGINX_ENVSUBST_FILTER: '^RUST_SPIKE_ENABLED$$'
     volumes:
-      - ../../services/nginx/nginx.conf:/etc/nginx/conf.d/default.conf:ro
+      - ../../services/nginx/nginx.conf:/etc/nginx/templates/default.conf.template:ro
     depends_on:
       - api
       - frontend2
-
     networks:
       - default
+      - rust-spike
       - traefik
 
   ingestion-worker:
@@ -354,6 +364,9 @@ services:
       - --loglevel=info
       - --queues=lifecycle,miscellaneous
       - --concurrency=${LIFECYCLE_WORKER_CONCURRENCY:-1}
+    networks:
+      - default
+      - rust-spike
 
   beat:
     build:
@@ -377,10 +390,51 @@ services:
       - --loglevel=info
       - --schedule=/var/celerybeat/schedule
 
+  rust-spike-pg:
+    profiles: ["rust-spike"]
+    image: postgres:16.10-bookworm
+    environment:
+      POSTGRES_USER: spike_writer
+      POSTGRES_DB: spike_projection
+      POSTGRES_PASSWORD: ${RUST_SPIKE_POSTGRES_PASSWORD:-}
+      RUST_SPIKE_READ_PASSWORD: ${RUST_SPIKE_READ_PASSWORD:-}
+    volumes:
+      - rust-spike-pg-data:/var/lib/postgresql/data
+      - ../../services/rust-read/postgres/01-schema.sql:/docker-entrypoint-initdb.d/01-schema.sql:ro
+      - ../../services/rust-read/postgres/02-read-only-role.sh:/docker-entrypoint-initdb.d/02-read-only-role.sh:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $$POSTGRES_USER -d $$POSTGRES_DB"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
+    networks:
+      - rust-spike
+
+  rust-read:
+    profiles: ["rust-spike"]
+    build:
+      context: ../..
+      dockerfile: services/rust-read/Dockerfile
+    cpus: 1.0
+    mem_limit: 256M
+    environment:
+      DATABASE_URL: ${RUST_SPIKE_DATABASE_URL:-}
+      RUST_SPIKE_BEARER_TOKEN: ${RUST_SPIKE_BEARER_TOKEN:-}
+      RUST_SPIKE_CURSOR_SECRET: ${RUST_SPIKE_CURSOR_SECRET:-}
+    depends_on:
+      rust-spike-pg:
+        condition: service_healthy
+    networks:
+      - rust-spike
+
 networks:
+  default:
+  rust-spike:
+    internal: true
   traefik:
     external: true
     name: traefik
 
 volumes:
+  rust-spike-pg-data:
   intelligence-data:

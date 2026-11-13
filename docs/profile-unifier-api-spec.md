@@ -191,20 +191,24 @@ machine clients.
   `custom`. Arbitrary persisted identifier keys accepted by the human search
   surface are rejected on this machine route.
 - Matching is exact `(identifier_type, normalized_value)` equality against the
-  canonical value stored by ingestion. HyperP performs no server-side
-  normalization for this endpoint; callers must send the stored normalized
-  value:
-  - `nric`: trim surrounding whitespace, remove leading junk `x`/`X` markers,
-    and uppercase; preserve a trailing `X`, which may be a check letter. No
-    checksum validation is implied.
+  canonical value stored by ingestion. For non-NRIC types, callers must send the
+  stored normalized value:
   - `phone`: normalized E.164. Ingestion prefers the source record's region
     hint before falling back to Singapore (`SG`) for local numbers; a caller
     lacking the relevant region must not treat a local-number miss as an
     authoritative negative.
   - `email`: trim and lowercase; Gmail/Googlemail local-part dots and `+tags`
     are removed and the domain is folded to `gmail.com`.
+  - `nric`: for `nric`, the server canonicalizes input (trimming surrounding
+    whitespace, stripping leading `x`/`X` markers, and uppercasing) and matches
+    against both HMAC-SHA256 digests and legacy records server-side, so callers
+    may supply plaintext or canonical NRIC.
   - Other supported machine types use their canonical stored value;
     ingestion's generic fallback trims surrounding whitespace.
+
+All read surfaces (including `/oauth2/v1`) return masked NRIC values (e.g. `S••••567D`).
+Plaintext NRIC is never returned on normal read endpoints. Machine clients receive masked
+values as intended PDPA behavior.
 
 A successful lookup returns `200` with `data` as a `Person[]` (`[]` when no
 eligible Person matches), a populated `meta.request_id`, and null
@@ -318,6 +322,17 @@ Recommended standard error codes:
 - `person_not_found`
 - `manual_lock_conflict`
 - `merge_blocked`
+- `pair_audit_merge_disabled` — merge refused because the case's match decision came from the `pair_audit` engine
+- `resolve_not_applicable` — a generic `resolve` was refused because the case does not link two persons without source-record evidence
+
+Bulk review actions report failures per item instead of failing the whole
+request. The per-item `error_code` values are:
+
+- `duplicate_review_case_id` — the id appeared earlier in the same request and was actioned only once
+- `outcome_unknown` — the commit state of that one case was indeterminate
+- `review_case_not_found` — no such review case, or the case is no longer actionable (for example, it was already closed)
+- `resolve_not_applicable` — a generic `resolve` was refused for this case
+- `action_not_applicable` — the action could not be applied to this case (for example, the case could no longer be claimed)
 
 ## Resource Models
 
@@ -400,9 +415,15 @@ is temporary and the response mapper emits `lifecycle_status: "active"`.
     "same DOB",
     "highly similar name"
   ],
-  "blocking_conflicts": []
+  "blocking_conflicts": [],
+  "review_suppressed": false,
+  "suppressed_reason": null
 }
 ```
+
+`review_suppressed` and `suppressed_reason` are read-only. They are set by the
+ingestion review policy when a `review` decision is parked instead of opening a
+review case — see *Review Weak-Signal Policy and Review Telemetry* below.
 
 ## Review Case
 
@@ -414,9 +435,25 @@ is temporary and the response mapper emits `lifecycle_status: "active"`.
   "assigned_to": null,
   "follow_up_at": null,
   "sla_due_at": "2026-04-01T00:00:00Z",
+  "resolved_by": null,
+  "resolution_reason_code": null,
   "match_decision": {}
 }
 ```
+
+`queue_state` is one of `open`, `assigned`, `deferred`, `resolved`, `cancelled`,
+`expired`, `dismissed`, or `superseded_by_policy`. `resolution` is one of
+`merge`, `reject`, `manual_no_match`, `resolve`, `expired`, `dismissed`, or
+`cancelled_superseded`.
+
+`resolved_by` and `resolution_reason_code` are the close-time audit fields.
+
+- `resolved_by` — the reviewer who closed the case. Set when the case was closed by a reason-coded action, or by a `resolve`, `expire`, or `dismiss` action.
+- `resolution_reason_code` — the `ReviewActionReasonCode` supplied with the closing action. Set only when the closing action carried a reason code.
+
+The `expire` and `dismiss` actions close a case without deleting it — the
+`ReviewCase` node stays in the graph and remains queryable. `expired`,
+`dismissed`, and `superseded_by_policy` are terminal states on the case.
 
 ## Ingestion APIs
 
@@ -654,7 +691,7 @@ Operational search for canonical persons.
   `partner_account_id` and dynamic social keys are also accepted. Human/MCP
   search is not limited to the machine identifier vocabulary.
 - `value`: optional exact search value
-- `q`: optional free-text search for name or display fields
+- `q`: optional free-text search (min 3 chars) across name, email, and phone (NRIC is not indexed for fulltext search)
 - `source_system`: optional source filter
 - `status`: optional person status filter
 - `cursor`: optional pagination cursor
@@ -744,6 +781,53 @@ Supported expansions:
   }
 }
 ```
+
+## POST /v1/persons/{person_id}/nric/reveal
+
+Perform an audited reveal of active NRIC identifiers for an active person.
+
+### Authorization
+
+- Human administrator only (`admin` role via Google ID token).
+- Non-admin human users and all OAuth2 machine clients receive `403 forbidden`.
+- Intentionally excluded from the MCP tool catalog.
+
+### Request Body
+
+```json
+{
+  "reason": "Compliance verification for regulatory audit"
+}
+```
+
+- `reason` (string, required): 1 to 500 characters justifying the reveal. The reason is scrubbed of any raw NRIC tokens before being recorded to the audit event.
+
+### Response
+
+```json
+{
+  "data": {
+    "person_id": "7af4b5f5-34c1-4f22-9e2d-95ea8ff3b8c7",
+    "reveal_id": "8bf5c6f6-45d2-4e33-ae3e-06fb9ff4c9d8",
+    "revealed_at": "2026-05-01T08:30:00Z",
+    "values": ["S1234567D"],
+    "unavailable_count": 0
+  },
+  "meta": {
+    "request_id": "req-abcdef123"
+  }
+}
+```
+
+- `values` (array of strings): Deduplicated, sorted plaintext NRICs decrypted from active NRIC identifiers.
+- `unavailable_count` (integer, min 0): Count of active digest-shaped NRIC identifiers that lacked usable ciphertext.
+
+### Error Codes
+
+- `404 person_not_found`: Person not found or status is `merged`.
+- `503 nric_key_unavailable`: `NRIC_HMAC_KEY` is not configured or ciphertext token is invalid.
+- `503 nric_unavailable`: All NRIC values for the person are unavailable (no usable ciphertext; no audit event is written).
+- `500 nric_reveal_failed`: Database error during reveal or audit event write.
 
 ## GET /v1/persons/{person_id}/source-records
 
@@ -1080,6 +1164,11 @@ Return recent match decisions related to the person.
 
 List review cases.
 
+A case that involves source-record evidence is listed only while that evidence
+is still pending. The terminal disposition states `expired`, `dismissed`, and
+`superseded_by_policy` stay listed even after an involved source record later
+changes its lifecycle status.
+
 ### Authorization
 
 - `reviewer`
@@ -1101,8 +1190,8 @@ List review cases.
 - `created_before`
 - `sla_due_after`
 - `sla_due_before`
-- `overdue_sla` — when `true`, only cases past their SLA and not yet resolved/cancelled
-- `resolved` — `true` for closed cases (`queue_state` of `resolved` or `cancelled`); `false` for unresolved cases (`open`, `assigned`, `deferred`)
+- `overdue_sla` — when `true`, only cases past their SLA and not yet in a closed state (`resolved`, `cancelled`, `expired`, `dismissed`, `superseded_by_policy`)
+- `resolved` — `true` for closed cases (`queue_state` of `resolved`, `cancelled`, `expired`, `dismissed`, or `superseded_by_policy`); `false` for unresolved cases (`open`, `assigned`, `deferred`)
 - `sort_by` — one of `priority` (default), `confidence`, `sla_due_at`, `created_at`, `updated_at`, `queue_state`
 - `sort_order` — `asc` or `desc`
 - `cursor`
@@ -1241,6 +1330,7 @@ Submit a review action.
 {
   "action_type": "merge",
   "notes": "Phone and DOB align. Name variant is acceptable.",
+  "reason_code": "confirmed_match",
   "metadata": {
     "create_manual_lock": false,
     "follow_up_at": null,
@@ -1256,11 +1346,36 @@ Supported `action_type` values for this endpoint:
 - `defer`
 - `escalate`
 - `manual_no_match`
+- `resolve` — close a two-person case without merging or locking
+- `expire` — close the case as stale
+- `dismiss` — close the case as no longer actionable
 
 Note: The `review_action_type` enum also includes `assign`, `unassign`,
 `cancel`, and `reopen`. These are system-recorded actions created internally by
 the assign, unassign, and cancel endpoints rather than submitted through this
 actions endpoint.
+
+`reason_code` is optional. When it is supplied with an action that closes the
+case, the case records the reviewer in `resolved_by` and the code in
+`resolution_reason_code`, and the reason code is appended to the case's
+`actions` audit entry for that action. `defer` never sets a resolution, so it
+records neither `resolved_by` nor `resolution_reason_code` — its reason code
+still appears in the `actions` audit entry.
+
+### Action restrictions
+
+- `merge` is refused with `422 pair_audit_merge_disabled` when the case's match
+  decision came from the `pair_audit` engine. Pair-audit cases are retired by
+  policy and are never merged, regardless of what the two sides of the case
+  are. Refusing the merge does not by itself dispose of the case — it stays in
+  its current queue state. The `superseded_by_policy` disposition is state
+  only, and no action moves a case into it.
+- `resolve` is refused with `422 resolve_not_applicable` unless the case links
+  two `Person` nodes and carries no attached source-record evidence. A
+  successful `resolve` closes the case only — it creates no no-match lock and
+  merges no people.
+- `expire` and `dismiss` move the case to a terminal state. They do not delete
+  the case, and they do not create a lock or merge anyone.
 
 ### Response
 
@@ -1276,6 +1391,196 @@ actions endpoint.
   }
 }
 ```
+
+## POST /v1/review-cases/bulk-actions
+
+Apply one review action to many review cases, reporting one outcome per case.
+
+### Authorization
+
+- `reviewer`
+- `admin`
+
+Human principals only — machine OAuth clients are rejected. Every id in the
+request is authorized before the first write: an `admin` may act on any case,
+and an `employee` must own at least one of the entities behind each listed
+case. A batch that includes a case outside the caller's entity scope is
+rejected without writing anything.
+
+### Request
+
+```json
+{
+  "review_case_ids": [
+    "8d0d1fa0-f5e5-47e6-85e5-c37aa6a4f6b6",
+    "3c9a71b2-6f5e-4a0e-9b6e-1f8a2b3c4d5e"
+  ],
+  "action_type": "dismiss",
+  "reason_code": "stale_expired",
+  "notes": "Retired in the v2 disposition pass.",
+  "follow_up_at": null
+}
+```
+
+- `review_case_ids` — 1 to 100 review case ids. An empty list or more than 100
+  ids is rejected with `400 invalid_request`.
+- `action_type` — one of `resolve`, `reject`, `defer`, `expire`, `dismiss`.
+  `merge` is not accepted: a bulk batch never merges people.
+- `reason_code` — required. One of `confirmed_match`, `confirmed_distinct`,
+  `insufficient_evidence`, `parked_weak_signal`, `stale_expired`,
+  `awaiting_verification`, `pair_audit_retired_in_v2`, `other`.
+- `notes` — optional, applied to every case in the batch.
+- `follow_up_at` — optional, applied to every case in the batch.
+
+A body that fails validation (missing `reason_code`, unknown `action_type`,
+out-of-range `review_case_ids`) is rejected with `400 invalid_request` before
+any case is touched.
+
+### Response
+
+```json
+{
+  "data": {
+    "items": [
+      {
+        "review_case_id": "8d0d1fa0-f5e5-47e6-85e5-c37aa6a4f6b6",
+        "status": "updated",
+        "queue_state": "dismissed",
+        "resolution": "dismissed",
+        "error_code": null
+      },
+      {
+        "review_case_id": "3c9a71b2-6f5e-4a0e-9b6e-1f8a2b3c4d5e",
+        "status": "error",
+        "queue_state": null,
+        "resolution": null,
+        "error_code": "review_case_not_found"
+      }
+    ]
+  },
+  "meta": {
+    "request_id": "..."
+  }
+}
+```
+
+`items` carries one entry per submitted id, in submission order.
+
+### Notes
+
+- Each case is actioned in its own transaction through the same path as the
+  single-case actions endpoint, so the claim, lifecycle and audit behaviour is
+  identical. One failing case does not abort the batch.
+- A repeated id is reported as `duplicate_review_case_id` and is actioned only
+  once; the repeat still occupies its own entry in `items`.
+- A case that cannot be actioned is reported as an error item with
+  `queue_state` and `resolution` set to `null`.
+- `error_code = "outcome_unknown"` means the commit state of that one case was
+  indeterminate — the write may or may not have landed. Refresh the review
+  queue before retrying that id; do not retry blindly.
+- The endpoint accepts no `Idempotency-Key` and does not enforce
+  request-level idempotency. Clients must not assume that repeating a request
+  is a no-op: a retried batch re-applies the action and can append duplicate
+  audit entries to the affected cases. After an indeterminate outcome, refresh
+  the queue to learn which cases actually changed before retrying anything.
+- `expire` and `dismiss` move a case to a terminal state. They do not delete
+  the case, and the case stays queryable afterwards.
+
+## Review Weak-Signal Policy and Review Telemetry
+
+### The `REVIEW_POLICY` flag
+
+The ingestion service reads a `REVIEW_POLICY` environment variable with two
+values:
+
+- `off` (default) — no behaviour change. Every `ReviewCase` and `MatchDecision`
+  write is identical to the behaviour before the flag existed.
+- `v2_weak_signal_park` — park weak-signal review decisions instead of opening
+  a review case for them.
+
+The flag is set on the ingestion containers (`REVIEW_POLICY: ${REVIEW_POLICY:-off}`
+in the `x-ingestion-env` block of `docker-compose.yml` and
+`.docker/staging/docker-compose.yml`). It is not exposed through the API.
+
+### What `v2_weak_signal_park` does
+
+A decision is parked only when all of the following hold:
+
+- the decision is `review`
+- the engine is `heuristic`
+- the decision carries at least one reason
+- the decision has no review candidate persons
+- every reason is a weak phone/email signal
+
+A parked decision creates **no** `ReviewCase`. The `MatchDecision` is still
+persisted, still carries `decision = review`, and gains `review_suppressed =
+true` plus a `suppressed_reason`. The source record stays persisted and
+`pending_review`, no evidence is attached to it, and nothing is dropped — the
+record is only parked, not resolved.
+
+The weak-signal reason codes are:
+
+- `unverified_phone`
+- `unverified_email`
+- `phone_near_match`
+- `email_near_match`
+- `weak_signal_combination` — two or more distinct weak codes co-occurred
+
+Suppression is deliberately conservative. If any reason is not a weak phone or
+email signal — CRM ambiguity, name similarity or mismatch, DOB match or
+conflict, continuity/reassignment, address, verified identifier, or any reason
+the policy does not recognise — the decision is not parked and a `ReviewCase` is
+created as usual. Decisions from other engines are never parked.
+
+### Review reason taxonomy
+
+`ReviewReasonCode` classifies why a review case was raised:
+
+- `unverified_phone`, `unverified_email`, `phone_near_match`,
+  `email_near_match`, `weak_signal_combination` — the weak signals above
+- `weak_signal` — telemetry roll-up for a created case whose reasons were all
+  weak-signal
+- `crm_ambiguity`
+- `continuity_reassignment`
+- `dob_conflict`, `dob_match`
+- `name_mismatch`, `name_similarity`
+- `shared_identifier_bridge` — a person-pair case opened by a shared identifier
+- `other`
+
+`ReviewActionReasonCode` classifies why a reviewer closed or deferred a case:
+`confirmed_match`, `confirmed_distinct`, `insufficient_evidence`,
+`parked_weak_signal`, `stale_expired`, `awaiting_verification`,
+`pair_audit_retired_in_v2`, `other`.
+
+### Review telemetry
+
+Review telemetry is emitted as structured log lines backed by process-local
+counters. The counters are in-memory only: they reset when the process
+restarts, they are not shared between replicas, and they are not a durable
+committed event stream. The API exposes no metrics endpoint; the log lines
+carry the same dimensions as the counters.
+
+Ingestion counters are **best-effort attempt telemetry**: they are incremented
+inside the managed transaction right after the Cypher write succeeds. A managed
+transaction may still be retried or rolled back afterwards, so a counted
+attempt is not a guarantee of a committed write.
+
+- `review_case_created` — review cases created, keyed by engine type, reason
+  code, source system, and UTC day
+- `review_decision_suppressed` — parked decisions, keyed by suppressed reason,
+  source system, and UTC day
+
+API counters are recorded **after** the write commits:
+
+- `review_case_transitioned` — every successful transition, including the
+  non-closing ones (`defer`, `escalate`), keyed by the resulting queue state,
+  resolution, reason code, and UTC day
+- an age bucket (`lt_1d`, `1d_to_7d`, `7d_to_30d`, `gte_30d`, or `unknown`)
+  derived from the case's creation time in UTC
+
+The counters are bounded: once a counter holds more than 512 keys, the keys
+belonging to the oldest UTC day are evicted one at a time until the counter is
+back within the limit.
 
 ## Merge and Lock APIs
 
@@ -1621,6 +1926,9 @@ The following endpoints should require `Idempotency-Key`:
 - `POST /v1/persons/{person_id}/golden-profile/recompute`
 - `POST /v1/persons/{person_id}/survivorship-overrides`
 
+`POST /v1/review-cases/bulk-actions` is deliberately not on this list: it
+accepts no `Idempotency-Key` and enforces no request-level idempotency.
+
 ## Pagination
 
 - use cursor-based pagination
@@ -1639,7 +1947,10 @@ The following endpoints should require `Idempotency-Key`:
 - `manual-merge` must fail with `merge_blocked` if a hard no-match lock exists
 - `unmerge` must fail with `conflict` if referenced merge event is invalid
 - review action `merge` should create an audit event and close the review case
+- review action `merge` must fail with `pair_audit_merge_disabled` when the case's match decision came from the `pair_audit` engine
+- review action `resolve` must fail with `resolve_not_applicable` unless the case links two `Person` nodes and carries no attached source-record evidence
 - review action `manual_no_match` should create a persistent lock
+- a bulk review action must authorize every submitted review case before the first write, and must never merge people
 
 ## Source Record Link Status Side Effects
 
@@ -1651,12 +1962,18 @@ When a review case is resolved or cancelled, the linked source record's
   the source record and set `link_status = linked`, or flag for manual triage
 - review cancelled: re-run matching to find a new home, or flag for manual
   triage
+- review closed as `expired` or `dismissed`: the case is closed and stays
+  queryable, but the involved source record's `link_status` is not changed by
+  these actions — it stays `pending_review` for later handling
+- review closed as `resolve`: not applicable — a generic `resolve` requires a
+  case with no attached source-record evidence
 
 A source record's `link_status` must not remain `pending_review` after its
-domain-link review case is no longer active. This is separate from
-`lifecycle_status`: an immutable replacement may remain lifecycle
-`pending_review` until it is accepted, rejected, or replaced by a newer
-distinct pending version.
+domain-link review case is no longer active, except for the parked `expired`
+and `dismissed` dispositions above, which deliberately leave the record
+`pending_review` for later handling. This is separate from `lifecycle_status`:
+an immutable replacement may remain lifecycle `pending_review` until it is
+accepted, rejected, or replaced by a newer distinct pending version.
 
 ## Suggested HTTP Status Codes
 

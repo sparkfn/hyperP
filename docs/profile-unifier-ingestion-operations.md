@@ -368,3 +368,51 @@ discovery and `crm_activity_ids` provenance remain supported, but they do not
 write or update historical activity evidence. Deploy #387 before activating
 #388 when activity presentation must be preserved; queue quiescence and
 inspection are separate live work.
+
+## Person-list summary counter (#489)
+
+### Initial cutover and backfill
+
+The `PersonListSummaryCounter` singleton is not ready for use until an operator
+explicitly backfills it. Before the first backfill, quiesce **all** API and
+ingestion writers that can change summary contributions, wait for their
+in-flight Neo4j transactions to drain, and keep them quiesced through backfill
+and readiness publication. Confirm that every writer to be resumed maintains
+the counter transactionally; older or out-of-band writers must remain stopped.
+
+Run the fixed operator control from an ingestion environment after draining the
+writers:
+
+```bash
+python -m src.person_list_summary_control backfill
+```
+
+This command is the explicit activation path. The startup bootstrap only creates
+the singleton as unready; it does not calculate counts or make it ready.
+
+### Nightly reconciliation
+
+Celery Beat schedules `src.tasks.reconcile_person_list_summary_task` daily at
+00:00 UTC and routes it to the consumed `lifecycle` queue. The task reconciles
+the six stored counts against their authoritative aggregates and repairs drift
+atomically. It also handles the first-of-month refresh. If the counter is
+unready, the task logs that it has nothing to reconcile and **never** activates
+it; run the explicit `person_list_summary_control backfill` before enabling the
+maintained read path.
+
+### Rollback
+
+Rollback the maintained summary read path by swapping API reads back to the
+retained full-scan aggregate queries and restarting the API. Before allowing any
+writer version that does not maintain summary deltas to run, invalidate counter
+readiness with the ingestion implementation's `invalidate_person_list_summary`
+helper and verify that the singleton is unready. The current
+`person_list_summary_control` CLI exposes only `backfill`, not a separate
+invalidation command; do not use `backfill` as a substitute for invalidation.
+After all writers again support the maintained counter and have been quiesced
+and drained, run `python -m src.person_list_summary_control backfill` before
+re-enabling counter reads.
+
+For a memory rollback, update both root and tracked staging Compose files
+synchronously: set `NEO4J_server_memory_heap_max__size` to `1g`,
+`NEO4J_server_memory_pagecache_size` to `512m`, and Neo4j `mem_limit` to `3G`.

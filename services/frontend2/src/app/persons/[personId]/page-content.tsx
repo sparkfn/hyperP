@@ -203,16 +203,6 @@ interface MergeFieldDraft {
   candidateDisplay: string | null;
 }
 
-/** Masks middle digits of NRIC: "S9436749B" → "S****749B" */
-function maskNric(value: string | null): string {
-  if (!value) return "—";
-  if (value.length < 4) return value;
-  const prefix = value.slice(0, 1);
-  const suffix = value.slice(-3);
-  const masked = "*".repeat(Math.max(0, value.length - 4));
-  return `${prefix}${masked}${suffix}`;
-}
-
 function fmtGpVersion(value: string | null): string {
   if (!value) return "—";
   const match = /^([a-z_]+)-(\d{4}-\d{2}-\d{2}(?:T.+)?)$/i.exec(value);
@@ -332,7 +322,6 @@ function PersonBreadcrumb({ personName, onShare, shareLoading }: { personName: s
 
 function PersonSidebar({ person, detailData, personId, onOverride, onGraphOpen }: { person: Person; detailData: DetailData; personId: string; onOverride: () => void; onGraphOpen: () => void }): ReactElement {
   const [detailOpen, setDetailOpen] = useState(false);
-  const [nricRevealed, setNricRevealed] = useState(false);
   const [timelineActivityCount, setTimelineActivityCount] = useState<number | null>(null);
   const onTimelineActivityCountLoaded = useCallback((count: number): void => {
     setTimelineActivityCount(count);
@@ -357,8 +346,8 @@ function PersonSidebar({ person, detailData, personId, onOverride, onGraphOpen }
   const email = person.preferred_email ?? null;
   const address = person.preferred_address?.normalized_full ?? null;
 
-  const gpFields: Array<{ label: string; value: string; mono?: boolean; revealable?: boolean }> = [
-    { label: "NRIC",    value: nricRevealed ? (person.preferred_nric ?? "—") : maskNric(person.preferred_nric ?? null), mono: true, revealable: true },
+  const gpFields: Array<{ label: string; value: string; mono?: boolean }> = [
+    { label: "NRIC",    value: person.preferred_nric ?? "—", mono: true },
     { label: "DOB",     value: person.preferred_dob ? fmtDate(person.preferred_dob) : "—" },
     { label: "Phone",   value: phone  ?? "—" },
     { label: "Email",   value: email  ?? "—" },
@@ -413,32 +402,7 @@ function PersonSidebar({ person, detailData, personId, onOverride, onGraphOpen }
             {gpFields.map((field) => (
               <div key={field.label} className={styles.sidebarHeroSummaryRow}>
                 <div className={styles.sidebarHeroSummaryLabel}>{field.label}</div>
-                {field.revealable === true ? (
-                  <div className={styles.revealableField}>
-                    <span className={`${styles.sidebarHeroSummaryValue} ${styles.mono}`}>{field.value}</span>
-                    <button
-                      type="button"
-                      className={styles.revealBtn}
-                      onClick={() => setNricRevealed((v) => !v)}
-                      aria-label={nricRevealed ? "Hide NRIC" : "Show NRIC"}
-                    >
-                      {nricRevealed ? (
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                          <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
-                          <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
-                          <line x1="1" y1="1" x2="23" y2="23"/>
-                        </svg>
-                      ) : (
-                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                          <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                          <circle cx="12" cy="12" r="3"/>
-                        </svg>
-                      )}
-                    </button>
-                  </div>
-                ) : (
-                  <div className={`${styles.sidebarHeroSummaryValue} ${field.mono === true ? styles.mono : ""}`}>{field.value}</div>
-                )}
+                <div className={`${styles.sidebarHeroSummaryValue} ${field.mono === true ? styles.mono : ""}`}>{field.value}</div>
               </div>
             ))}
           </div>
@@ -2965,6 +2929,7 @@ export function MatchesTab({ personId, currentPerson, currentIdentifiers, active
                 rightPersonId={reviewActionCase.right_person_id ?? null}
                 leftPersonStatus={reviewActionCase.left_person_status ?? null}
                 rightPersonStatus={reviewActionCase.right_person_status ?? null}
+                engineType={reviewActionCase.match_decision.engine_type}
                 onActionDone={(success) => {
                   if (success) setReviewActionDirty(true);
                 }}
@@ -3862,16 +3827,7 @@ export function IdentifiersTab({
   onLoadMore: () => Promise<void>;
 }): ReactElement {
   const count = identifiers.length;
-  const [revealedSet, setRevealedSet] = useState<Set<number>>(new Set());
   const [expandedSet, setExpandedSet] = useState<Set<number>>(new Set());
-
-  function toggleReveal(i: number): void {
-    setRevealedSet((prev) => {
-      const next = new Set(prev);
-      if (next.has(i)) next.delete(i); else next.add(i);
-      return next;
-    });
-  }
 
   function toggleExpand(i: number): void {
     setExpandedSet((prev) => {
@@ -3897,12 +3853,8 @@ export function IdentifiersTab({
       ) : (
         <div className={styles.idList}>
           {identifiers.map((id, i) => {
-            const isSensitive = id.identifier_type === "nric";
-            const isRevealed  = revealedSet.has(i);
-            const isOpen      = expandedSet.has(i);
-            const displayValue = isSensitive && !isRevealed
-              ? maskNric(id.normalized_value)
-              : id.normalized_value;
+            const isOpen = expandedSet.has(i);
+            const displayValue = id.normalized_value;
 
             const entityNames = [
               ...new Set(id.entities.map((e) => e.display_name).filter((n): n is string => n !== null)),
@@ -3935,27 +3887,6 @@ export function IdentifiersTab({
                   <div className={styles.idBody}>
                     <div className={styles.idRevealRow}>
                       <span className={styles.idValue}>{displayValue}</span>
-                      {isSensitive && (
-                        <button
-                          type="button"
-                          className={styles.revealBtn}
-                          onClick={() => toggleReveal(i)}
-                          aria-label={isRevealed ? "Hide NRIC" : "Show NRIC"}
-                        >
-                          {isRevealed ? (
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                              <path d="M17.94 17.94A10.07 10.07 0 0 1 12 20c-7 0-11-8-11-8a18.45 18.45 0 0 1 5.06-5.94"/>
-                              <path d="M9.9 4.24A9.12 9.12 0 0 1 12 4c7 0 11 8 11 8a18.5 18.5 0 0 1-2.16 3.19"/>
-                              <line x1="1" y1="1" x2="23" y2="23"/>
-                            </svg>
-                          ) : (
-                            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-                              <path d="M1 12s4-8 11-8 11 8 11 8-4 8-11 8-11-8-11-8z"/>
-                              <circle cx="12" cy="12" r="3"/>
-                            </svg>
-                          )}
-                        </button>
-                      )}
                     </div>
                     <div className={styles.connMeta}>
                       {metaParts.map((part, j) => (
@@ -4640,7 +4571,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
       { key: "preferred_email", label: "Email", thisRaw: person.preferred_email, thisDisplay: person.preferred_email, candidateRaw: target.preferred_email, candidateDisplay: target.preferred_email },
       { key: "preferred_dob", label: "DOB", thisRaw: person.preferred_dob, thisDisplay: person.preferred_dob ? fmtDate(person.preferred_dob) : null, candidateRaw: target.preferred_dob, candidateDisplay: target.preferred_dob ? fmtDate(target.preferred_dob) : null },
       { key: "preferred_address", label: "Address", thisRaw: person.preferred_address?.address_id ?? null, thisDisplay: person.preferred_address?.normalized_full ?? null, candidateRaw: target.preferred_address?.address_id ?? null, candidateDisplay: target.preferred_address?.normalized_full ?? null },
-      { key: "preferred_nric", label: "NRIC", thisRaw: person.preferred_nric, thisDisplay: person.preferred_nric ? maskNric(person.preferred_nric) : null, candidateRaw: target.preferred_nric, candidateDisplay: target.preferred_nric ? maskNric(target.preferred_nric) : null },
+      { key: "preferred_nric", label: "NRIC", thisRaw: person.preferred_nric, thisDisplay: person.preferred_nric ?? null, candidateRaw: target.preferred_nric, candidateDisplay: target.preferred_nric ?? null },
     ];
   }
 
@@ -5161,7 +5092,7 @@ export default function PersonDetailPage({ params }: { params: Promise<{ personI
                 const currentOption = field.options.find((option) => option.is_current) ?? field.options[0];
                 const candidateOptions = field.options.filter((option) => option.source_record_pk !== currentOption?.source_record_pk);
                 const selectedPk = overrideSelections[field.field_name] ?? currentOption?.source_record_pk ?? "";
-                const canUseCustomValue = true;
+                const canUseCustomValue = field.field_name !== "preferred_nric";
                 const selectedCandidatePk = selectedPk === "__custom__" ? "__custom__" : candidateOptions.some((option) => option.source_record_pk === selectedPk) ? selectedPk : currentOption?.source_record_pk ?? "";
                 const currentDisplay = field.current_value_display ?? currentOption?.value_display ?? "No value";
                 const currentMeta = currentOption

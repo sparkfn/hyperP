@@ -25,6 +25,7 @@ from src.graph.converters import (
     to_str_dict,
     to_str_list,
 )
+from src.nric import format_masked_nric, mask_identifier_value
 from src.types import (
     AddressSummary,
     AuditEvent,
@@ -227,7 +228,7 @@ def map_person(record: GraphRecord, address_key: str = "preferred_address") -> P
         preferred_email=to_optional_str(p.get("preferred_email")),
         preferred_dob=to_optional_str(p.get("preferred_dob")),
         preferred_address=map_address(record.get(address_key)),
-        preferred_nric=to_optional_str(p.get("preferred_nric")),
+        preferred_nric=format_masked_nric(to_optional_str(p.get("preferred_nric"))),
         preferred_race_ethnicity=to_optional_str(p.get("preferred_race_ethnicity")),
         profile_completeness_score=to_float(p.get("profile_completeness_score")),
         golden_profile_computed_at=to_iso_or_none(p.get("golden_profile_computed_at")),
@@ -347,6 +348,9 @@ def _append_identifier_facts(facts: list[TimelineFact], payload: dict[str, JsonV
         normalized_value = _json_str(item.get("normalized_value"))
         if identifier_type is None or normalized_value is None or normalized_value == "":
             continue
+        normalized_value = mask_identifier_value(
+            identifier_type, normalized_value, _json_str(item.get("nric_masked"))
+        )
         category: Literal["contact", "identity"] = (
             "contact" if identifier_type in {"phone", "email"} else "identity"
         )
@@ -525,7 +529,11 @@ def map_person_identifier(record: GraphRecord) -> PersonIdentifier:
     )
     return PersonIdentifier(
         identifier_type=to_str(record.get("identifier_type")),
-        normalized_value=to_str(record.get("normalized_value")),
+        normalized_value=mask_identifier_value(
+            to_str(record.get("identifier_type")),
+            to_str(record.get("normalized_value")),
+            to_optional_str(record.get("nric_masked")),
+        ),
         is_active=bool(record.get("is_active", True)),
         is_verified=bool(record.get("is_verified", False)),
         last_confirmed_at=to_iso_or_none(record.get("last_confirmed_at")),
@@ -543,7 +551,11 @@ def _map_shared_identifiers(value: GraphValue) -> list[SharedIdentifier]:
     return [
         SharedIdentifier(
             identifier_type=to_str(d.get("identifier_type")),
-            normalized_value=to_str(d.get("normalized_value")),
+            normalized_value=mask_identifier_value(
+                to_str(d.get("identifier_type")),
+                to_str(d.get("normalized_value")),
+                to_optional_str(d.get("nric_masked")),
+            ),
         )
         for raw in value
         if (d := _as_dict(raw)).get("identifier_type")
@@ -585,7 +597,11 @@ def map_possible_match_detail(records: list[GraphRecord]) -> PossibleMatchDetail
         shared_identifier_groups=[
             SharedIdentifierGroup(
                 identifier_type=to_str(record.get("identifier_type")),
-                normalized_value=to_str(record.get("normalized_value")),
+                normalized_value=mask_identifier_value(
+                    to_str(record.get("identifier_type")),
+                    to_str(record.get("normalized_value")),
+                    to_optional_str(record.get("nric_masked")),
+                ),
                 candidate_source_records=_map_possible_match_source_records(
                     record.get("candidate_source_records")
                 ),
@@ -687,6 +703,8 @@ def map_match_decision(record: GraphRecord) -> MatchDecision:
         review_case_id=to_optional_str(record.get("review_case_id")),
         review_case_queue_state=to_optional_str(record.get("review_case_queue_state")),
         review_case_assigned_to=to_optional_str(record.get("review_case_assigned_to")),
+        review_suppressed=bool(md.get("review_suppressed", False)),
+        suppressed_reason=to_optional_str(md.get("suppressed_reason")),
     )
 
 
@@ -708,6 +726,8 @@ def map_review_case_summary(record: GraphRecord) -> ReviewCaseSummary:
         right_person_id=to_optional_str(record.get("right_person_id")),
         right_person_name=to_optional_str(record.get("right_person_name")),
         right_person_status=to_optional_str(record.get("right_person_status")),
+        resolved_by=to_optional_str(rc.get("resolved_by")),
+        resolution_reason_code=to_optional_str(rc.get("resolution_reason_code")),
         match_decision=MatchDecisionSummary(
             match_decision_id=to_str(md.get("match_decision_id")),
             engine_type=to_str(md.get("engine_type")),
@@ -990,6 +1010,8 @@ def map_review_case_detail(record: GraphRecord) -> ReviewCaseDetail:
         sla_due_at=to_iso_or_none(rc.get("sla_due_at")),
         resolution=to_optional_str(rc.get("resolution")),
         resolved_at=to_iso_or_none(rc.get("resolved_at")),
+        resolved_by=to_optional_str(rc.get("resolved_by")),
+        resolution_reason_code=to_optional_str(rc.get("resolution_reason_code")),
         actions=actions,
         match_decision=map_match_decision(record),
         comparison_left=_map_comparison_entity(
@@ -1027,15 +1049,27 @@ def _sanitize_properties(raw: GraphValue) -> dict[str, str | int | float | bool 
 def _map_graph_nodes(raw_nodes: GraphValue) -> list[GraphNode]:
     if not isinstance(raw_nodes, list):
         return []
-    return [
-        GraphNode(
-            id=to_str(n.get("id")),
-            label=to_str(n.get("label")),
-            properties=_sanitize_properties(n.get("properties")),
-        )
-        for item in raw_nodes
-        if (n := _as_dict(item)) is not None
-    ]
+    nodes: list[GraphNode] = []
+    for item in raw_nodes:
+        if (n := _as_dict(item)) is None:
+            continue
+        label = to_str(n.get("label"))
+        props = _sanitize_properties(n.get("properties"))
+        if label == "Identifier" and props.get("identifier_type") == "nric":
+            props.pop("nric_encrypted", None)
+            props.pop("hashed_value", None)
+            norm_val = str(props.get("normalized_value") or "")
+            nric_masked = (
+                str(props["nric_masked"]) if props.get("nric_masked") is not None else None
+            )
+            props["normalized_value"] = mask_identifier_value("nric", norm_val, nric_masked)
+        elif label == "Person" and "preferred_nric" in props:
+            raw_nric = (
+                str(props["preferred_nric"]) if props.get("preferred_nric") is not None else None
+            )
+            props["preferred_nric"] = format_masked_nric(raw_nric)
+        nodes.append(GraphNode(id=to_str(n.get("id")), label=label, properties=props))
+    return nodes
 
 
 def _map_graph_edges(raw_edges: GraphValue) -> list[GraphEdge]:

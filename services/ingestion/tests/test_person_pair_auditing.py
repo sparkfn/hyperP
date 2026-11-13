@@ -5,7 +5,13 @@ from __future__ import annotations
 from collections.abc import Iterator
 
 import pytest
+from _txmock import (
+    SUMMARY_APPLY_ROW,
+    is_summary_apply_query,
+    is_summary_capture_query,
+)
 from src.graph import queries
+from src.graph.person_list_summary_deltas import PersonListSummaryDeltaCollector
 from src.models import (
     EngineType,
     MatchDecision,
@@ -76,9 +82,16 @@ class _ScriptedTx:
         }
         self.create_calls: list[dict[str, object]] = []
         self.match_decision_calls: list[dict[str, object]] = []
+        self.summary_calls: list[str] = []
         self._created = 0
 
     def run(self, query: str, **params: object) -> _Result:
+        if is_summary_capture_query(query):
+            self.summary_calls.append(query)
+            return _Result([])
+        if is_summary_apply_query(query):
+            self.summary_calls.append(query)
+            return _Result([dict(SUMMARY_APPLY_ROW)])
         if "input.input_index AS input_index" in query:
             return _Result(
                 [
@@ -134,7 +147,8 @@ def _nric() -> list[NormalizedIdentifier]:
 
 def test_pair_below_020_does_not_open_review() -> None:
     tx = _ScriptedTx(fanout=2, person_ids=["person-b", "person-a"])
-    created = audit_person_pairs(tx, _nric())  # type: ignore[arg-type]
+    collector = PersonListSummaryDeltaCollector()
+    created = audit_person_pairs(tx, _nric(), collector=collector)  # type: ignore[arg-type]
     assert created == []
     assert tx.create_calls == []
 
@@ -147,7 +161,13 @@ def test_pair_at_040_auto_merges_instead_of_opening_review(
     merges: list[tuple[str, str]] = []
 
     def fake_merge(
-        tx: object, *, absorbed_id: str, survivor_id: str, match_decision_id: str, reason: str
+        tx: object,
+        *,
+        absorbed_id: str,
+        survivor_id: str,
+        match_decision_id: str,
+        reason: str,
+        collector: object,
     ) -> str:
         merges.append((absorbed_id, survivor_id))
         return "me-1"
@@ -169,7 +189,8 @@ def test_pair_at_040_auto_merges_instead_of_opening_review(
             "right_created_at": "2026-01-01T00:00:00Z",
         },
     )
-    assert audit_person_pairs(tx, _nric()) == []  # type: ignore[arg-type]
+    collector = PersonListSummaryDeltaCollector()
+    assert audit_person_pairs(tx, _nric(), collector=collector) == []  # type: ignore[arg-type]
     assert tx.create_calls == []
     assert merges == [("person-b", "person-a")]
 
@@ -182,7 +203,11 @@ def test_pair_at_020_opens_review_case() -> None:
             {"identifier_type": "phone", "normalized_value": "+6580000000", "is_verified": False}
         ],
     )
-    assert audit_person_pairs(tx, _nric()) == ["rc-1"]  # type: ignore[arg-type]
+    collector = PersonListSummaryDeltaCollector()
+    assert (
+        audit_person_pairs(tx, _nric(), collector=collector)  # type: ignore[arg-type]
+        == ["rc-1"]
+    )
     assert tx.create_calls[0]["confidence"] == 0.20
 
 
@@ -211,8 +236,14 @@ def test_relationship_pair_at_020_auto_merges(
         ),
     )
     tx = _ScriptedTx(fanout=2, person_ids=["person-a", "person-b"])
+    collector = PersonListSummaryDeltaCollector()
 
-    assert audit_person_pairs(tx, _nric(), RecordType.RELATIONSHIP) == []  # type: ignore[arg-type]
+    assert (
+        audit_person_pairs(  # type: ignore[arg-type]
+            tx, _nric(), RecordType.RELATIONSHIP, collector=collector
+        )
+        == []
+    )
     assert merges == [("person-b", "person-a")]
     assert tx.create_calls == []
 
@@ -230,10 +261,11 @@ def test_relationship_pair_review_boundaries(
 
     monkeypatch.setattr(module, "score_person_pair", lambda *_args: _score(confidence))
     tx = _ScriptedTx(fanout=2, person_ids=["person-a", "person-b"])
+    collector = PersonListSummaryDeltaCollector()
 
     assert (
         audit_person_pairs(  # type: ignore[arg-type]
-            tx, _nric(), RecordType.RELATIONSHIP
+            tx, _nric(), RecordType.RELATIONSHIP, collector=collector
         )
         == expected_cases
     )
@@ -250,9 +282,10 @@ def test_relationship_pair_hard_conflict_vetoes_auto_merge(
         lambda *_args: _score(0.20, hard_conflict=True),
     )
     tx = _ScriptedTx(fanout=2, person_ids=["person-a", "person-b"])
+    collector = PersonListSummaryDeltaCollector()
 
     assert audit_person_pairs(  # type: ignore[arg-type]
-        tx, _nric(), RecordType.RELATIONSHIP
+        tx, _nric(), RecordType.RELATIONSHIP, collector=collector
     ) == ["rc-1"]
     assert tx.match_decision_calls == []
     assert tx.create_calls[0]["confidence"] == 0.20
@@ -260,14 +293,16 @@ def test_relationship_pair_hard_conflict_vetoes_auto_merge(
 
 def test_existing_open_case_suppresses_duplicate() -> None:
     tx = _ScriptedTx(fanout=2, person_ids=["person-a", "person-b"], existing_case="rc-old")
-    created = audit_person_pairs(tx, _nric())  # type: ignore[arg-type]
+    collector = PersonListSummaryDeltaCollector()
+    created = audit_person_pairs(tx, _nric(), collector=collector)  # type: ignore[arg-type]
     assert created == []
     assert tx.create_calls == []
 
 
 def test_active_no_match_lock_suppresses_case() -> None:
     tx = _ScriptedTx(fanout=2, person_ids=["person-a", "person-b"], is_locked=True)
-    created = audit_person_pairs(tx, _nric())  # type: ignore[arg-type]
+    collector = PersonListSummaryDeltaCollector()
+    created = audit_person_pairs(tx, _nric(), collector=collector)  # type: ignore[arg-type]
     assert created == []
     assert tx.create_calls == []
 
@@ -275,7 +310,8 @@ def test_active_no_match_lock_suppresses_case() -> None:
 def test_fanout_over_cap_skips_identifier() -> None:
     # nric cap is 5; fanout 6 exceeds it.
     tx = _ScriptedTx(fanout=6, person_ids=["a", "b", "c", "d", "e", "f"])
-    created = audit_person_pairs(tx, _nric())  # type: ignore[arg-type]
+    collector = PersonListSummaryDeltaCollector()
+    created = audit_person_pairs(tx, _nric(), collector=collector)  # type: ignore[arg-type]
     assert created == []
     assert tx.create_calls == []
 
@@ -288,7 +324,8 @@ def test_three_persons_produce_three_pairwise_cases() -> None:
             {"identifier_type": "phone", "normalized_value": "+6580000000", "is_verified": False}
         ],
     )
-    created = audit_person_pairs(tx, _nric())  # type: ignore[arg-type]
+    collector = PersonListSummaryDeltaCollector()
+    created = audit_person_pairs(tx, _nric(), collector=collector)  # type: ignore[arg-type]
     assert created == ["rc-1", "rc-2", "rc-3"]
     pairs = {(c["left_person_id"], c["right_person_id"]) for c in tx.create_calls}
     assert pairs == {
@@ -307,7 +344,8 @@ def test_unusable_identifier_skipped() -> None:
         )
     ]
     tx = _ScriptedTx(fanout=2, person_ids=["person-a", "person-b"])
-    created = audit_person_pairs(tx, bad)  # type: ignore[arg-type]
+    collector = PersonListSummaryDeltaCollector()
+    created = audit_person_pairs(tx, bad, collector=collector)  # type: ignore[arg-type]
     assert created == []
 
 

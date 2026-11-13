@@ -1,0 +1,12 @@
+{
+  "error": {
+    "code": "invalid_request",
+    "message": "Invalid request.",
+    "details": null
+  },
+  "meta": {
+    "request_id": "req-test-0001",
+    "next_cursor": null,
+    "total_count": null
+  }
+}
