@@ -401,7 +401,8 @@ def _park_call_without_person_context(
     """Persist an in-scope call that has no person context as an unlinked, parked record.
 
     No Person, link or decision is created. A rerun reuses the identical latest parked version;
-    once context exists the real call is created at the next version and this stub stays parked.
+    once context exists the real call is created at the next version and this stub stays parked
+    with ``reeval_pending`` cleared.
     """
     parked = tx.run(
         queries.FIND_PARKED_SOURCE_RECORD_BY_HASH,

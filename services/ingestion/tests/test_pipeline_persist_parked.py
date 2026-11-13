@@ -25,6 +25,7 @@ from src.graph import queries
 from src.graph.queries.identity_assertions import (
     ASSERT_FACTS,
     ASSERT_IDENTIFIERS,
+    MERGE_ASSERTION_IDENTIFIERS_BATCH,
     MERGE_PROFILE_FACTS_BATCH,
 )
 from src.graph.queries.identity_link_revisions import APPEND_IDENTITY_LINK_REVISIONS
@@ -460,7 +461,7 @@ def test_v2_shadow_parked_ingest_executes_real_assertion_queries() -> None:
     assert nric_row["nric_encrypted"] is None
 
     upsert_ident_calls = [
-        params for query, params in tx.calls if query == queries.UPSERT_IDENTIFIERS_BATCH
+        params for query, params in tx.calls if query == MERGE_ASSERTION_IDENTIFIERS_BATCH
     ]
     assert len(upsert_ident_calls) == 1
     assert upsert_ident_calls[0]["identifiers"] == expected_rows.identifiers

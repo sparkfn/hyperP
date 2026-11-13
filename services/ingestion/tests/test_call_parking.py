@@ -172,3 +172,18 @@ def test_parked_rows_are_invisible_to_the_existing_check_and_version_is_paramete
     assert "<> 'parked'" in queries.FIND_ANY_SOURCE_RECORD
     assert "source_record_version: $source_record_version" in queries.CREATE_CALL_FROM_HISTORY
     assert "source_record_version: '1'" not in queries.CREATE_CALL_FROM_HISTORY
+
+
+def test_real_call_clears_reeval_pending_on_prior_parked_stubs_for_the_same_identity() -> None:
+    query = queries.CREATE_CALL_FROM_HISTORY
+
+    assert (
+        "OPTIONAL MATCH (parked:SourceRecord {\n"
+        "    source_instance_id: $source_instance_id,\n"
+        "    source_record_id: $source_record_id,\n"
+        "    lifecycle_status: 'parked'\n"
+        "})-[:FROM_SOURCE]->(ss)"
+    ) in query
+    assert "parked.reeval_pending = true" in query
+    assert "SET stub.reeval_pending = false" in query
+    assert "stub.attribution_eval_at = datetime()" in query

@@ -20,9 +20,10 @@ from src.graph.queries.identity_assertions import (
     ASSERT_IDENTIFIERS,
     AUDIT_ASSERTION_PAGE,
     BACKFILL_ASSERTION_PAGE,
+    MERGE_ASSERTION_ADDRESSES_BATCH,
+    MERGE_ASSERTION_IDENTIFIERS_BATCH,
     MERGE_PROFILE_FACTS_BATCH,
 )
-from src.graph.queries.persons import UPSERT_ADDRESSES_BATCH, UPSERT_IDENTIFIERS_BATCH
 from src.identifier_scopes import identifier_scope, source_instance_for_identifier
 from src.identity_registry import FACT_ASSERTION_ATTRIBUTES
 from src.models import JsonValue, QualityFlag
@@ -238,9 +239,9 @@ def write_assertions(
     """Upsert assertion targets and immutably MERGE edges from one SourceRecord."""
     rows = assertion_rows(source_record_pk, normalized_payload)
     if rows.identifiers:
-        tx.run(UPSERT_IDENTIFIERS_BATCH, identifiers=rows.identifiers)
+        tx.run(MERGE_ASSERTION_IDENTIFIERS_BATCH, identifiers=rows.identifiers)
     if rows.addresses:
-        tx.run(UPSERT_ADDRESSES_BATCH, addresses=rows.addresses)
+        tx.run(MERGE_ASSERTION_ADDRESSES_BATCH, addresses=rows.addresses)
     if rows.facts:
         tx.run(MERGE_PROFILE_FACTS_BATCH, facts=rows.facts)
     if rows.identifiers:
@@ -291,9 +292,11 @@ def _fallback_payload(value: object) -> Mapping[str, JsonValue]:
 
 def _payload_or_fallback(record: Mapping[str, object]) -> Mapping[str, JsonValue]:
     payload = _parse_normalized_payload(record.get("normalized_payload"))
-    if payload is not None and isinstance(payload.get("identifiers"), list):
-        return payload
-    return _fallback_payload(record.get("fallback_identifiers"))
+    if payload is None:
+        return _fallback_payload(record.get("fallback_identifiers"))
+    if payload.get("identifiers") is None:
+        return {**payload, **_fallback_payload(record.get("fallback_identifiers"))}
+    return payload
 
 
 def _read_page(

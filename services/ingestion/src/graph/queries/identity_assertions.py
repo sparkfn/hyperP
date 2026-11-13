@@ -12,6 +12,44 @@ ON CREATE SET fact.created_at = datetime()
 RETURN count(fact) AS upserted_count
 """
 
+MERGE_ASSERTION_IDENTIFIERS_BATCH = """
+UNWIND $identifiers AS input
+MERGE (id:Identifier {
+    identifier_type: input.identifier_type,
+    identifier_scope: input.identifier_scope,
+    normalized_value: input.normalized_value
+})
+ON CREATE SET
+    id.identifier_id = randomUUID(),
+    id.source_instance_id = input.source_instance_id,
+    id.hashed_value = input.hashed_value,
+    id.nric_masked = input.nric_masked,
+    id.checksum_valid = input.checksum_valid,
+    id.nric_key_version = input.nric_key_version,
+    id.nric_encrypted = input.nric_encrypted,
+    id.created_at = datetime()
+RETURN count(id) AS upserted_count
+"""
+
+MERGE_ASSERTION_ADDRESSES_BATCH = """
+UNWIND $addresses AS input
+MERGE (addr:Address {
+    country_code: input.country_code,
+    postal_code: input.postal_code,
+    street_name: input.street_name,
+    street_number: input.street_number,
+    unit_number: input.unit_number
+})
+ON CREATE SET
+    addr.address_id = randomUUID(),
+    addr.building_name = input.building_name,
+    addr.city = input.city,
+    addr.state_province = input.state_province,
+    addr.normalized_full = input.normalized_full,
+    addr.created_at = datetime()
+RETURN count(addr) AS upserted_count
+"""
+
 ASSERT_IDENTIFIERS = """
 UNWIND $assertions AS input
 MATCH (sr:SourceRecord {source_record_pk: input.source_record_pk})

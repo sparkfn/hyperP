@@ -10,9 +10,14 @@ from typing import TypeVar, cast
 import pytest
 from neo4j import ManagedTransaction
 from src.graph.client import Neo4jClient
-from src.graph.queries.identity_assertions import ASSERT_IDENTIFIERS
+from src.graph.queries.identity_assertions import (
+    ASSERT_ADDRESSES,
+    ASSERT_FACTS,
+    ASSERT_IDENTIFIERS,
+)
 from src.identity_assertions import (
     _parse_normalized_payload,
+    _payload_or_fallback,
     assertion_rows,
     audit_assertions,
     backfill_assertions,
@@ -156,10 +161,9 @@ def test_write_assertions_runs_only_needed_upserts_and_immutable_assertions() ->
     write_assertions(cast(ManagedTransaction, tx), "source-1", _payload())
 
     assert len(tx.calls) == 6
-    assertion_queries = [query for query, _ in tx.calls if "ASSERTS" in query]
-    assert len(assertion_queries) == 3
-    assert all("ON MATCH SET" not in query for query in assertion_queries)
-    assert all("ON CREATE SET" in query for query in assertion_queries)
+    issued = [query for query, _ in tx.calls]
+    assert all("ON MATCH SET" not in query for query in issued)
+    assert all("ON CREATE SET" in query for query in issued)
     assert any(query == ASSERT_IDENTIFIERS for query, _ in tx.calls)
 
 
@@ -275,11 +279,10 @@ def test_legacy_shaped_payload_records_malformed_and_audit_reports_it() -> None:
 
 
 def test_present_non_list_identifiers_container_is_counted_as_malformed() -> None:
-    # The audit routes this shape to the IDENTIFIED_BY fallback instead (edges stay the authority).
     assert assertion_rows("source-1", {"identifiers": {"unexpected": "object"}}).malformed == 1
 
 
-@pytest.mark.parametrize("key", ["addresses", "attributes"])
+@pytest.mark.parametrize("key", ["identifiers", "addresses", "attributes"])
 def test_present_non_list_container_is_malformed_and_audit_reports_it(key: str) -> None:
     payload: dict[str, JsonValue] = {
         "identifiers": [],
@@ -380,6 +383,101 @@ def test_payload_without_identifiers_list_uses_fallback_for_backfill_and_audit()
     )
     assert backfill_assertions(cast(Neo4jClient, backfill_client), batch_size=1) == 1
     assert ASSERT_IDENTIFIERS in backfill_client.write_calls
+
+
+def _address_entry() -> dict[str, JsonValue]:
+    return {
+        "country_code": "SG",
+        "postal_code": "123456",
+        "street_name": "Example Road",
+        "street_number": "10",
+        "quality_flag": "valid",
+    }
+
+
+def _fact_entry() -> dict[str, JsonValue]:
+    return {"attribute_name": "full_name", "attribute_value": "Ada Example"}
+
+
+def test_missing_identifiers_merges_fallback_and_preserves_addresses_and_attributes() -> None:
+    fallback_identifiers: list[JsonValue] = [
+        {
+            "identifier_type": "phone",
+            "identifier_scope": "global",
+            "normalized_value": "+6591234567",
+            "source_instance_id": None,
+            "quality_flag": "valid",
+        }
+    ]
+    payload: dict[str, JsonValue] = {
+        "addresses": [_address_entry()],
+        "attributes": [_fact_entry()],
+    }
+
+    resolved = _payload_or_fallback(
+        {"normalized_payload": json.dumps(payload), "fallback_identifiers": fallback_identifiers}
+    )
+    rows = assertion_rows("source-1", resolved)
+
+    assert rows.malformed == 0
+    assert [row["normalized_value"] for row in rows.identifiers] == ["+6591234567"]
+    assert [row["postal_code"] for row in rows.addresses] == ["123456"]
+    assert [row["attribute_name"] for row in rows.facts] == ["full_name"]
+
+
+def test_malformed_identifiers_container_preserves_addresses_and_attributes() -> None:
+    payload: dict[str, JsonValue] = {
+        "identifiers": {"unexpected": "object"},
+        "addresses": [_address_entry()],
+        "attributes": [_fact_entry()],
+    }
+    record: dict[str, object] = {
+        "normalized_payload": json.dumps(payload),
+        "fallback_identifiers": [],
+    }
+
+    resolved = _payload_or_fallback(record)
+    rows = assertion_rows("source-1", resolved)
+
+    assert resolved == payload
+    assert rows.malformed == 1
+    assert rows.identifiers == []
+    assert [row["postal_code"] for row in rows.addresses] == ["123456"]
+    assert [row["attribute_name"] for row in rows.facts] == ["full_name"]
+
+    audit_client = _FakeClient(
+        [
+            [
+                {
+                    "source_record_pk": "source-1",
+                    "normalized_payload": json.dumps(payload),
+                    "fallback_identifiers": [],
+                    "identifier_count": 0,
+                    "address_count": 1,
+                    "fact_count": 1,
+                }
+            ],
+            [],
+        ]
+    )
+    mismatches = audit_assertions(cast(Neo4jClient, audit_client), batch_size=1)
+    assert [m.malformed_entries for m in mismatches] == [1]
+
+    backfill_client = _FakeClient(
+        [
+            [
+                {
+                    "source_record_pk": "source-1",
+                    "normalized_payload": json.dumps(payload),
+                    "fallback_identifiers": [],
+                }
+            ],
+            [],
+        ]
+    )
+    assert backfill_assertions(cast(Neo4jClient, backfill_client), batch_size=1) == 1
+    assert ASSERT_ADDRESSES in backfill_client.write_calls
+    assert ASSERT_FACTS in backfill_client.write_calls
 
 
 def test_empty_object_payload_with_no_identified_by_edges_has_no_mismatch() -> None:
