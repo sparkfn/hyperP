@@ -19,6 +19,7 @@ import pytest
 import src.repositories.neo4j.merge as merge_module
 import src.repositories.neo4j.person as person_module
 import src.repositories.neo4j.report as report_module
+import src.repositories.neo4j.review as review_module
 from neo4j import (
     AsyncDriver,
     AsyncManagedTransaction,
@@ -41,6 +42,7 @@ from src.graph.queries.persons_list import (
 from src.repositories.neo4j.merge import Neo4jMergeRepository
 from src.repositories.neo4j.person import Neo4jPersonRepository
 from src.repositories.neo4j.report import Neo4jReportRepository
+from src.repositories.neo4j.review import Neo4jReviewRepository
 
 _URI_ENV = "HYPERP_NEO4J_PERSON_LIST_SUMMARY_TEST_URI"
 _USER_ENV = "HYPERP_NEO4J_PERSON_LIST_SUMMARY_TEST_USER"
@@ -373,6 +375,7 @@ def _install_repository_sessions(
     monkeypatch.setattr(person_module, "get_session", _get_session)
     monkeypatch.setattr(merge_module, "get_session", _get_session)
     monkeypatch.setattr(report_module, "get_session", _get_session)
+    monkeypatch.setattr(review_module, "get_session", _get_session)
 
 
 @pytest.mark.anyio
@@ -391,6 +394,50 @@ async def test_keyed_api_read_matches_all_six_authoritative_aggregates(
         summary = await Neo4jPersonRepository().get_list_summary()
 
     assert summary.model_dump() == expected
+
+
+@pytest.mark.anyio
+async def test_keyed_api_read_reports_stale_month_invalid_and_falls_back_for_crm_monthly(
+    neo4j_graph: _TestGraph,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    _seed_people_and_shared_deal(neo4j_graph)
+    expected = _publish_counter_from_aggregates(neo4j_graph)
+    assert expected["deals_this_month_count"] == 1
+
+    with neo4j_graph.driver.session() as session:
+        record = session.run(
+            """
+            MATCH (counter:PersonListSummaryCounter {key: $key})
+            WITH counter,
+                 datetime.truncate('month', datetime()) - duration({months: 1}) AS prev_month
+            WITH counter,
+                 toString(prev_month.year) + '-' + right('0' + toString(prev_month.month), 2)
+                   AS prior_month
+            SET counter.month = prior_month,
+                counter.deals_this_month_count = 999,
+                counter.updated_at = datetime()
+            RETURN prior_month
+            """,
+            key=PERSON_LIST_SUMMARY_COUNTER_KEY,
+        ).single(strict=True)
+    prior_month = str(record["prior_month"])
+
+    async with _api_driver(neo4j_graph) as driver:
+        _install_repository_sessions(monkeypatch, driver)
+        repository = Neo4jPersonRepository()
+        state = await repository._read_counter_state()
+        assert state.ready is True
+        assert state.month == prior_month
+        assert state.month_valid is False
+        assert state.crm_usable is False
+        assert state.core_usable is True
+
+        summary = await repository.get_list_summary()
+
+    authoritative = _authoritative_counts(neo4j_graph)
+    assert summary.model_dump() == authoritative
+    assert summary.deals_this_month_count == expected["deals_this_month_count"]
 
 
 @pytest.mark.anyio
@@ -445,6 +492,125 @@ async def test_manual_merge_repository_keeps_counter_equal_to_authority(
     stored_after = _counter_counts(neo4j_graph)
     assert expected_after["all_profiles_count"] == expected_before["all_profiles_count"] - 1
     assert stored_after == expected_after
+
+
+@pytest.mark.anyio
+async def test_review_path_pending_record_merge_replacing_deal_keeps_counter_equal_to_authority(
+    neo4j_graph: _TestGraph,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    review_case_id = f"summary-rc-{neo4j_graph.run_id}"
+    person_id = f"summary-person-{neo4j_graph.run_id}"
+    source_record_id = f"summary-rec-{neo4j_graph.run_id}"
+    old_deal_pk = f"summary-deal-v1-{neo4j_graph.run_id}"
+    pending_pk = f"summary-pending-v2-{neo4j_graph.run_id}"
+    decision_id = f"summary-md-{neo4j_graph.run_id}"
+
+    with neo4j_graph.driver.session() as session:
+        session.run(
+            f"""
+            MERGE (source:SourceSystem {{source_key: 'bitrix_chat'}})
+            ON CREATE SET source.{_RUN_PROPERTY} = $run_id
+            WITH source
+            CREATE (lock:SourceRecordIdentityLock {{
+              source_system: 'bitrix_chat',
+              source_instance_id: 'legacy-default',
+              source_record_id: $source_record_id,
+              {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (person:Person {{
+              person_id: $person_id,
+              status: 'active',
+              is_high_risk: false,
+              is_high_value: false,
+              preferred_phone: '+6580000001',
+              preferred_email: 'review-person@example.com',
+              {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (old:SourceRecord {{
+              source_record_pk: $old_deal_pk,
+              source_record_id: $source_record_id,
+              source_instance_id: 'legacy-default',
+              record_type: 'crm_deal',
+              lifecycle_status: 'active',
+              is_latest: true,
+              observed_at: datetime(),
+              {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (old)-[:FROM_SOURCE]->(source)
+            CREATE (old)-[:LINKED_TO {{is_active: true}}]->(person)
+            CREATE (pending:SourceRecord {{
+              source_record_pk: $pending_pk,
+              source_record_id: $source_record_id,
+              source_instance_id: 'legacy-default',
+              record_type: 'identity',
+              lifecycle_status: 'pending_review',
+              is_latest: false,
+              expected_active_source_record_pk: $old_deal_pk,
+              normalized_payload: '{{}}',
+              observed_at: datetime(),
+              {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (pending)-[:FROM_SOURCE]->(source)
+            CREATE (md:MatchDecision {{
+              match_decision_id: $decision_id,
+              decision: 'review',
+              {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (md)-[:ABOUT_LEFT]->(pending)
+            CREATE (md)-[:ABOUT_RIGHT]->(person)
+            CREATE (rc:ReviewCase {{
+              review_case_id: $review_case_id,
+              queue_state: 'open',
+              created_at: datetime(),
+              {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (rc)-[:FOR_DECISION]->(md)
+            """,
+            run_id=neo4j_graph.run_id,
+            person_id=person_id,
+            source_record_id=source_record_id,
+            old_deal_pk=old_deal_pk,
+            pending_pk=pending_pk,
+            decision_id=decision_id,
+            review_case_id=review_case_id,
+        ).consume()
+
+    expected_before = _publish_counter_from_aggregates(neo4j_graph)
+    assert expected_before["all_deals_count"] == 1
+    assert expected_before["deals_this_month_count"] == 1
+    assert _counter_counts(neo4j_graph) == expected_before
+
+    def _ignore_recalculation(_review_case_ids: list[str]) -> None:
+        return None
+
+    monkeypatch.setattr(review_module, "enqueue_match_recalculation", _ignore_recalculation)
+    async with _api_driver(neo4j_graph) as driver:
+        _install_repository_sessions(monkeypatch, driver)
+        outcome = await Neo4jReviewRepository().submit_action(
+            review_case_id,
+            "merge",
+            "resolved",
+            "merge",
+            "integration test pending merge",
+            None,
+            "reviewer@example.com",
+            person_id,
+            [],
+            reason_code="confirmed_match",
+        )
+
+    assert outcome is not None
+    assert outcome.get("review_case_id") == review_case_id
+    assert outcome.get("queue_state") == "resolved"
+    assert outcome.get("resolution") == "merge"
+
+    expected_after = _authoritative_counts(neo4j_graph)
+    stored_after = _counter_counts(neo4j_graph)
+    assert stored_after == expected_after
+    assert stored_after["all_deals_count"] == 0
+    assert stored_after["deals_this_month_count"] == 0
+    assert stored_after["all_profiles_count"] == expected_before["all_profiles_count"]
 
 
 @pytest.mark.anyio

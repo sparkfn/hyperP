@@ -50,11 +50,17 @@ from src.graph.migrations import (
     reconcile_source_record_lifecycle,
 )
 from src.graph.person_list_summary import (
+    PersonListSummaryCounts,
     backfill_person_list_summary,
     invalidate_person_list_summary,
+    person_list_summary_field_drifts,
+    person_list_summary_month_rolled_over,
     reconcile_person_list_summary,
 )
-from src.graph.person_list_summary_deltas import PersonListSummaryDeltaCollector
+from src.graph.person_list_summary_deltas import (
+    PersonListSummaryDeltaApplication,
+    PersonListSummaryDeltaCollector,
+)
 from src.graph.queries.person_list_summary import (
     CAPTURE_DEAL_SUMMARY_CONTRIBUTIONS,
     CAPTURE_DEAL_SUMMARY_CONTRIBUTIONS_BY_ELEMENT_ID,
@@ -702,6 +708,71 @@ def test_nightly_reconcile_leaves_an_unready_counter_unready(
     assert _counter_state(neo4j_driver)["ready"] is False
 
 
+def test_reconcile_recovers_corrupt_counter_and_rolls_month_forward(
+    neo4j_driver: Driver,
+    client: Neo4jClient,
+) -> None:
+    _seed_person(neo4j_driver, person_id="p-1", is_high_risk=True, preferred_phone="+6580000000")
+    _seed_deal(
+        neo4j_driver,
+        source_record_pk="deal-1",
+        person_id="p-1",
+        observed_at=_MONTH_START,
+    )
+    with neo4j_driver.session() as session:
+        record = session.run(
+            """
+            MATCH (counter:PersonListSummaryCounter {key: $key})
+            WITH counter,
+                 datetime.truncate('month', datetime()) - duration({months: 1}) AS prev_month
+            WITH counter,
+                 toString(prev_month.year) + '-' + right('0' + toString(prev_month.month), 2)
+                   AS prior_month
+            SET counter.ready = true,
+                counter.generation = 1,
+                counter.month = prior_month,
+                counter.active_person_count = 999,
+                counter.high_risk_count = 888,
+                counter.high_value_count = 777,
+                counter.no_contact_count = 666,
+                counter.deals_this_month_count = 555,
+                counter.all_deals_count = 444,
+                counter.updated_at = datetime()
+            RETURN prior_month
+            """,
+            key=PERSON_LIST_SUMMARY_COUNTER_KEY,
+        ).single(strict=True)
+    prior_month = str(record["prior_month"])
+
+    publication = reconcile_person_list_summary(client)
+
+    assert publication is not None
+    assert publication.previous.ready is True
+    assert publication.previous.month == prior_month
+    assert publication.previous.active_person_count == 999
+
+    expected = _expected_counts(neo4j_driver)
+    assert _stored_counts(neo4j_driver) == expected
+    assert publication.new == PersonListSummaryCounts(**expected)
+
+    drifts = person_list_summary_field_drifts(publication)
+    drift_by_field = {drift.field: drift for drift in drifts}
+    assert drift_by_field["active_person_count"].drift == abs(expected["active_person_count"] - 999)
+    assert drift_by_field["high_risk_count"].drift == abs(expected["high_risk_count"] - 888)
+    assert drift_by_field["high_value_count"].drift == abs(expected["high_value_count"] - 777)
+    assert drift_by_field["no_contact_count"].drift == abs(expected["no_contact_count"] - 666)
+    assert drift_by_field["deals_this_month_count"].drift == abs(
+        expected["deals_this_month_count"] - 555
+    )
+    assert drift_by_field["all_deals_count"].drift == abs(expected["all_deals_count"] - 444)
+
+    assert person_list_summary_month_rolled_over(publication) is True
+    assert publication.new_month != prior_month
+    state = _counter_state(neo4j_driver)
+    assert state["ready"] is True
+    assert state["month"] == publication.new_month
+
+
 def test_invalidation_marks_the_counter_unready_and_advances_the_generation(
     neo4j_driver: Driver,
     client: Neo4jClient,
@@ -994,6 +1065,85 @@ def test_observed_at_null_future_current_and_old_are_classified(
     assert stored == _expected_counts(neo4j_driver)
     assert stored["all_deals_count"] == 4
     assert stored["deals_this_month_count"] == 2
+
+
+def test_writer_delta_on_stale_month_counter_gates_monthly_deal_count(
+    neo4j_driver: Driver,
+    client: Neo4jClient,
+) -> None:
+    _seed_source_system(neo4j_driver)
+    _seed_person(neo4j_driver, person_id="p-1", preferred_phone=None, preferred_email=None)
+    with neo4j_driver.session() as session:
+        record = session.run(
+            """
+            MATCH (counter:PersonListSummaryCounter {key: $key})
+            WITH counter,
+                 datetime.truncate('month', datetime()) - duration({months: 1}) AS prev_month
+            WITH counter,
+                 toString(prev_month.year) + '-' + right('0' + toString(prev_month.month), 2)
+                   AS prior_month
+            SET counter.ready = true,
+                counter.generation = 1,
+                counter.month = prior_month,
+                counter.active_person_count = 1,
+                counter.high_risk_count = 0,
+                counter.high_value_count = 0,
+                counter.no_contact_count = 1,
+                counter.deals_this_month_count = 7,
+                counter.all_deals_count = 0,
+                counter.updated_at = datetime()
+            RETURN prior_month
+            """,
+            key=PERSON_LIST_SUMMARY_COUNTER_KEY,
+        ).single(strict=True)
+    prior_month = str(record["prior_month"])
+
+    def _write(tx: ManagedTransaction) -> PersonListSummaryDeltaApplication:
+        collector = PersonListSummaryDeltaCollector()
+        collector.capture_before(tx, person_ids=["p-1"], source_record_pks=["deal-1"])
+        tx.run(
+            "MATCH (person:Person {person_id: 'p-1'}) SET person.is_high_risk = true",
+        ).consume()
+        tx.run(
+            """
+            MATCH (source:SourceSystem {source_key: 'bitrix_chat'})
+            CREATE (deal:SourceRecord {
+              source_record_pk: 'deal-1',
+              source_record_id: 'deal-1',
+              source_instance_id: 'legacy-default',
+              source_record_version: 1,
+              record_hash: 'hash-deal-1',
+              record_type: 'crm_deal',
+              lifecycle_status: 'active',
+              is_latest: true,
+              observed_at: datetime.truncate('month', datetime())
+            })
+            CREATE (deal)-[:FROM_SOURCE]->(source)
+            WITH deal
+            MATCH (person:Person {person_id: 'p-1'})
+            CREATE (deal)-[link:LINKED_TO {is_active: true}]->(person)
+            """,
+        ).consume()
+        return collector.finalize(tx)
+
+    apply_result = client.execute_write(_write)
+
+    assert apply_result.monthly_applied is False
+    assert apply_result.core_applied is True
+    assert apply_result.all_deals_applied is True
+    assert apply_result.deals_this_month_count == 7
+    assert apply_result.high_risk_count == 1
+    assert apply_result.all_deals_count == 1
+    assert apply_result.current_month != prior_month
+
+    stored = _stored_counts(neo4j_driver)
+    assert stored["deals_this_month_count"] == 7
+    assert stored["high_risk_count"] == 1
+    assert stored["all_deals_count"] == 1
+    assert _expected_counts(neo4j_driver)["deals_this_month_count"] == 1
+
+    state = _counter_state(neo4j_driver)
+    assert state["month"] == prior_month
 
 
 # --- production writers ---------------------------------------------------------
