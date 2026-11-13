@@ -974,9 +974,12 @@ def test_claimed_review_close_uses_stable_claim_not_lifecycle_eligibility() -> N
     assert "rc.lifecycle_claim_status = $claim_status" in query
     assert "rc.lifecycle_claimed_by = $actor_id" in query
     assert "involved:SourceRecord" not in query
+    assert "AND SET" not in query
+    assert "valueType(rc.actions) STARTS WITH 'STRING'" in query
     assert "rc.lifecycle_claim_token IS NULL" in CLAIM_PENDING_REVIEW_RESOLUTION
     assert "randomUUID()" in CLAIM_PENDING_REVIEW_RESOLUTION
     assert "claim_version" in CLAIM_PENDING_REVIEW_RESOLUTION
+    assert "involved:SourceRecord" in CLAIM_PENDING_REVIEW_RESOLUTION
 
 
 def test_review_activation_only_treats_explicit_latest_legacy_record_as_active() -> None:
