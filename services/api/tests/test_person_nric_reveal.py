@@ -2,20 +2,23 @@
 
 from __future__ import annotations
 
+from typing import cast
 from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 from cryptography.fernet import Fernet
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
-from src.auth.deps import get_current_user_or_oauth_client
+from starlette.routing import Mount
+
+from src.app import build_app
+from src.auth.deps import get_current_user_or_oauth_client, require_active_user
 from src.auth.models import AuthUser
 from src.auth.oauth_client_models import OAuthClientUser
-from src.frontend_app import build_frontend_app
 from src.nric import (
     NricKeyUnavailableError,
     derive_fernet_key,
 )
-from src.oauth2_app import build_oauth2_app
 from src.repositories.deps import get_nric_repo
 from src.repositories.neo4j.nric import Neo4jNricRevealRepository, _reveal_tx
 from src.repositories.protocols.nric import (
@@ -95,6 +98,26 @@ class _MockNricRepo(NricRevealRepository):
         return self.result
 
 
+def _mounted_app(app: FastAPI, path: str) -> FastAPI:
+    for route in app.routes:
+        if isinstance(route, Mount) and route.path == path:
+            return cast(FastAPI, route.app)
+    raise AssertionError(f"{path} mount not found")
+
+
+def _reveal_client(repo: _MockNricRepo, principal: AuthUser | OAuthClientUser) -> TestClient:
+    app = build_app()
+    frontend = _mounted_app(app, "/app/v2")
+
+    def _principal() -> AuthUser | OAuthClientUser:
+        return principal
+
+    frontend.dependency_overrides[require_active_user] = _principal
+    frontend.dependency_overrides[get_current_user_or_oauth_client] = _principal
+    frontend.dependency_overrides[get_nric_repo] = lambda: repo
+    return TestClient(app)
+
+
 def test_reveal_route_admin_success_passes_actor_email() -> None:
     expected = NricRevealResult(
         person_id="p-1",
@@ -104,11 +127,7 @@ def test_reveal_route_admin_success_passes_actor_email() -> None:
         unavailable_count=0,
     )
     repo = _MockNricRepo(result=expected)
-    app = build_frontend_app()
-    app.dependency_overrides[get_current_user_or_oauth_client] = _admin_user
-    app.dependency_overrides[get_nric_repo] = lambda: repo
-
-    client = TestClient(app)
+    client = _reveal_client(repo, _admin_user())
     response = client.post(
         "/app/v2/persons/p-1/nric/reveal",
         json={"reason": "Compliance audit for customer review"},
@@ -127,37 +146,33 @@ def test_reveal_route_admin_success_passes_actor_email() -> None:
 
 def test_reveal_route_non_admin_human_forbidden() -> None:
     repo = _MockNricRepo()
-    app = build_frontend_app()
-    app.dependency_overrides[get_current_user_or_oauth_client] = _employee_user
-    app.dependency_overrides[get_nric_repo] = lambda: repo
-
-    client = TestClient(app)
+    client = _reveal_client(repo, _employee_user())
     response = client.post(
         "/app/v2/persons/p-1/nric/reveal",
         json={"reason": "Audit request"},
     )
     assert response.status_code == 403
     assert response.json()["error"]["code"] == "forbidden"
+    assert repo.calls == []
 
 
 def test_reveal_route_oauth_client_forbidden() -> None:
     repo = _MockNricRepo()
-    app = build_frontend_app()
-    app.dependency_overrides[get_current_user_or_oauth_client] = _admin_oauth_client
-    app.dependency_overrides[get_nric_repo] = lambda: repo
-
-    client = TestClient(app)
+    client = _reveal_client(repo, _admin_oauth_client())
     response = client.post(
         "/app/v2/persons/p-1/nric/reveal",
         json={"reason": "Audit request"},
     )
     assert response.status_code == 403
-    assert response.json()["error"]["code"] == "forbidden_oauth"
+    assert response.json()["error"]["code"] == "forbidden"
+    assert (
+        response.json()["error"]["message"] == "OAuth clients cannot access human workflow routes."
+    )
+    assert repo.calls == []
 
 
 def test_reveal_route_not_present_on_oauth2_app() -> None:
-    oauth_app = build_oauth2_app()
-    client = TestClient(oauth_app)
+    client = TestClient(build_app())
     response = client.post(
         "/oauth2/v1/persons/p-1/nric/reveal",
         json={"reason": "Audit request"},
@@ -168,11 +183,7 @@ def test_reveal_route_not_present_on_oauth2_app() -> None:
 
 def test_reveal_route_person_not_found() -> None:
     repo = _MockNricRepo(result=None)
-    app = build_frontend_app()
-    app.dependency_overrides[get_current_user_or_oauth_client] = _admin_user
-    app.dependency_overrides[get_nric_repo] = lambda: repo
-
-    client = TestClient(app)
+    client = _reveal_client(repo, _admin_user())
     response = client.post(
         "/app/v2/persons/missing/nric/reveal",
         json={"reason": "Audit request"},
@@ -183,11 +194,7 @@ def test_reveal_route_person_not_found() -> None:
 
 def test_reveal_route_key_unavailable() -> None:
     repo = _MockNricRepo(exc=NricKeyUnavailableError("Key missing"))
-    app = build_frontend_app()
-    app.dependency_overrides[get_current_user_or_oauth_client] = _admin_user
-    app.dependency_overrides[get_nric_repo] = lambda: repo
-
-    client = TestClient(app)
+    client = _reveal_client(repo, _admin_user())
     response = client.post(
         "/app/v2/persons/p-1/nric/reveal",
         json={"reason": "Audit request"},
@@ -198,11 +205,7 @@ def test_reveal_route_key_unavailable() -> None:
 
 def test_reveal_route_all_unavailable() -> None:
     repo = _MockNricRepo(exc=NricUnavailableError("All NRIC values unavailable"))
-    app = build_frontend_app()
-    app.dependency_overrides[get_current_user_or_oauth_client] = _admin_user
-    app.dependency_overrides[get_nric_repo] = lambda: repo
-
-    client = TestClient(app)
+    client = _reveal_client(repo, _admin_user())
     response = client.post(
         "/app/v2/persons/p-1/nric/reveal",
         json={"reason": "Audit request"},
@@ -213,11 +216,7 @@ def test_reveal_route_all_unavailable() -> None:
 
 def test_reveal_route_database_failure() -> None:
     repo = _MockNricRepo(exc=RuntimeError("Database query failed"))
-    app = build_frontend_app()
-    app.dependency_overrides[get_current_user_or_oauth_client] = _admin_user
-    app.dependency_overrides[get_nric_repo] = lambda: repo
-
-    client = TestClient(app)
+    client = _reveal_client(repo, _admin_user())
     response = client.post(
         "/app/v2/persons/p-1/nric/reveal",
         json={"reason": "Audit request"},

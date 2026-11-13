@@ -66,7 +66,9 @@ class NricValue:
     checksum_valid: bool | None
 
 
-# rebase(#490): use identity_registry.source_promotes_person
+# rebase(#490): use identity_registry.source_promotes_person (in #500, equals
+# ``source_key in PROMOTES_PERSON_SOURCE_KEYS``; all seeded promoting sources
+# currently define ``field_trust["nric"] = "tier_4"``).
 def _source_promotes_person(source_key: str) -> bool:
     """Return True if source_key promotes a person (seeded and not match_only)."""
     if source_key in MATCH_ONLY_SOURCE_KEYS:
@@ -105,6 +107,8 @@ def nric_anchor_gate(
         return NricGateResult(promotes_person=False, reason="source_not_promoting")
 
     # 5. Source NRIC trust tier must be at or above floor tier_4
+    # rebase(#490): in #500 bootstrap trust tiers govern attribute precedence
+    # rather than identifier promotion; keep this floor aligned when rebasing C1/C3.
     if SOURCE_NRIC_TRUST.get(source_key) not in _TIERS_WITHIN_FLOOR:
         return NricGateResult(promotes_person=False, reason="below_tier_floor")
 
@@ -122,7 +126,7 @@ def nric_anchor_gate(
         if incoming.full_name and holder.full_name:
             norm_inc, _ = normalize_name(incoming.full_name)
             norm_hol, _ = normalize_name(holder.full_name)
-            if norm_inc and norm_hol and norm_inc != norm_hol:
+            if norm_inc and norm_hol and norm_inc.casefold() != norm_hol.casefold():
                 return NricGateResult(promotes_person=False, reason="nric_contradiction")
 
     return NricGateResult(promotes_person=True, reason="anchor")

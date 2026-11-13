@@ -45,15 +45,32 @@ def decode_raw_payload(raw: object) -> dict[str, JsonValue] | None:
     return parsed if isinstance(parsed, dict) else None
 
 
-def scrub_nric_strings(
-    val: JsonValue,
-    collected_tokens: frozenset[str] = frozenset(),
-) -> JsonValue:
-    """Recursively mask NRIC values in any JSON data structure.
+def _collect_payload_nric_tokens(obj: object) -> set[str]:
+    """Collect raw and canonical NRIC strings under known NRIC keys in a JSON structure."""
+    tokens: set[str] = set()
 
-    Pass 1: replace any known collected NRIC tokens (case-insensitive).
-    Pass 2: replace any remaining regex matches for ``[STFG]\\d{7}[A-Z]``.
-    """
+    def _walk(node: object) -> None:
+        if isinstance(node, dict):
+            for k, v in node.items():
+                if isinstance(k, str) and k.lower() in _NRIC_KEY_NAMES and isinstance(v, str):
+                    s = v.strip()
+                    tokens.add(s)
+                    canonical, _ = normalize_nric(s)
+                    if canonical:
+                        tokens.add(canonical)
+                _walk(v)
+        elif isinstance(node, list):
+            for item in node:
+                _walk(item)
+
+    _walk(obj)
+    return tokens
+
+
+def _scrub_nric_value(
+    val: JsonValue,
+    collected_tokens: frozenset[str],
+) -> JsonValue:
     if isinstance(val, str):
         result = val
         for tok in collected_tokens:
@@ -65,40 +82,38 @@ def scrub_nric_strings(
         # Regex pass for free-text NRICs
         return _NRIC_REGEX.sub(lambda m: mask_nric(m.group(0)), result)
     if isinstance(val, list):
-        return cast(JsonValue, [scrub_nric_strings(item, collected_tokens) for item in val])
+        return cast(JsonValue, [_scrub_nric_value(item, collected_tokens) for item in val])
     if isinstance(val, dict):
         return cast(
             JsonValue,
-            {k: scrub_nric_strings(v, collected_tokens) for k, v in val.items()},
+            {k: _scrub_nric_value(v, collected_tokens) for k, v in val.items()},
         )
     return val
 
 
+def scrub_nric_strings(
+    val: JsonValue,
+    collected_tokens: frozenset[str] = frozenset(),
+) -> JsonValue:
+    """Recursively mask NRIC values in any JSON data structure.
+
+    Pass 1: replace any known collected NRIC tokens (case-insensitive), including
+            tokens under named NRIC keys within ``val``.
+    Pass 2: replace any remaining regex matches for ``[STFG]\\d{7}[A-Z]``.
+    """
+    tokens = collected_tokens | _collect_payload_nric_tokens(val)
+    return _scrub_nric_value(val, tokens)
+
+
 def _collect_nric_tokens(envelope: SourceRecordEnvelope) -> set[str]:
     """Collect known raw/canonical NRIC strings from envelope and payload keys."""
-    tokens: set[str] = set()
+    tokens = _collect_payload_nric_tokens(envelope.raw_payload)
     for ident in envelope.identifiers:
         if ident.type.lower().strip() == "nric":
             tokens.add(ident.value.strip())
             canonical, _ = normalize_nric(ident.value)
             if canonical:
                 tokens.add(canonical)
-
-    def _walk(obj: object) -> None:
-        if isinstance(obj, dict):
-            for k, v in obj.items():
-                if k.lower() in _NRIC_KEY_NAMES and isinstance(v, str):
-                    s = v.strip()
-                    tokens.add(s)
-                    canonical, _ = normalize_nric(s)
-                    if canonical:
-                        tokens.add(canonical)
-                _walk(v)
-        elif isinstance(obj, list):
-            for item in obj:
-                _walk(item)
-
-    _walk(envelope.raw_payload)
     return tokens
 
 

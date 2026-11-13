@@ -17,6 +17,7 @@ from src.models import (
     SourceRecordLifecycleStatus,
 )
 from src.pipeline_bankruptcy import bankruptcy_case_blueprint
+from src.pipeline_sales import _serialize_metadata
 from src.pipeline_writes import build_normalized_source_payload, persist_source_record
 from src.raw_payload import (
     decode_raw_payload,
@@ -181,3 +182,20 @@ def test_normalized_payload_scrubs_conversation_free_text() -> None:
     assert normalized["summary"] == "Customer S••••164F inquired about loan"
     assert normalized["chat_members"] == ["Alice", "Bob (S••••609F)"]
     assert normalized["inquiries"] == ["NRIC T••••456G dispute"]
+
+
+def test_serialize_metadata_scrubs_nric_strings() -> None:
+    serialized = _serialize_metadata(
+        {"nric": "S7012164F", "note": "buyer S8110609F", "merchant": "Shop"}
+    )
+    assert json.loads(serialized) == {
+        "nric": "S••••164F",
+        "note": "buyer S••••609F",
+        "merchant": "Shop",
+    }
+    assert json.loads(_serialize_metadata(None)) == {}
+
+
+def test_scrub_nric_strings_masks_noncanonical_token_under_nric_key() -> None:
+    scrubbed = cast(dict[str, JsonValue], scrub_nric_strings({"nric": "S7012164"}))
+    assert scrubbed == {"nric": "•••••••••"}
