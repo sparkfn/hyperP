@@ -11,12 +11,15 @@ from collections.abc import Sequence
 from dataclasses import dataclass
 from typing import Literal
 
-from src.graph.bootstrap import MATCH_ONLY_SOURCE_KEYS, SOURCE_NRIC_TRUST
+from src.graph.bootstrap import SOURCE_NRIC_TRUST
+from src.identity_registry import (
+    PROMOTION_MIN_TRUST_TIERS,
+    identifier_policy,
+    source_promotes_person,
+)
 from src.models import NormalizedIdentifier, RecordType
 from src.normalizers.name import normalize_name
 from src.normalizers.nric import is_nric_digest
-
-_TIERS_WITHIN_FLOOR: frozenset[str] = frozenset({"tier_1", "tier_2", "tier_3", "tier_4"})
 
 NricGateReason = Literal[
     "anchor",
@@ -66,16 +69,6 @@ class NricValue:
     checksum_valid: bool | None
 
 
-# rebase(#490): use identity_registry.source_promotes_person (in #500, equals
-# ``source_key in PROMOTES_PERSON_SOURCE_KEYS``; all seeded promoting sources
-# currently define ``field_trust["nric"] = "tier_4"``).
-def _source_promotes_person(source_key: str) -> bool:
-    """Return True if source_key promotes a person (seeded and not match_only)."""
-    if source_key in MATCH_ONLY_SOURCE_KEYS:
-        return False
-    return source_key in SOURCE_NRIC_TRUST
-
-
 def nric_anchor_gate(
     identifier: NormalizedIdentifier,
     source_key: str,
@@ -88,9 +81,8 @@ def nric_anchor_gate(
     First check that fails returns ``promotes_person=False`` with that reason.
     If all checks pass, returns ``promotes_person=True`` with reason ``'anchor'``.
     """
-    # 1. Identifier type must be nric
-    # rebase(#490): and identifier_policy("nric").promotes
-    if identifier.identifier_type != "nric":
+    # 1. Identifier type must be nric and promote a Person
+    if identifier.identifier_type != "nric" or not identifier_policy("nric").promotes:
         return NricGateResult(promotes_person=False, reason="not_nric")
 
     # 2. Normalized value must be digest-shaped (keyed)
@@ -102,14 +94,11 @@ def nric_anchor_gate(
         return NricGateResult(promotes_person=False, reason="checksum_invalid")
 
     # 4. Source must promote a person
-    # rebase(#490): use identity_registry.source_promotes_person
-    if not _source_promotes_person(source_key):
+    if not source_promotes_person(source_key):
         return NricGateResult(promotes_person=False, reason="source_not_promoting")
 
-    # 5. Source NRIC trust tier must be at or above floor tier_4
-    # rebase(#490): in #500 bootstrap trust tiers govern attribute precedence
-    # rather than identifier promotion; keep this floor aligned when rebasing C1/C3.
-    if SOURCE_NRIC_TRUST.get(source_key) not in _TIERS_WITHIN_FLOOR:
+    # 5. Source NRIC trust tier must be at or above the promotion floor
+    if SOURCE_NRIC_TRUST.get(source_key) not in PROMOTION_MIN_TRUST_TIERS:
         return NricGateResult(promotes_person=False, reason="below_tier_floor")
 
     # 6. Record type must not be conversation

@@ -13,6 +13,7 @@ from src.exclusions import ExclusionContext, build_exclusion_context
 from src.graph import queries
 from src.graph.client import Neo4jClient
 from src.incremental_connector import IncrementalConnector
+from src.ingest_skips import SkipLedger, SkipReporter
 from src.ingestion_config import get_ingestion_config
 from src.models import JsonValue, SourceRecordEnvelope
 from src.pipeline import IngestPipeline
@@ -115,17 +116,28 @@ def _process_page_records(
     ingest_run_id: str,
     exclusion_context: ExclusionContext,
     control_instance_id: str,
+    ledger: SkipLedger | None = None,
 ) -> tuple[int, int]:
     """Process records from one page. Returns (succeeded, errors)."""
-    from src.main import _process_record, _record_is_excluded
+    from src.main import _exclusion_reason, _process_record
 
     succeeded = 0
     errors = 0
     for raw_record in records:
+        # Counted as emitted only once classified, so a failure mid-record never leaves an
+        # unclassified record in the durable attempt snapshot.
+        if ledger is not None:
+            ledger.checkpoint()
         envelope = SourceRecordEnvelope.model_validate(
             {"source_system": source_key, **raw_record},
         )
-        if _record_is_excluded(envelope, exclusion_context):
+        exclusion_reason = _exclusion_reason(envelope, exclusion_context)
+        if exclusion_reason is not None:
+            if ledger is not None:
+                # Emitted first: buffering the skip may flush, and no snapshot may hold the
+                # skip without its record.
+                ledger.emitted += 1
+                ledger.add_pipeline_skip(exclusion_reason, envelope)
             continue
         result = _process_record(
             client,
@@ -135,10 +147,23 @@ def _process_page_records(
             exclusion_context,
             control_instance_id=control_instance_id,
         )
-        if result.errors:
+        if ledger is not None:
+            # Emitted before its bucket: add_pipeline_skip below may flush mid-classification.
+            ledger.emitted += 1
+        if result.excluded:
+            if ledger is not None:
+                ledger.add_pipeline_skip(result.skip_reason or "excluded", envelope)
+        elif result.skipped_duplicate:
+            if ledger is not None:
+                ledger.duplicates += 1
+        elif result.errors:
             errors += 1
+            if ledger is not None:
+                ledger.record_errors += 1
         else:
             succeeded += 1
+            if ledger is not None:
+                ledger.persisted += 1
     return succeeded, errors
 
 
@@ -180,12 +205,17 @@ def run_incremental(
     max_updated_at = watermark.updated_at
     records_processed = 0
     pages_processed = 0
+    ledger = SkipLedger(graph_client, ingest_run_id, source_key, control_instance_id)
 
     try:
         connector.open_query(updated_since=watermark.updated_at)
 
         while True:
+            if isinstance(connector, SkipReporter):
+                ledger.add_connector_skips(connector.drain_skips())
             if time_window_closing() or shutdown_signal():
+                if not ledger.reconcile():
+                    raise RuntimeError(f"Skip ledger reconciliation failed for run {ingest_run_id}")
                 _finalize_run(
                     graph_client,
                     ingest_run_id,
@@ -206,6 +236,8 @@ def run_incremental(
                 )
 
             page = connector.fetch_next_page()
+            if isinstance(connector, SkipReporter):
+                ledger.add_connector_skips(connector.drain_skips())
             _process_page_records(
                 graph_client,
                 pipeline,
@@ -214,6 +246,7 @@ def run_incremental(
                 ingest_run_id,
                 exclusion_context,
                 control_instance_id,
+                ledger=ledger,
             )
             records_processed += len(page.records)
             pages_processed += 1
@@ -222,6 +255,10 @@ def run_incremental(
                 max_updated_at = page.max_updated_at
 
             if not page.has_more:
+                if isinstance(connector, SkipReporter):
+                    ledger.add_connector_skips(connector.drain_skips())
+                if not ledger.reconcile():
+                    raise RuntimeError(f"Skip ledger reconciliation failed for run {ingest_run_id}")
                 watermark_end_iso = (
                     max_updated_at.isoformat() if max_updated_at is not None else None
                 )
@@ -254,6 +291,9 @@ def run_incremental(
                 )
     except Exception:
         try:
+            if isinstance(connector, SkipReporter):
+                ledger.add_connector_skips(connector.drain_skips())
+            ledger.flush_quietly()
             _finalize_run(
                 graph_client,
                 ingest_run_id,

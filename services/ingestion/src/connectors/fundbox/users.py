@@ -73,6 +73,13 @@ class FundboxConnector(FundboxConnectorBase):
         for chunk in self._chunked(self._stream(conn, primary_stmt), self._resolved_chunk_size()):
             user_ids = [row.user_id for row in chunk]
             excluded_user_ids = self._fetch_excluded_user_ids(conn, user_ids)
+            for row in chunk:
+                if row.user_id in excluded_user_ids:
+                    self.record_skip(
+                        "internal_user",
+                        source_record_id=f"fundbox-user-{row.user_id}",
+                        locator=f"users#user_id={row.user_id}",
+                    )
             eligible_chunk = [row for row in chunk if row.user_id not in excluded_user_ids]
             eligible_user_ids = [row.user_id for row in eligible_chunk]
             addresses_by_user = self._fetch_grouped(conn, addresses, "user_id", eligible_user_ids)

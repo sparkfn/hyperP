@@ -179,6 +179,11 @@ class SpeedZoneConnector(SourceConnector):
         result = conn.execute(stmt).yield_per(chunk_size)
         for row in result:
             if row.person_id in excluded_person_ids:
+                self.record_skip(
+                    "employee_customer",
+                    source_record_id=f"speedzone_phppos-customer-{row.person_id}",
+                    locator=f"customers#person_id={row.person_id}",
+                )
                 continue
             yield self._build_envelope_with_customer(row)
 
@@ -189,6 +194,11 @@ class SpeedZoneConnector(SourceConnector):
         result = conn.execute(stmt).yield_per(chunk_size)
         for row in result:
             if row.person_id in excluded_person_ids:
+                self.record_skip(
+                    "employee_customer",
+                    source_record_id=f"speedzone_phppos-person-{row.person_id}",
+                    locator=f"people#person_id={row.person_id}",
+                )
                 continue
             yield self._build_envelope_people_only(row)
 

@@ -8,6 +8,9 @@ MATCH (sr:SourceRecord {
     source_record_id: $source_record_id
 })
       -[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})
+// A parked call is a re-evaluable stub, not a persisted version: it must not
+// mask the real call that later context creates.
+WHERE coalesce(sr.lifecycle_status, 'active') <> 'parked'
 RETURN sr.source_record_pk AS source_record_pk
       ,sr.record_hash AS record_hash
       ,sr.history_family AS history_family
@@ -150,7 +153,7 @@ CREATE (call:SourceRecord {
     source_record_pk: randomUUID(),
     source_record_id: $source_record_id,
     source_instance_id: $source_instance_id,
-    source_record_version: '1',
+    source_record_version: $source_record_version,
     source_version_key: $source_version_key,
     entity_key: deal.entity_key,
     expected_active_source_record_pk: null,
@@ -185,6 +188,18 @@ CREATE (call)-[:CHILD_OF]->(history)
 CREATE (call)-[:DETAILS_HISTORY_ITEM {crm_activity_id: $crm_activity_id}]->(history)
 FOREACH (person IN people |
     CREATE (call)-[:LINKED_TO {linked_at: datetime()}]->(person)
+)
+WITH ss, call, people, deal
+OPTIONAL MATCH (parked:SourceRecord {
+    source_instance_id: $source_instance_id,
+    source_record_id: $source_record_id,
+    lifecycle_status: 'parked'
+})-[:FROM_SOURCE]->(ss)
+WHERE parked.reeval_pending = true
+WITH call, people, deal, collect(parked) AS parked_stubs
+FOREACH (stub IN parked_stubs |
+    SET stub.reeval_pending = false,
+        stub.attribution_eval_at = datetime()
 )
 RETURN call.source_record_pk AS source_record_pk,
        [person IN people | person.person_id][0] AS person_id,

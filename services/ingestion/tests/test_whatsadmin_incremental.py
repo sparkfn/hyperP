@@ -101,8 +101,10 @@ def _fake_process(
     bundles: list[_ChatBundle],
     *,
     on_extraction_failure: object | None = None,
+    on_skip: object | None = None,
 ) -> Iterator[dict[str, JsonValue]]:
     _ = on_extraction_failure
+    assert callable(on_skip)
     for bundle in bundles:
         yield {"source_record_id": f"record-{bundle.chat_id}"}
 

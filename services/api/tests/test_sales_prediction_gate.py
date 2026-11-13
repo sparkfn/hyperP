@@ -307,6 +307,12 @@ def test_gate_queries_page_stage_events_and_bound_deal_parent_batches() -> None:
     assert "WITH DISTINCT" not in GATE_DEAL_VERSIONS_FOR_PARENTS
 
 
+def test_gate_deal_versions_exclude_parked_source_records() -> None:
+    assert "coalesce(deal.lifecycle_status, 'active') <> 'parked'" in (
+        GATE_DEAL_VERSIONS_FOR_PARENTS
+    )
+
+
 def test_release_query_binds_persisted_acceptance_without_live_source_reconciliation() -> None:
     assert "release.boundary_digest IS NOT NULL AS boundary_bound" in GATE_RELEASE
     assert "release.reconciliation_digest IS NOT NULL AS reconciliation_bound" in GATE_RELEASE

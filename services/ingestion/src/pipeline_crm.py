@@ -16,7 +16,15 @@ from src.graph.queries.bitrix_backfill import (
     RESOLVE_BITRIX_ACTIVITY_OWNER_RETRY,
 )
 from src.graph.queries.bitrix_deal_scope import GET_CURRENT_DEAL_SCOPE_BATCH
-from src.models import IngestResult, RecordType, SourceRecordEnvelope
+from src.models import (
+    IngestResult,
+    MatchDecision,
+    MatchResult,
+    RecordType,
+    SourceRecordEnvelope,
+    SourceRecordLifecycleStatus,
+)
+from src.pipeline_writes import persist_source_record
 from src.raw_payload import serialize_raw_payload
 from src.record_lifecycle import load_locked_source_state
 from src.source_instances import (
@@ -69,7 +77,8 @@ def ingest_crm_history_record(
         if owner_scope is None:
             result = IngestResult(
                 source_record_id=envelope.source_record_id,
-                dropped=True,
+                excluded=True,
+                skip_reason="owner_scope_unresolved_retry",
                 ingest_run_id=ingest_run_id,
             )
             _record_activity_unit(
@@ -84,7 +93,8 @@ def ingest_crm_history_record(
         if owner_scope == "out_of_scope":
             result = IngestResult(
                 source_record_id=envelope.source_record_id,
-                dropped=True,
+                excluded=True,
+                skip_reason="excluded_out_of_scope",
                 ingest_run_id=ingest_run_id,
             )
             _record_activity_unit(
@@ -157,7 +167,8 @@ def ingest_crm_history_record(
         if created is None:
             result = IngestResult(
                 source_record_id=envelope.source_record_id,
-                dropped=True,
+                excluded=True,
+                skip_reason="parent_without_person_context",
                 ingest_run_id=ingest_run_id,
             )
             _record_activity_unit(
@@ -227,7 +238,8 @@ def ingest_call_record(
         if owner_scope is None:
             result = IngestResult(
                 source_record_id=envelope.source_record_id,
-                dropped=True,
+                excluded=True,
+                skip_reason="owner_scope_unresolved_retry",
                 ingest_run_id=ingest_run_id,
             )
             _record_activity_unit(
@@ -242,7 +254,8 @@ def ingest_call_record(
         if owner_scope == "out_of_scope":
             result = IngestResult(
                 source_record_id=envelope.source_record_id,
-                dropped=True,
+                excluded=True,
+                skip_reason="excluded_out_of_scope",
                 ingest_run_id=ingest_run_id,
             )
             _record_activity_unit(
@@ -254,9 +267,10 @@ def ingest_call_record(
                 scope_state=owner_scope,
             )
             return result
-        load_locked_source_state(
+        state = load_locked_source_state(
             tx, envelope.source_system, envelope.source_record_id, envelope.source_instance_id
         )
+        version = str(state.next_version)
         existing = tx.run(
             queries.FIND_ANY_SOURCE_RECORD,
             source_system=envelope.source_system,
@@ -285,10 +299,11 @@ def ingest_call_record(
             source_system=envelope.source_system,
             source_instance_id=effective_source_instance_id(envelope.source_instance_id),
             source_record_id=envelope.source_record_id,
+            source_record_version=version,
             source_version_key=encode_source_version_key(
                 envelope.source_system,
                 envelope.source_record_id,
-                "1",
+                version,
                 source_instance_id=effective_source_instance_id(envelope.source_instance_id),
             ),
             parent_source_system=parent_ref.parent_source_system,
@@ -302,10 +317,12 @@ def ingest_call_record(
             crm_activity_id=crm_activity_id,
         ).single()
         if created is None:
-            result = IngestResult(
-                source_record_id=envelope.source_record_id,
-                dropped=True,
+            result = _park_call_without_person_context(
+                tx,
+                envelope,
+                version=version,
                 ingest_run_id=ingest_run_id,
+                control_instance_id=resolved_control_instance_id,
             )
             _record_activity_unit(
                 tx,
@@ -371,6 +388,62 @@ def _require_activity_owner_scope(
     if state != "in_scope":
         raise RuntimeError("activity owner scope returned an invalid state")
     return "in_scope"
+
+
+def _park_call_without_person_context(
+    tx: ManagedTransaction,
+    envelope: SourceRecordEnvelope,
+    *,
+    version: str,
+    ingest_run_id: str,
+    control_instance_id: str,
+) -> IngestResult:
+    """Persist an in-scope call that has no person context as an unlinked, parked record.
+
+    No Person, link or decision is created. A rerun reuses the identical latest parked version;
+    once context exists the real call is created at the next version and this stub stays parked
+    with ``reeval_pending`` cleared.
+    """
+    parked = tx.run(
+        queries.FIND_PARKED_SOURCE_RECORD_BY_HASH,
+        source_system=envelope.source_system,
+        source_instance_id=effective_source_instance_id(envelope.source_instance_id),
+        source_record_id=envelope.source_record_id,
+        record_hash=envelope.record_hash,
+        latest_version=int(version) - 1,
+    ).single()
+    if parked is not None:
+        return IngestResult(
+            source_record_id=envelope.source_record_id,
+            source_record_pk=str(parked["source_record_pk"]),
+            skipped_duplicate=True,
+            parked=True,
+            ingest_run_id=ingest_run_id,
+        )
+    envelope.source_record_version = version
+    source_record_pk = persist_source_record(
+        tx,
+        envelope=envelope,
+        identifiers=[],
+        addresses=[],
+        attributes=[],
+        match_result=MatchResult(
+            decision=MatchDecision.NO_MATCH, reasons=["call_parent_without_person_context"]
+        ),
+        ingest_run_id=ingest_run_id,
+        lifecycle_status=SourceRecordLifecycleStatus.PARKED,
+        expected_active_source_record_pk=None,
+        link_status="unlinked",
+        control_instance_id=control_instance_id,
+        attribution_status="parked",
+        reeval_pending=True,
+    )
+    return IngestResult(
+        source_record_id=envelope.source_record_id,
+        source_record_pk=source_record_pk,
+        parked=True,
+        ingest_run_id=ingest_run_id,
+    )
 
 
 def _owner_scope_or_retry(
@@ -463,7 +536,7 @@ def _record_activity_unit(
     resolved = disposition
     if scope_state == "out_of_scope":
         resolved = "excluded_out_of_scope"
-        if not result.dropped:
+        if not result.excluded:
             raise RuntimeError("out-of-scope activity attempted to persist")
     record_terminal_unit(
         tx,

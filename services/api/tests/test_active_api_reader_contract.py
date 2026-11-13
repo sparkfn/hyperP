@@ -7,6 +7,7 @@ import sys
 from pathlib import Path
 from types import ModuleType
 
+from src.graph.queries.graph import get_graph_query, get_node_graph_query
 from src.graph.queries.persons import GET_PERSON_BY_ID
 from src.graph.queries.persons_list import _ORDER_COUNT
 
@@ -42,7 +43,6 @@ def _active_api_reader_sources() -> tuple[Path, ...]:
     )
 
 
-
 def _scoped_active_readers(classifier: ModuleType) -> dict[str, object]:
     readers = classifier.discover_relationship_readers(*_active_api_reader_sources())
     classified = (
@@ -59,6 +59,7 @@ def _scoped_active_readers(classifier: ModuleType) -> dict[str, object]:
         if reader.classification in {"authoritative", "authoritative_mutation"}
     )
     return {reader.identifier: reader for reader in readers}
+
 
 def test_api_authoritative_reader_parity_excludes_retired_links() -> None:
     classifier = _load_classifier()
@@ -82,6 +83,13 @@ def test_graph_explorer_is_authoritative_and_filters_generic_relationship_scopes
     assert graph_reader.identifier not in classifier._AUDIT_READERS
     assert classifier._has_active_predicate(graph_reader)
     assert graph_reader.query.count("coalesce(r.is_active, true) = true") == 2
+
+
+def test_graph_explorer_excludes_shadow_asserts_edges() -> None:
+    for query in (get_graph_query(2), get_node_graph_query(2)):
+        # Once in the path-traversal filter and once in the post-CALL edge filter,
+        # so an ASSERTS edge between two already-visible nodes is never returned.
+        assert query.count("type(r) <> 'ASSERTS'") == 2
 
 
 def test_api_audit_reader_is_explicitly_allowlisted_and_observable() -> None:

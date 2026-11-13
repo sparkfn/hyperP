@@ -21,6 +21,7 @@ from src.connectors.phppos_api.models import (
     SaleRow,
     SalesPage,
 )
+from src.graph.queries.ingest_skips import RECONCILE_INGEST_RUN_ACCOUNTING
 from src.incremental_connector import IncrementalConnector
 from src.models import JsonValue
 
@@ -160,6 +161,18 @@ class FakeNeo4jTx:
         return self
 
     def single(self) -> dict[str, object] | None:
+        if self.calls and self.calls[-1][0] == RECONCILE_INGEST_RUN_ACCOUNTING:
+            return {
+                "emitted_count": 0,
+                "persisted_count": 0,
+                "duplicate_count": 0,
+                "pipeline_skip_count": 0,
+                "connector_skip_count": 0,
+                "record_error_count": 0,
+                "stored_skips": 0,
+                "expected_skips": 0,
+                "reconciled": True,
+            }
         return {"ingest_run_id": "run-001", "status": "started", "created": True}
 
 

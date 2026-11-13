@@ -5,10 +5,11 @@ from __future__ import annotations
 from abc import ABC, abstractmethod
 from collections.abc import Iterator
 
+from src.ingest_skips import SkipRecorder
 from src.models import JsonValue
 
 
-class SourceConnector(ABC):
+class SourceConnector(SkipRecorder, ABC):
     """Contract that every ingestion connector must implement.
 
     A connector knows how to extract raw records from a single upstream

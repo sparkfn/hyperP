@@ -138,6 +138,18 @@ RETURN sr.source_record_pk AS source_record_pk
 LIMIT 1
 """
 
+FIND_PARKED_SOURCE_RECORD_BY_HASH = """
+MATCH (sr:SourceRecord {
+    source_instance_id: $source_instance_id,
+    source_record_id: $source_record_id
+})-[:FROM_SOURCE]->(:SourceSystem {source_key: $source_system})
+WHERE sr.lifecycle_status = 'parked'
+  AND sr.record_hash = $record_hash
+  AND toInteger(sr.source_record_version) = $latest_version
+RETURN sr.source_record_pk AS source_record_pk
+LIMIT 1
+"""
+
 GET_LATEST_SOURCE_RECORD = """
 MATCH (sr:SourceRecord {
     source_instance_id: $source_instance_id,
@@ -214,6 +226,49 @@ CREATE (sr:SourceRecord {
 })-[:FROM_SOURCE]->(ss)
 FOREACH (_ IN CASE WHEN entity IS NULL THEN [] ELSE [1] END |
     MERGE (sr)-[:OWNED_BY]->(entity)
+)
+RETURN sr.source_record_pk AS source_record_pk
+"""
+
+SET_SOURCE_RECORD_ATTRIBUTION = """
+MATCH (sr:SourceRecord {source_record_pk: $source_record_pk})
+SET sr.attribution_status = $attribution_status,
+    sr.reeval_pending = $reeval_pending,
+    sr.attribution_eval_at = CASE
+        WHEN $attribution_status IS NULL THEN sr.attribution_eval_at
+        ELSE datetime()
+    END
+WITH sr
+OPTIONAL MATCH (sr)-[:FROM_SOURCE]->(:SourceSystem)<-[:FROM_SOURCE]-(prior:SourceRecord {
+    source_instance_id: sr.source_instance_id,
+    source_record_id: sr.source_record_id,
+    lifecycle_status: 'parked'
+})
+WHERE $reeval_pending = true
+  AND prior <> sr
+  AND prior.reeval_pending = true
+  AND toInteger(coalesce(prior.source_record_version, '0'))
+      < toInteger(coalesce(sr.source_record_version, '0'))
+FOREACH (obsolete IN CASE WHEN prior IS NULL THEN [] ELSE [prior] END |
+    SET obsolete.reeval_pending = false,
+        obsolete.attribution_eval_at = datetime()
+)
+"""
+
+PROMOTE_STAGED_SOURCE_RECORD = """
+MATCH (sr:SourceRecord {source_record_pk: $source_record_pk, lifecycle_status: 'parked'})
+SET sr.lifecycle_status = 'pending_review',
+    sr.link_status = $link_status,
+    sr.expected_active_source_record_pk = $expected_active_source_record_pk,
+    sr.attribution_status = null,
+    sr.reeval_pending = null,
+    sr.attribution_eval_at = null
+WITH sr
+OPTIONAL MATCH (ir:IngestRun {
+  ingest_run_id: $ingest_run_id, control_instance_id: $control_instance_id
+})
+FOREACH (run IN CASE WHEN ir IS NULL THEN [] ELSE [ir] END |
+  MERGE (sr)-[:PART_OF_RUN]->(run)
 )
 RETURN sr.source_record_pk AS source_record_pk
 """

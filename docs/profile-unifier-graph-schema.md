@@ -357,6 +357,39 @@ different matching criteria later. `rental_flat` is a place register and is
   retried at end-of-run. See
   [`profile-unifier-entity-and-sales.md`](profile-unifier-entity-and-sales.md).
 
+### Identity assertions and skips
+
+`ASSERTS` records immutable source attribution from a `SourceRecord` to shared
+`Identifier`, `Address`, or `ProfileFact` evidence. Each relationship has a
+unique `assertion_id`, a `field_path`, and a `role` (`subject` in C1); retries
+merge the same edge and never rewrite or delete it. C1 asserts only usable
+identifiers and addresses, plus `full_name` and `dob` attributes. A `ProfileFact`
+node is keyed by `(attribute_name, attribute_value)`; it is an assertion target,
+not a replacement for Person `HAS_FACT` profile projection.
+
+`IngestSkip` records intentionally unpersisted input with a unique `skip_id`,
+`ingest_run_id`, `source_system`, `stage`, `reason`, and source ID or locator.
+Upstream SQL `WHERE` clauses and API query filters define a source's extraction
+scope rather than rows Python observed, so they are intentionally excluded from
+`IngestSkip`.
+A SourceRecord with `lifecycle_status='parked'` is persisted without a Person
+link and remains eligible for later re-evaluation; it is not active or latest.
+An `IngestRunAttempt` node stores durable counters for one process attempt and links to its
+`IngestRun` for cumulative reconciliation.
+Optional SourceRecord attribution properties are `attribution_status`,
+`attribution_score` (reserved for later work), `attribution_eval_at`, and
+`reeval_pending`. `IDENTITY_MODEL=v1` is the default; `v2_shadow` adds ASSERTS
+writes only and does not change matching or linking behavior.
+
+Every IngestPipeline record is staged as `parked` first and settled to
+`pending_review`/`active` once linked. A parked row reused by a later run is attached to that
+run with `PART_OF_RUN` when it settles, so run lineage matches a record that run created.
+
+Source retirement (`retire_source_evidence`) applies to `active`/`pending_review` rows only.
+No retirement-capable connector (the Fundbox API) can leave a record parked today; a connector
+that emits retirement markers for a record type that can be parked must add `parked` to the
+retirement lifecycle filters, otherwise a retracted parked row keeps `reeval_pending`.
+
 ### IngestRun
 
 Lightweight operational node for observability and replay.

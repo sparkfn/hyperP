@@ -45,4 +45,5 @@ class SpeedZoneSalesConnector(SourceConnector):
                 # SpeedZone customer ``custom_field_8/10_value`` holds the bike
                 # plate, emitted as the line ``lta_tag`` for vehicle extraction.
                 extract_bike_plate=True,
+                on_skip=self.record_skip,
             )

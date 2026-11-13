@@ -224,7 +224,7 @@ CALL (identity_key, source_system, source_record_id) {
   }
   WITH accepted
   WHERE NOT coalesce(
-    accepted.lifecycle_status IN ['pending_review', 'rejected', 'link_failed'], false
+    accepted.lifecycle_status IN ['pending_review', 'rejected', 'link_failed', 'parked'], false
   )
     AND NOT coalesce(
       accepted.lifecycle_status IS NULL AND accepted.link_status = 'pending_review', false
@@ -338,7 +338,7 @@ CALL (migration, identity_key, source_system, source_record_id, active_version) 
           version.migration_source_record_version +
         toString(size(duplicate_discriminator)) + ':' + duplicate_discriminator,
       version.lifecycle_status = CASE
-        WHEN version.lifecycle_status IN ['pending_review', 'rejected', 'link_failed']
+        WHEN version.lifecycle_status IN ['pending_review', 'rejected', 'link_failed', 'parked']
           THEN version.lifecycle_status
         WHEN version.lifecycle_status IS NULL AND version.link_status = 'pending_review'
           THEN 'pending_review'

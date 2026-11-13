@@ -102,6 +102,7 @@ def test_source_authorization_resolves_record_and_source_scoped_entities() -> No
     assert "OWNED_BY" in GET_ENTITY_FOR_SOURCE
     assert "OPERATED_BY" in GET_ENTITY_FOR_SOURCE
     assert "entity_keys" in GET_ENTITY_FOR_SOURCE
+    assert "coalesce(record.lifecycle_status, 'active') <> 'parked'" in GET_ENTITY_FOR_SOURCE
 
 
 def test_source_authorization_only_scans_records_without_a_source_owner() -> None:

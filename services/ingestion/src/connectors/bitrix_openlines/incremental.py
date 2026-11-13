@@ -11,6 +11,7 @@ from src.connectors.bitrix_openlines.connector import (
     OpenLinesClient,
 )
 from src.incremental_connector import IncrementalPage
+from src.ingest_skips import ConnectorSkip, SkipRecorder, SkipReporter
 from src.ingestion_config import BitrixOpenLinesConfig
 from src.models import JsonValue
 
@@ -35,7 +36,7 @@ class _StubWatermarkStore:
         pass
 
 
-class BitrixOpenLinesIncrementalConnector:
+class BitrixOpenLinesIncrementalConnector(SkipRecorder):
     """Adapt BitrixOpenLinesConnector to the IncrementalConnector protocol."""
 
     def __init__(
@@ -84,6 +85,13 @@ class BitrixOpenLinesIncrementalConnector:
             has_more=has_more,
             max_updated_at=max_ts,
         )
+
+    def drain_skips(self) -> list[ConnectorSkip]:
+        inner_skips: list[ConnectorSkip] = []
+        if self._inner is not None and isinstance(self._inner, SkipReporter):
+            inner_skips = self._inner.drain_skips()
+        own_skips = super().drain_skips()
+        return own_skips + inner_skips
 
     def close(self) -> None:
         self._records_iter = None

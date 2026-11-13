@@ -1,4 +1,4 @@
-"""SG bankruptcy ingestion is match-only: no new persons, unmatched dropped."""
+"""SG bankruptcy ingestion is match-only: no new persons, unmatched parked."""
 
 from __future__ import annotations
 
@@ -6,8 +6,19 @@ from typing import cast
 
 from _txmock import _RecordingTx, summary_counter_result
 from neo4j import ManagedTransaction
+from src.graph import queries
+from src.graph.queries.source_records import FIND_PARKED_SOURCE_RECORD_BY_HASH
 from src.models import SourceRecordEnvelope
 from src.pipeline import IngestPipeline, _is_match_only_source
+
+_EMPTY_LOCK_STATE: dict[str, object] = {
+    "source_record_pk": None,
+    "source_record_version": None,
+    "record_hash": None,
+    "lifecycle_status": None,
+    "linked_person_ids": [],
+    "max_source_record_version": None,
+}
 
 
 class _Result:
@@ -35,18 +46,26 @@ class _Tx(_RecordingTx):
             return counter
         self._record(query, kwargs)
         if "max_source_record_version" in query:
-            return _Result(
-                {
-                    "source_record_pk": None,
-                    "source_record_version": None,
-                    "record_hash": None,
-                    "lifecycle_status": None,
-                    "linked_person_ids": [],
-                    "max_source_record_version": None,
-                }
-            )
+            return _Result(dict(_EMPTY_LOCK_STATE))
         if "ACTIVATE" not in query and "pending.lifecycle_status = 'active'" in query:
             return _Result({"source_record_pk": "sr-1"})
+        if "CREATE (sr:SourceRecord" in query:
+            return _Result({"source_record_pk": "sr-parked"})
+        return _Result()
+
+
+class _ParkedDuplicateTx(_RecordingTx):
+    """An identical parked version already exists for this source identity."""
+
+    def run(self, query: str, **kwargs: object) -> _Result:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
+        self._record(query, kwargs)
+        if query == FIND_PARKED_SOURCE_RECORD_BY_HASH:
+            return _Result({"source_record_pk": "sr-parked"})
+        if "max_source_record_version" in query:
+            return _Result(dict(_EMPTY_LOCK_STATE))
         return _Result()
 
 
@@ -138,18 +157,39 @@ def test_sgbankruptcy_is_match_only_source() -> None:
     assert _is_match_only_source("fundbox") is False
 
 
-def test_unmatched_bankruptcy_record_is_dropped_with_no_writes() -> None:
+def test_unmatched_bankruptcy_record_is_persisted_parked_without_identity_writes() -> None:
     tx = _Tx()
     client = _Client(tx)
     pipeline = IngestPipeline(cast(object, client))
 
     result = pipeline.ingest(_bankruptcy_envelope(), ingest_run_id="run-1")
 
-    assert result.dropped is True
+    assert result.parked is True
     assert result.person_id is None
-    all_queries = [q for q, _ in tx.calls]
-    assert not any("CREATE (p:Person" in q or "MERGE (p:Person" in q for q in all_queries)
-    assert not any("CREATE (sr:SourceRecord" in q for q in all_queries)
+    assert result.source_record_pk == "sr-parked"
+    issued = [q for q, _ in tx.calls]
+    assert not any("CREATE (p:Person" in q or "MERGE (p:Person" in q for q in issued)
+    assert queries.CREATE_MATCH_DECISION not in issued
+    assert queries.LINK_SOURCE_RECORD_TO_PERSON not in issued
+    assert queries.ACTIVATE_FIRST_SOURCE_RECORD_VERSION not in issued
+    creates = [params for query, params in tx.calls if query == queries.CREATE_SOURCE_RECORD]
+    assert len(creates) == 1
+    assert creates[0]["lifecycle_status"] == "parked"
+    assert creates[0]["link_status"] == "unlinked"
+    assert creates[0]["expected_active_source_record_pk"] is None
+
+
+def test_rerun_of_a_parked_record_is_a_duplicate_without_writes() -> None:
+    tx = _ParkedDuplicateTx()
+    client = _Client(tx)
+    pipeline = IngestPipeline(cast(object, client))
+
+    result = pipeline.ingest(_bankruptcy_envelope(), ingest_run_id="run-1")
+
+    assert result.skipped_duplicate is True
+    assert result.parked is True
+    assert result.source_record_pk == "sr-parked"
+    assert not any(query == queries.CREATE_SOURCE_RECORD for query, _ in tx.calls)
 
 
 def test_matched_bankruptcy_record_links_to_existing_person() -> None:
@@ -159,6 +199,6 @@ def test_matched_bankruptcy_record_links_to_existing_person() -> None:
 
     result = pipeline.ingest(_bankruptcy_envelope(), ingest_run_id="run-1")
 
-    assert result.dropped is False
+    assert result.parked is False
     assert result.person_id == "person-1"
     assert result.is_new_person is False

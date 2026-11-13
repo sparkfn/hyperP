@@ -111,7 +111,10 @@ def test_lifecycle_migration_preserves_review_and_terminal_states() -> None:
     assert "'rejected'" in query
     assert "'link_failed'" in query
     assert "version.link_status = 'pending_review'" in query
-    assert "version.lifecycle_status IN ['pending_review', 'rejected', 'link_failed']" in query
+    assert "'parked'" in query
+    assert (
+        "version.lifecycle_status IN ['pending_review', 'rejected', 'link_failed', 'parked']"
+    ) in query
 
 
 def test_legacy_null_status_predicate_is_explicitly_two_valued_in_cypher() -> None:
@@ -122,7 +125,7 @@ def test_legacy_null_status_predicate_is_explicitly_two_valued_in_cypher() -> No
     assert "coalesce(" in query
     assert (
         "coalesce( accepted.lifecycle_status IN "
-        "['pending_review', 'rejected', 'link_failed'], false )"
+        "['pending_review', 'rejected', 'link_failed', 'parked'], false )"
     ) in compact_query
     assert (
         "coalesce( accepted.lifecycle_status IS NULL AND "

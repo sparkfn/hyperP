@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import json
 import logging
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Literal
 
@@ -24,6 +25,7 @@ from neo4j import ManagedTransaction
 
 from src.bitrix_backfill_runtime import record_terminal_unit, source_lineage_text
 from src.bitrix_ingestion_models import ExecutionContext, FenceContext
+from src.config import IdentityModel, get_settings
 from src.exclusions import ExclusionContext, is_excluded_vehicle_observation
 from src.golden_profile import compute_golden_profile
 from src.graph import queries
@@ -76,10 +78,12 @@ from src.pipeline_writes import (
     create_review_case_if_needed,
     find_candidates,
     link_record_to_graph,
+    link_status_for,
     persist_match_decision,
     persist_source_record,
     record_auto_merge_event,
     retire_identity_projections,
+    settle_staged_source_record,
     upsert_nodes,
 )
 from src.profile_analysis_dirty import mark_profile_analysis_dirty
@@ -149,6 +153,12 @@ _CRM_DEAL_CONTINUITY_RAW_KEYS = (
 )
 
 
+@dataclass(frozen=True)
+class _Staged:
+    source_record_pk: str
+    created: bool
+
+
 class IngestPipeline:
     """Processes a single source record through the full ingestion flow.
 
@@ -163,10 +173,13 @@ class IngestPipeline:
         fence_context: FenceContext | None = None,
         execution_context: ExecutionContext | None = None,
         control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+        identity_model: IdentityModel | None = None,
     ) -> None:
         if execution_context is not None and fence_context is not None:
             raise ValueError("supply execution_context or fence_context, not both")
         self._client = client
+        resolved_identity_model = identity_model or get_settings().identity_model
+        self._shadow_assertions = resolved_identity_model == "v2_shadow"
         self._match_engine = MatchEngine()
         self._execution_context = execution_context
         self._fence_context = (
@@ -258,13 +271,17 @@ class IngestPipeline:
                         scope_state="in_scope",
                         category_id=category_id,
                         entity_key=envelope.entity_key,
-                        source_record_pk=result.source_record_pk,
+                        source_record_pk=None if result.parked else result.source_record_pk,
                     )
                 ],
                 fence_context=context.fence_context,
             )
             scope_state = "in_scope"
-        if envelope.record_type == RecordType.CONVERSATION and result.source_record_pk is not None:
+        if (
+            envelope.record_type == RecordType.CONVERSATION
+            and result.source_record_pk is not None
+            and not result.parked
+        ):
             activity_ids = envelope.raw_payload.get("crm_activity_ids")
             if isinstance(activity_ids, list):
                 tx.run(
@@ -359,6 +376,15 @@ class IngestPipeline:
             active_exclusion_context,
         )
         person_identifiers = projected_identifiers(envelope, identifiers)
+        staged = self._stage_source_record(
+            tx,
+            envelope=envelope,
+            identifiers=person_identifiers,
+            addresses=addresses,
+            attributes=attributes,
+            ingest_run_id=ingest_run_id,
+            activation_blueprint=activation_blueprint,
+        )
         continuity_person_id = (
             lifecycle_plan.prior_person_ids[0]
             if len(lifecycle_plan.prior_person_ids) == 1
@@ -401,15 +427,18 @@ class IngestPipeline:
                 and canonical_contact_result is None
             ):
                 logger.info(
-                    "Dropping CRM deal %s: contacts do not resolve to one existing person",
+                    "Parking CRM deal %s: contacts do not resolve to one existing person",
                     envelope.source_record_id,
                 )
                 if rejected_pending:
                     collector.finalize(tx)
                 return IngestResult(
                     source_record_id=envelope.source_record_id,
+                    source_record_pk=staged.source_record_pk,
+                    skipped_duplicate=not staged.created,
+                    parked=True,
+                    match_decision=None,
                     ingest_run_id=ingest_run_id,
-                    dropped=True,
                 )
             if len(lifecycle_plan.prior_person_ids) > 1:
                 match_result = ambiguous_prior_owners_result(lifecycle_plan.prior_person_ids)
@@ -446,7 +475,7 @@ class IngestPipeline:
             and not self._has_usable_match(match_result, candidates)
         ):
             logger.info(
-                "Dropping unmatched match-only record %s (source=%s, decision=%s)",
+                "Parking unmatched match-only record %s (source=%s, decision=%s)",
                 envelope.source_record_id,
                 envelope.source_system,
                 match_result.decision.value,
@@ -455,8 +484,11 @@ class IngestPipeline:
                 collector.finalize(tx)
             return IngestResult(
                 source_record_id=envelope.source_record_id,
+                source_record_pk=staged.source_record_pk,
+                skipped_duplicate=not staged.created,
+                parked=True,
+                match_decision=None,
                 ingest_run_id=ingest_run_id,
-                dropped=True,
             )
         if durable_quarantine:
             logger.info(
@@ -467,13 +499,10 @@ class IngestPipeline:
             quarantine_result = self._persist_unlinked_review(
                 tx,
                 envelope=envelope,
-                identifiers=person_identifiers,
-                addresses=addresses,
-                attributes=attributes,
+                source_record_pk=staged.source_record_pk,
                 match_result=match_result,
                 ingest_run_id=ingest_run_id,
                 lifecycle_plan=lifecycle_plan,
-                activation_blueprint=activation_blueprint,
                 collector=collector,
             )
             collector.finalize(tx)
@@ -489,20 +518,15 @@ class IngestPipeline:
         person_id, is_new_person = self._resolve_person(tx, match_result, candidates)
         if is_new_person:
             collector.mark_new(person_ids=[person_id])
-        source_record_pk = persist_source_record(
+        settle_staged_source_record(
             tx,
-            envelope=envelope,
-            identifiers=person_identifiers,
-            addresses=addresses,
-            attributes=attributes,
-            match_result=match_result,
-            is_new_person=is_new_person,
-            ingest_run_id=ingest_run_id,
-            lifecycle_status=SourceRecordLifecycleStatus.PENDING_REVIEW,
+            staged.source_record_pk,
+            link_status=link_status_for(match_result, is_new_person),
             expected_active_source_record_pk=lifecycle_plan.active_source_record_pk,
-            activation_blueprint=activation_blueprint,
+            ingest_run_id=ingest_run_id,
             control_instance_id=self._control_instance_id,
         )
+        source_record_pk = staged.source_record_pk
         collector.mark_new(source_record_pks=[source_record_pk])
         match_decision_id = persist_match_decision(tx, match_result, source_record_pk)
         review_case_id = create_review_case_if_needed(
@@ -972,7 +996,7 @@ class IngestPipeline:
             return set()
         return {candidate.person_id for candidate in find_candidates(tx, canonical_identifiers, [])}
 
-    def _persist_unlinked_review(
+    def _stage_source_record(
         self,
         tx: ManagedTransaction,
         *,
@@ -980,25 +1004,63 @@ class IngestPipeline:
         identifiers: list[NormalizedIdentifier],
         addresses: list[NormalizedAddressModel],
         attributes: list[NormalizedAttribute],
-        match_result: MatchResult,
         ingest_run_id: str | None,
-        lifecycle_plan: PlannedVersion,
         activation_blueprint: dict[str, JsonValue],
-        collector: PersonListSummaryDeltaCollector,
-    ) -> IngestResult:
-        source_record_pk = persist_source_record(
+    ) -> _Staged:
+        """Stage the SourceRecord as parked first before candidate or match logic.
+
+        If an identical parked version already exists for this source identity,
+        reuse it without rewriting. Otherwise persist the new version with
+        lifecycle_status='parked', link_status='unlinked', and attribution='parked'.
+        """
+        planned_version = int(envelope.source_record_version or "1")
+        parked = tx.run(
+            queries.FIND_PARKED_SOURCE_RECORD_BY_HASH,
+            source_system=envelope.source_system,
+            source_instance_id=effective_source_instance_id(envelope.source_instance_id),
+            source_record_id=envelope.source_record_id,
+            record_hash=envelope.record_hash,
+            latest_version=planned_version - 1,
+        ).single()
+        if parked is not None:
+            return _Staged(source_record_pk=str(parked["source_record_pk"]), created=False)
+        pk = persist_source_record(
             tx,
             envelope=envelope,
             identifiers=identifiers,
             addresses=addresses,
             attributes=attributes,
-            match_result=match_result,
+            match_result=None,
             is_new_person=False,
             ingest_run_id=ingest_run_id,
-            lifecycle_status=SourceRecordLifecycleStatus.PENDING_REVIEW,
-            expected_active_source_record_pk=lifecycle_plan.active_source_record_pk,
+            lifecycle_status=SourceRecordLifecycleStatus.PARKED,
+            expected_active_source_record_pk=None,
             activation_blueprint=activation_blueprint,
+            link_status="unlinked",
+            control_instance_id=self._control_instance_id,
+            attribution_status="parked",
+            reeval_pending=True,
+            shadow_assertions=self._shadow_assertions,
+        )
+        return _Staged(source_record_pk=pk, created=True)
+
+    def _persist_unlinked_review(
+        self,
+        tx: ManagedTransaction,
+        *,
+        envelope: SourceRecordEnvelope,
+        source_record_pk: str,
+        match_result: MatchResult,
+        ingest_run_id: str | None,
+        lifecycle_plan: PlannedVersion,
+        collector: PersonListSummaryDeltaCollector,
+    ) -> IngestResult:
+        settle_staged_source_record(
+            tx,
+            source_record_pk,
             link_status="blocked",
+            expected_active_source_record_pk=lifecycle_plan.active_source_record_pk,
+            ingest_run_id=ingest_run_id,
             control_instance_id=self._control_instance_id,
         )
         collector.mark_new(source_record_pks=[source_record_pk])

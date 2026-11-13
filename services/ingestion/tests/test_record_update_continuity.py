@@ -4,7 +4,7 @@ import json
 from collections.abc import Iterator
 from contextlib import ExitStack
 from typing import cast
-from unittest.mock import DEFAULT, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from _txmock import summary_counter_result
@@ -14,6 +14,8 @@ from src.models import MatchDecision, MatchResult, RecordType, SourceRecordEnvel
 from src.pipeline import IngestPipeline
 from src.pipeline_writes import persist_match_decision, retire_identity_projections
 from src.record_lifecycle import PlannedVersion
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID
+from tests._staging_tx import tx_without_parked_row
 
 
 class _Rows:
@@ -182,11 +184,7 @@ def _envelope() -> SourceRecordEnvelope:
 
 def test_multi_owner_changed_update_stays_pending_without_active_side_effects() -> None:
     pipeline = IngestPipeline(cast(object, MagicMock()))
-    tx_mock = MagicMock()
-    tx_mock.run.side_effect = (
-        lambda query, *_args, **_kwargs: summary_counter_result(query) or DEFAULT
-    )
-    tx = cast(ManagedTransaction, tx_mock)
+    tx = tx_without_parked_row()
     plan = PlannedVersion(
         version=2,
         active_source_record_pk="old-sr",
@@ -201,6 +199,9 @@ def test_multi_owner_changed_update_stays_pending_without_active_side_effects() 
         stack.enter_context(patch("src.pipeline.upsert_nodes"))
         persist = stack.enter_context(
             patch("src.pipeline.persist_source_record", return_value="new-sr")
+        )
+        settle = stack.enter_context(
+            patch("src.pipeline.settle_staged_source_record", return_value="new-sr")
         )
         stack.enter_context(patch("src.pipeline.persist_match_decision", return_value="decision-1"))
         review = stack.enter_context(
@@ -222,8 +223,17 @@ def test_multi_owner_changed_update_stays_pending_without_active_side_effects() 
     assert result.person_id == "person-a"
     find.assert_called_once()
     match_engine.evaluate.assert_not_called()
-    assert persist.call_args.kwargs["lifecycle_status"].value == "pending_review"
-    assert persist.call_args.kwargs["expected_active_source_record_pk"] == "old-sr"
+    assert persist.call_args.kwargs["lifecycle_status"].value == "parked"
+    assert persist.call_args.kwargs["link_status"] == "unlinked"
+    assert persist.call_args.kwargs["expected_active_source_record_pk"] is None
+    settle.assert_called_once_with(
+        tx,
+        "new-sr",
+        link_status="pending_review",
+        expected_active_source_record_pk="old-sr",
+        ingest_run_id=None,
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    )
     review.assert_called_once()
     assert link.call_args.kwargs["attach_evidence"] is False
     retire.assert_not_called()
@@ -275,17 +285,16 @@ def test_accepted_update_retires_activates_and_recomputes_complete_affected_set(
             )
         )
     )
-    tx_mock = MagicMock()
-    tx_mock.run.side_effect = (
-        lambda query, *_args, **_kwargs: summary_counter_result(query) or DEFAULT
-    )
-    tx = cast(ManagedTransaction, tx_mock)
+    tx = tx_without_parked_row()
     plan = PlannedVersion(2, old_pk, prior, None)
 
     with ExitStack() as stack:
         stack.enter_context(patch("src.pipeline.find_candidates", return_value=[]))
         stack.enter_context(patch("src.pipeline.upsert_nodes"))
         stack.enter_context(patch("src.pipeline.persist_source_record", return_value="new-sr"))
+        settle = stack.enter_context(
+            patch("src.pipeline.settle_staged_source_record", return_value="new-sr")
+        )
         stack.enter_context(patch("src.pipeline.persist_match_decision", return_value="decision-1"))
         stack.enter_context(patch("src.pipeline.create_review_case_if_needed", return_value=None))
         link = stack.enter_context(patch("src.pipeline.link_record_to_graph"))
@@ -306,6 +315,14 @@ def test_accepted_update_retires_activates_and_recomputes_complete_affected_set(
         retire.assert_not_called()
     else:
         retire.assert_called_once_with(tx, old_pk)
+    settle.assert_called_once_with(
+        tx,
+        "new-sr",
+        link_status="linked",
+        expected_active_source_record_pk=old_pk,
+        ingest_run_id=None,
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    )
     activate.assert_called_once()
     assert activate.call_args.kwargs["old_source_record_pk"] == old_pk
     assert all(call.kwargs["attach_evidence"] for call in link.call_args_list)
@@ -426,11 +443,7 @@ def _crm_normalized_payload() -> str:
 def test_unchanged_crm_identity_update_reuses_continuity_without_rematching() -> None:
     pipeline = IngestPipeline(cast(object, MagicMock()))
     pipeline._match_engine = MagicMock()
-    tx_mock = MagicMock()
-    tx_mock.run.side_effect = (
-        lambda query, *_args, **_kwargs: summary_counter_result(query) or DEFAULT
-    )
-    tx = cast(ManagedTransaction, tx_mock)
+    tx = tx_without_parked_row()
     envelope = _crm_deal_envelope()
     plan = PlannedVersion(
         version=2,
@@ -446,6 +459,9 @@ def test_unchanged_crm_identity_update_reuses_continuity_without_rematching() ->
         upsert = stack.enter_context(patch("src.pipeline.upsert_nodes"))
         persist = stack.enter_context(
             patch("src.pipeline.persist_source_record", return_value="new-sr")
+        )
+        settle = stack.enter_context(
+            patch("src.pipeline.settle_staged_source_record", return_value="new-sr")
         )
         stack.enter_context(patch("src.pipeline.persist_match_decision", return_value="decision-1"))
         stack.enter_context(patch("src.pipeline.create_review_case_if_needed", return_value=None))
@@ -468,7 +484,17 @@ def test_unchanged_crm_identity_update_reuses_continuity_without_rematching() ->
     find.assert_not_called()
     pipeline._match_engine.evaluate.assert_not_called()
     upsert.assert_not_called()
-    assert persist.call_args.kwargs["match_result"].reasons == ["unchanged_crm_identity_continuity"]
+    assert persist.call_args.kwargs["lifecycle_status"].value == "parked"
+    assert persist.call_args.kwargs["link_status"] == "unlinked"
+    assert persist.call_args.kwargs["expected_active_source_record_pk"] is None
+    settle.assert_called_once_with(
+        tx,
+        "new-sr",
+        link_status="linked",
+        expected_active_source_record_pk="old-sr",
+        ingest_run_id=None,
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    )
     retire.assert_called_once_with(tx, "old-sr", person_ids=("person-a",))
     activate.assert_called_once()
     golden.assert_not_called()
@@ -488,11 +514,7 @@ def test_crm_contact_change_uses_full_matching_and_projection_refresh() -> None:
             )
         )
     )
-    tx_mock = MagicMock()
-    tx_mock.run.side_effect = (
-        lambda query, *_args, **_kwargs: summary_counter_result(query) or DEFAULT
-    )
-    tx = cast(ManagedTransaction, tx_mock)
+    tx = tx_without_parked_row()
     envelope = _crm_deal_envelope(contact_ids=["contact-1"])
     prior_raw = dict(envelope.raw_payload)
     prior_raw["crm_contact_ids"] = ["contact-old"]
@@ -509,6 +531,9 @@ def test_crm_contact_change_uses_full_matching_and_projection_refresh() -> None:
         find = stack.enter_context(patch("src.pipeline.find_candidates", return_value=[]))
         upsert = stack.enter_context(patch("src.pipeline.upsert_nodes"))
         stack.enter_context(patch("src.pipeline.persist_source_record", return_value="new-sr"))
+        settle = stack.enter_context(
+            patch("src.pipeline.settle_staged_source_record", return_value="new-sr")
+        )
         stack.enter_context(patch("src.pipeline.persist_match_decision", return_value="decision-1"))
         stack.enter_context(patch("src.pipeline.create_review_case_if_needed", return_value=None))
         stack.enter_context(patch("src.pipeline.link_record_to_graph"))
@@ -528,6 +553,14 @@ def test_crm_contact_change_uses_full_matching_and_projection_refresh() -> None:
     find.assert_called_once()
     pipeline._match_engine.evaluate.assert_called_once()
     upsert.assert_called_once()
+    settle.assert_called_once_with(
+        tx,
+        "new-sr",
+        link_status="linked",
+        expected_active_source_record_pk="old-sr",
+        ingest_run_id=None,
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    )
     golden.assert_called_once_with(tx, "person-a")
     audit.assert_called_once()
     merge_event.assert_called_once()

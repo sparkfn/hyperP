@@ -2,11 +2,13 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from typing import cast
+from collections.abc import Callable
+from dataclasses import dataclass, field, replace
+from typing import TypeVar, cast
 
 import pytest
 from celery.exceptions import Reject
+from neo4j import ManagedTransaction
 from pytest import MonkeyPatch
 from src import tasks
 from src.bitrix_backfill_models import GenerationRunContext, KnownOwnerMembershipSet
@@ -17,17 +19,46 @@ from src.graph.ingestion_control_models import (
     LogicalRunAttempt,
     LogicalRunState,
 )
+from src.graph.queries.ingest_skips import RECONCILE_INGEST_RUN_ACCOUNTING
+from src.graph.queries.ingestion_control import LOCK_AND_ASSERT_ACTIVE_BITRIX_FENCE
 from src.main import IngestionSummary
 from src.models import JsonValue
 from src.resumable import LogicalRunStatus
+
+T = TypeVar("T")
+
+
+@dataclass
+class _ReconcileResult:
+    record: dict[str, object] | None
+
+    def single(self) -> dict[str, object] | None:
+        return self.record
+
+
+@dataclass
+class _ReconcileTx:
+    client: _Client
+
+    def run(self, query: str, **kwargs: object) -> _ReconcileResult:
+        self.client.statements.append((query, kwargs))
+        if query == LOCK_AND_ASSERT_ACTIVE_BITRIX_FENCE and not self.client.fence_active:
+            return _ReconcileResult(None)
+        return _ReconcileResult({"reconciled": self.client.reconciled})
 
 
 @dataclass
 class _Client:
     closed: bool = False
+    reconciled: bool = True
+    fence_active: bool = True
+    statements: list[tuple[str, dict[str, object]]] = field(default_factory=list)
 
     def close(self) -> None:
         self.closed = True
+
+    def execute_write(self, work: Callable[[ManagedTransaction], T]) -> T:
+        return work(cast(ManagedTransaction, _ReconcileTx(self)))
 
 
 class _LogicalControl:
@@ -646,7 +677,205 @@ def test_failed_refresh_phase_resumes_with_durable_connector_and_cursor(
     assert refresh_cursor == {"last_known_deal_id": "901", "census_epoch": 1}
     assert finalized == [(3, 149_578)]
     assert summary["succeeded"] == 1
+    assert [query for query, _ in client.statements] == [
+        LOCK_AND_ASSERT_ACTIVE_BITRIX_FENCE,
+        RECONCILE_INGEST_RUN_ACCOUNTING,
+    ]
+    assert client.statements[-1][1]["ingest_run_id"] == "ingest-3"
     assert client.closed is True
+
+
+class _RefreshPhaseLogicalControl(_LogicalControl):
+    """Logical control double that advances into the known-owner refresh phase."""
+
+    phase = "scoped_deal_census_v1"
+
+    def get(self, _logical_run_id: str) -> LogicalRunState:
+        return replace(super().get(_logical_run_id), phase=self.phase)
+
+    def transition_phase_fenced(self, **_parameters: object) -> bool:
+        self.phase = "known_owner_refresh_v1"
+        return True
+
+
+def _patch_generation_run(
+    monkeypatch: MonkeyPatch,
+    client: _Client,
+    membership: KnownOwnerMembershipSet,
+    *,
+    census_records: int,
+    refreshed: int,
+    moved_out_of_scope: int,
+    logical_control: type[_RefreshPhaseLogicalControl] = _RefreshPhaseLogicalControl,
+) -> None:
+    """Install the double stack of one generation-scoped split run."""
+
+    class Repository:
+        def __init__(self, _client: object) -> None:
+            pass
+
+        def attach_logical_run(self, **_parameters: object) -> None:
+            pass
+
+        def find_known_owner_set(self, **_parameters: object) -> KnownOwnerMembershipSet:
+            return membership
+
+        def materialize_known_owner_set(self, **_parameters: object) -> KnownOwnerMembershipSet:
+            raise AssertionError("a sealed membership set must never be rebuilt")
+
+    class Config:
+        included_crm_category_ids = ("1",)
+        entity_by_crm_category_id = {"1": "entity-1"}
+        source_instance_id = "bitrix-primary"
+
+    class IngestionConfig:
+        bitrix_openlines = Config()
+
+    monkeypatch.setattr(tasks, "Neo4jClient", lambda _settings: client)
+    monkeypatch.setattr(tasks, "LogicalRunControl", logical_control)
+    monkeypatch.setattr(tasks, "BitrixStreamControl", _StreamControl)
+    monkeypatch.setattr(tasks, "BitrixBackfillRepository", Repository)
+    monkeypatch.setattr(tasks, "get_settings", lambda: object())
+    monkeypatch.setattr(tasks, "get_ingestion_config", lambda: IngestionConfig())
+    monkeypatch.setattr(tasks, "create_bitrix_known_owner_client", lambda **_kwargs: object())
+    monkeypatch.setattr(
+        tasks,
+        "run_ingestion",
+        lambda *_args, **_kwargs: {
+            "ingest_run_id": "ingest-1",
+            "status": "completed",
+            "succeeded": census_records,
+            "errors": 0,
+            "skipped": 0,
+            "source_key": "bitrix_chat",
+            "mode": "backfill",
+            "dump_path": None,
+            "entity_key": None,
+            "http_request_count": 1,
+        },
+    )
+    monkeypatch.setattr(
+        tasks,
+        "refresh_known_owner_set",
+        lambda *_args, **_kwargs: KnownOwnerRefreshSummary(
+            refreshed=refreshed,
+            moved_out_of_scope=moved_out_of_scope,
+            missing_candidates=0,
+            unresolved=0,
+            http_request_count=1,
+        ),
+    )
+
+
+def _run_generation_split() -> IngestionSummary:
+    return tasks._run_split_bitrix_ingestion(
+        source_key="bitrix_chat",
+        mode="backfill",
+        dump_path=None,
+        incremental=False,
+        idempotency_key="bitrix-backfill:generation-1:crm_deals:boundary:config",
+        stream_key="crm_deals",
+        worker_task_id="task-1",
+        generation_context=GenerationRunContext(
+            generation_id="generation-1",
+            boundary_digest="sha256:boundary",
+            configuration_digest="sha256:config",
+        ),
+        source_window={
+            "upper_deal_id": "900",
+            "included_category_digest": "sha256:categories",
+            "owner_artifact_id": None,
+        },
+    )
+
+
+def _membership() -> KnownOwnerMembershipSet:
+    return KnownOwnerMembershipSet(
+        generation_id="generation-1",
+        membership_set_id="generation-1:known-owners:sha256:boundary",
+        digest="sha256:owners",
+        deal_ids=("2", "10"),
+    )
+
+
+def test_split_task_reconciles_the_ledger_after_the_known_owner_refresh(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    client = _Client()
+    _patch_generation_run(
+        monkeypatch,
+        client,
+        _membership(),
+        census_records=2,
+        refreshed=1,
+        moved_out_of_scope=1,
+    )
+
+    summary = _run_generation_split()
+
+    assert summary["succeeded"] == 4
+    assert [query for query, _ in client.statements] == [
+        LOCK_AND_ASSERT_ACTIVE_BITRIX_FENCE,
+        RECONCILE_INGEST_RUN_ACCOUNTING,
+    ]
+    assert client.statements[-1][1]["ingest_run_id"] == "ingest-1"
+
+
+def test_split_task_fails_closed_when_the_final_reconciliation_fails(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    client = _Client(reconciled=False)
+
+    class LogicalControl(_RefreshPhaseLogicalControl):
+        def fail_fenced(self, **parameters: object) -> None:
+            _LogicalControl.failed.append(cast(str, parameters["failure_category"]))
+
+    _patch_generation_run(
+        monkeypatch,
+        client,
+        _membership(),
+        census_records=1,
+        refreshed=1,
+        moved_out_of_scope=0,
+        logical_control=LogicalControl,
+    )
+    _LogicalControl.failed.clear()
+    _LogicalControl.finalized.clear()
+
+    with pytest.raises(RuntimeError, match="reconciliation failed"):
+        _run_generation_split()
+
+    assert _LogicalControl.finalized == []
+    assert _LogicalControl.failed == ["RuntimeError"]
+
+
+def test_split_task_refuses_to_reconcile_a_stale_fence(monkeypatch: MonkeyPatch) -> None:
+    client = _Client(fence_active=False)
+
+    class LogicalControl(_RefreshPhaseLogicalControl):
+        def fail_fenced(self, **parameters: object) -> None:
+            _LogicalControl.failed.append(cast(str, parameters["failure_category"]))
+
+    _patch_generation_run(
+        monkeypatch,
+        client,
+        _membership(),
+        census_records=1,
+        refreshed=1,
+        moved_out_of_scope=0,
+        logical_control=LogicalControl,
+    )
+    _LogicalControl.failed.clear()
+    _LogicalControl.finalized.clear()
+
+    with pytest.raises(RuntimeError, match="fence is stale or inactive"):
+        _run_generation_split()
+
+    assert _LogicalControl.finalized == []
+    assert _LogicalControl.failed == ["RuntimeError"]
+    assert [query for query, _ in client.statements] == [
+        LOCK_AND_ASSERT_ACTIVE_BITRIX_FENCE,
+    ]
 
 
 def test_resume_normalizes_deployed_known_owner_cursor_key() -> None:
