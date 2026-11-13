@@ -392,6 +392,7 @@ def _seed_deal(
     source_record_pk: str | None,
     person_id: str,
     source_system: str = "bitrix_chat",
+    source_instance_id: str = "legacy-default",
     record_type: str = "crm_deal",
     lifecycle_status: str | None = "active",
     is_latest: bool | None = True,
@@ -412,7 +413,7 @@ def _seed_deal(
             CREATE (deal:SourceRecord {
               source_record_pk: $source_record_pk,
               source_record_id: coalesce($source_record_id, $source_record_pk),
-              source_instance_id: 'legacy-default',
+              source_instance_id: $source_instance_id,
               source_record_version: 1,
               record_hash: 'hash-' + toString($source_record_pk),
               record_type: $record_type,
@@ -439,6 +440,7 @@ def _seed_deal(
             source_record_pk=source_record_pk,
             source_record_id=source_record_id,
             source_system=source_system,
+            source_instance_id=source_instance_id,
             record_type=record_type,
             lifecycle_status=lifecycle_status,
             is_latest=is_latest,
@@ -503,7 +505,7 @@ def _envelope(
     source_record_id: str,
     record_type: str = "identity",
     source_system: str = "bitrix_chat",
-    source_instance_id: str = "legacy-default",
+    source_instance_id: str | None = None,
     raw_payload: dict[str, JsonValue] | None = None,
     attributes: dict[str, JsonValue] | None = None,
     observed_at: str | None = None,
@@ -1165,6 +1167,7 @@ def test_cross_type_deal_replaced_by_a_company_reference(
         source_record_pk="deal-1",
         person_id="p-1",
         source_record_id="shared-2",
+        source_instance_id="portal-a",
         observed_at=_MONTH_START,
     )
     backfill_person_list_summary(client)
@@ -1174,11 +1177,12 @@ def test_cross_type_deal_replaced_by_a_company_reference(
         _envelope(
             source_record_id="shared-2",
             record_type="crm_company",
+            source_instance_id="portal-a",
             raw_payload={
                 "company_reference": {"type": "crm_company_id", "value": "303"},
                 "reference_metadata": {
                     "identity_policy_version": "crm_company_reference_v1",
-                    "source_instance_id": "legacy-default",
+                    "source_instance_id": "portal-a",
                     "crm_company_id": "303",
                     "person_matching_prohibited": True,
                 },
@@ -1507,11 +1511,13 @@ def test_two_writers_on_the_same_person_keep_the_counter_consistent(
     def _first_writer() -> None:
         try:
             client.execute_write(
-                _publish_person_delta_while_locked,
-                person_id="p-1",
-                phone="+6580000001",
-                lock_acquired=first_locked,
-                release_lock=release_first,
+                lambda tx: _publish_person_delta_while_locked(
+                    tx,
+                    person_id="p-1",
+                    phone="+6580000001",
+                    lock_acquired=first_locked,
+                    release_lock=release_first,
+                )
             )
         except BaseException as exc:  # noqa: BLE001 - surfaced in the assertion
             errors.append(exc)
@@ -1578,11 +1584,13 @@ def test_two_writers_on_a_shared_deal_keep_the_counter_consistent(
     def _first_writer() -> None:
         try:
             client.execute_write(
-                _publish_deal_delta_while_locked,
-                source_record_pk="deal-1",
-                lifecycle_status="superseded",
-                lock_acquired=first_locked,
-                release_lock=release_first,
+                lambda tx: _publish_deal_delta_while_locked(
+                    tx,
+                    source_record_pk="deal-1",
+                    lifecycle_status="superseded",
+                    lock_acquired=first_locked,
+                    release_lock=release_first,
+                )
             )
         except BaseException as exc:  # noqa: BLE001 - surfaced in the assertion
             errors.append(exc)
@@ -1818,9 +1826,11 @@ def test_synthetic_benchmark_reports_a_collector_bearing_write(
 
     def _write(index: int) -> None:
         client.execute_write(
-            _publish_person_delta,
-            person_id="bench-p-1",
-            phone=f"+65800000{index:02d}",
+            lambda tx: _publish_person_delta(
+                tx,
+                person_id="bench-p-1",
+                phone=f"+65800000{index:02d}",
+            )
         )
 
     for index in range(3):
@@ -1872,9 +1882,11 @@ def test_two_writer_contention_reports_the_lock_wait(
         started = time.perf_counter()
         try:
             client.execute_write(
-                _publish_person_delta,
-                person_id="p-1",
-                phone="+6580000002",
+                lambda tx: _publish_person_delta(
+                    tx,
+                    person_id="p-1",
+                    phone="+6580000002",
+                )
             )
         except BaseException as exc:  # noqa: BLE001 - surfaced in the assertion
             errors.append(exc)
