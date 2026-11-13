@@ -369,6 +369,9 @@ not a replacement for Person `HAS_FACT` profile projection.
 
 `IngestSkip` records intentionally unpersisted input with a unique `skip_id`,
 `ingest_run_id`, `source_system`, `stage`, `reason`, and source ID or locator.
+Upstream SQL `WHERE` clauses and API query filters define a source's extraction
+scope rather than rows Python observed, so they are intentionally excluded from
+`IngestSkip`.
 A SourceRecord with `lifecycle_status='parked'` is persisted without a Person
 link and remains eligible for later re-evaluation; it is not active or latest.
 An `IngestRunAttempt` node stores durable counters for one process attempt and links to its

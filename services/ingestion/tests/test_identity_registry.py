@@ -8,6 +8,7 @@ from pathlib import Path
 from src.graph.bootstrap import _SOURCE_SYSTEMS
 from src.identity_registry import (
     IDENTIFIER_TYPE_REGISTRY,
+    PROMOTION_MIN_TRUST_TIERS,
     IdentifierTypePolicy,
     identifier_policy,
     source_promotes_person,
@@ -102,9 +103,24 @@ def test_every_connector_identifier_type_is_registered_or_social_wildcard() -> N
     )
 
 
-def test_all_registered_types_have_none_half_life_days() -> None:
-    for identifier_type, policy in IDENTIFIER_TYPE_REGISTRY.items():
-        assert policy.half_life_days is None, f"{identifier_type} must not invent half_life_days"
+def test_half_life_days_and_promotion_trust_floor_defaults() -> None:
+    assert PROMOTION_MIN_TRUST_TIERS == frozenset({"tier_1", "tier_2", "tier_3", "tier_4"})
+
+    assert identifier_policy("phone").half_life_days == 365
+    assert identifier_policy("email").half_life_days == 730
+    assert identifier_policy("device_id").half_life_days == 180
+    assert identifier_policy("social:*").half_life_days == 365
+    assert identifier_policy("social:facebook").half_life_days == 365
+    for identifier_type in (
+        "nric",
+        "crm_contact_id",
+        "crm_lead_id",
+        "crm_company_id",
+        "membership_id",
+        "external:bitrix",
+        "external_customer_id",
+    ):
+        assert identifier_policy(identifier_type).half_life_days is None, identifier_type
     assert identifier_policy("unknown").half_life_days is None
 
 

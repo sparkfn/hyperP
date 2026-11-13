@@ -1,4 +1,9 @@
-"""Skip ledger recording and reconciliation for ingestion runs."""
+"""Skip ledger recording and reconciliation for ingestion runs.
+
+Only rows Python actually observes during extraction are recorded as skips.
+Upstream SQL ``WHERE`` clauses and API query filters define a source's extraction
+scope, so rows excluded there are intentionally not recorded as ``IngestSkip``.
+"""
 
 from __future__ import annotations
 
@@ -22,6 +27,10 @@ from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID
 logger = logging.getLogger(__name__)
 
 _FLUSH_BATCH_SIZE = 500
+
+#: Upstream SQL WHERE clauses and API query filters define extraction scope, not
+#: rows Python observed, so they are excluded from per-row IngestSkip recording.
+UPSTREAM_QUERY_FILTERS_RECORDED_AS_SKIPS: bool = False
 
 SkipStage = Literal["connector", "pipeline"]
 

@@ -125,9 +125,9 @@ def test_nric_anchor_gate_matrix(monkeypatch: pytest.MonkeyPatch) -> None:
     assert r4.reason == "source_not_promoting"
 
     # 5. Below tier floor (source promotes but tier outside floor)
-    monkeypatch.setitem(SOURCE_NRIC_TRUST, "x_source", "tier_9")
+    monkeypatch.setitem(SOURCE_NRIC_TRUST, "onediver", "tier_9")
     r5_floor = nric_anchor_gate(
-        valid_ident, "x_source", RecordType.IDENTITY, NameDob("Alice", "1990-01-01"), None
+        valid_ident, "onediver", RecordType.IDENTITY, NameDob("Alice", "1990-01-01"), None
     )
     assert r5_floor.promotes_person is False
     assert r5_floor.reason == "below_tier_floor"

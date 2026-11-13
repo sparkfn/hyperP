@@ -1,9 +1,14 @@
 """Identity type policies shared by ingestion and shadow assertions.
 
+Seeded values:
+- Per-type half-life windows follow Policy 9 (docs/profile-unifier-architecture.md:
+  638-647): phone 365, email 730, device_id 180, social 365 days; nric and CRM/
+  membership/external ids never age. These defaults are seed policy only — v1 and
+  ``v2_shadow`` matching do not read ``half_life_days`` until the C3 aging job.
+- ``PROMOTION_MIN_TRUST_TIERS`` is the trust floor an NRIC-bearing source must meet
+  for its identifier to promote a Person (consumed by ``nric_anchor``).
+
 Unseeded values (no source of truth):
-- Per-type half-life windows: docs/profile-unifier-architecture.md:638-647
-  requires per-type configurable aging windows, but no aging implementation
-  or configuration exists in code today; all half_life_days remain None.
 - Trust-tier-derived promotion: bootstrap trust tiers (src.graph.bootstrap)
   govern attribute fact precedence, not identifier promotion. `promotes` is
   only True where existing code makes that type decisive.
@@ -44,9 +49,12 @@ _SOCIAL_POLICY = IdentifierTypePolicy(
     candidate_eligible=True,
     single_valued=False,
     fanout_cap=25,
-    half_life_days=None,
+    half_life_days=365,
     promotes=False,
 )
+
+#: Bootstrap trust tiers whose NRIC evidence may promote a Person.
+PROMOTION_MIN_TRUST_TIERS: frozenset[str] = frozenset({"tier_1", "tier_2", "tier_3", "tier_4"})
 
 # Registry of known identifier types.
 # - single_valued: True where code treats a second distinct value as a conflict
@@ -56,10 +64,10 @@ _SOCIAL_POLICY = IdentifierTypePolicy(
 #   external_customer_id and membership_id: TRUSTED_ID_TYPES,
 #   matching/deterministic.py:90,267).
 IDENTIFIER_TYPE_REGISTRY: Mapping[str, IdentifierTypePolicy] = {
-    "phone": IdentifierTypePolicy(True, False, 50, None, False),
-    "email": IdentifierTypePolicy(True, False, 100, None, False),
+    "phone": IdentifierTypePolicy(True, False, 50, 365, False),
+    "email": IdentifierTypePolicy(True, False, 100, 730, False),
     "nric": IdentifierTypePolicy(True, True, 5, None, True),
-    "device_id": IdentifierTypePolicy(True, False, 25, None, False),
+    "device_id": IdentifierTypePolicy(True, False, 25, 180, False),
     "social:*": _SOCIAL_POLICY,
     "crm_contact_id": IdentifierTypePolicy(True, False, None, None, False),
     "crm_lead_id": IdentifierTypePolicy(True, False, None, None, False),

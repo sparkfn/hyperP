@@ -14,7 +14,7 @@ from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
-from _txmock import _RecordingTx
+from _txmock import _RecordingTx, _SummaryCounterResult, summary_counter_result
 from neo4j import ManagedTransaction
 from pytest import MonkeyPatch
 from src.bitrix_backfill_models import GenerationRunContext
@@ -111,7 +111,10 @@ class _ParkedTx(_RecordingTx):
         self._parked_hit = parked_hit
         self._lock_row = dict(_EMPTY_LOCK_STATE) if lock_row is None else dict(lock_row)
 
-    def run(self, query: str, **kwargs: object) -> _Result:
+    def run(self, query: str, **kwargs: object) -> _Result | _SummaryCounterResult:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self._record(query, kwargs)
         if query == FIND_PARKED_SOURCE_RECORD_BY_HASH:
             if self._parked_hit is None:
@@ -449,6 +452,13 @@ def test_v2_shadow_parked_ingest_executes_real_assertion_queries() -> None:
     assert len(expected_rows.identifiers) == 1
     assert len(expected_rows.facts) == 1
 
+    nric_row = expected_rows.identifiers[0]
+    assert nric_row["hashed_value"] == nric_row["normalized_value"]
+    assert nric_row["nric_masked"] == "S••••567A"
+    assert nric_row["checksum_valid"] is False
+    assert nric_row["nric_key_version"] == "v1"
+    assert nric_row["nric_encrypted"] is None
+
     upsert_ident_calls = [
         params for query, params in tx.calls if query == queries.UPSERT_IDENTIFIERS_BATCH
     ]
@@ -617,7 +627,10 @@ class _FullOrderTx(_RecordingTx):
         super().__init__()
         self._candidates = candidates or []
 
-    def run(self, query: str, **kwargs: object) -> _Result:
+    def run(self, query: str, **kwargs: object) -> _Result | _SummaryCounterResult:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self._record(query, kwargs)
         if query == queries.LOCK_AND_GET_SOURCE_STATE:
             return _Result(dict(_EMPTY_LOCK_STATE))

@@ -4,7 +4,7 @@ import json
 from collections.abc import Iterator
 from contextlib import ExitStack
 from typing import cast
-from unittest.mock import DEFAULT, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 from _txmock import summary_counter_result

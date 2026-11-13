@@ -13,7 +13,7 @@ from typing import cast
 from unittest.mock import MagicMock
 
 import pytest
-from _txmock import _RecordingTx
+from _txmock import _RecordingTx, _SummaryCounterResult, summary_counter_result
 from neo4j import ManagedTransaction
 from pytest import MonkeyPatch
 from src.config import IdentityModel
@@ -59,7 +59,10 @@ class _StreamTx(_RecordingTx):
         queries.ACTIVATE_SOURCE_RECORD_VERSION: {"source_record_pk": "sr-new"},
     }
 
-    def run(self, query: str, **kwargs: object) -> _Result:
+    def run(self, query: str, **kwargs: object) -> _Result | _SummaryCounterResult:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self._record(query, kwargs)
         return _Result(self._ROWS.get(query))
 

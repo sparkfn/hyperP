@@ -5,7 +5,7 @@ from __future__ import annotations
 import logging
 from collections.abc import Iterator
 from contextlib import ExitStack
-from datetime import UTC, datetime
+from datetime import datetime
 from typing import Literal, cast
 from unittest.mock import MagicMock, patch
 
@@ -17,7 +17,6 @@ from _txmock import (
     summary_counter_result,
 )
 from neo4j import ManagedTransaction
-
 from src.config import Settings
 from src.graph import queries
 from src.models import (
@@ -37,6 +36,7 @@ from src.pipeline_writes import (
     create_review_case_if_needed,
     reset_review_counters,
 )
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID
 
 ReviewPolicy = Literal["off", "v2_weak_signal_park"]
 
@@ -363,6 +363,9 @@ def test_pipeline_keeps_suppressed_review_record_pending_without_evidence(
         persist = stack.enter_context(
             patch("src.pipeline.persist_source_record", return_value="source-record-1")
         )
+        settle = stack.enter_context(
+            patch("src.pipeline.settle_staged_source_record", return_value="source-record-1")
+        )
         stack.enter_context(patch("src.pipeline.persist_match_decision", return_value="decision-1"))
         link = stack.enter_context(patch("src.pipeline.link_record_to_graph"))
 
@@ -371,14 +374,21 @@ def test_pipeline_keeps_suppressed_review_record_pending_without_evidence(
     assert result.match_decision is MatchDecision.REVIEW
     assert result.review_case_id is None
     assert result.match_decision_id == "decision-1"
-    assert (
-        persist.call_args.kwargs["lifecycle_status"] is SourceRecordLifecycleStatus.PENDING_REVIEW
+    assert persist.call_args.kwargs["lifecycle_status"] is SourceRecordLifecycleStatus.PARKED
+    assert persist.call_args.kwargs["link_status"] == "unlinked"
+    settle.assert_called_once_with(
+        tx,
+        "source-record-1",
+        link_status="pending_review",
+        expected_active_source_record_pk=None,
+        ingest_run_id=None,
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
     )
     assert link.call_args.kwargs["attach_evidence"] is False
     assert [
         query
         for query, _ in tx.calls
         if query not in SUMMARY_CAPTURE_QUERIES and query != SUMMARY_APPLY_QUERY
-    ] == [queries.SUPPRESS_MATCH_DECISION_REVIEW]
+    ] == [queries.FIND_PARKED_SOURCE_RECORD_BY_HASH, queries.SUPPRESS_MATCH_DECISION_REVIEW]
     assert REVIEW_CASES_CREATED_COUNTER == {}
     assert len(REVIEW_DECISIONS_SUPPRESSED_COUNTER) == 1

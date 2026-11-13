@@ -107,6 +107,42 @@ def test_assertion_id_matches_documented_sha1_formula() -> None:
     assert row["assertion_id"] == hashlib.sha1(identity.encode("utf-8")).hexdigest()
 
 
+def test_nric_identifier_row_populates_metadata_and_non_nric_sets_none() -> None:
+    digest = "a43bb81909a911bc898702d96b9cb10a382793e492d8175abf54772f8df60b2a"
+    payload: dict[str, JsonValue] = {
+        "identifiers": [
+            {
+                "identifier_type": "phone",
+                "normalized_value": "+6591234567",
+                "quality_flag": "valid",
+            },
+            {
+                "identifier_type": "nric",
+                "normalized_value": digest,
+                "quality_flag": "valid",
+                "nric_masked": "S••••567A",
+                "checksum_valid": False,
+                "nric_key_version": "v1",
+            },
+        ]
+    }
+    rows = {row["identifier_type"]: row for row in assertion_rows("source-1", payload).identifiers}
+
+    phone = rows["phone"]
+    assert phone["hashed_value"] is None
+    assert phone["nric_masked"] is None
+    assert phone["checksum_valid"] is None
+    assert phone["nric_key_version"] is None
+    assert phone["nric_encrypted"] is None
+
+    nric = rows["nric"]
+    assert nric["hashed_value"] == nric["normalized_value"]
+    assert nric["nric_masked"] == "S••••567A"
+    assert nric["checksum_valid"] is False
+    assert nric["nric_key_version"] == "v1"
+    assert nric["nric_encrypted"] is None
+
+
 def test_json_roundtrip_preserves_live_assertion_rows() -> None:
     payload = _payload()
     parsed = _parse_normalized_payload(json.dumps(payload))

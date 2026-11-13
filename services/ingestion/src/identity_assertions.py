@@ -141,12 +141,19 @@ def _identifier_row(
     scope = identifier_scope(identifier_type, source_instance_id)
     target_id = f"{identifier_type}|{scope}|{normalized_value}"
     field_path = f"identifiers.{identifier_type}"
+    is_nric = identifier_type == "nric"
+    hashed_value = _optional_string(raw.get("hashed_value")) or normalized_value
     return {
         "source_record_pk": source_record_pk,
         "identifier_type": identifier_type,
         "identifier_scope": scope,
         "normalized_value": normalized_value,
         "source_instance_id": source_instance_for_identifier(identifier_type, source_instance_id),
+        "hashed_value": hashed_value if is_nric else None,
+        "nric_masked": _optional_string(raw.get("nric_masked")) if is_nric else None,
+        "checksum_valid": _optional_bool(raw.get("checksum_valid")) if is_nric else None,
+        "nric_key_version": _optional_string(raw.get("nric_key_version")) if is_nric else None,
+        "nric_encrypted": _optional_string(raw.get("nric_encrypted")) if is_nric else None,
         "target_id": target_id,
         "field_path": field_path,
         "assertion_id": _assertion_id(source_record_pk, field_path, target_id),
@@ -217,6 +224,10 @@ def _string(row: Mapping[str, JsonValue], key: str) -> str | None:
 
 def _optional_string(value: JsonValue | None) -> str | None:
     return value if isinstance(value, str) else None
+
+
+def _optional_bool(value: JsonValue | None) -> bool | None:
+    return value if isinstance(value, bool) else None
 
 
 def write_assertions(

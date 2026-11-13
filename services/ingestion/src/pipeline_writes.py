@@ -205,12 +205,6 @@ def upsert_nodes(
 ) -> None:
     """Step 3: ensure Identifier and Address nodes exist."""
     settings = get_settings()
-    # rebase(#490): populate NRIC metadata on assertion identifier rows. In #500,
-    # ``identity_assertions.write_assertions`` runs ``UPSERT_IDENTIFIERS_BATCH`` inside
-    # ``persist_source_record`` before ``upsert_nodes``; parked records that never reach
-    # ``upsert_nodes`` will otherwise create NRIC Identifier nodes with null metadata
-    # until ``_identifier_row`` populates ``hashed_value``, ``nric_masked``,
-    # ``checksum_valid``, ``nric_key_version``, and ``nric_encrypted``.
     identifier_rows: list[dict[str, object]] = []
     for ident in identifiers:
         row: dict[str, object] = {
@@ -285,7 +279,8 @@ def find_candidates(
         )
         # Transition candidate generation: find legacy plaintext holders using plaintext carrier.
         # Removed after L2 rehash backfill.
-        # rebase(#490): same carrier dependency as matching.deterministic._check_government_id;
+        # Note (A3 follow-up): same carrier dependency as
+        # matching.deterministic._check_government_id;
         # the A3 follow-up must restore carrier-equivalence for rows rebuilt without
         # ``nric_plaintext`` so they still reach legacy-plaintext candidates.
         if ident.identifier_type == "nric" and ident.nric_plaintext:

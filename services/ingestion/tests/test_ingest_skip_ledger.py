@@ -17,7 +17,13 @@ from src.graph.queries.ingest_skips import (
     WRITE_INGEST_ATTEMPT,
     WRITE_INGEST_SKIPS,
 )
-from src.ingest_skips import ConnectorSkip, SkipLedger, SkipRecorder, skip_row
+from src.ingest_skips import (
+    UPSTREAM_QUERY_FILTERS_RECORDED_AS_SKIPS,
+    ConnectorSkip,
+    SkipLedger,
+    SkipRecorder,
+    skip_row,
+)
 from src.main import _ingest_all_records
 from src.models import (
     IngestResult,
@@ -93,6 +99,10 @@ class _DummyConnector(SourceConnector):
 
     def fetch_records(self) -> list[dict[str, JsonValue]]:
         return list(self.records)
+
+
+def test_upstream_query_filters_are_not_recorded_as_skips() -> None:
+    assert UPSTREAM_QUERY_FILTERS_RECORDED_AS_SKIPS is False
 
 
 def test_skip_recorder_mixin() -> None:

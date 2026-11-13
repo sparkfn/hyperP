@@ -58,6 +58,9 @@ class _ParkedDuplicateTx(_RecordingTx):
     """An identical parked version already exists for this source identity."""
 
     def run(self, query: str, **kwargs: object) -> _Result:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self._record(query, kwargs)
         if query == FIND_PARKED_SOURCE_RECORD_BY_HASH:
             return _Result({"source_record_pk": "sr-parked"})

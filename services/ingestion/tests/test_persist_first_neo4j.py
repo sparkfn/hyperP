@@ -69,9 +69,9 @@ def neo4j_driver() -> Iterator[Driver]:
         driver.verify_connectivity()
         _require_neo4j_526(driver)
         with driver.session() as session:
-            count = session.run("MATCH (node) RETURN count(node) AS count").single(strict=True)[
-                "count"
-            ]
+            count = session.run(
+                "MATCH (node) WHERE NOT node:PersonListSummaryCounter RETURN count(node) AS count"
+            ).single(strict=True)["count"]
         if count != 0:
             pytest.fail("persist-first test database must be empty")
         cleanup_owned = True
@@ -80,7 +80,9 @@ def neo4j_driver() -> Iterator[Driver]:
         try:
             if cleanup_owned:
                 with driver.session() as session:
-                    session.run("MATCH (node) DETACH DELETE node").consume()
+                    session.run(
+                        "MATCH (node) WHERE NOT node:PersonListSummaryCounter DETACH DELETE node"
+                    ).consume()
         finally:
             driver.close()
 

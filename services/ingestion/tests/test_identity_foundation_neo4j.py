@@ -88,9 +88,9 @@ def neo4j_driver() -> Iterator[Driver]:
         driver.verify_connectivity()
         _require_neo4j_526(driver)
         with driver.session() as session:
-            count = session.run("MATCH (node) RETURN count(node) AS count").single(strict=True)[
-                "count"
-            ]
+            count = session.run(
+                "MATCH (node) WHERE NOT node:PersonListSummaryCounter RETURN count(node) AS count"
+            ).single(strict=True)["count"]
         if count != 0:
             pytest.fail("identity foundation test database must be empty")
         cleanup_owned = True
@@ -99,7 +99,9 @@ def neo4j_driver() -> Iterator[Driver]:
         try:
             if cleanup_owned:
                 with driver.session() as session:
-                    session.run("MATCH (node) DETACH DELETE node").consume()
+                    session.run(
+                        "MATCH (node) WHERE NOT node:PersonListSummaryCounter DETACH DELETE node"
+                    ).consume()
         finally:
             driver.close()
 
@@ -159,7 +161,8 @@ def _seed_existing_identity(driver: Driver) -> None:
 def _graph_counts(driver: Driver) -> tuple[int, int]:
     with driver.session() as session:
         row = session.run(
-            "MATCH (node) WITH count(node) AS nodes "
+            "MATCH (node) WHERE NOT node:PersonListSummaryCounter "
+            "WITH count(node) AS nodes "
             "MATCH ()-[relationship]->() RETURN nodes, count(relationship) AS relationships"
         ).single(strict=True)
     return int(row["nodes"]), int(row["relationships"])

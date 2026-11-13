@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from typing import cast
-from unittest.mock import DEFAULT, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 from _txmock import summary_counter_result
 from neo4j import ManagedTransaction
