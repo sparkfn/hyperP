@@ -101,7 +101,12 @@ EXCEPTIONS: tuple[ComposeTransformation, ...] = (
     *(
         ComposeTransformation(("services", name, "build", "context"), ".", "../..")
         for name in (
-            "intelligence", "api", "frontend2", "ingestion-worker", "lifecycle-worker", "beat",
+            "intelligence",
+            "api",
+            "frontend2",
+            "ingestion-worker",
+            "lifecycle-worker",
+            "beat",
             "rust-read",
         )
     ),
@@ -219,6 +224,42 @@ def test_root_and_staging_compose_documents_match_after_exact_exceptions() -> No
     _assert_contract(_read_compose(_STAGING_COMPOSE))
 
 
+def test_root_and_staging_neo4j_memory_tuning_matches() -> None:
+    """The Neo4j memory tuning is identical in both documents (issue #489)."""
+    for path in (_ROOT_COMPOSE, _STAGING_COMPOSE):
+        document = _read_compose(path)
+        services = document["services"]
+        assert isinstance(services, dict)
+        neo4j = services["neo4j"]
+        assert isinstance(neo4j, dict)
+        assert neo4j["mem_limit"] == "5G"
+        environment = neo4j["environment"]
+        assert isinstance(environment, dict)
+        assert environment["NEO4J_server_memory_heap_max__size"] == "1536m"
+        assert environment["NEO4J_server_memory_pagecache_size"] == "2g"
+        # The initial heap and the off-heap transaction memory are unchanged.
+        assert environment["NEO4J_server_memory_heap_initial__size"] == "512m"
+        assert environment["NEO4J_server_memory_off__heap_transaction__max__size"] == "512m"
+
+
+def test_neo4j_memory_tuning_needs_no_exception_entry() -> None:
+    """The tuned Neo4j block is identical, so the exception registry is unchanged."""
+    root = _read_compose(_ROOT_COMPOSE)
+    staging = _read_compose(_STAGING_COMPOSE)
+    root_services = root["services"]
+    staging_services = staging["services"]
+    assert isinstance(root_services, dict)
+    assert isinstance(staging_services, dict)
+    root_neo4j = root_services["neo4j"]
+    staging_neo4j = staging_services["neo4j"]
+    assert isinstance(root_neo4j, dict)
+    assert isinstance(staging_neo4j, dict)
+    assert root_neo4j == staging_neo4j
+    assert not any(
+        transformation.path[:2] == ("services", "neo4j") for transformation in EXCEPTIONS
+    )
+
+
 def test_staging_compose_critical_invariants() -> None:
     staging = _read_compose(_STAGING_COMPOSE)
     services = staging["services"]
@@ -245,7 +286,8 @@ def test_staging_compose_critical_invariants() -> None:
     assert isinstance(beat, dict)
     assert isinstance(intelligence, dict)
     assert intelligence["build"] == {
-        "context": "../..", "dockerfile": "services/intelligence/Dockerfile"
+        "context": "../..",
+        "dockerfile": "services/intelligence/Dockerfile",
     }
     assert intelligence["profiles"] == ["intelligence"]
     assert intelligence["volumes"] == ["intelligence-data:/var/lib/intelligence"]
@@ -300,12 +342,15 @@ def test_staging_compose_critical_invariants() -> None:
     assert lifecycle_worker["command"][-1] == "--concurrency=${LIFECYCLE_WORKER_CONCURRENCY:-1}"
     environment = staging["x-ingestion-env"]
     assert isinstance(environment, dict)
-    assert {key: environment[key] for key in (
-        "SCHEDULED_INGESTION_TIMEZONE",
-        "SCHEDULED_INGESTION_LOCAL_OPENING",
-        "SCHEDULED_INGESTION_LOCAL_CUTOFF",
-        "SCHEDULED_INGESTION_DRAIN_RESERVE_SECONDS",
-    )} == {
+    assert {
+        key: environment[key]
+        for key in (
+            "SCHEDULED_INGESTION_TIMEZONE",
+            "SCHEDULED_INGESTION_LOCAL_OPENING",
+            "SCHEDULED_INGESTION_LOCAL_CUTOFF",
+            "SCHEDULED_INGESTION_DRAIN_RESERVE_SECONDS",
+        )
+    } == {
         "SCHEDULED_INGESTION_TIMEZONE": "${SCHEDULED_INGESTION_TIMEZONE:-Asia/Singapore}",
         "SCHEDULED_INGESTION_LOCAL_OPENING": "${SCHEDULED_INGESTION_LOCAL_OPENING:-09:00}",
         "SCHEDULED_INGESTION_LOCAL_CUTOFF": "${SCHEDULED_INGESTION_LOCAL_CUTOFF:-23:00}",

@@ -306,6 +306,29 @@ WHERE absorbed.status = 'merged'
 RETURN absorbed.person_id AS absorbed_id, survivor.person_id AS survivor_id
 """
 
+# Pre-read for the unmerge summary delta.
+#
+# It resolves the same absorbed/current-survivor pair as ``REVERT_MERGE`` and
+# collects the distinct deal records the merge event moved, so the caller can
+# capture their contribution before the revert rewires them.
+#
+# Every moved ``LINKED_TO`` SourceRecord is collected, whatever its current
+# link state: review activity can change a link between the merge and the
+# unmerge, and the contribution must be captured for the record either way.
+GET_UNMERGE_DEAL_TARGET = """
+MATCH (absorbed:Person)-[mi:MERGED_INTO {merge_event_id: $merge_event_id}]->(merge_survivor:Person)
+MATCH (merge_survivor)-[:MERGED_INTO*0..1]->(current_survivor:Person)
+WHERE NOT (current_survivor)-[:MERGED_INTO]->(:Person)
+MATCH (merge_event:MergeEvent {merge_event_id: mi.merge_event_id})
+OPTIONAL MATCH (merge_event)-[move:MOVED_RELATIONSHIP]->(sr:SourceRecord)
+WHERE move.relationship_type = 'LINKED_TO'
+RETURN absorbed.person_id AS absorbed_id,
+       current_survivor.person_id AS current_survivor_id,
+       [element_id IN collect(DISTINCT elementId(sr)) WHERE element_id IS NOT NULL]
+         AS deal_element_ids
+"""
+
+
 REVERT_MERGE = """
 MATCH (absorbed:Person {person_id: $absorbed_id})
       -[mi:MERGED_INTO {merge_event_id: $merge_event_id}]->(merge_survivor:Person)

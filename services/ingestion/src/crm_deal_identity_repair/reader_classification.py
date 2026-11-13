@@ -101,6 +101,7 @@ api/graph/queries/entities.py:_CONNECTION_COUNT
 api/graph/queries/entities.py:_ENTITY_PERSONS_HEAD
 api/graph/queries/entities.py:_PHONE_CONFIDENCE
 api/graph/queries/entities.py:_SOURCE_RECORD_COUNT
+api/graph/queries/person_list_summary.py:_FIND_DEAL_ELEMENT_IDS_FOR_PERSONS
 api/graph/queries/persons.py:COUNT_PERSON_CONNECTIONS_ADDRESS
 api/graph/queries/persons.py:COUNT_PERSON_CONNECTIONS_ALL
 api/graph/queries/persons.py:COUNT_PERSON_CONNECTIONS_IDENTIFIER
@@ -211,6 +212,13 @@ _AUTHORITATIVE_MUTATION_READERS: Final[frozenset[str]] = frozenset(
         "ingestion/graph/queries/vehicle.py:LINK_PERSON_BOUGHT_VEHICLE",
         "ingestion/graph/queries/vehicle.py:LINK_PERSON_OWNS_VEHICLE",
         "ingestion/graph/queries/vehicle.py:LINK_SOURCE_RECORD_MENTIONS_VEHICLE",
+        # Summary counter capture/recompute readers are current-state,
+        # active-filtered, and only write a lock or counter.
+        "api/graph/queries/person_list_summary.py:_CAPTURE_DEAL_SUMMARY_CONTRIBUTIONS",
+        "api/graph/queries/person_list_summary.py:_CAPTURE_DEAL_SUMMARY_CONTRIBUTIONS_BY_ELEMENT_ID",
+        "ingestion/graph/queries/person_list_summary.py:_CAPTURE_DEAL_SUMMARY_CONTRIBUTIONS",
+        "ingestion/graph/queries/person_list_summary.py:_CAPTURE_DEAL_SUMMARY_CONTRIBUTIONS_BY_ELEMENT_ID",
+        "ingestion/graph/queries/person_list_summary.py:_RECOMPUTE_PERSON_LIST_SUMMARY",
         "ingestion/graph/queries/knows.py:LINK_PERSON_KNOWS",
     }
 )
@@ -260,6 +268,8 @@ ingestion/graph/migrations.py:DEDUPLICATE_LEGACY_BITRIX_PROJECTIONS
 ingestion/graph/migrations.py:REWRITE_LEGACY_BITRIX_PROJECTION_KEYS
 ingestion/graph/migrations.py:REWRITE_DIRECT_BITRIX_PROJECTION_KEYS
 ingestion/graph/migrations.py:MIGRATE_PROJECTION_RELATIONSHIP_LIFECYCLE
+ingestion/graph/queries/lifecycle_migrations.py:MIGRATE_SOURCE_RECORD_LIFECYCLE_BATCH
+ingestion/graph/migrations.py:RECONCILE_SOURCE_RECORD_LIFECYCLE
 ingestion/graph/migrations.py:RECONCILE_PROJECTION_RELATIONSHIP_LIFECYCLE
 ingestion/graph/queries/crm_deal_identity_repair_mutation.py:READ_LOCKED_REPAIR_AUTHORITY
 ingestion/graph/queries/crm_deal_identity_repair_mutation.py:LOCK_SUPPORT_SOURCE_RECORDS

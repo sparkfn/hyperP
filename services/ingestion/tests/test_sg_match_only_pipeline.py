@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from _txmock import _RecordingTx
+from _txmock import _RecordingTx, summary_counter_result
 from neo4j import ManagedTransaction
 from src.models import SourceRecordEnvelope
 from src.pipeline import IngestPipeline, _is_match_only_source
@@ -30,6 +30,9 @@ class _Tx(_RecordingTx):
     """No candidate ever owns the incoming NRIC — nothing matches."""
 
     def run(self, query: str, **kwargs: object) -> _Result:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self._record(query, kwargs)
         if "max_source_record_version" in query:
             return _Result(
@@ -51,6 +54,9 @@ class _MatchedTx(_RecordingTx):
     """The incoming NRIC is owned by an existing person-1 with a VALID edge."""
 
     def run(self, query: str, **kwargs: object) -> _Result:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self._record(query, kwargs)
         if "max_source_record_version" in query:
             return _Result(

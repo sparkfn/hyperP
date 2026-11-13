@@ -7,6 +7,7 @@ import logging
 from neo4j import ManagedTransaction
 
 from src.graph.client import Neo4jClient
+from src.graph.person_list_summary_deltas import PersonListSummaryDeltaCollector
 from src.identity_link_revisions import IdentityLinkDesiredRevision, append_identity_link_revisions
 from src.models import (
     IngestResult,
@@ -51,6 +52,17 @@ def ingest_reference_record(
                 skipped_duplicate=True,
                 ingest_run_id=ingest_run_id,
             )
+        collector = PersonListSummaryDeltaCollector()
+        # Capture the replaced version and its owners before the first write.
+        collector.capture_before(
+            tx,
+            person_ids=plan.prior_person_ids,
+            source_record_pks=tuple(
+                source_record_pk
+                for source_record_pk in (plan.active_source_record_pk, plan.pending_to_reject)
+                if source_record_pk
+            ),
+        )
         if plan.pending_to_reject is not None:
             reject_replaced_pending(tx, plan.pending_to_reject)
         envelope.source_record_version = str(plan.version)
@@ -71,6 +83,7 @@ def ingest_reference_record(
             expected_active_source_record_pk=plan.active_source_record_pk,
             link_status="not_applicable",
         )
+        collector.mark_new(source_record_pks=[source_record_pk])
         activate_staged_version(
             tx,
             source_system=envelope.source_system,
@@ -104,6 +117,7 @@ def ingest_reference_record(
                 ],
             )
         logger.info("Ingested non-Person reference %s", envelope.source_record_id)
+        collector.finalize(tx)
         return IngestResult(
             source_record_id=envelope.source_record_id,
             source_record_pk=source_record_pk,

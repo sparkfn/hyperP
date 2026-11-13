@@ -15,7 +15,8 @@ MATCH (rc:ReviewCase)-[:FOR_DECISION]->(md)
 # as properties). Legacy nodes hold the literal string '[]', so coerce any
 # non-list value to an empty list before appending.
 _ACTIONS_AS_LIST: LiteralString = (
-    "(CASE WHEN rc.actions IS :: STRING THEN [] ELSE coalesce(rc.actions, []) END)"
+    "(CASE WHEN valueType(rc.actions) STARTS WITH 'STRING' "
+    "THEN [] ELSE coalesce(rc.actions, []) END)"
 )
 
 # Person joins are only added when `q` or `person_id` is present (search needs
@@ -405,7 +406,7 @@ def build_claimed_review_action_cypher(
         "AND rc.lifecycle_claim_token = $claim_token "
         "AND rc.lifecycle_claim_version = $claim_version "
         "AND rc.lifecycle_claim_status = $claim_status "
-        "AND rc.lifecycle_claimed_by = $actor_id AND "
+        "AND rc.lifecycle_claimed_by = $actor_id "
     )
     return query.replace(eligibility + _INVOLVED_SOURCE_IS_PENDING + " ", claim_guard)
 
@@ -502,6 +503,7 @@ GET_REVIEW_SALES_RECORD = """
 MATCH (rc:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->(md:MatchDecision)
 MATCH (md)-[:ABOUT_LEFT]->(sr:SourceRecord {record_type: 'sales'})
 RETURN sr.source_record_pk AS source_record_pk,
+       sr.expected_active_source_record_pk AS expected_active_source_record_pk,
        sr.lifecycle_status AS lifecycle_status,
        coalesce(sr.staged_sales_ready, false) AS staged_sales_ready
 """

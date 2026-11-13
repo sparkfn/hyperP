@@ -95,6 +95,48 @@ adds a mandatory hop to every query for zero benefit. When the profile is
 recomputed, update in place — the computation is synchronous within the merge
 transaction anyway.
 
+### PersonListSummaryCounter
+
+A singleton maintained projection for the person-list summary endpoints. Its
+unique `key` is `global`; it stores the six aggregate values, readiness and
+reconciliation metadata. The API trusts the Person counts only while `ready`
+is true and their generation and values are valid. The CRM counts additionally
+require a current month marker. An explicit ingestion backfill publishes the
+initial values; startup and nightly reconciliation never activate an unready
+counter.
+
+```cypher
+MERGE (c:PersonListSummaryCounter {key: 'global'})
+ON CREATE SET c.ready = false,
+              c.generation = 0,
+              c.active_person_count = 0,
+              c.high_risk_count = 0,
+              c.high_value_count = 0,
+              c.no_contact_count = 0,
+              c.deals_this_month_count = 0,
+              c.all_deals_count = 0,
+              c.updated_at = datetime()
+```
+
+| Property | Meaning |
+| --- | --- |
+| `key` | Singleton key; always `global` and uniquely constrained. |
+| `active_person_count` | Persons with a non-null status other than `merged`; exposed as `all_profiles_count`. |
+| `high_risk_count` | Qualifying Persons with `is_high_risk = true`. |
+| `high_value_count` | Qualifying Persons with `is_high_value = true`. |
+| `no_contact_count` | Qualifying Persons whose `preferred_phone` and `preferred_email` are both null. |
+| `deals_this_month_count` | Distinct qualifying CRM deals observed since the current database month boundary. |
+| `all_deals_count` | Distinct qualifying CRM deals, regardless of observation month. |
+| `ready` | Boolean readiness gate; explicit backfill transitions an unready counter to ready. |
+| `generation` | Non-negative integer advanced when the projection is invalidated. |
+| `month` | Database month marker (`YYYY-MM`) for the month-scoped deal count. |
+| `updated_at` | Timestamp of the latest counter maintenance or publication. |
+
+The uniqueness constraint is `person_list_summary_counter_key_unique` on
+`PersonListSummaryCounter.key`. Counts are maintained transactionally by graph
+writers and reconciled from the authoritative aggregates nightly. A deal linked
+to multiple qualifying Persons contributes once to each deal count.
+
 ### Identifier
 
 Shared identifiers are the connective tissue of the graph and the key enabler

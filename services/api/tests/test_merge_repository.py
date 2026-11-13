@@ -6,6 +6,11 @@ from typing import cast
 
 import pytest
 from neo4j import AsyncManagedTransaction
+from person_list_summary_doubles import (
+    SUMMARY_APPLY_ROW,
+    is_summary_apply_query,
+    is_summary_capture_query,
+)
 from src.graph.queries import (
     CHECK_BOTH_PERSONS_ACTIVE,
     CHECK_EXISTING_LOCK,
@@ -28,6 +33,11 @@ from src.graph.queries import (
     REVERT_PERSON_PAIR_REDIRECTS_RIGHT,
     REVERT_RECORD_PERSON_CASE_REDIRECTS,
     UPDATE_GOLDEN_FIELDS,
+)
+from src.graph.queries.person_list_summary import (
+    APPLY_PERSON_LIST_SUMMARY_DELTAS,
+    CAPTURE_PERSON_SUMMARY_CONTRIBUTIONS,
+    FIND_DEAL_ELEMENT_IDS_FOR_PERSONS,
 )
 from src.repositories.neo4j import merge as merge_module
 from src.repositories.neo4j.merge import (
@@ -77,8 +87,12 @@ class _Tx:
     def __init__(self, records: Sequence[Record | None]) -> None:
         self._records: list[Record | None] = list(records)
         self.calls: list[_Call] = []
+        self.summary_calls: list[str] = []
 
     async def run(self, query: str, **params: RecordValue) -> _AsyncResult:
+        if is_summary_capture_query(query) or is_summary_apply_query(query):
+            self.summary_calls.append(query)
+            return _AsyncResult(SUMMARY_APPLY_ROW if is_summary_apply_query(query) else None)
         self.calls.append(_Call(query=query, params=params))
         record = self._records.pop(0) if self._records else None
         return _AsyncResult(record)
@@ -188,7 +202,8 @@ async def test_manual_merge_success_returns_merge_event_id() -> None:
 async def test_manual_merge_recomputes_and_applies_selections_in_mutation_transaction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    tx = cast(AsyncManagedTransaction, object())
+    fake_tx = _Tx([])
+    tx = cast(AsyncManagedTransaction, fake_tx)
     events: list[str] = []
     selections: list[GoldenProfileSelection] = [
         {
@@ -241,6 +256,15 @@ async def test_manual_merge_recomputes_and_applies_selections_in_mutation_transa
 
     assert outcome.merge_event_id == "merge-1"
     assert events == ["merge", "recompute", "selections"]
+    # The maintained summary counter is captured before the merge and published
+    # once after the profile recompute and the golden-profile selections.
+    assert tx.summary_calls == [
+        FIND_DEAL_ELEMENT_IDS_FOR_PERSONS,
+        CAPTURE_PERSON_SUMMARY_CONTRIBUTIONS,
+        CAPTURE_PERSON_SUMMARY_CONTRIBUTIONS,
+        APPLY_PERSON_LIST_SUMMARY_DELTAS,
+    ]
+    assert fake_tx.summary_calls == tx.summary_calls
 
 
 def test_manual_merge_locks_then_rechecks_both_active_in_mutation_query() -> None:
@@ -437,7 +461,21 @@ async def test_unmerge_returns_actual_current_survivor_for_recompute() -> None:
 async def test_unmerge_recomputes_both_profiles_in_mutation_transaction(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    tx = cast(AsyncManagedTransaction, object())
+    fake_tx = _Tx(
+        [
+            {
+                "absorbed_id": "person-a",
+                "current_survivor_id": "person-c",
+                "deal_element_ids": [],
+            },
+            {
+                "absorbed_id": "person-a",
+                "current_survivor_id": "person-c",
+                "deal_element_ids": [],
+            },
+        ]
+    )
+    tx = cast(AsyncManagedTransaction, fake_tx)
     recomputed: list[str] = []
 
     async def unmerge(inner_tx: AsyncManagedTransaction, *_args: object) -> _UnmergeResult:
@@ -469,6 +507,13 @@ async def test_unmerge_recomputes_both_profiles_in_mutation_transaction(
 
     assert result is not None
     assert recomputed == ["person-a", "person-c"]
+    # The unmerge captures the absorbed and survivor persons before the revert
+    # and publishes the delta once after both profile recomputes.
+    assert fake_tx.summary_calls == [
+        CAPTURE_PERSON_SUMMARY_CONTRIBUTIONS,
+        CAPTURE_PERSON_SUMMARY_CONTRIBUTIONS,
+        APPLY_PERSON_LIST_SUMMARY_DELTAS,
+    ]
 
 
 @pytest.mark.asyncio

@@ -9,8 +9,32 @@ from src.graph import queries
 from src.graph.client import Neo4jClient
 from src.graph.crm_deal_count import recompute_source_person_crm_deal_counts
 from src.graph.ingestion_control import assert_active_bitrix_fence
+from src.graph.person_list_summary_deltas import PersonListSummaryDeltaCollector
 from src.identity_link_revisions import IdentityLinkDesiredRevision, append_identity_link_revisions
 from src.source_instances import effective_source_instance_id
+
+
+def _source_identity_deal_element_ids(
+    tx: ManagedTransaction,
+    *,
+    source_system: str,
+    source_instance_id: str,
+    source_record_id: str,
+    reconciliation_snapshot_at: str,
+) -> tuple[str, ...]:
+    """Return the element ids of the distinct deals a retirement may retire."""
+    element_ids: list[str] = []
+    for row in tx.run(
+        queries.FIND_SOURCE_IDENTITY_DEAL_ELEMENT_IDS,
+        source_system=source_system,
+        source_instance_id=source_instance_id,
+        source_record_id=source_record_id,
+        reconciliation_snapshot_at=reconciliation_snapshot_at,
+    ):
+        element_id = row.get("deal_element_id")
+        if isinstance(element_id, str) and element_id and element_id not in element_ids:
+            element_ids.append(element_id)
+    return tuple(element_ids)
 
 
 def retire_source_evidence(
@@ -26,6 +50,25 @@ def retire_source_evidence(
     def _work(tx: ManagedTransaction) -> int:
         if fence_context is not None:
             assert_active_bitrix_fence(tx, fence_context)
+        # Lock the source identity before capturing, so a concurrent
+        # retirement cannot apply a stale summary delta.
+        tx.run(
+            queries.LOCK_SOURCE_RECORD_IDENTITY,
+            source_system=source_system,
+            source_instance_id=effective_source_instance_id(source_instance_id),
+            source_record_id=source_record_id,
+        ).consume()
+        collector = PersonListSummaryDeltaCollector()
+        collector.capture_before(
+            tx,
+            deal_element_ids=_source_identity_deal_element_ids(
+                tx,
+                source_system=source_system,
+                source_instance_id=effective_source_instance_id(source_instance_id),
+                source_record_id=source_record_id,
+                reconciliation_snapshot_at=reconciliation_snapshot_at,
+            ),
+        )
         provenance = tx.run(
             """
 MATCH (sr:SourceRecord {source_instance_id: $source_instance_id,
@@ -82,6 +125,9 @@ ORDER BY toInteger(sr.source_record_version) DESC LIMIT 1
             recompute_source_person_crm_deal_counts(
                 tx, [value for value in source_record_pks if isinstance(value, str)]
             )
-        return int(record["retired_count"])
+        retired_count = int(record["retired_count"])
+        if retired_count:
+            collector.finalize(tx)
+        return retired_count
 
     return client.execute_write(_work)

@@ -13,7 +13,7 @@ import time
 import uuid
 from collections.abc import Collection, Mapping
 from dataclasses import dataclass
-from typing import Literal, cast
+from typing import Literal, TypedDict, cast
 
 from neo4j import ManagedTransaction, Record
 
@@ -21,6 +21,7 @@ from src.graph import queries
 from src.graph.bitrix_crm_entity_migration import migrate_bitrix_crm_entities
 from src.graph.client import Neo4jClient
 from src.graph.fundbox_source_migration import migrate_fundbox_source_keys
+from src.graph.person_list_summary_deltas import apply_captured_batch
 from src.graph.queries.identifier_scope_migrations import (
     BACKFILL_IDENTIFIER_SCOPES_BATCH,
     CONSOLIDATE_SCOPED_IDENTIFIER_DUPLICATES_BATCH,
@@ -235,6 +236,14 @@ RETURN count(ownership) + count(legacy_ownership) AS removed
 """
 
 
+class _LeaseParams(TypedDict):
+    """Lease parameters accepted by the source-record lifecycle migration queries."""
+
+    migration_key: str
+    owner_id: str
+    lease_seconds: int
+
+
 _MigrationPhase = Literal["prepare", "migrate", "cleanup"]
 
 
@@ -272,6 +281,9 @@ RETURN updated
 """
 
 
+# This reconciliation only rewrites lifecycle_status/is_latest, never record_type.
+# Keep its before-state collection to CRM deals so legacy non-CRM records do not
+# inflate the unbounded batch payload passed to apply_captured_batch.
 RECONCILE_SOURCE_RECORD_LIFECYCLE = """
 MATCH (migration:DataMigration {migration_key: 'source_record_lifecycle_v1'})
 SET migration.lock_version = coalesce(migration.lock_version, 0) + 1
@@ -358,14 +370,33 @@ CALL {
        CASE WHEN active_count = 0 AND size(accepted) > 0 THEN last(accepted)
             ELSE NULL END AS active_version
   UNWIND versions AS version
+  WITH version, active_version,
+       elementId(version) AS deal_element_id,
+       coalesce((version.record_type = 'crm_deal'
+        AND (version.lifecycle_status = 'active'
+             OR (version.lifecycle_status IS NULL AND version.is_latest = true))
+        AND EXISTS {
+          MATCH (version)-[deal_link:LINKED_TO]->(linked_person:Person)
+          WHERE coalesce(deal_link.is_active, true) = true
+            AND linked_person.status IS NOT NULL
+            AND linked_person.status <> 'merged'
+        }), false) AS before_qualifying
+  WITH version, active_version, deal_element_id, before_qualifying,
+       CASE WHEN before_qualifying THEN toString(version.observed_at) ELSE null END
+         AS before_observed_at
   SET version.lifecycle_status = CASE
         WHEN version.link_status = 'pending_review' THEN 'pending_review'
         WHEN version = active_version THEN 'active'
         ELSE 'superseded' END,
       version.is_latest = version = active_version
-  RETURN count(version) AS updated
+  RETURN count(version) AS updated,
+         collect(CASE WHEN version.record_type = 'crm_deal' THEN {
+           deal_element_id: deal_element_id,
+           qualifying: before_qualifying,
+           observed_at: before_observed_at
+         } END) AS before_deals
 }
-RETURN candidates, keyed, updated
+RETURN candidates, keyed, updated, before_deals
 """
 
 
@@ -492,11 +523,16 @@ def backfill_missing_person_completeness_scores(
 def _run_migration_query(
     client: Neo4jClient,
     query: str,
+    *,
+    maintain_summary: bool = False,
     **params: object,
 ) -> Record | None:
     def _work(tx: ManagedTransaction) -> Record | None:
         # Neo4j types this boundary as dict[str, Any]; callers remain concrete.
-        return tx.run(query, **params).single()  # type: ignore[arg-type]
+        record = tx.run(query, **params).single()  # type: ignore[arg-type]
+        if maintain_summary and record is not None:
+            apply_captured_batch(tx, record.get("before_deals"))
+        return record
 
     return client.execute_write(_work)
 
@@ -528,7 +564,7 @@ def _required_phase(record: Record | None) -> _MigrationPhase:
     return cast(_MigrationPhase, value)
 
 
-def _lease_params(owner_id: str) -> dict[str, object]:
+def _lease_params(owner_id: str) -> _LeaseParams:
     return {
         "migration_key": SOURCE_RECORD_LIFECYCLE_MIGRATION_KEY,
         "owner_id": owner_id,
@@ -570,6 +606,7 @@ def _drain_migration_batches(
     result_key: str,
     *,
     batch_size: int | None = None,
+    maintain_summary: bool = False,
 ) -> int:
     total = 0
     effective_batch_size = batch_size or SOURCE_RECORD_LIFECYCLE_BATCH_SIZE
@@ -579,6 +616,7 @@ def _drain_migration_batches(
             query,
             **_lease_params(owner_id),
             batch_size=effective_batch_size,
+            maintain_summary=maintain_summary,
         )
         processed = _required_int(record, result_key)
         if processed == 0:
@@ -629,6 +667,7 @@ def _migrate_source_record_identities(client: Neo4jClient, owner_id: str) -> int
             owner_id,
             MIGRATE_SOURCE_RECORD_LIFECYCLE_BATCH,
             "updated",
+            maintain_summary=True,
         )
         _complete_source_record_identity(client, owner_id)
     return total
@@ -834,6 +873,8 @@ def reconcile_source_record_lifecycle(client: Neo4jClient) -> int:
 
     def _work(tx: ManagedTransaction) -> int:
         record = tx.run(RECONCILE_SOURCE_RECORD_LIFECYCLE).single()
+        if record is not None:
+            apply_captured_batch(tx, record.get("before_deals"))
         return int(record["updated"]) if record is not None else 0
 
     return client.execute_write(_work)

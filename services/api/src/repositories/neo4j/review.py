@@ -28,6 +28,10 @@ from src.graph.mappers import (
     map_review_case_detail,
     map_review_case_summary,
 )
+from src.graph.person_list_summary_deltas import (
+    PersonListSummaryDeltaCollector,
+    find_deal_element_ids_for_persons,
+)
 from src.graph.queries import (
     ACTIVATE_PENDING_REVIEW_RECORD,
     ASSIGN_REVIEW_CASE,
@@ -238,6 +242,23 @@ def reset_review_resolution_counters() -> None:
     """Clear the process-local review resolution telemetry counters."""
     REVIEW_RESOLUTION_COUNTER.clear()
     REVIEW_AGE_BUCKET_COUNTER.clear()
+
+
+def _pending_person_ids(pending_record: Mapping[str, object]) -> list[str]:
+    """Return the Person ids the pending review record already involves.
+
+    The read is tolerant on purpose: the capture only widens the maintained
+    summary, so a malformed pending record must not fail the review action.
+    """
+    person_ids: set[str] = set()
+    for key in ("prior_person_ids", "review_candidate_person_ids"):
+        value = pending_record.get(key)
+        if isinstance(value, list):
+            person_ids.update(item for item in value if isinstance(item, str))
+    proposed_person_id = pending_record.get("proposed_person_id")
+    if isinstance(proposed_person_id, str) and proposed_person_id:
+        person_ids.add(proposed_person_id)
+    return sorted(person_ids)
 
 
 class Neo4jReviewRepository:
@@ -553,6 +574,16 @@ async def _sales_link_merge_tx(
     sales_record = await sales_result.single()
     if sales_record is None:
         return ActionResult(merge_not_applicable=True)
+    collector = PersonListSummaryDeltaCollector()
+    # Capture the sales record and the version it replaces: an approved sales
+    # record can replace an old distinct deal, and that deal stops counting.
+    await collector.capture_before(
+        tx,
+        source_record_pks=(
+            to_str(sales_record.get("source_record_pk")),
+            to_optional_str(sales_record.get("expected_active_source_record_pk")) or "",
+        ),
+    )
     claim = await _claim_review_action(tx, review_case_id, actor_id)
     if claim is None:
         return ActionResult(merge_not_applicable=True)
@@ -642,6 +673,7 @@ async def _sales_link_merge_tx(
     )
     if rc.get("created_at") is not None:
         out["created_at"] = to_iso_or_none(rc.get("created_at"))
+    await collector.finalize(tx)
     return out
 
 
@@ -948,6 +980,16 @@ async def _pending_record_merge_tx(
         proposed_person_id = selected_person_id
     elif survivor_person_id is not None and survivor_person_id != proposed_person_id:
         return ActionResult(merge_not_applicable=True)
+    collector = PersonListSummaryDeltaCollector()
+    # Capture the pending record and the version it replaces before the
+    # activation, so the replaced version's contribution is known.
+    await collector.capture_before(
+        tx,
+        source_record_pks=(
+            pending_source_record_pk,
+            expected_active_source_record_pk or "",
+        ),
+    )
     claim = await _claim_review_action(tx, review_case_id, actor_id)
     if claim is None:
         return ActionResult(merge_not_applicable=True)
@@ -972,6 +1014,10 @@ async def _pending_record_merge_tx(
     affected = activated.get("affected_person_ids", [])
     if isinstance(affected, list):
         affected_person_ids = sorted({value for value in affected if isinstance(value, str)})
+        # Capture the affected Persons before the profile recompute: the
+        # activation does not change their preferred fields, so this snapshot
+        # is still the pre-recompute state.
+        await collector.capture_before(tx, person_ids=affected_person_ids)
         await recompute_person_crm_deal_counts(tx, affected_person_ids)
         for person_id in affected_person_ids:
             await recompute_golden_profile_tx(tx, person_id, False)
@@ -1016,6 +1062,7 @@ async def _pending_record_merge_tx(
     )
     if review_case.get("created_at") is not None:
         out["created_at"] = to_iso_or_none(review_case.get("created_at"))
+    await collector.finalize(tx)
     return out
 
 
@@ -1041,6 +1088,7 @@ async def _action_tx(
     record: Record | GraphRecord | None
     include_audit_fields = reason_code is not None or action_type in _AUDIT_FIELD_ACTIONS
     has_reason_code = resolution is not None and reason_code is not None
+    collector: PersonListSummaryDeltaCollector | None = None
 
     if action_type == ApiReviewActionType.MANUAL_NO_MATCH.value:
         pending_result = await tx.run(GET_PENDING_REVIEW_RECORD, review_case_id=review_case_id)
@@ -1051,6 +1099,18 @@ async def _action_tx(
             claim = await _claim_review_action(tx, review_case_id, actor_id)
             if claim is None:
                 return ActionResult(merge_not_applicable=True)
+            collector = PersonListSummaryDeltaCollector()
+            # Capture the pending record, the version it replaces and the
+            # Persons it involves: the replaced version stops counting even
+            # though the pending record itself ends unresolved.
+            await collector.capture_before(
+                tx,
+                person_ids=_pending_person_ids(pending_record),
+                source_record_pks=(
+                    to_str(pending_record.get("pending_source_record_pk")),
+                    to_optional_str(pending_record.get("expected_active_source_record_pk")) or "",
+                ),
+            )
             no_match_result = await tx.run(
                 RESOLVE_PENDING_REVIEW_RECORD_NO_MATCH,
                 review_case_id=review_case_id,
@@ -1081,6 +1141,15 @@ async def _action_tx(
             claim = await _claim_review_action(tx, review_case_id, actor_id)
             if claim is None:
                 return ActionResult(merge_not_applicable=True)
+            collector = PersonListSummaryDeltaCollector()
+            await collector.capture_before(
+                tx,
+                person_ids=_pending_person_ids(pending_record),
+                source_record_pks=(
+                    to_str(pending_record.get("pending_source_record_pk")),
+                    to_optional_str(pending_record.get("expected_active_source_record_pk")) or "",
+                ),
+            )
             rejected_result = await tx.run(
                 REJECT_PENDING_REVIEW_RECORD,
                 review_case_id=review_case_id,
@@ -1105,6 +1174,16 @@ async def _action_tx(
                 claim = await _claim_review_action(tx, review_case_id, actor_id)
                 if claim is None:
                     return ActionResult(merge_not_applicable=True)
+                collector = PersonListSummaryDeltaCollector()
+                # Capture the sales record and the version it replaces: the
+                # replaced version stops counting when the sale is rejected.
+                await collector.capture_before(
+                    tx,
+                    source_record_pks=(
+                        to_str(sales_record.get("source_record_pk")),
+                        to_optional_str(sales_record.get("expected_active_source_record_pk")) or "",
+                    ),
+                )
                 if sales_record.get("lifecycle_status") == "pending_review":
                     rejected = await tx.run(
                         REJECT_STAGED_REVIEW_SALE,
@@ -1281,6 +1360,16 @@ async def _action_tx(
         )
     elif action_type == ApiReviewActionType.MERGE.value and absorbed_id and survivor_id:
         left, right = _ordered_pair(absorbed_id, survivor_id)
+        collector = PersonListSummaryDeltaCollector()
+        # Capture both Persons and their distinct deals immediately before the
+        # merge rewires them.
+        await collector.capture_before(
+            tx,
+            person_ids=[absorbed_id, survivor_id],
+            deal_element_ids=await find_deal_element_ids_for_persons(
+                tx, [absorbed_id, survivor_id]
+            ),
+        )
         merge_result = await tx.run(
             EXECUTE_MANUAL_MERGE,
             from_id=absorbed_id,
@@ -1324,4 +1413,6 @@ async def _action_tx(
     ):
         await tx.run(MARK_REVIEW_SALES_RECORD_UNRESOLVED, review_case_id=review_case_id)
 
+    if collector is not None:
+        await collector.finalize(tx)
     return out

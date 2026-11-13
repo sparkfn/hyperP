@@ -6,8 +6,9 @@ from collections.abc import Iterator
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from typing import cast
-from unittest.mock import MagicMock, patch
+from unittest.mock import DEFAULT, MagicMock, patch
 
+from _txmock import summary_counter_result
 from neo4j import ManagedTransaction
 from src.connectors.bitrix_openlines.connector import build_crm_deal_envelope
 from src.connectors.bitrix_openlines.crm_identity_policy import (
@@ -60,6 +61,9 @@ class _Tx:
         self._blocked_owners = blocked_owners or {}
 
     def run(self, query: str, **_kwargs: object) -> _Rows:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         if "candidate_person_id" in query and "NO_MATCH_LOCK" in query:
             return _Rows(
                 [
@@ -83,6 +87,9 @@ class _Tx:
 
 class _NameMismatchTx:
     def run(self, query: str, **_kwargs: object) -> _Rows:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         if "is_locked" in query:
             return _Rows([{"is_locked": False}])
         if "owner_person_id" in query:
@@ -643,7 +650,11 @@ def test_blocked_canonical_owner_persists_durable_pending_review() -> None:
             "blocked_canonical_crm_contact_candidate_ids": ["person-a"],
         },
     )
-    tx = cast(ManagedTransaction, MagicMock())
+    tx_mock = MagicMock()
+    tx_mock.run.side_effect = (
+        lambda query, *_args, **_kwargs: summary_counter_result(query) or DEFAULT
+    )
+    tx = cast(ManagedTransaction, tx_mock)
 
     with ExitStack() as stack:
         stack.enter_context(patch("src.pipeline.find_candidates", return_value=[]))
@@ -712,7 +723,11 @@ def test_crm_multi_merge_persists_provisional_link_without_identity_evidence() -
             quality_flag=QualityFlag.VALID,
         ),
     ]
-    tx = cast(ManagedTransaction, MagicMock())
+    tx_mock = MagicMock()
+    tx_mock.run.side_effect = (
+        lambda query, *_args, **_kwargs: summary_counter_result(query) or DEFAULT
+    )
+    tx = cast(ManagedTransaction, tx_mock)
 
     with ExitStack() as stack:
         find = stack.enter_context(patch("src.pipeline.find_candidates", return_value=[]))

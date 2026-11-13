@@ -23,6 +23,7 @@ from src.oauth2_app import build_oauth2_app
 from src.proclaude.service import close_proclaude_service
 from src.redis_client import close_redis
 from src.repositories.neo4j.bootstrap import (
+    ensure_person_list_summary_counter,
     ensure_source_record_identity_lock_constraint,
 )
 from src.request_middleware import RequestTimingMiddleware
@@ -35,6 +36,11 @@ logger = logging.getLogger("profile_unifier_api")
 async def _ensure_source_record_identity_lock() -> None:
     """Install review activation's identity serialization prerequisite."""
     await ensure_source_record_identity_lock_constraint()
+
+
+async def _ensure_person_list_summary_counter() -> None:
+    """Install the person-list summary counter schema and global singleton."""
+    await ensure_person_list_summary_counter()
 
 
 async def _ensure_user_constraint() -> None:
@@ -66,6 +72,7 @@ async def _lifespan(_app: FastAPI) -> AsyncIterator[None]:
     """Manage the Neo4j driver lifecycle alongside the FastAPI process."""
     validate_oauth_runtime_config()
     await _ensure_source_record_identity_lock()
+    await _ensure_person_list_summary_counter()
     await _ensure_user_constraint()
     await _ensure_oauth_client_constraints()
     await _ensure_person_indexes()

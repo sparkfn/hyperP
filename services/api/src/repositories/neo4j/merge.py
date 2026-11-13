@@ -10,9 +10,13 @@ from neo4j import AsyncManagedTransaction
 
 from src.celery_client import enqueue_match_recalculation
 from src.graph.client import get_session
-from src.graph.converters import to_str
+from src.graph.converters import to_str, to_str_list
 from src.graph.crm_deal_count import recompute_person_crm_deal_counts
 from src.graph.golden_profile import recompute_golden_profile_tx
+from src.graph.person_list_summary_deltas import (
+    PersonListSummaryDeltaCollector,
+    find_deal_element_ids_for_persons,
+)
 from src.graph.queries import (
     CHECK_BOTH_PERSONS_ACTIVE,
     CHECK_EXISTING_LOCK,
@@ -23,6 +27,7 @@ from src.graph.queries import (
     EXECUTE_MANUAL_MERGE,
     FLAG_AFFECTED_RECORDS_FOR_REVIEW,
     GET_ADDRESS_BY_NORMALIZED,
+    GET_UNMERGE_DEAL_TARGET,
     GET_UNMERGE_TARGET,
     REVERT_MERGE,
     UPDATE_GOLDEN_FIELDS,
@@ -41,6 +46,13 @@ class _UnmergeResult:
     absorbed_id: str
     current_survivor_id: str
     reverted_review_case_ids: list[str]
+
+
+_UNMERGE_LINEAGE_RETRY_LIMIT = 3
+
+
+class _UnmergeLineageChangedError(RuntimeError):
+    """The current merge survivor moved while an unmerge acquired its locks."""
 
 
 logger = logging.getLogger(__name__)
@@ -77,9 +89,16 @@ class Neo4jMergeRepository:
         self, merge_event_id: str, reason: str, actor_id: str
     ) -> tuple[str, str] | None:
         async with get_session(write=True) as session:
-            result = await session.execute_write(
-                _unmerge_with_profiles_tx, merge_event_id, reason, actor_id
-            )
+            result: _UnmergeResult | None = None
+            for attempt in range(_UNMERGE_LINEAGE_RETRY_LIMIT):
+                try:
+                    result = await session.execute_write(
+                        _unmerge_with_profiles_tx, merge_event_id, reason, actor_id
+                    )
+                    break
+                except _UnmergeLineageChangedError:
+                    if attempt + 1 == _UNMERGE_LINEAGE_RETRY_LIMIT:
+                        raise
             if result is not None:
                 enqueue_match_recalculation(result.reverted_review_case_ids)
             return (result.absorbed_id, result.current_survivor_id) if result is not None else None
@@ -151,12 +170,19 @@ async def _manual_merge_with_profile_tx(
     actor_id: str,
     golden_profile_selections: list[GoldenProfileSelection],
 ) -> MergeOutcome:
+    collector = PersonListSummaryDeltaCollector()
+    await collector.capture_before(
+        tx,
+        person_ids=[from_id, to_id],
+        deal_element_ids=await find_deal_element_ids_for_persons(tx, [from_id, to_id]),
+    )
     outcome = await _manual_merge_tx(tx, from_id, to_id, reason, actor_id)
     if outcome.merge_event_id is None:
         return outcome
     await recompute_golden_profile_tx(tx, to_id, False)
     if golden_profile_selections:
         await _apply_golden_profile_selections_tx(tx, to_id, golden_profile_selections)
+    await collector.finalize(tx)
     return outcome
 
 
@@ -298,12 +324,58 @@ async def _unmerge_with_profiles_tx(
     reason: str,
     actor_id: str,
 ) -> _UnmergeResult | None:
-    result = await _unmerge_tx(tx, merge_event_id, reason, actor_id)
-    if result is None:
+    collector = PersonListSummaryDeltaCollector()
+    target = await (await tx.run(GET_UNMERGE_DEAL_TARGET, merge_event_id=merge_event_id)).single()
+    if target is None:
         return None
-    await recompute_golden_profile_tx(tx, result.absorbed_id, False)
-    await recompute_golden_profile_tx(tx, result.current_survivor_id, False)
-    return result
+    absorbed_id = to_str(target["absorbed_id"])
+
+    for _attempt in range(_UNMERGE_LINEAGE_RETRY_LIMIT):
+        current_survivor_id = to_str(target["current_survivor_id"])
+        deal_element_ids = tuple(
+            sorted(
+                element_id for element_id in to_str_list(target["deal_element_ids"]) if element_id
+            )
+        )
+        # Capturing the Person and deal nodes takes their write locks before the
+        # lineage is checked again. A concurrent merge that completed after the
+        # initial target read is therefore detected before any unmerge mutation.
+        await collector.capture_before(
+            tx,
+            person_ids=[absorbed_id, current_survivor_id],
+            deal_element_ids=deal_element_ids,
+        )
+        verified = await (
+            await tx.run(GET_UNMERGE_DEAL_TARGET, merge_event_id=merge_event_id)
+        ).single()
+        if verified is None:
+            return None
+        verified_absorbed_id = to_str(verified["absorbed_id"])
+        verified_survivor_id = to_str(verified["current_survivor_id"])
+        verified_deal_ids = tuple(
+            sorted(
+                element_id for element_id in to_str_list(verified["deal_element_ids"]) if element_id
+            )
+        )
+        if (
+            verified_absorbed_id != absorbed_id
+            or verified_survivor_id != current_survivor_id
+            or verified_deal_ids != deal_element_ids
+        ):
+            target = verified
+            continue
+
+        result = await _unmerge_tx(tx, merge_event_id, reason, actor_id)
+        if result is None:
+            return None
+        if result.absorbed_id != absorbed_id or result.current_survivor_id != current_survivor_id:
+            raise _UnmergeLineageChangedError("unmerge target moved after summary capture")
+        await recompute_golden_profile_tx(tx, result.absorbed_id, False)
+        await recompute_golden_profile_tx(tx, result.current_survivor_id, False)
+        await collector.finalize(tx)
+        return result
+
+    raise _UnmergeLineageChangedError("unmerge target kept moving during summary capture")
 
 
 async def _create_lock_tx(

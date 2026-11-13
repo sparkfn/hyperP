@@ -108,8 +108,7 @@ _EXPECTED_ACTIVE_NODE_SENTINELS = {
     "api": (
         "services/api/tests/test_active_api_reader_contract.py::"
         "test_api_authoritative_reader_parity_excludes_retired_links",
-        "services/api/tests/test_mcp_app.py::"
-        "test_mcp_tools_match_every_canonical_api_operation",
+        "services/api/tests/test_mcp_app.py::test_mcp_tools_match_every_canonical_api_operation",
         "services/api/tests/test_ci_selection_gate.py::"
         "test_root_plugin_rejects_explicit_historical_targets_before_import",
         "services/api/tests/test_person_crm_metrics_neo4j.py::"
@@ -369,8 +368,7 @@ def test_historical_restoration_is_gated_and_restores_historical_api_reader() ->
     runner = runpy.run_path(str(_ROOT / "scripts/ci_historical_validation.py"))
     commands = runner["_commands"]("<historical-mypy-config>")
     assert any(
-        command.environment == "ingestion"
-        and command.argv == _EXPECTED_HISTORICAL_TRAINING_SYNC
+        command.environment == "ingestion" and command.argv == _EXPECTED_HISTORICAL_TRAINING_SYNC
         for command in commands
     )
     assert "hyperp-intelligence" in script
@@ -420,6 +418,7 @@ def test_workflows_retain_untrusted_execution_and_failure_suppression_bans() -> 
         for token in prohibited:
             assert token not in rendered
 
+
 _EXPECTED_QUERY_TEST_PATHS = frozenset(
     {
         "services/ingestion/tests/test_active_publication_fencing_neo4j.py",
@@ -441,6 +440,7 @@ _EXPECTED_QUERY_TEST_PATHS = frozenset(
         "services/ingestion/tests/test_standalone_crm_census_neo4j.py",
         "services/ingestion/tests/test_standalone_crm_lane_a_schema_neo4j.py",
         "services/ingestion/tests/test_standalone_crm_source_child_integration_neo4j.py",
+        "services/ingestion/tests/test_person_list_summary_neo4j.py",
         "services/api/tests/test_identity_link_revisions_neo4j.py",
         "services/api/tests/test_person_crm_metrics_neo4j.py",
         "services/api/tests/test_person_graph_neo4j.py",
@@ -448,6 +448,7 @@ _EXPECTED_QUERY_TEST_PATHS = frozenset(
         "services/api/tests/test_persons_list_neo4j_234.py",
         "services/api/tests/test_persons_list_plan_neo4j.py",
         "services/api/tests/test_persons_list_possible_match_neo4j.py",
+        "services/api/tests/test_person_list_summary_neo4j.py",
     }
 )
 
@@ -481,11 +482,7 @@ def test_frontend_commands_and_complete_query_inventory_remain_exact() -> None:
         steps = _steps(_workflow(name))
         frontend = "frontend-checks" if name == "pr.yaml" else "frontend-build"
         assert _commands(steps[frontend]) == expected_frontend[name]
-        query_commands = tuple(
-            command
-            for shard in _SHARDS
-            for command in _commands(steps[shard])
-        )
+        query_commands = tuple(command for shard in _SHARDS for command in _commands(steps[shard]))
         assert _query_test_paths(query_commands) == _EXPECTED_QUERY_TEST_PATHS
 
 
@@ -534,6 +531,7 @@ def test_query_connections_have_complete_families_and_readiness_precedes_executi
             "HYPERP_NEO4J_PERSON_COMPLETENESS_TEST",
             "HYPERP_NEO4J_LOYALTY_POINTS_TEST",
             "HYPERP_NEO4J_CRM_DEAL_COUNT_TEST",
+            "HYPERP_NEO4J_PERSON_LIST_SUMMARY_TEST",
             "HYPERP_NEO4J_CONTROL_MIGRATION_TEST",
             "HYPERP_NEO4J_STANDALONE_CRM_CENSUS_TEST",
             "HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST",
@@ -553,6 +551,8 @@ def test_query_connections_have_complete_families_and_readiness_precedes_executi
             for family in families:
                 for suffix in ("_URI", "_USER", "_PASSWORD", "_SERVICE_HOST"):
                     assert f"{family}{suffix}" in environment
+            if shard == "neo4j-census-migration-api-checks":
+                assert environment["HYPERP_NEO4J_PERSON_LIST_SUMMARY_TEST_REQUIRED"] == "1"
             commands = _commands(steps[shard])
             readiness = min(
                 index for index, command in enumerate(commands) if "wait_for_neo4j.py" in command
@@ -561,9 +561,7 @@ def test_query_connections_have_complete_families_and_readiness_precedes_executi
                 index for index, command in enumerate(commands) if " pytest " in command
             )
             assert readiness < first_pytest
-    publication_path = (
-        _ROOT / "services/ingestion/tests/test_active_publication_fencing_neo4j.py"
-    )
+    publication_path = _ROOT / "services/ingestion/tests/test_active_publication_fencing_neo4j.py"
     publication = publication_path.read_text(encoding="utf-8")
     assert publication.index("_initialize_control_schema(driver)") < publication.index(
         "yield driver"
@@ -577,8 +575,7 @@ def test_historical_runner_isolated_enforces_numpy_and_requires_both_neo4j_famil
     runner = runpy.run_path(str(_ROOT / "scripts/ci_historical_validation.py"))
     commands = runner["_commands"]("<historical-mypy-config>")
     assert any(
-        command.environment == "ingestion"
-        and command.argv == _EXPECTED_HISTORICAL_TRAINING_SYNC
+        command.environment == "ingestion" and command.argv == _EXPECTED_HISTORICAL_TRAINING_SYNC
         for command in commands
     )
     assert any(
@@ -598,9 +595,7 @@ def test_historical_runner_isolated_enforces_numpy_and_requires_both_neo4j_famil
 
 def test_preimport_gate_and_behavioral_coverage_reject_explicit_historical_targets() -> None:
     gate = (_ROOT / "ci_support/pytest_selection_gate.py").read_text(encoding="utf-8")
-    behavior = (_ROOT / "services/api/tests/test_ci_selection_gate.py").read_text(
-        encoding="utf-8"
-    )
+    behavior = (_ROOT / "services/api/tests/test_ci_selection_gate.py").read_text(encoding="utf-8")
     assert "pytest_cmdline_main" in gate
     assert "reject_explicit_historical_targets" in gate
     assert "invocation_dir" in gate
@@ -656,17 +651,13 @@ def test_query_service_bindings_and_pristine_identifier_schema_order_fail_closed
         redirected = copy.deepcopy(document)
         redirected_steps = _steps(redirected)
         redirected_environment = _environment(redirected_steps["neo4j-census-migration-api-checks"])
-        redirected_environment["HYPERP_NEO4J_CRM_METRICS_TEST_URI"] = (
-            "bolt://neo4j-projection:7687"
-        )
+        redirected_environment["HYPERP_NEO4J_CRM_METRICS_TEST_URI"] = "bolt://neo4j-projection:7687"
         try:
             _assert_query_service_bindings(redirected)
         except AssertionError:
             pass
         else:
-            raise AssertionError(
-                f"{workflow_name} accepted cross-service query target redirection"
-            )
+            raise AssertionError(f"{workflow_name} accepted cross-service query target redirection")
 
         reordered = copy.deepcopy(document)
         reordered_steps = _steps(reordered)
@@ -678,6 +669,4 @@ def test_query_service_bindings_and_pristine_identifier_schema_order_fail_closed
         except AssertionError:
             pass
         else:
-            raise AssertionError(
-                f"{workflow_name} accepted identifier-schema command reordering"
-            )
+            raise AssertionError(f"{workflow_name} accepted identifier-schema command reordering")

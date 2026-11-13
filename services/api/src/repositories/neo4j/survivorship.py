@@ -17,6 +17,7 @@ from src.graph.golden_profile import (
     parse_overrides,
     recompute_golden_profile_tx,
 )
+from src.graph.person_list_summary_deltas import PersonListSummaryDeltaCollector
 from src.graph.queries import (
     CHECK_SOURCE_RECORD_LINKED,
     CREATE_OVERRIDE_AUDIT,
@@ -90,7 +91,7 @@ def _is_valid_custom_value(field_name: str, value: str) -> bool:
 class Neo4jSurvivorshipRepository:
     async def recompute_golden_profile(self, person_id: str) -> float | None:
         async with get_session(write=True) as session:
-            return await session.execute_write(recompute_golden_profile_tx, person_id)
+            return await session.execute_write(_recompute_golden_profile_tx, person_id)
 
     async def get_field_options(self, person_id: str) -> FieldOptionsData | None:
         async with get_session() as session:
@@ -147,6 +148,20 @@ class Neo4jSurvivorshipRepository:
                 reason,
                 actor_id,
             )
+
+
+async def _recompute_golden_profile_tx(
+    tx: AsyncManagedTransaction,
+    person_id: str,
+) -> float | None:
+    """Recompute one golden profile and publish the summary delta."""
+    collector = PersonListSummaryDeltaCollector()
+    await collector.capture_before(tx, person_ids=[person_id])
+    score = await recompute_golden_profile_tx(tx, person_id)
+    if score is None:
+        return None
+    await collector.finalize(tx)
+    return score
 
 
 async def _field_options_tx(session: TimedAsyncSession, person_id: str) -> FieldOptionsData | None:
@@ -277,6 +292,8 @@ async def _override_tx(
     now = datetime.now(UTC).isoformat()
     overrides = parse_overrides(person_record["overrides"])
     overrides[field_name] = _override_entry(field_name, source_record_pk, reason, actor_id, now)
+    collector = PersonListSummaryDeltaCollector()
+    await collector.capture_before(tx, person_ids=[person_id])
     await tx.run(UPDATE_OVERRIDES, person_id=person_id, overrides=json.dumps(overrides))
     await tx.run(
         UPDATE_GOLDEN_FIELD,
@@ -285,6 +302,7 @@ async def _override_tx(
         value=derived.value,
     )
     await tx.run(CREATE_OVERRIDE_AUDIT, person_id=person_id, actor_id=actor_id, reason=reason)
+    await collector.finalize(tx)
     return "ok"
 
 
@@ -322,6 +340,8 @@ async def _custom_override_tx(
     now = datetime.now(UTC).isoformat()
     overrides = parse_overrides(person_record["overrides"])
     overrides[field_name] = _custom_override_entry(trimmed_value, reason, actor_id, now)
+    collector = PersonListSummaryDeltaCollector()
+    await collector.capture_before(tx, person_ids=[person_id])
     await tx.run(UPDATE_OVERRIDES, person_id=person_id, overrides=json.dumps(overrides))
     await tx.run(
         UPDATE_GOLDEN_FIELD,
@@ -330,6 +350,7 @@ async def _custom_override_tx(
         value=value_to_store,
     )
     await tx.run(CREATE_OVERRIDE_AUDIT, person_id=person_id, actor_id=actor_id, reason=reason)
+    await collector.finalize(tx)
     return "ok"
 
 
@@ -368,6 +389,8 @@ async def _batch_override_tx(
     overrides = parse_overrides(person_record["overrides"])
     for field_name, source_record_pk, _ in validated:
         overrides[field_name] = _override_entry(field_name, source_record_pk, reason, actor_id, now)
+    collector = PersonListSummaryDeltaCollector()
+    await collector.capture_before(tx, person_ids=[person_id])
     await tx.run(UPDATE_OVERRIDES, person_id=person_id, overrides=json.dumps(overrides))
 
     updates = [
@@ -382,4 +405,5 @@ async def _batch_override_tx(
         )
 
     await tx.run(CREATE_OVERRIDE_AUDIT, person_id=person_id, actor_id=actor_id, reason=reason)
+    await collector.finalize(tx)
     return BatchOverrideResult(outcome="ok")

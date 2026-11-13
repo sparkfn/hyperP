@@ -10,6 +10,12 @@ from typing import Literal, cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+from _txmock import (
+    SUMMARY_APPLY_QUERY,
+    SUMMARY_CAPTURE_QUERIES,
+    _SummaryCounterResult,
+    summary_counter_result,
+)
 from neo4j import ManagedTransaction
 
 from src.config import Settings
@@ -48,8 +54,11 @@ class _Transaction:
         self._responses = responses or {}
         self.calls: list[tuple[str, dict[str, object]]] = []
 
-    def run(self, query: str, **parameters: object) -> _Result:
+    def run(self, query: str, **parameters: object) -> _Result | _SummaryCounterResult:
         self.calls.append((query, parameters))
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         return _Result(self._responses.get(query))
 
 
@@ -366,6 +375,10 @@ def test_pipeline_keeps_suppressed_review_record_pending_without_evidence(
         persist.call_args.kwargs["lifecycle_status"] is SourceRecordLifecycleStatus.PENDING_REVIEW
     )
     assert link.call_args.kwargs["attach_evidence"] is False
-    assert [query for query, _ in tx.calls] == [queries.SUPPRESS_MATCH_DECISION_REVIEW]
+    assert [
+        query
+        for query, _ in tx.calls
+        if query not in SUMMARY_CAPTURE_QUERIES and query != SUMMARY_APPLY_QUERY
+    ] == [queries.SUPPRESS_MATCH_DECISION_REVIEW]
     assert REVIEW_CASES_CREATED_COUNTER == {}
     assert len(REVIEW_DECISIONS_SUPPRESSED_COUNTER) == 1

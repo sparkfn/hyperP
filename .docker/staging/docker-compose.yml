@@ -172,7 +172,7 @@ services:
   neo4j:
     image: neo4j:5.26-community
     cpus: 2.0
-    mem_limit: 3G
+    mem_limit: 5G
     stop_grace_period: 30s
     ports:
       - "${NEO4J_HTTP_PORT:-7474}:7474"
@@ -181,8 +181,8 @@ services:
       NEO4J_AUTH: neo4j/${NEO4J_PASSWORD:-changeme}
       NEO4J_PLUGINS: '[]'
       NEO4J_server_memory_heap_initial__size: 512m
-      NEO4J_server_memory_heap_max__size: 1g
-      NEO4J_server_memory_pagecache_size: 512m
+      NEO4J_server_memory_heap_max__size: 1536m
+      NEO4J_server_memory_pagecache_size: 2g
       NEO4J_server_memory_off__heap_transaction__max__size: 512m
       NEO4J_server_jvm_additional: --add-modules jdk.incubator.vector
     volumes:
