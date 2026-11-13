@@ -6,11 +6,18 @@ import json
 
 from neo4j import ManagedTransaction
 
-from src.bitrix_backfill_models import CoverageDisposition, CoverageEntry
+from src.bitrix_backfill_models import CoverageDisposition, CoverageEntry, GenerationRunContext
 from src.bitrix_ingestion_models import ExecutionContext
 from src.graph.bitrix_backfill import BitrixBackfillRepository
+from src.graph.queries.ingest_skips import RECORD_INGEST_REFRESH_UNIT
 from src.graph.queries.ingestion_control import ADVANCE_BITRIX_UNIT_CHECKPOINT
 from src.models import IngestResult, JsonValue, SourceRecordEnvelope
+
+#: Checkpoint phase that refreshes the frozen known-owner membership set.
+KNOWN_OWNER_REFRESH_PHASE = "known_owner_refresh_v1"
+
+#: Attempt key of the one known-owner refresh attempt shared by a whole run.
+KNOWN_OWNER_REFRESH_ATTEMPT_KEY = "known_owner_refresh_v1"
 
 
 def record_terminal_unit(
@@ -84,6 +91,65 @@ def record_terminal_unit(
         raise RuntimeError("Bitrix checkpoint did not advance with its terminal coverage row")
     if record["stop_requested"] is True:
         raise RuntimeError("Bitrix logical run stop was requested at a committed unit boundary")
+    if context.checkpoint.phase == KNOWN_OWNER_REFRESH_PHASE:
+        _record_refresh_unit_accounting(
+            tx,
+            context=context,
+            generation=generation,
+            entry=entry,
+            result=result,
+        )
+
+
+def refresh_attempt_key(context: ExecutionContext) -> str:
+    """Return the attempt key of the known-owner refresh attempt of one run.
+
+    One refresh attempt is shared by every unit of a run, so its counters accumulate
+    the whole phase.  Runs without a generation context have no durable refresh
+    accounting and keep the legacy empty attempt key.
+    """
+    if context.generation_context is None:
+        return ""
+    return KNOWN_OWNER_REFRESH_ATTEMPT_KEY
+
+
+def _record_refresh_unit_accounting(
+    tx: ManagedTransaction,
+    *,
+    context: ExecutionContext,
+    generation: GenerationRunContext,
+    entry: CoverageEntry,
+    result: IngestResult,
+) -> None:
+    """Persist one refresh unit's attempt counters inside its own domain transaction."""
+    buckets = _result_buckets(result)
+    record = tx.run(
+        RECORD_INGEST_REFRESH_UNIT,
+        ingest_run_id=context.fence_context.ingest_run_id,
+        control_instance_id=context.fence_context.control_instance_id,
+        attempt_key=refresh_attempt_key(context),
+        generation_id=generation.generation_id,
+        stream_key=context.fence_context.stream_key,
+        source_identity=entry.source_identity,
+        source_boundary=entry.source_boundary,
+        persisted_count=buckets["persisted"],
+        duplicate_count=buckets["duplicate"],
+        pipeline_skip_count=buckets["excluded"],
+        record_error_count=buckets["error"],
+    ).single()
+    if record is None:
+        raise RuntimeError("known-owner refresh accounting did not persist its terminal unit")
+
+
+def _result_buckets(result: IngestResult) -> dict[str, int]:
+    """Classify one terminal result into exactly one durable attempt bucket."""
+    if result.excluded:
+        return {"persisted": 0, "duplicate": 0, "excluded": 1, "error": 0}
+    if result.skipped_duplicate:
+        return {"persisted": 0, "duplicate": 1, "excluded": 0, "error": 0}
+    if result.errors:
+        return {"persisted": 0, "duplicate": 0, "excluded": 0, "error": 1}
+    return {"persisted": 1, "duplicate": 0, "excluded": 0, "error": 0}
 
 
 def source_lineage_text(
@@ -115,7 +181,7 @@ def _cursor_after(
     if context.fence_context.stream_key == "crm_deals":
         cursor_key = (
             "last_known_deal_id"
-            if context.checkpoint.phase == "known_owner_refresh_v1"
+            if context.checkpoint.phase == KNOWN_OWNER_REFRESH_PHASE
             else "last_deal_id"
         )
         cursor[cursor_key] = source_id

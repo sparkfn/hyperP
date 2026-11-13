@@ -8,10 +8,15 @@ from collections.abc import Iterator
 from urllib.parse import urlparse
 
 import pytest
-from neo4j import Driver, GraphDatabase
+from neo4j import Driver, GraphDatabase, ManagedTransaction
 from neo4j.exceptions import ConstraintError
 from src.graph.client import Neo4jClient
 from src.graph.queries.identity_foundation_schema import CREATE_IDENTITY_FOUNDATION_SCHEMA
+from src.graph.queries.ingest_skips import (
+    RECONCILE_INGEST_RUN_ACCOUNTING,
+    RECORD_INGEST_REFRESH_UNIT,
+    WRITE_INGEST_SKIPS,
+)
 from src.graph.schema_init import (
     BASE_LIFECYCLE_CONSTRAINTS,
     _find_init_cypher,
@@ -20,7 +25,7 @@ from src.graph.schema_init import (
     apply_schema,
 )
 from src.identity_assertions import audit_assertions, backfill_assertions
-from src.ingest_skips import ConnectorSkip, SkipLedger
+from src.ingest_skips import ConnectorSkip, SkipLedger, skip_row
 from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID
 
 _ENV_PREFIX = "HYPERP_NEO4J_CONTROL_MIGRATION_TEST"
@@ -292,3 +297,267 @@ def test_skip_ledger_reconciles_redelivered_attempts(neo4j_driver: Driver) -> No
             ingest_run_id=ingest_run_id,
         ).consume()
     assert attempt_two.reconcile() is False
+
+
+_REFRESH_ATTEMPT_KEY = "known_owner_refresh_v1"
+_REFRESH_BOUNDARY = "sha256:boundary:known_owner_refresh_v1"
+
+
+def _seed_ingest_run(driver: Driver, ingest_run_id: str) -> None:
+    with driver.session() as session:
+        session.run(
+            "CREATE (:IngestRun {ingest_run_id: $ingest_run_id, "
+            "control_instance_id: $control_instance_id})",
+            ingest_run_id=ingest_run_id,
+            control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+        ).consume()
+
+
+def _seed_coverage_unit(driver: Driver, source_identity: str) -> None:
+    with driver.session() as session:
+        session.run(
+            "CREATE (:BitrixBackfillCoverage {control_instance_id: $control_instance_id, "
+            "generation_id: 'generation-1', stream_key: 'crm_deals', "
+            "source_identity: $source_identity, source_boundary: $source_boundary})",
+            control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+            source_identity=source_identity,
+            source_boundary=_REFRESH_BOUNDARY,
+        ).consume()
+
+
+def _record_refresh_unit(
+    client: _Client,
+    *,
+    ingest_run_id: str,
+    source_identity: str,
+    persisted_count: int = 0,
+    pipeline_skip_count: int = 0,
+) -> None:
+    def _work(tx: ManagedTransaction) -> None:
+        tx.run(
+            RECORD_INGEST_REFRESH_UNIT,
+            ingest_run_id=ingest_run_id,
+            control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+            attempt_key=_REFRESH_ATTEMPT_KEY,
+            generation_id="generation-1",
+            stream_key="crm_deals",
+            source_identity=source_identity,
+            source_boundary=_REFRESH_BOUNDARY,
+            persisted_count=persisted_count,
+            duplicate_count=0,
+            pipeline_skip_count=pipeline_skip_count,
+            record_error_count=0,
+        ).single()
+
+    client.execute_write(_work)
+
+
+def _attempt_counters(client: _Client, ingest_run_id: str) -> dict[str, int]:
+    def _read(tx: ManagedTransaction) -> dict[str, int]:
+        record = tx.run(
+            "MATCH (attempt:IngestRunAttempt {ingest_run_id: $ingest_run_id}) "
+            "RETURN attempt.emitted_count AS emitted, attempt.persisted_count AS persisted, "
+            "attempt.pipeline_skip_count AS pipeline_skips",
+            ingest_run_id=ingest_run_id,
+        ).single()
+        if record is None:
+            return {}
+        return {
+            "emitted": int(record["emitted"]),
+            "persisted": int(record["persisted"]),
+            "pipeline_skips": int(record["pipeline_skips"]),
+        }
+
+    return client.execute_read(_read)
+
+
+def _write_excluded_skip(driver: Driver, ingest_run_id: str, source_record_id: str) -> None:
+    with driver.session() as session:
+        session.run(
+            WRITE_INGEST_SKIPS,
+            rows=[
+                skip_row(
+                    ingest_run_id,
+                    "pipeline",
+                    "bitrix_chat",
+                    "excluded_out_of_scope",
+                    source_record_id,
+                    "",
+                    attempt_key=_REFRESH_ATTEMPT_KEY,
+                )
+            ],
+            control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+        ).consume()
+
+
+def _skip_count(driver: Driver, ingest_run_id: str) -> int:
+    with driver.session() as session:
+        record = session.run(
+            "MATCH (skip:IngestSkip {ingest_run_id: $ingest_run_id}) RETURN count(skip) AS count",
+            ingest_run_id=ingest_run_id,
+        ).single(strict=True)
+    return int(record["count"])
+
+
+def test_known_owner_refresh_accounting_is_durable_and_counts_each_unit_once(
+    neo4j_driver: Driver,
+) -> None:
+    ingest_run_id = "refresh-accounting-run"
+    _seed_ingest_run(neo4j_driver, ingest_run_id)
+    _seed_coverage_unit(neo4j_driver, "bitrix-crm-deal-7")
+    _seed_coverage_unit(neo4j_driver, "bitrix-crm-deal-9")
+    client = _Client(neo4j_driver)
+    apply_schema(client)
+
+    _record_refresh_unit(
+        client,
+        ingest_run_id=ingest_run_id,
+        source_identity="bitrix-crm-deal-7",
+        persisted_count=1,
+    )
+    _record_refresh_unit(
+        client,
+        ingest_run_id=ingest_run_id,
+        source_identity="bitrix-crm-deal-9",
+        pipeline_skip_count=1,
+    )
+    _write_excluded_skip(neo4j_driver, ingest_run_id, "bitrix-crm-deal-9")
+
+    assert _skip_count(neo4j_driver, ingest_run_id) == 1
+    assert _attempt_counters(client, ingest_run_id) == {
+        "emitted": 2,
+        "persisted": 1,
+        "pipeline_skips": 1,
+    }
+
+    # A replayed unit inside the same run must not be counted twice.
+    _record_refresh_unit(
+        client,
+        ingest_run_id=ingest_run_id,
+        source_identity="bitrix-crm-deal-7",
+        persisted_count=1,
+    )
+    assert _attempt_counters(client, ingest_run_id) == {
+        "emitted": 2,
+        "persisted": 1,
+        "pipeline_skips": 1,
+    }
+
+    # The moved-out-of-scope unit replays with its own skip row: one stored skip,
+    # unchanged counters.
+    _record_refresh_unit(
+        client,
+        ingest_run_id=ingest_run_id,
+        source_identity="bitrix-crm-deal-9",
+        pipeline_skip_count=1,
+    )
+    _write_excluded_skip(neo4j_driver, ingest_run_id, "bitrix-crm-deal-9")
+
+    assert _skip_count(neo4j_driver, ingest_run_id) == 1
+    assert _attempt_counters(client, ingest_run_id) == {
+        "emitted": 2,
+        "persisted": 1,
+        "pipeline_skips": 1,
+    }
+
+    with neo4j_driver.session() as session:
+        marked = session.run(
+            "MATCH (:IngestRunAttempt {ingest_run_id: $ingest_run_id})"
+            "-[marker:ACCOUNTED_UNIT]->(:BitrixBackfillCoverage) "
+            "RETURN count(marker) AS markers",
+            ingest_run_id=ingest_run_id,
+        ).single(strict=True)["markers"]
+    assert marked == 2
+
+    def _reconcile(tx: ManagedTransaction) -> bool:
+        record = tx.run(
+            RECONCILE_INGEST_RUN_ACCOUNTING,
+            ingest_run_id=ingest_run_id,
+            control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+        ).single()
+        assert record is not None
+        return bool(record["reconciled"])
+
+    assert client.execute_write(_reconcile) is True
+    with neo4j_driver.session() as session:
+        run = session.run(
+            "MATCH (ir:IngestRun {ingest_run_id: $ingest_run_id}) "
+            "RETURN ir.emitted_count AS emitted, ir.pipeline_skip_count AS pipeline_skips, "
+            "ir.skip_ledger_reconciled AS reconciled",
+            ingest_run_id=ingest_run_id,
+        ).single(strict=True)
+    assert run["emitted"] == 2
+    assert run["pipeline_skips"] == 1
+    assert run["reconciled"] is True
+
+
+def test_known_owner_refresh_accounting_is_scoped_to_its_own_run(neo4j_driver: Driver) -> None:
+    first_run = "refresh-accounting-run-a"
+    second_run = "refresh-accounting-run-b"
+    _seed_ingest_run(neo4j_driver, first_run)
+    _seed_ingest_run(neo4j_driver, second_run)
+    _seed_coverage_unit(neo4j_driver, "bitrix-crm-deal-7")
+    client = _Client(neo4j_driver)
+    apply_schema(client)
+
+    _record_refresh_unit(
+        client,
+        ingest_run_id=first_run,
+        source_identity="bitrix-crm-deal-7",
+        persisted_count=1,
+    )
+    _record_refresh_unit(
+        client,
+        ingest_run_id=second_run,
+        source_identity="bitrix-crm-deal-7",
+        persisted_count=1,
+    )
+
+    assert _attempt_counters(client, first_run) == {
+        "emitted": 1,
+        "persisted": 1,
+        "pipeline_skips": 0,
+    }
+    assert _attempt_counters(client, second_run) == {
+        "emitted": 1,
+        "persisted": 1,
+        "pipeline_skips": 0,
+    }
+
+
+def test_known_owner_refresh_accounting_rolls_back_with_its_failed_unit(
+    neo4j_driver: Driver,
+) -> None:
+    ingest_run_id = "refresh-rollback-run"
+    _seed_ingest_run(neo4j_driver, ingest_run_id)
+    _seed_coverage_unit(neo4j_driver, "bitrix-crm-deal-7")
+    client = _Client(neo4j_driver)
+    apply_schema(client)
+
+    def _work(tx: ManagedTransaction) -> None:
+        tx.run(
+            RECORD_INGEST_REFRESH_UNIT,
+            ingest_run_id=ingest_run_id,
+            control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+            attempt_key=_REFRESH_ATTEMPT_KEY,
+            generation_id="generation-1",
+            stream_key="crm_deals",
+            source_identity="bitrix-crm-deal-7",
+            source_boundary=_REFRESH_BOUNDARY,
+            persisted_count=1,
+            duplicate_count=0,
+            pipeline_skip_count=0,
+            record_error_count=0,
+        ).single()
+        raise RuntimeError("refresh unit failed")
+
+    with pytest.raises(RuntimeError, match="refresh unit failed"):
+        client.execute_write(_work)
+
+    assert _attempt_counters(client, ingest_run_id) == {}
+    with neo4j_driver.session() as session:
+        marked = session.run(
+            "MATCH (:IngestRunAttempt)-[marker:ACCOUNTED_UNIT]->(:BitrixBackfillCoverage) "
+            "RETURN count(marker) AS markers"
+        ).single(strict=True)["markers"]
+    assert marked == 0

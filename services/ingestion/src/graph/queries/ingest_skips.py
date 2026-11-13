@@ -1,4 +1,10 @@
-"""Cypher queries for recording and reconciling IngestSkip ledger entries."""
+"""Cypher queries for recording and reconciling IngestSkip ledger entries.
+
+``RECORD_INGEST_REFRESH_UNIT`` accounts one known-owner refresh unit inside the
+unit's own domain transaction.  One refresh attempt is shared by the whole run
+and each unit is counted once, when the attempt's marker relationship to the
+phase-scoped coverage unit is newly created.
+"""
 
 WRITE_INGEST_SKIPS = """
 UNWIND $rows AS row
@@ -31,6 +37,44 @@ SET attempt.emitted_count = $emitted_count,
     attempt.record_error_count = $record_error_count,
     attempt.updated_at = datetime()
 MERGE (attempt)-[:ATTEMPT_OF]->(ir)
+"""
+
+RECORD_INGEST_REFRESH_UNIT = """
+MATCH (ir:IngestRun {ingest_run_id: $ingest_run_id, control_instance_id: $control_instance_id})
+MERGE (attempt:IngestRunAttempt {
+    ingest_run_id: $ingest_run_id,
+    attempt_key: $attempt_key
+})
+ON CREATE SET
+    attempt.emitted_count = 0,
+    attempt.persisted_count = 0,
+    attempt.duplicate_count = 0,
+    attempt.pipeline_skip_count = 0,
+    attempt.connector_skip_count = 0,
+    attempt.record_error_count = 0,
+    attempt.accounting_scope = 'known_owner_refresh_v1',
+    attempt.created_at = datetime()
+SET attempt.updated_at = datetime()
+MERGE (attempt)-[:ATTEMPT_OF]->(ir)
+MATCH (coverage:BitrixBackfillCoverage {
+    control_instance_id: $control_instance_id,
+    generation_id: $generation_id,
+    stream_key: $stream_key,
+    source_identity: $source_identity,
+    source_boundary: $source_boundary
+})
+WITH ir, attempt, coverage
+OPTIONAL MATCH (attempt)-[accounted:ACCOUNTED_UNIT]->(coverage)
+WITH ir, attempt, coverage, count(accounted) AS accounted_units
+FOREACH (_ IN CASE WHEN accounted_units = 0 THEN [1] ELSE [] END |
+    SET attempt.emitted_count = coalesce(attempt.emitted_count, 0) + 1,
+        attempt.persisted_count = coalesce(attempt.persisted_count, 0) + $persisted_count,
+        attempt.duplicate_count = coalesce(attempt.duplicate_count, 0) + $duplicate_count,
+        attempt.pipeline_skip_count = coalesce(attempt.pipeline_skip_count, 0) + $pipeline_skip_count,
+        attempt.record_error_count = coalesce(attempt.record_error_count, 0) + $record_error_count)
+MERGE (attempt)-[:ACCOUNTED_UNIT]->(coverage)
+SET ir.skip_ledger_reconciled = false
+RETURN attempt.emitted_count AS emitted_count
 """
 
 RECONCILE_INGEST_RUN_ACCOUNTING = """

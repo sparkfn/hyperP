@@ -13,7 +13,8 @@ import pytest
 from neo4j import ManagedTransaction
 from pytest import MonkeyPatch
 from src import bitrix_deal_scope_reconciliation as reconciliation
-from src.bitrix_backfill_models import KnownOwnerMembershipSet
+from src.bitrix_backfill_models import GenerationRunContext, KnownOwnerMembershipSet
+from src.bitrix_backfill_runtime import record_terminal_unit
 from src.bitrix_deal_scope_reconciliation import (
     _get_deal_with_absence_confirmation,
     refresh_known_owner_set,
@@ -23,8 +24,8 @@ from src.connectors.bitrix_openlines.connector import build_crm_deal_envelope
 from src.connectors.bitrix_openlines.models import CrmContact, CrmDeal
 from src.graph.bitrix_deal_scope import CurrentDealScope
 from src.graph.client import Neo4jClient
-from src.graph.queries.ingest_skips import WRITE_INGEST_SKIPS
-from src.models import RecordType, SourceRecordEnvelope
+from src.graph.queries.ingest_skips import RECORD_INGEST_REFRESH_UNIT, WRITE_INGEST_SKIPS
+from src.models import IngestResult, RecordType, SourceRecordEnvelope
 from src.resumable import CheckpointDescriptor
 
 
@@ -93,6 +94,20 @@ def _context() -> ExecutionContext:
     )
 
 
+def _generation_context() -> ExecutionContext:
+    base = _context()
+    return ExecutionContext(
+        worker_task_id=base.worker_task_id,
+        fence_context=base.fence_context,
+        checkpoint=base.checkpoint,
+        generation_context=GenerationRunContext(
+            generation_id="generation-1",
+            boundary_digest="sha256:boundary",
+            configuration_digest="sha256:config",
+        ),
+    )
+
+
 def test_absence_requires_two_independent_healthy_targeted_reads() -> None:
     client = _MissingClient()
     scope = _Scope()
@@ -145,12 +160,23 @@ class _Pipeline:
 T = TypeVar("T")
 
 
+class _RecordingResult:
+    """Result double that reports one successful fenced statement."""
+
+    def __init__(self, record: dict[str, object]) -> None:
+        self._record = record
+
+    def single(self) -> dict[str, object]:
+        return self._record
+
+
 class _RecordingTx:
     def __init__(self) -> None:
         self.runs: list[tuple[str, dict[str, object]]] = []
 
-    def run(self, query: str, **kwargs: object) -> None:
+    def run(self, query: str, **kwargs: object) -> _RecordingResult:
         self.runs.append((query, kwargs))
+        return _RecordingResult({"stop_requested": False})
 
 
 class _WriteThroughGraph:
@@ -464,6 +490,106 @@ def test_known_owner_refresh_rechecks_runtime_after_batch_before_writes(
 
     assert client.chunks == [(1,)]
     assert _Pipeline.ingested == []
+
+
+class _MixedScopeClient:
+    """Client that returns one in-scope and one moved-out-of-scope known owner."""
+
+    def __init__(self, deals: dict[int, CrmDeal]) -> None:
+        self._deals = deals
+        self.closed = False
+
+    @property
+    def request_count(self) -> int:
+        return 1
+
+    def get_deals_or_none(self, deal_ids: Collection[int]) -> dict[int, CrmDeal | None]:
+        return {deal_id: self._deals.get(deal_id) for deal_id in deal_ids}
+
+    def get_deal_or_none(self, deal_id: int) -> CrmDeal | None:
+        return self._deals.get(deal_id)
+
+    def close(self) -> None:
+        self.closed = True
+
+
+class _AccountingPipeline:
+    """Pipeline double that accounts its terminal unit inside the unit transaction."""
+
+    ingested: list[str] = []
+    accounting: list[dict[str, object]] = []
+
+    def __init__(self, _graph: object, *, execution_context: ExecutionContext) -> None:
+        self._context = execution_context
+
+    def ingest(self, envelope: SourceRecordEnvelope, *, ingest_run_id: str) -> None:
+        tx = _RecordingTx()
+        record_terminal_unit(
+            cast(ManagedTransaction, tx),
+            context=self._context,
+            envelope=envelope,
+            result=IngestResult(source_record_id=envelope.source_record_id),
+        )
+        _AccountingPipeline.ingested.append(envelope.source_record_id)
+        _AccountingPipeline.accounting.extend(
+            params for query, params in tx.runs if query == RECORD_INGEST_REFRESH_UNIT
+        )
+
+
+def test_known_owner_refresh_accounts_in_scope_and_moved_out_of_scope_units(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    moved = replace(
+        _deal(9),
+        category_id="99",
+        stage_id="C99:NEW",
+        raw_payload={"ID": "9", "CATEGORY_ID": "99", "STAGE_ID": "C99:NEW"},
+    )
+    client = _MixedScopeClient({7: _deal(7), 9: moved})
+    graph = _WriteThroughGraph()
+    _AccountingPipeline.ingested.clear()
+    _AccountingPipeline.accounting.clear()
+    monkeypatch.setattr(reconciliation, "IngestPipeline", _AccountingPipeline)
+    monkeypatch.setattr(reconciliation, "record_scope_batch_in_transaction", Mock(return_value={}))
+    monkeypatch.setattr(reconciliation, "BitrixDealScopeRepository", lambda _graph: object())
+
+    summary = refresh_known_owner_set(
+        client,
+        cast(Neo4jClient, graph),
+        membership=KnownOwnerMembershipSet(
+            generation_id="generation-1",
+            membership_set_id="owners-1",
+            digest="sha256:owners",
+            deal_ids=("7", "9"),
+        ),
+        context=_generation_context(),
+        included_category_ids=["2"],
+        entity_by_category_id={"2": "eko"},
+        source_instance_id=None,
+    )
+
+    assert summary.refreshed == 1
+    assert summary.moved_out_of_scope == 1
+    assert _AccountingPipeline.ingested == ["bitrix-crm-deal-7"]
+
+    out_of_scope_accounting = [
+        params for query, params in graph.tx.runs if query == RECORD_INGEST_REFRESH_UNIT
+    ]
+    assert len(out_of_scope_accounting) == 1
+    accounted = {
+        cast(str, params["source_identity"]): params
+        for params in [*_AccountingPipeline.accounting, *out_of_scope_accounting]
+    }
+    assert set(accounted) == {"bitrix-crm-deal-7", "bitrix-crm-deal-9"}
+    assert accounted["bitrix-crm-deal-7"]["persisted_count"] == 1
+    assert accounted["bitrix-crm-deal-9"]["pipeline_skip_count"] == 1
+    assert accounted["bitrix-crm-deal-9"]["attempt_key"] == "known_owner_refresh_v1"
+
+    skip_statements = [params for query, params in graph.tx.runs if query == WRITE_INGEST_SKIPS]
+    assert len(skip_statements) == 1
+    [skip] = cast(list[dict[str, object]], skip_statements[0]["rows"])
+    assert skip["attempt_key"] == "known_owner_refresh_v1"
+    assert skip["source_record_id"] == "bitrix-crm-deal-9"
 
 
 def test_legacy_crm_deal_identity_v2_payload_and_hash_are_fixed() -> None:

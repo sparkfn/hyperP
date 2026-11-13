@@ -12,7 +12,7 @@ from typing import Protocol
 from neo4j import ManagedTransaction
 
 from src.bitrix_backfill_models import KnownOwnerMembershipSet
-from src.bitrix_backfill_runtime import record_terminal_unit
+from src.bitrix_backfill_runtime import record_terminal_unit, refresh_attempt_key
 from src.bitrix_ingestion_models import ExecutionContext, FenceContext
 from src.connectors.bitrix_openlines.connector import _deal_envelope
 from src.connectors.bitrix_openlines.models import CrmDeal
@@ -260,7 +260,8 @@ def _record_out_of_scope(
             disposition="excluded_out_of_scope",
             scope_state="out_of_scope",
         )
-        # Scope rows have an empty attempt key and are excluded from reconciliation.
+        # The skip carries the run's shared refresh attempt key so reconciliation counts
+        # the refresh outcome instead of omitting it as an orphan row.
         tx.run(
             WRITE_INGEST_SKIPS,
             rows=[
@@ -271,6 +272,7 @@ def _record_out_of_scope(
                     "excluded_out_of_scope",
                     envelope.source_record_id,
                     "",
+                    attempt_key=refresh_attempt_key(context),
                 )
             ],
             control_instance_id=context.fence_context.control_instance_id,
