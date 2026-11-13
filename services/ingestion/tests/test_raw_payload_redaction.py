@@ -154,7 +154,7 @@ def test_persist_source_record_passes_scrubbed_raw_payload() -> None:
     kwargs = tx.run.call_args.kwargs
     raw_payload_str = kwargs["raw_payload"]
     assert "S7012164F" not in raw_payload_str
-    assert "S••••164F" in raw_payload_str
+    assert json.loads(raw_payload_str) == {"nric": "S••••164F"}
 
 
 def test_normalized_payload_scrubs_conversation_free_text() -> None:
@@ -170,6 +170,8 @@ def test_normalized_payload_scrubs_conversation_free_text() -> None:
             "chat_members": ["Alice", "Bob (S8110609F)"],
             "inquiries": ["NRIC T0123456G dispute"],
         },
+        extraction_confidence=0.9,
+        extraction_method="llm:qwen-max",
     )
 
     normalized = build_normalized_source_payload(

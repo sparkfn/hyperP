@@ -136,6 +136,7 @@ api/graph/queries/persons_list.py:_POSSIBLE_MATCH_COUNT
 api/graph/queries/persons_list.py:_head
 api/graph/queries/persons_list_filters.py:build_common_filter_clause
 api/graph/queries/persons_list_filters.py:build_entity_filter_clause
+api/graph/queries/nric.py:GET_PERSON_NRIC_IDENTIFIERS
 api/graph/queries/reports.py:SEED_REPORTS
 api/graph/queries/sales.py:COUNT_PERSON_SALES
 api/graph/queries/sales.py:GET_PERSON_SALES
@@ -164,6 +165,7 @@ ingestion/graph/queries/matching.py:FIND_CANDIDATES_BY_ADDRESS
 ingestion/graph/queries/matching.py:FIND_CANDIDATES_BY_ADDRESSES_BATCH
 ingestion/graph/queries/matching.py:FIND_CANDIDATES_BY_IDENTIFIER
 ingestion/graph/queries/matching.py:FIND_CANDIDATES_BY_IDENTIFIERS_BATCH
+ingestion/graph/queries/nric_metrics.py:FETCH_ACTIVE_PERSON_NRIC_ROWS
 ingestion/graph/queries/person_pairs.py:FIND_PERSONS_SHARING_IDENTIFIER
 ingestion/graph/queries/person_pairs.py:FIND_PERSONS_SHARING_IDENTIFIERS_BATCH
 ingestion/graph/queries/persons.py:FETCH_PERSON_ADDRESSES
