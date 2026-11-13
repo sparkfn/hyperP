@@ -161,7 +161,13 @@ def test_pair_at_040_auto_merges_instead_of_opening_review(
     merges: list[tuple[str, str]] = []
 
     def fake_merge(
-        tx: object, *, absorbed_id: str, survivor_id: str, match_decision_id: str, reason: str
+        tx: object,
+        *,
+        absorbed_id: str,
+        survivor_id: str,
+        match_decision_id: str,
+        reason: str,
+        collector: object,
     ) -> str:
         merges.append((absorbed_id, survivor_id))
         return "me-1"

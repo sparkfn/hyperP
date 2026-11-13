@@ -88,11 +88,11 @@ class _FakeTx:
         self.params: dict[str, object] = {}
 
     def run(self, query: str, **params: object) -> _FakeResult:
+        self.query = query
+        self.params = params
         counter = summary_counter_result(query)
         if counter is not None:
             return counter
-        self.query = query
-        self.params = params
         return _FakeResult(self._deleted)
 
 

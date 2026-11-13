@@ -16,7 +16,7 @@ failure so a CI job cannot silently stop covering the counter.
 
 The URI must address a loopback host or exactly the configured service host, must
 not carry credentials, and must not select a database: the suite wipes the graph
-after every test, so it may only ever run against a disposable instance.
+before and after every test, so it may only ever run against a disposable instance.
 
 The maintained counter is never its own oracle: after every writer the stored
 six values are compared with independent copies of the original core and CRM
@@ -216,9 +216,8 @@ def neo4j_driver(summary_environment: _Environment) -> Iterator[Driver]:
         else:
             pytest.fail("disposable person-list summary Neo4j database did not become ready")
         with driver.session() as session:
-            existing = session.run("MATCH (node) RETURN count(node) AS total").single(strict=True)
-            if existing["total"] != 0:
-                pytest.fail("the person-list summary suite requires an empty database")
+            # Earlier suites may leave nodes in the shared disposable service.
+            session.run("MATCH (node) DETACH DELETE node").consume()
             safe_to_clear = True
             session.run(CREATE_PERSON_LIST_SUMMARY_COUNTER_CONSTRAINT).consume()
             session.run(CREATE_SOURCE_RECORD_IDENTITY_LOCK_CONSTRAINT).consume()
@@ -409,7 +408,7 @@ def _seed_deal(
     with driver.session() as session:
         session.run(
             """
-            MATCH (source:SourceSystem {source_key: $source_system})
+            MERGE (source:SourceSystem {source_key: $source_system})
             CREATE (deal:SourceRecord {
               source_record_pk: $source_record_pk,
               source_record_id: coalesce($source_record_id, $source_record_pk),
@@ -1010,9 +1009,8 @@ def test_ingestion_publishes_the_created_person(
             source_record_id="identity-1",
             identifiers=[
                 {
-                    "identifier_type": "nric",
-                    "normalized_value": "hash-1",
-                    "quality_flag": "valid",
+                    "type": "nric",
+                    "value": "hash-1",
                 }
             ],
         )
@@ -1036,9 +1034,8 @@ def test_ingestion_of_a_second_record_keeps_the_counter_in_step(
             source_record_id="identity-1",
             identifiers=[
                 {
-                    "identifier_type": "nric",
-                    "normalized_value": "hash-1",
-                    "quality_flag": "valid",
+                    "type": "nric",
+                    "value": "hash-1",
                 }
             ],
         )
@@ -1050,9 +1047,8 @@ def test_ingestion_of_a_second_record_keeps_the_counter_in_step(
             source_record_id="identity-2",
             identifiers=[
                 {
-                    "identifier_type": "nric",
-                    "normalized_value": "hash-2",
-                    "quality_flag": "valid",
+                    "type": "nric",
+                    "value": "hash-2",
                 }
             ],
         )
@@ -1072,9 +1068,8 @@ def test_duplicate_version_is_a_no_op_for_the_counter(
         source_record_id="identity-1",
         identifiers=[
             {
-                "identifier_type": "nric",
-                "normalized_value": "hash-1",
-                "quality_flag": "valid",
+                "type": "nric",
+                "value": "hash-1",
             }
         ],
     )
@@ -1411,8 +1406,13 @@ def test_reconcile_source_record_lifecycle_keeps_the_counter_in_step(
         observed_at=_MONTH_START,
     )
     backfill_person_list_summary(client)
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE (:DataMigration {migration_key: 'source_record_lifecycle_v1',"
+            " completed_at: datetime()})"
+        ).consume()
 
-    reconcile_source_record_lifecycle(client)
+    assert reconcile_source_record_lifecycle(client) == 1
 
     _assert_counter_matches_graph(neo4j_driver)
 
@@ -1458,7 +1458,12 @@ def test_legacy_crm_deal_without_is_latest_migrates_without_summary_drift(
     assert _stored_counts(neo4j_driver)["all_deals_count"] == 0
 
     if operation == "reconcile":
-        reconcile_source_record_lifecycle(client)
+        with neo4j_driver.session() as session:
+            session.run(
+                "CREATE (:DataMigration {migration_key: 'source_record_lifecycle_v1',"
+                " completed_at: datetime()})"
+            ).consume()
+        assert reconcile_source_record_lifecycle(client) == 1
     else:
         migrate_source_record_lifecycle(client)
 
