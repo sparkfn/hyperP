@@ -9,7 +9,6 @@ same evidence linker normal ingestion uses. Cypher lives in
 
 from __future__ import annotations
 
-import json
 from collections.abc import Sequence
 from dataclasses import dataclass
 
@@ -17,6 +16,20 @@ from neo4j import ManagedTransaction, Record
 
 from src.graph import queries
 from src.identifier_scopes import identifier_scope
+from src.identity_link_member_evidence import (
+    MemberClassification,
+    MemberDisposition,
+    MemberEvidence,
+    cross_member_contradiction,
+    member_addresses,
+    member_attributes,
+    member_evidence,
+    member_has_nric_conflict,
+    member_holder_rejects,
+    member_row,
+    optional_str_value,
+    required_str_value,
+)
 from src.identity_link_writes import (
     lock_identifiers,
     open_profiles_for_keys,
@@ -35,15 +48,7 @@ from src.identity_links import (
     identifier_key_row,
     identifier_key_tuple,
 )
-from src.identity_registry import FACT_ASSERTION_ATTRIBUTES
-from src.models import (
-    NormalizedAddress as NormalizedAddressModel,
-)
-from src.models import (
-    NormalizedAttribute,
-    NormalizedIdentifier,
-    RecordType,
-)
+from src.models import NormalizedIdentifier, RecordType
 from src.normalizers.nric import is_nric_digest
 from src.nric_anchor import NameDob, nric_anchor_gate
 from src.pipeline_writes import attach_person_evidence
@@ -108,11 +113,34 @@ def promote_profile(
     }
     if not (evidence_keys | {identifier_key_tuple(nric_row)}) <= locked:
         raise IdentityLinkConflictError(f"profile {profile_id} grew beyond its locked key closure")
-    conflict_reason = _member_conflict(
+    classification = _classify_members(
         tx, profile_id, identifier, source_key, record_type, incoming
     )
-    if conflict_reason is not None:
-        return PromotionOutcome(status="rejected", profile_id=profile_id, reason=conflict_reason)
+    if classification.rejection is not None:
+        return PromotionOutcome(
+            status="rejected", profile_id=profile_id, reason=classification.rejection
+        )
+    dispositions = _member_dispositions(tx, profile_id, classification.eligible)
+    activate_pks = [
+        item.source_record_pk for item in dispositions if item.disposition == "activate"
+    ]
+    if not activate_pks:
+        return PromotionOutcome(
+            status="rejected", profile_id=profile_id, reason="no_promotable_members"
+        )
+    supersede_rows: list[dict[str, str]] = []
+    for item in dispositions:
+        if item.disposition != "supersede":
+            continue
+        if item.winner_pk is None:
+            raise IdentityLinkConflictError("superseded profile member has no winner version")
+        supersede_rows.append(
+            {"source_record_pk": item.source_record_pk, "winner_pk": item.winner_pk}
+        )
+    reopen_pks = [
+        *classification.excluded,
+        *(item.source_record_pk for item in dispositions if item.disposition == "reopen"),
+    ]
     person_id, person_created = _merge_person_by_nric(tx, nric_key, nric_scope)
     promoted = tx.run(
         queries.PROMOTE_PROFILE,
@@ -122,14 +150,23 @@ def promote_profile(
     ).single()
     if promoted is None:
         raise IdentityLinkConflictError(f"profile {profile_id} changed during promotion")
+    if supersede_rows:
+        tx.run(queries.SUPERSEDE_PROFILE_MEMBERS, rows=supersede_rows)
+    if reopen_pks:
+        tx.run(
+            queries.REOPEN_PROFILE_MEMBERS,
+            profile_id=profile_id,
+            source_record_pks=reopen_pks,
+        )
     reattributed = tx.run(
         queries.REATTRIBUTE_PROFILE_MEMBERS_TO_PERSON,
         profile_id=profile_id,
         person_id=person_id,
+        source_record_pks=activate_pks,
     ).single()
     _attach_member_evidence(tx, person_id, reattributed)
     recompute_participant_links(tx, "person", person_id)
-    recompute_participant_counts(tx, {identifier_key_tuple(nric_row)})
+    recompute_participant_counts(tx, evidence_keys | {identifier_key_tuple(nric_row)})
     return PromotionOutcome(
         status="promoted",
         profile_id=profile_id,
@@ -271,27 +308,68 @@ def _canonical_person_id(tx: ManagedTransaction, person_id: str) -> str:
     return required_str(row, "person_id")
 
 
-def _member_conflict(
+def _classify_members(
     tx: ManagedTransaction,
     profile_id: str,
     identifier: NormalizedIdentifier,
     source_key: str,
     record_type: RecordType,
     incoming: NameDob,
-) -> str | None:
-    """Return a gate/conflict reason when the Profile contradicts this NRIC."""
+) -> MemberClassification:
+    """Split members into eligible/excluded and reject contradictions."""
+    eligible: list[MemberEvidence] = []
+    excluded: list[str] = []
     for row in tx.run(queries.FETCH_PROFILE_MEMBER_EVIDENCE, profile_id=profile_id):
-        for value in _str_values(row["nric_values"]):
-            if value != identifier.normalized_value:
-                return "nric_conflict"
-        holder = NameDob(
-            full_name=next(iter(_str_values(row["full_names"])), None),
-            dob=next(iter(_str_values(row["dobs"])), None),
+        member = member_evidence(
+            row["source_record_pk"],
+            row["full_names"],
+            row["dobs"],
+            row["nric_records"],
         )
-        gate = nric_anchor_gate(identifier, source_key, record_type, incoming, holder)
-        if not gate.promotes_person:
-            return gate.reason
-    return None
+        if member_has_nric_conflict(member, identifier.normalized_value) or member_holder_rejects(
+            member, identifier, source_key, record_type, incoming
+        ):
+            excluded.append(member.source_record_pk)
+        else:
+            eligible.append(member)
+    if not eligible:
+        return MemberClassification((), tuple(excluded), "no_promotable_members")
+    if cross_member_contradiction(eligible, identifier, source_key, record_type):
+        return MemberClassification((), (), "nric_contradiction")
+    return MemberClassification(tuple(eligible), tuple(excluded), None)
+
+
+def _member_dispositions(
+    tx: ManagedTransaction,
+    profile_id: str,
+    eligible: Sequence[MemberEvidence],
+) -> list[MemberDisposition]:
+    """Lock each eligible member's identity and classify its version authority."""
+    source_record_pks = [member.source_record_pk for member in eligible]
+    rows = {
+        required_str(row, "source_record_pk"): row
+        for row in tx.run(
+            queries.FETCH_PROFILE_MEMBER_VERSION_DISPOSITION,
+            profile_id=profile_id,
+            source_record_pks=source_record_pks,
+        )
+    }
+    dispositions: list[MemberDisposition] = []
+    for source_record_pk in source_record_pks:
+        row = rows.get(source_record_pk)
+        if row is None:
+            raise IdentityLinkConflictError(f"profile {profile_id} member disposition missing")
+        disposition = required_str(row, "disposition")
+        if disposition not in ("activate", "supersede", "reopen"):
+            raise IdentityLinkConflictError(f"unknown profile member disposition: {disposition}")
+        dispositions.append(
+            MemberDisposition(
+                source_record_pk=source_record_pk,
+                disposition=disposition,
+                winner_pk=optional_str(row, "winner_pk"),
+            )
+        )
+    return dispositions
 
 
 def _attach_member_evidence(
@@ -306,75 +384,16 @@ def _attach_member_evidence(
     if not isinstance(raw_members, list):
         raise ValueError("re-attributed member rows are malformed")
     for raw_member in raw_members:
-        member = _member_row(raw_member)
-        payload = _optional_str_value(member["normalized_payload"])
+        member = member_row(raw_member)
+        payload = optional_str_value(member["normalized_payload"])
         attach_person_evidence(
             tx,
             person_id=person_id,
-            source_record_pk=_required_str_value(member["source_record_pk"]),
-            source_system_key=_required_str_value(member["source_key"]),
-            observed_at=_optional_str_value(member["observed_at"]),
-            addresses=_member_addresses(payload),
-            attributes=_member_attributes(payload),
+            source_record_pk=required_str_value(member["source_record_pk"]),
+            source_system_key=required_str_value(member["source_key"]),
+            observed_at=optional_str_value(member["observed_at"]),
+            addresses=member_addresses(payload),
+            attributes=member_attributes(payload),
             source_trust_tier=None,
             confidence=None,
         )
-
-
-def _member_row(value: object) -> dict[str, object]:
-    if not isinstance(value, dict):
-        raise ValueError("re-attributed member row is malformed")
-    return {str(key): item for key, item in value.items()}
-
-
-def _required_str_value(value: object) -> str:
-    if not isinstance(value, str):
-        raise ValueError("re-attributed member value is malformed")
-    return value
-
-
-def _optional_str_value(value: object) -> str | None:
-    if value is None or isinstance(value, str):
-        return value
-    raise ValueError("re-attributed member value is malformed")
-
-
-def _str_values(value: object) -> list[str]:
-    if not isinstance(value, list):
-        return []
-    return [item for item in value if isinstance(item, str)]
-
-
-def _payload_items(payload: str | None, key: str) -> list[object]:
-    if payload is None:
-        return []
-    try:
-        parsed: object = json.loads(payload)
-    except (TypeError, ValueError):
-        return []
-    if not isinstance(parsed, dict):
-        return []
-    items = parsed.get(key)
-    return items if isinstance(items, list) else []
-
-
-def _member_addresses(payload: str | None) -> list[NormalizedAddressModel]:
-    addresses: list[NormalizedAddressModel] = []
-    for item in _payload_items(payload, "addresses"):
-        try:
-            addresses.append(NormalizedAddressModel.model_validate(item))
-        except (TypeError, ValueError):
-            continue
-    return addresses
-
-
-def _member_attributes(payload: str | None) -> list[NormalizedAttribute]:
-    attributes: list[NormalizedAttribute] = []
-    for item in _payload_items(payload, "attributes"):
-        try:
-            attribute = NormalizedAttribute.model_validate(item)
-        except (TypeError, ValueError):
-            continue
-        if attribute.attribute_name in FACT_ASSERTION_ATTRIBUTES:
-            attributes.append(attribute)
-    return attributes

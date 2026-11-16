@@ -112,10 +112,13 @@ def materialize_profile_for_record(
         raise IdentityLinkConflictError(
             f"cluster for record {source_record_pk} grew beyond its locked key closure"
         )
+    member_pks = sorted({row["source_record_pk"] for row in evidence})
+    if len(member_pks) > MAX_RECORD_EXPANSION:
+        tx.run(queries.SET_SOURCE_RECORD_PARKED, source_record_pk=source_record_pk)
+        return MaterializationOutcome(status="parked", profile_id=None)
     if not materializes(evidence):
         tx.run(queries.SET_SOURCE_RECORD_PARKED, source_record_pk=source_record_pk)
         return MaterializationOutcome(status="parked", profile_id=None)
-    member_pks = sorted({row["source_record_pk"] for row in evidence})
     absorbed: list[str] = []
     if open_profiles:
         profile_id = open_profiles[0].profile_id

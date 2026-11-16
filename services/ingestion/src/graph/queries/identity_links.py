@@ -441,17 +441,10 @@ RETURN profile.profile_id AS profile_id
 REATTRIBUTE_PROFILE_MEMBERS_TO_PERSON = """
 MATCH (profile:Profile {profile_id: $profile_id})
 MATCH (record:SourceRecord)-[:IN_PROFILE]->(profile)
+WHERE record.source_record_pk IN $source_record_pks
 MATCH (record)-[:FROM_SOURCE]->(source:SourceSystem)
 MATCH (person:Person {person_id: $person_id})
-// Serialize against a concurrent ingest of the same source identity before
-// deciding version authority (same lock shape as LOCK_AND_GET_SOURCE_STATE).
-MERGE (identity_lock:SourceRecordIdentityLock {
-    source_system: source.source_key,
-    source_instance_id: coalesce(record.source_instance_id, 'legacy-default'),
-    source_record_id: record.source_record_id
-})
-SET identity_lock.locked_at = datetime()
-WITH DISTINCT record, source, person
+// The disposition read already took every eligible member's identity lock.
 // Exactly one open version of a source identity may be activated: another
 // open version, or a higher version of the same identity, keeps this member
 // parked (IN_PROFILE stays as lineage and nothing else is written).
@@ -503,15 +496,98 @@ FETCH_PROFILE_MEMBER_EVIDENCE = """
 MATCH (profile:Profile {profile_id: $profile_id})
 MATCH (member:SourceRecord)-[:IN_PROFILE]->(profile)
 OPTIONAL MATCH (member)-[:ASSERTS]->(nric:Identifier {identifier_type: 'nric'})
-WITH member, collect(DISTINCT nric.normalized_value) AS nric_values
+WITH member, collect(DISTINCT CASE WHEN nric IS NULL THEN null ELSE {
+    value: nric.normalized_value, checksum_valid: nric.checksum_valid
+} END) AS nric_records
 OPTIONAL MATCH (member)-[:ASSERTS]->(fact:ProfileFact)
 WHERE fact.attribute_name IN ['full_name', 'dob']
-WITH member, nric_values, collect(DISTINCT fact) AS facts
+WITH member, nric_records, collect(DISTINCT fact) AS facts
 RETURN member.source_record_pk AS source_record_pk,
-       nric_values,
+       nric_records,
        [item IN facts WHERE item.attribute_name = 'full_name' | item.attribute_value] AS full_names,
        [item IN facts WHERE item.attribute_name = 'dob' | item.attribute_value] AS dobs
 ORDER BY source_record_pk
+"""
+
+FETCH_PROFILE_MEMBER_VERSION_DISPOSITION = """
+MATCH (profile:Profile {profile_id: $profile_id})
+UNWIND $source_record_pks AS source_record_pk
+MATCH (member:SourceRecord {source_record_pk: source_record_pk})-[:IN_PROFILE]->(profile)
+MATCH (member)-[:FROM_SOURCE]->(source:SourceSystem)
+// Same lock shape as LOCK_AND_GET_SOURCE_STATE, ordered so competing promotions
+// take the per-identity locks in one canonical order.
+WITH member, source
+ORDER BY source.source_key, coalesce(member.source_instance_id, 'legacy-default'),
+         member.source_record_id
+MERGE (lock:SourceRecordIdentityLock {
+    source_system: source.source_key,
+    source_instance_id: coalesce(member.source_instance_id, 'legacy-default'),
+    source_record_id: member.source_record_id
+})
+SET lock.locked_at = datetime()
+WITH member, source
+CALL (member, source) {
+    WITH member, source
+    OPTIONAL MATCH (other:SourceRecord)-[:FROM_SOURCE]->(source)
+    WHERE other <> member
+      AND coalesce(other.source_instance_id, 'legacy-default')
+          = coalesce(member.source_instance_id, 'legacy-default')
+      AND other.source_record_id = member.source_record_id
+      AND (other.lifecycle_status IN ['active', 'pending_review']
+           OR (other.lifecycle_status IS NULL AND other.is_latest = true))
+    WITH other
+    ORDER BY toInteger(other.source_record_version) DESC
+    RETURN head(collect(other)) AS open_version
+}
+CALL (member, source) {
+    WITH member, source
+    OPTIONAL MATCH (other:SourceRecord)-[:FROM_SOURCE]->(source)
+    WHERE other <> member
+      AND coalesce(other.source_instance_id, 'legacy-default')
+          = coalesce(member.source_instance_id, 'legacy-default')
+      AND other.source_record_id = member.source_record_id
+      AND other.lifecycle_status = 'parked'
+      AND toInteger(other.source_record_version)
+          > toInteger(member.source_record_version)
+    WITH other
+    ORDER BY toInteger(other.source_record_version) DESC
+    RETURN head(collect(other)) AS parked_higher
+}
+RETURN member.source_record_pk AS source_record_pk,
+       CASE
+           WHEN open_version IS NOT NULL THEN
+               CASE WHEN toInteger(member.source_record_version)
+                         < toInteger(open_version.source_record_version)
+                    THEN 'supersede' ELSE 'reopen' END
+           WHEN parked_higher IS NOT NULL THEN 'supersede'
+           ELSE 'activate'
+       END AS disposition,
+       coalesce(open_version.source_record_pk, parked_higher.source_record_pk) AS winner_pk
+ORDER BY source_record_pk
+"""
+
+SUPERSEDE_PROFILE_MEMBERS = """
+UNWIND $rows AS row
+MATCH (member:SourceRecord {source_record_pk: row.source_record_pk})
+MATCH (winner:SourceRecord {source_record_pk: row.winner_pk})
+SET member.lifecycle_status = 'superseded',
+    member.is_latest = false,
+    member.reeval_pending = false,
+    member.superseded_at = datetime(),
+    member.updated_at = datetime()
+MERGE (member)-[:PREVIOUS_VERSION_OF]->(winner)
+"""
+
+REOPEN_PROFILE_MEMBERS = """
+MATCH (profile:Profile {profile_id: $profile_id})
+UNWIND $source_record_pks AS source_record_pk
+MATCH (record:SourceRecord {source_record_pk: source_record_pk})
+      -[member:IN_PROFILE]->(profile)
+DELETE member
+SET record.link_status = 'unlinked',
+    record.attribution_status = 'parked',
+    record.reeval_pending = true,
+    record.attribution_eval_at = datetime()
 """
 
 PERSON_HAS_IDENTIFIER_LINKS = """
