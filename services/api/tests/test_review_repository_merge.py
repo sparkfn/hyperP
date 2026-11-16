@@ -44,6 +44,13 @@ from src.graph.queries import (
     build_review_action_cypher,
 )
 from src.graph.queries.identity_link_revisions import APPEND_IDENTITY_LINK_REVISIONS
+from src.graph.queries.identity_links import (
+    DELETE_PERSON_HAS_IDENTIFIER_LINKS,
+    DELETE_STALE_PERSON_HAS_IDENTIFIER_LINKS,
+    FETCH_PERSON_ASSERTION_EVIDENCE,
+    MERGE_PERSON_HAS_IDENTIFIER_LINKS,
+    RECOMPUTE_IDENTIFIER_PARTICIPANT_COUNTS,
+)
 from src.graph.queries.person_list_summary import (
     APPLY_PERSON_LIST_SUMMARY_DELTAS,
     CAPTURE_PERSON_SUMMARY_CONTRIBUTIONS,
@@ -157,16 +164,38 @@ class _Call:
     params: Params
 
 
+IDENTITY_LINK_RECOMPUTE_QUERIES: frozenset[str] = frozenset(
+    {
+        FETCH_PERSON_ASSERTION_EVIDENCE,
+        DELETE_STALE_PERSON_HAS_IDENTIFIER_LINKS,
+        MERGE_PERSON_HAS_IDENTIFIER_LINKS,
+        RECOMPUTE_IDENTIFIER_PARTICIPANT_COUNTS,
+        DELETE_PERSON_HAS_IDENTIFIER_LINKS,
+    }
+)
+
+
+def _identity_link_recompute_event(params: Mapping[str, object]) -> str:
+    person_id = params.get("person_id")
+    return f"has_recompute:{person_id if isinstance(person_id, str) else 'counts'}"
+
+
 class _Tx:
     def __init__(self, records: Sequence[Record | None]) -> None:
         self._records: list[Record | None] = list(records)
         self.calls: list[_Call] = []
         self.summary_calls: list[str] = []
+        self.events: list[str] = []
 
     async def run(self, query: str, **params: object) -> _AsyncResult:
         if is_summary_capture_query(query) or is_summary_apply_query(query):
             self.summary_calls.append(query)
             return _AsyncResult(SUMMARY_APPLY_ROW if is_summary_apply_query(query) else None)
+        if query in IDENTITY_LINK_RECOMPUTE_QUERIES:
+            self.events.append(_identity_link_recompute_event(params))
+            if query == MERGE_PERSON_HAS_IDENTIFIER_LINKS:
+                return _AsyncResult({"link_count": 0})
+            return _AsyncResult(None)
         self.calls.append(_Call(query=query, params=params))
         record = self._records.pop(0) if self._records else None
         return _AsyncResult(record)
@@ -1193,6 +1222,11 @@ class _LifecycleTx:
         if is_summary_capture_query(query) or is_summary_apply_query(query):
             self.summary_calls.append(query)
             return _StateResult(SUMMARY_APPLY_ROW if is_summary_apply_query(query) else None)
+        if query in IDENTITY_LINK_RECOMPUTE_QUERIES:
+            self.events.append(_identity_link_recompute_event(params))
+            if query == MERGE_PERSON_HAS_IDENTIFIER_LINKS:
+                return _StateResult({"link_count": 0})
+            return _StateResult(None)
         self.calls.append((query, params))
         if query == GET_PERSONS_FOR_REVIEW_MERGE:
             return _StateResult(None)
@@ -1292,6 +1326,11 @@ async def test_pending_record_review_can_select_any_persisted_crm_candidate(
 
     assert result is not None
     assert _activation_call(tx)["approved_person_id"] == "person-b"
+    # Activation re-links the pending record, then the approved Person's HAS
+    # projection is re-derived from the newly attributed evidence.
+    recompute_events = [event for event in tx.events if event.startswith("has_recompute:")]
+    assert recompute_events
+    assert tx.events.index("activate") < tx.events.index(recompute_events[0])
 
 
 def _activation_call(tx: _LifecycleTx) -> Mapping[str, object]:

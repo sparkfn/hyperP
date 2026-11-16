@@ -1146,7 +1146,8 @@ def test_promotion_discovers_profile_through_shared_non_nric_key(neo4j_driver: D
             for row in session.run(
                 "MATCH (:Person {person_id: $person_id})-[lives:LIVES_AT]->(:Address) "
                 "WHERE coalesce(lives.is_active, true) = true "
-                "RETURN lives.source_record_pk AS source_record_pk"
+                "RETURN lives.source_record_pk AS source_record_pk",
+                person_id=person_id,
             )
         ]
     assert projected_facts == ["full_name"]
