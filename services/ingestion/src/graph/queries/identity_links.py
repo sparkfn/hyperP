@@ -360,7 +360,7 @@ MATCH (record:SourceRecord)-[:IN_PROFILE]->(profile)
 MATCH (person:Person {person_id: $person_id})
 OPTIONAL MATCH (record)-[existing:LINKED_TO]->(person)
 WHERE coalesce(existing.is_active, true) = true
-WITH record,
+WITH record, person,
      (existing IS NOT NULL
       AND record.link_status = 'linked'
       AND record.attribution_status = 'person'

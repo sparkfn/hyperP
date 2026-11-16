@@ -309,7 +309,8 @@ def test_materialization_and_link_recompute_are_zero_diff(neo4j_driver: Driver) 
     assert properties["score"] == 0.0
     assert properties["exclusivity"] == 0.0
     assert properties["rank_score"] == 0.0
-    assert properties["golden_rank"] is None
+    # Neo4j removes null-valued properties, so an unset golden_rank is absent.
+    assert properties.get("golden_rank") is None
     assert properties["basis"] == "ASSERTS"
     assert properties["status"] == "active"
     assert properties["policy_version"] == "c3-provisional"
@@ -570,7 +571,7 @@ def test_concurrent_promotion_converges_on_one_anchor(neo4j_driver: Driver) -> N
         )
         == 0
     )
-    assert _scalar(neo4j_driver, "MATCH (:Profile) RETURN count(profile) AS count") == 2
+    assert _scalar(neo4j_driver, "MATCH (profile:Profile) RETURN count(profile) AS count") == 2
     with neo4j_driver.session() as session:
         person_ids = {
             row["promoted_person_id"]

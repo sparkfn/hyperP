@@ -181,12 +181,14 @@ CALL {
     WITH identifier, exact_nric, over_cap
     MATCH (person:Person {status: 'active'})-[:HAS_IDENTIFIER]->(identifier)
     RETURN 'person' AS participant_kind, person.person_id AS participant_id,
-           exact_nric AS exact_nric, over_cap AS over_cap, identifier AS identifier
+           exact_nric AS exact_nric_flag, over_cap AS over_cap_flag,
+           identifier AS matched_identifier
     UNION
     WITH identifier, exact_nric, over_cap
     MATCH (profile:Profile {status: 'open'})-[:HAS_IDENTIFIER]->(identifier)
     RETURN 'profile' AS participant_kind, profile.profile_id AS participant_id,
-           exact_nric AS exact_nric, over_cap AS over_cap, identifier AS identifier
+           exact_nric AS exact_nric_flag, over_cap AS over_cap_flag,
+           identifier AS matched_identifier
     UNION
     WITH identifier, exact_nric, over_cap
     MATCH (record:SourceRecord)-[:ASSERTS]->(identifier)
@@ -195,14 +197,16 @@ CALL {
       AND record.attribution_status = 'parked'
       AND record.reeval_pending = true
       AND record.source_record_pk <> $source_record_pk
-    WITH record ORDER BY record.source_record_pk LIMIT 200
+    WITH record, exact_nric, over_cap, identifier
+    ORDER BY record.source_record_pk LIMIT 200
     RETURN 'source_record' AS participant_kind, record.source_record_pk AS participant_id,
-           exact_nric AS exact_nric, over_cap AS over_cap, identifier AS identifier
+           exact_nric AS exact_nric_flag, over_cap AS over_cap_flag,
+           identifier AS matched_identifier
 }
 WITH participant_kind, participant_id,
-     count(DISTINCT identifier) AS shared_key_count,
-     max(exact_nric) AS exact_nric,
-     sum(CASE WHEN over_cap THEN 0 ELSE 1 END) AS direct_key_count
+     count(DISTINCT matched_identifier) AS shared_key_count,
+     max(exact_nric_flag) AS exact_nric,
+     sum(CASE WHEN over_cap_flag THEN 0 ELSE 1 END) AS direct_key_count
 WHERE direct_key_count >= 1
 RETURN participant_kind, participant_id, shared_key_count
 ORDER BY exact_nric DESC, shared_key_count DESC, participant_kind, participant_id
