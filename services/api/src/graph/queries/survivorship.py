@@ -39,13 +39,28 @@ LIMIT 1
 """
 
 GET_BEST_IDENTIFIER = """
-MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY]->(id:Identifier {identifier_type: $identifier_type})
-WHERE coalesce(rel.is_active, true) = true
+MATCH (p:Person {person_id: $person_id})
+CALL {
+  WITH p
+  MATCH (p)-[has:HAS_IDENTIFIER {status: 'active'}]
+        ->(id:Identifier {identifier_type: $identifier_type})
+  RETURN id,
+         coalesce(has.verified_count, 0) > 0 AS is_verified,
+         has.last_confirmed_at AS last_confirmed_at
+  UNION
+  WITH p
+  MATCH (p)-[rel:IDENTIFIED_BY]->(id:Identifier {identifier_type: $identifier_type})
+  WHERE coalesce(rel.is_active, true) = true
+    AND NOT EXISTS { MATCH (p)-[:HAS_IDENTIFIER {status: 'active'}]->(id) }
+  RETURN id,
+         rel.is_verified AS is_verified,
+         rel.last_confirmed_at AS last_confirmed_at
+}
 RETURN id.normalized_value AS normalized_value,
        id.nric_masked AS nric_masked,
-       rel.is_verified AS is_verified,
-       rel.last_confirmed_at AS last_confirmed_at
-ORDER BY rel.is_verified DESC, rel.last_confirmed_at DESC
+       is_verified,
+       last_confirmed_at
+ORDER BY is_verified DESC, last_confirmed_at DESC
 LIMIT 1
 """
 
@@ -101,8 +116,31 @@ RETURN f.attribute_value AS value
 """
 
 GET_IDENTIFIER_VALUE_FOR_SR = """
-MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY {source_record_pk: $source_record_pk}]->(id:Identifier {identifier_type: $identifier_type})
-WHERE coalesce(rel.is_active, true) = true
+MATCH (p:Person {person_id: $person_id})
+CALL {
+  WITH p
+  // Source-specific evidence must be an actively attributed record version:
+  // the record asserts the identifier, is linked to this Person, and is neither
+  // pending review nor superseded.
+  MATCH (record:SourceRecord {source_record_pk: $source_record_pk})
+        -[linked:LINKED_TO]->(p)
+  WHERE coalesce(linked.is_active, true) = true
+    AND coalesce(record.link_status, 'linked') <> 'pending_review'
+    AND coalesce(record.lifecycle_status, 'active') <> 'superseded'
+  MATCH (record)-[:ASSERTS]->(id:Identifier {identifier_type: $identifier_type})
+  MATCH (p)-[:HAS_IDENTIFIER {status: 'active'}]->(id)
+  RETURN id
+  UNION
+  WITH p
+  MATCH (p)-[rel:IDENTIFIED_BY {source_record_pk: $source_record_pk}]
+        ->(id:Identifier {identifier_type: $identifier_type})
+  WHERE coalesce(rel.is_active, true) = true
+    AND NOT EXISTS {
+      MATCH (:SourceRecord {source_record_pk: $source_record_pk})-[:ASSERTS]->(id)
+      MATCH (p)-[:HAS_IDENTIFIER {status: 'active'}]->(id)
+    }
+  RETURN id
+}
 RETURN id.normalized_value AS value,
        id.nric_masked AS nric_masked
 LIMIT 1

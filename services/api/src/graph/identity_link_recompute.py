@@ -221,10 +221,12 @@ def _aggregate(evidence: Sequence[_Evidence]) -> _LinkAggregate:
         verified_count=sum(
             1 for row in evidence if _has_complete_metadata(row) and row["is_verified"] is True
         ),
-        max_tier=max(
+        # API TRUST_RANK orders tier_1=1 (highest) .. tier_4=4 (lowest), so the
+        # best-supported tier is the minimum, matching ingestion's ranking.
+        max_tier=min(
             (_evidence_tier(row) for row in evidence),
             default=LOWEST_TRUST_TIER,
-            key=lambda tier: TRUST_RANK.get(tier, 0),
+            key=TRUST_RANK.__getitem__,
         ),
         first_seen_at=observations[0] if observations else None,
         last_seen_at=observations[-1] if observations else None,
