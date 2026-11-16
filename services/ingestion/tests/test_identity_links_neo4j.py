@@ -16,13 +16,19 @@ from neo4j import Driver, GraphDatabase, ManagedTransaction, Record
 from src.golden_profile import compute_golden_profile
 from src.graph import queries
 from src.graph.client import Neo4jClient
+from src.graph.person_list_summary_deltas import PersonListSummaryDeltaCollector
 from src.graph.schema_init import apply_schema
-from src.identity_link_writes import (
+from src.identity_link_promotion import (
     anchor_person_by_nric,
-    lock_identifiers,
-    materialize_profile_for_record,
     promote_profile,
     promote_profiles_for_nric,
+)
+from src.identity_link_writes import (
+    fetch_cluster_key_closure,
+    fetch_record_identifier_keys,
+    lock_identifiers,
+    materialize_profile_for_record,
+    recompute_participant_counts,
     recompute_participant_links,
 )
 from src.identity_links import (
@@ -46,7 +52,9 @@ from src.models import (
 )
 from src.nric_anchor import NameDob
 from src.pipeline import IngestPipeline
+from src.pipeline_person_merge import merge_person_pair
 from src.pipeline_writes import find_identity_candidates
+from src.record_lifecycle import load_locked_source_state
 
 _ENV_PREFIX = "HYPERP_NEO4J_CONTROL_MIGRATION_TEST"
 _NRIC_DIGEST = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -158,15 +166,30 @@ def _seed_identifier(
         ).consume()
 
 
-def _seed_parked_record(driver: Driver, source_record_pk: str, observed_at: str) -> None:
+def _seed_parked_record(
+    driver: Driver,
+    source_record_pk: str,
+    observed_at: str,
+    *,
+    source_record_id: str | None = None,
+    source_record_version: int = 1,
+    normalized_payload: str | None = None,
+) -> None:
     with driver.session() as session:
         session.run(
             "MATCH (system:SourceSystem {source_key: 'onediver'}) "
             "CREATE (record:SourceRecord {source_record_pk: $source_record_pk, "
+            "source_record_id: $source_record_id, "
+            "source_instance_id: 'legacy-default', "
+            "source_record_version: $source_record_version, "
             "lifecycle_status: 'parked', link_status: 'unlinked', "
             "attribution_status: 'parked', reeval_pending: true, "
-            "observed_at: datetime($observed_at)})-[:FROM_SOURCE]->(system)",
+            "observed_at: datetime($observed_at), "
+            "normalized_payload: $normalized_payload})-[:FROM_SOURCE]->(system)",
             source_record_pk=source_record_pk,
+            source_record_id=source_record_id or source_record_pk,
+            source_record_version=source_record_version,
+            normalized_payload=normalized_payload,
             observed_at=observed_at,
         ).consume()
 
@@ -404,7 +427,8 @@ def test_bridged_profiles_union_to_lowest_id_and_retire_losers(neo4j_driver: Dri
             "MATCH (identifier:Identifier {identifier_id: 'ident-phone'}) "
             "RETURN identifier.participant_count AS count",
         )
-        == 1
+        # A growing Profile counts its two members (both IN_PROFILE the keeper).
+        == 2
     )
 
 
@@ -912,20 +936,6 @@ def _seed_asserted_fact(
         ).consume()
 
 
-def _seed_asserted_address(driver: Driver, source_record_pk: str, assertion_id: str) -> None:
-    with driver.session() as session:
-        session.run(
-            "MATCH (record:SourceRecord {source_record_pk: $source_record_pk}) "
-            "MERGE (address:Address {country_code: 'SG', postal_code: '018989', "
-            "street_name: 'Marina Boulevard', street_number: '10', unit_number: '12-34'}) "
-            "MERGE (record)-[assertion:ASSERTS {assertion_id: $assertion_id}]->(address) "
-            "ON CREATE SET assertion.field_path = 'addresses', "
-            "assertion.role = 'subject', assertion.created_at = datetime()",
-            source_record_pk=source_record_pk,
-            assertion_id=assertion_id,
-        ).consume()
-
-
 def _attach_profile_member(driver: Driver, profile_id: str, member_pk: str) -> None:
     with driver.session() as session:
         session.run(
@@ -1063,12 +1073,35 @@ def test_concurrent_materialization_bridges_through_a_shared_key_once(
 
     barrier = threading.Barrier(2)
 
+    def _locked_materialize(
+        tx: ManagedTransaction, source_record_pk: str
+    ) -> MaterializationOutcome:
+        source_keys = fetch_record_identifier_keys(tx, source_record_pk)
+        closure = fetch_cluster_key_closure(tx, source_keys, source_record_pk)
+        locked = frozenset(
+            {
+                (key["identifier_type"], key["identifier_scope"], key["normalized_value"])
+                for key in source_keys
+            }
+            | closure
+        )
+        lock_identifiers(
+            tx,
+            [
+                IdentifierKey(
+                    identifier_type=identifier_type,
+                    identifier_scope=scope,
+                    normalized_value=value,
+                )
+                for identifier_type, scope, value in sorted(locked)
+            ],
+        )
+        return materialize_profile_for_record(tx, source_record_pk, locked_keys=locked)
+
     def _materialize_in_transaction(source_record_pk: str) -> MaterializationOutcome:
         barrier.wait(timeout=10)
         with neo4j_driver.session() as session:
-            return session.execute_write(
-                lambda tx: materialize_profile_for_record(tx, source_record_pk)
-            )
+            return session.execute_write(lambda tx: _locked_materialize(tx, source_record_pk))
 
     with ThreadPoolExecutor(max_workers=2) as pool:
         first = pool.submit(_materialize_in_transaction, "sr-a")
@@ -1091,11 +1124,48 @@ def test_promotion_discovers_profile_through_shared_non_nric_key(neo4j_driver: D
     _seed_source_system(neo4j_driver)
     _seed_identifier(neo4j_driver, "ident-nric", "nric", _NRIC_DIGEST)
     _seed_identifier(neo4j_driver, "ident-phone", "phone", _PHONE)
+    payload = json.dumps(
+        {
+            "identifiers": [],
+            "addresses": [
+                {
+                    "country_code": "SG",
+                    "postal_code": "018989",
+                    "street_name": "Marina Boulevard",
+                    "street_number": "10",
+                    "unit_number": "12-34",
+                    "normalized_full": "10 Marina Boulevard 12-34",
+                    "quality_flag": "valid",
+                }
+            ],
+            "attributes": [
+                {
+                    "attribute_name": "full_name",
+                    "attribute_value": "Alice Tan",
+                    "quality_flag": "partial_parse",
+                },
+                {
+                    "attribute_name": "dob",
+                    "attribute_value": "1990-01-01",
+                    "quality_flag": "valid",
+                },
+                {
+                    "attribute_name": "race_ethnicity",
+                    "attribute_value": "Chinese",
+                    "quality_flag": "valid",
+                },
+            ],
+        }
+    )
+    _seed_parked_record(
+        neo4j_driver,
+        "sr-p1",
+        "2026-01-01T00:00:00Z",
+        normalized_payload=payload,
+    )
+    _seed_parked_record(neo4j_driver, "sr-p2", "2026-01-01T00:00:00Z")
     for source_record_pk in ("sr-p1", "sr-p2"):
-        _seed_parked_record(neo4j_driver, source_record_pk, "2026-01-01T00:00:00Z")
         _seed_assertion(neo4j_driver, source_record_pk, "ident-phone", f"assert-{source_record_pk}")
-    _seed_asserted_fact(neo4j_driver, "sr-p1", "full_name", "Alice Tan", "assert-fact")
-    _seed_asserted_address(neo4j_driver, "sr-p1", "assert-address")
     _seed_profile(neo4j_driver, "profile-phone", "sr-p1")
     _attach_profile_member(neo4j_driver, "profile-phone", "sr-p2")
     _seed_profile_link(neo4j_driver, "profile-phone", "ident-phone")
@@ -1132,26 +1202,38 @@ def test_promotion_discovers_profile_through_shared_non_nric_key(neo4j_driver: D
     assert {str(row["link_status"]) for row in members} == {"linked"}
     assert {str(row["attribution_status"]) for row in members} == {"person"}
     with neo4j_driver.session() as session:
-        projected_facts = [
-            str(row["attribute_name"])
+        facts = {
+            str(row["attribute_name"]): row
             for row in session.run(
                 "MATCH (:Person {person_id: $person_id})-[fact:HAS_FACT]->(:SourceRecord) "
                 "WHERE coalesce(fact.is_active, true) = true "
-                "RETURN fact.attribute_name AS attribute_name",
+                "RETURN fact.attribute_name AS attribute_name, "
+                "fact.quality_flag AS quality_flag, keys(fact) AS keys",
                 person_id=person_id,
             )
-        ]
-        projected_addresses = [
+        }
+        addresses = [
             row
             for row in session.run(
-                "MATCH (:Person {person_id: $person_id})-[lives:LIVES_AT]->(:Address) "
+                "MATCH (:Person {person_id: $person_id})-[lives:LIVES_AT]->(address:Address) "
                 "WHERE coalesce(lives.is_active, true) = true "
+                "MATCH (:SourceRecord {source_record_pk: $source_record_pk})"
+                "-[:DESCRIBES_ADDRESS]->(address) "
                 "RETURN lives.source_record_pk AS source_record_pk",
                 person_id=person_id,
+                source_record_pk="sr-p1",
             )
         ]
-    assert projected_facts == ["full_name"]
-    assert [row["source_record_pk"] for row in projected_addresses] == ["sr-p1"]
+    # Only C1 fact-registry attributes are projected, each with its own quality;
+    # provisional trust/confidence stay unset rather than fabricated, and
+    # addresses keep their record provenance.
+    assert set(facts) == {"full_name", "dob"}
+    assert facts["full_name"]["quality_flag"] == "partial_parse"
+    assert facts["dob"]["quality_flag"] == "valid"
+    for fact in facts.values():
+        assert "source_trust_tier" not in fact["keys"]
+        assert "confidence" not in fact["keys"]
+    assert [row["source_record_pk"] for row in addresses] == ["sr-p1"]
     snapshots = _execute(
         neo4j_driver,
         lambda tx: fetch_candidate_snapshots(tx, [person_id], include_legacy=False),
@@ -1163,21 +1245,13 @@ def test_promotion_discovers_profile_through_shared_non_nric_key(neo4j_driver: D
     before_links = _link_snapshot(neo4j_driver)
 
     def _rerun_reattribution(tx: ManagedTransaction) -> None:
-        tx.run(
+        row = tx.run(
             queries.REATTRIBUTE_PROFILE_MEMBERS_TO_PERSON,
             profile_id="profile-phone",
             person_id=person_id,
-        ).consume()
-        tx.run(
-            queries.PROJECT_REATTRIBUTED_FACTS_TO_PERSON,
-            profile_id="profile-phone",
-            person_id=person_id,
-        ).consume()
-        tx.run(
-            queries.PROJECT_REATTRIBUTED_ADDRESSES_TO_PERSON,
-            profile_id="profile-phone",
-            person_id=person_id,
-        ).consume()
+        ).single()
+        assert row is not None
+        assert row["reattributed_members"] == []
 
     _execute(neo4j_driver, _rerun_reattribution)
     assert _identity_projection_snapshot(neo4j_driver) == before_projection
@@ -1452,8 +1526,395 @@ def test_golden_profile_reads_has_identifier_evidence(neo4j_driver: Driver) -> N
 
     profile = _execute(
         neo4j_driver,
-        lambda tx: compute_golden_profile(tx, "person-has-only"),
+        lambda tx: compute_golden_profile(tx, "person-has-only", v2_evidence=True),
     )
 
     assert profile["preferred_phone"] == _PHONE
     assert profile["preferred_email"] == "has-only@example.com"
+
+
+def test_v1_golden_profile_ignores_has_only_identifiers(neo4j_driver: Driver) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_person(neo4j_driver, "person-has-only")
+    _seed_identifier(neo4j_driver, "ident-phone", "phone", _PHONE)
+    _seed_identifier(neo4j_driver, "ident-email", "email", "has-only@example.com")
+    _seed_person_has_link(neo4j_driver, "person-has-only", "ident-phone")
+    _seed_person_has_link(neo4j_driver, "person-has-only", "ident-email")
+
+    profile = _execute(
+        neo4j_driver,
+        lambda tx: compute_golden_profile(tx, "person-has-only"),
+    )
+
+    assert profile["preferred_phone"] is None
+    assert profile["preferred_email"] is None
+
+
+def test_promotion_activates_only_the_newest_version_of_an_identity(
+    neo4j_driver: Driver,
+) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_identifier(neo4j_driver, "ident-nric", "nric", _NRIC_DIGEST)
+    _seed_identifier(neo4j_driver, "ident-phone", "phone", _PHONE)
+    _seed_parked_record(
+        neo4j_driver,
+        "sr-v1",
+        "2026-01-01T00:00:00Z",
+        source_record_id="dup-ident",
+        source_record_version=1,
+    )
+    _seed_parked_record(
+        neo4j_driver,
+        "sr-v2",
+        "2026-02-01T00:00:00Z",
+        source_record_id="dup-ident",
+        source_record_version=2,
+    )
+    for source_record_pk in ("sr-v1", "sr-v2"):
+        _seed_assertion(neo4j_driver, source_record_pk, "ident-phone", f"assert-{source_record_pk}")
+    _seed_profile(neo4j_driver, "profile-versioned", "sr-v1")
+    _attach_profile_member(neo4j_driver, "profile-versioned", "sr-v2")
+    _seed_profile_link(neo4j_driver, "profile-versioned", "ident-phone")
+
+    outcome = _execute(
+        neo4j_driver,
+        lambda tx: promote_profile(
+            tx,
+            profile_id="profile-versioned",
+            identifier=_nric_identifier(),
+            source_key="onediver",
+            record_type=RecordType.IDENTITY,
+            incoming=NameDob(full_name="Alice Tan", dob="1990-01-01"),
+        ),
+    )
+
+    assert outcome.status == "promoted"
+    person_id = _single_person_id(neo4j_driver)
+    linked = {
+        str(row["source_record_pk"])
+        for row in _record_attribution_snapshot(neo4j_driver)
+        if str(row["link_status"]) == "linked"
+    }
+    assert linked == {"sr-v2"}
+    assert (
+        _scalar(
+            neo4j_driver,
+            "MATCH (:SourceRecord {source_record_pk: 'sr-v2'})-[link:LINKED_TO]->(:Person) "
+            "WHERE coalesce(link.is_active, true) = true RETURN count(*) AS count",
+        )
+        == 1
+    )
+    assert (
+        _scalar(
+            neo4j_driver,
+            "MATCH (:SourceRecord {source_record_pk: 'sr-v1'})-[:LINKED_TO]->(:Person) "
+            "RETURN count(*) AS count",
+        )
+        == 0
+    )
+    assert (
+        _scalar(
+            neo4j_driver,
+            "MATCH (record:SourceRecord {source_record_pk: 'sr-v2'}) "
+            "WHERE record.is_latest = true AND record.lifecycle_status = 'active' "
+            "RETURN count(record) AS count",
+        )
+        == 1
+    )
+    state = _execute(
+        neo4j_driver,
+        lambda tx: load_locked_source_state(tx, "onediver", "dup-ident", "legacy-default"),
+    )
+    assert state.active is not None
+    assert state.active.source_record_pk == "sr-v2"
+    assert state.pending is None
+    assert person_id
+
+
+def test_promotion_rejects_member_asserting_a_different_nric(neo4j_driver: Driver) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_identifier(neo4j_driver, "ident-nric", "nric", _NRIC_DIGEST)
+    _seed_identifier(neo4j_driver, "ident-other-nric", "nric", _OTHER_DIGEST)
+    _seed_identifier(neo4j_driver, "ident-phone", "phone", _PHONE)
+    _seed_parked_record(neo4j_driver, "sr-conflict", "2026-01-01T00:00:00Z")
+    _seed_assertion(neo4j_driver, "sr-conflict", "ident-phone", "assert-phone")
+    _seed_assertion(neo4j_driver, "sr-conflict", "ident-other-nric", "assert-other-nric")
+    _seed_profile(neo4j_driver, "profile-conflict", "sr-conflict")
+    _seed_profile_link(neo4j_driver, "profile-conflict", "ident-phone")
+
+    outcome = _execute(
+        neo4j_driver,
+        lambda tx: promote_profile(
+            tx,
+            profile_id="profile-conflict",
+            identifier=_nric_identifier(),
+            source_key="onediver",
+            record_type=RecordType.IDENTITY,
+            incoming=NameDob(full_name="Alice Tan", dob="1990-01-01"),
+        ),
+    )
+
+    assert outcome.status == "rejected"
+    assert outcome.reason == "nric_conflict"
+    profiles = {str(row["profile_id"]): row for row in _profile_snapshot(neo4j_driver)}
+    assert profiles["profile-conflict"]["status"] == "open"
+    assert (
+        _scalar(
+            neo4j_driver,
+            "MATCH (:SourceRecord)-[:LINKED_TO]->(:Person) RETURN count(*) AS count",
+        )
+        == 0
+    )
+    assert _scalar(neo4j_driver, "MATCH (person:Person) RETURN count(person) AS count") == 0
+
+
+def test_promotion_rejects_member_with_contradictory_dob(neo4j_driver: Driver) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_identifier(neo4j_driver, "ident-nric", "nric", _NRIC_DIGEST)
+    _seed_identifier(neo4j_driver, "ident-phone", "phone", _PHONE)
+    _seed_parked_record(neo4j_driver, "sr-dob", "2026-01-01T00:00:00Z")
+    _seed_assertion(neo4j_driver, "sr-dob", "ident-phone", "assert-phone")
+    _seed_asserted_fact(neo4j_driver, "sr-dob", "dob", "1980-02-02", "assert-dob")
+    _seed_profile(neo4j_driver, "profile-dob", "sr-dob")
+    _seed_profile_link(neo4j_driver, "profile-dob", "ident-phone")
+
+    outcome = _execute(
+        neo4j_driver,
+        lambda tx: promote_profile(
+            tx,
+            profile_id="profile-dob",
+            identifier=_nric_identifier(),
+            source_key="onediver",
+            record_type=RecordType.IDENTITY,
+            incoming=NameDob(full_name="Alice Tan", dob="1990-01-01"),
+        ),
+    )
+
+    assert outcome.status == "rejected"
+    assert outcome.reason == "nric_contradiction"
+    profiles = {str(row["profile_id"]): row for row in _profile_snapshot(neo4j_driver)}
+    assert profiles["profile-dob"]["status"] == "open"
+    assert (
+        _scalar(
+            neo4j_driver,
+            "MATCH (:SourceRecord)-[:LINKED_TO]->(:Person) RETURN count(*) AS count",
+        )
+        == 0
+    )
+
+
+def test_legacy_golden_uses_verified_legacy_identifier_and_ignores_has(
+    neo4j_driver: Driver,
+) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_identifier(neo4j_driver, "ident-phone-a", "phone", "+6590000001")
+    _seed_identifier(neo4j_driver, "ident-phone-b", "phone", "+6590000002")
+    _seed_person(neo4j_driver, "person-golden")
+    _seed_linked_record(neo4j_driver, "sr-golden", "person-golden", link_status="linked")
+    _seed_assertion(neo4j_driver, "sr-golden", "ident-phone-a", "assert-a")
+    _seed_assertion(neo4j_driver, "sr-golden", "ident-phone-b", "assert-b")
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (person:Person {person_id: 'person-golden'}) "
+            "MATCH (identifier:Identifier {identifier_id: $identifier_id}) "
+            "CREATE (person)-[:HAS_IDENTIFIER {link_id: $link_id, status: 'active', "
+            "verified_count: $verified_count, last_confirmed_at: $confirmed, "
+            "computed_at: datetime()}]->(identifier)",
+            identifier_id="ident-phone-a",
+            link_id=link_id("person-golden", "ident-phone-a"),
+            verified_count=0,
+            confirmed="2026-06-03T00:00:00Z",
+        ).consume()
+        session.run(
+            "MATCH (person:Person {person_id: 'person-golden'}) "
+            "MATCH (identifier:Identifier {identifier_id: $identifier_id}) "
+            "CREATE (person)-[:HAS_IDENTIFIER {link_id: $link_id, status: 'active', "
+            "verified_count: 1, last_confirmed_at: '2026-06-01T00:00:00Z', "
+            "computed_at: datetime()}]->(identifier)",
+            identifier_id="ident-phone-b",
+            link_id=link_id("person-golden", "ident-phone-b"),
+        ).consume()
+        session.run(
+            "MATCH (person:Person {person_id: 'person-golden'}) "
+            "MATCH (identifier:Identifier {identifier_id: 'ident-phone-a'}) "
+            "CREATE (person)-[:IDENTIFIED_BY {is_active: true, is_verified: true, "
+            "source_record_pk: 'sr-golden', source_system_key: 'onediver', "
+            "last_confirmed_at: '2026-06-02T00:00:00Z'}]->(identifier)"
+        ).consume()
+
+    profile = _execute(
+        neo4j_driver,
+        lambda tx: compute_golden_profile(tx, "person-golden"),
+    )
+
+    # v1/shadow golden uses only the legacy projection: the verified legacy edge
+    # wins and neither HAS row is a golden source.
+    assert profile["preferred_phone"] == "+6590000001"
+
+
+def test_profile_member_growth_counts_toward_the_expansion_cap(
+    neo4j_driver: Driver,
+) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_identifier(neo4j_driver, "ident-phone", "phone", _PHONE)
+    with neo4j_driver.session() as session:
+        session.run(
+            "CREATE (profile:Profile {profile_id: 'profile-growth', status: 'open', "
+            "evidence_version: 1, materialized_at: datetime('2026-01-01T00:00:00Z')})"
+        ).consume()
+        session.run(
+            "MATCH (profile:Profile {profile_id: 'profile-growth'}) "
+            "MATCH (identifier:Identifier {identifier_id: 'ident-phone'}) "
+            "UNWIND range(1, 51) AS index "
+            "CREATE (record:SourceRecord {source_record_pk: 'sr-growth-' + toString(index), "
+            "source_record_id: 'growth-' + toString(index), "
+            "source_instance_id: 'legacy-default', source_record_version: 1, "
+            "lifecycle_status: 'parked', link_status: 'profile', "
+            "attribution_status: 'profile', reeval_pending: false, "
+            "observed_at: datetime('2026-01-01T00:00:00Z')})-[:IN_PROFILE]->(profile) "
+            "CREATE (record)-[:ASSERTS {assertion_id: 'assert-growth-' + toString(index)}]"
+            "->(identifier)"
+        ).consume()
+
+    _execute(
+        neo4j_driver,
+        lambda tx: recompute_participant_counts(tx, {("phone", "global", _PHONE)}),
+    )
+    assert (
+        _scalar(
+            neo4j_driver,
+            "MATCH (identifier:Identifier {identifier_id: 'ident-phone'}) "
+            "RETURN identifier.participant_count AS count",
+        )
+        == 51
+    )
+
+    _seed_parked_record(neo4j_driver, "sr-growth-late", "2026-02-01T00:00:00Z")
+    _seed_assertion(neo4j_driver, "sr-growth-late", "ident-phone", "assert-growth-late")
+
+    outcome = _materialize(neo4j_driver, "sr-growth-late")
+
+    assert outcome.status == "parked"
+    assert (
+        _scalar(
+            neo4j_driver,
+            "MATCH (:SourceRecord)-[:IN_PROFILE]->(:Profile {profile_id: 'profile-growth'}) "
+            "RETURN count(*) AS count",
+        )
+        == 51
+    )
+
+
+def test_pair_audit_merge_maintains_has_projection(neo4j_driver: Driver) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_identifier(neo4j_driver, "ident-survivor-phone", "phone", "+6590000011")
+    _seed_identifier(neo4j_driver, "ident-absorbed-phone", "phone", "+6590000012")
+    _seed_person(neo4j_driver, "person-survivor")
+    _seed_person(neo4j_driver, "person-absorbed")
+    _seed_linked_record(neo4j_driver, "sr-survivor", "person-survivor", link_status="linked")
+    _seed_linked_record(neo4j_driver, "sr-absorbed", "person-absorbed", link_status="linked")
+    _seed_assertion(neo4j_driver, "sr-survivor", "ident-survivor-phone", "assert-survivor")
+    _seed_assertion(neo4j_driver, "sr-absorbed", "ident-absorbed-phone", "assert-absorbed")
+    _seed_person_has_link(neo4j_driver, "person-survivor", "ident-survivor-phone")
+    _seed_person_has_link(neo4j_driver, "person-absorbed", "ident-absorbed-phone")
+
+    _execute(
+        neo4j_driver,
+        lambda tx: merge_person_pair(
+            tx,
+            absorbed_id="person-absorbed",
+            survivor_id="person-survivor",
+            match_decision_id="md-merge",
+            reason="pair audit",
+            collector=PersonListSummaryDeltaCollector(),
+        ),
+    )
+
+    survivor_links = {
+        str(link["identifier_id"])
+        for link in _link_snapshot(neo4j_driver)
+        if link["participant_id"] == "person-survivor"
+    }
+    absorbed_links = {
+        str(link["identifier_id"])
+        for link in _link_snapshot(neo4j_driver)
+        if link["participant_id"] == "person-absorbed"
+    }
+    assert survivor_links == {"ident-survivor-phone", "ident-absorbed-phone"}
+    assert absorbed_links == set()
+
+
+def test_v2_review_with_anchorable_nric_does_not_anchor_or_promote(
+    neo4j_driver: Driver,
+) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_identifier(neo4j_driver, "ident-nric", "nric", _NRIC_DIGEST)
+    _seed_identifier(neo4j_driver, "ident-phone", "phone", _PHONE)
+    _seed_parked_record(neo4j_driver, "sr-review-member", "2026-01-01T00:00:00Z")
+    _seed_assertion(neo4j_driver, "sr-review-member", "ident-phone", "assert-review")
+    _seed_profile(neo4j_driver, "profile-review", "sr-review-member")
+    _seed_profile_link(neo4j_driver, "profile-review", "ident-phone")
+    pipeline = IngestPipeline(cast(object, MagicMock()), identity_model="v2")
+
+    resolved = _execute(
+        neo4j_driver,
+        lambda tx: pipeline._resolve_v2_person(
+            tx,
+            _shadow_envelope(nric=True),
+            [_nric_identifier(), _phone_identifier()],
+            [],
+            MatchResult(decision=MatchDecision.REVIEW, confidence=0.7, reasons=["review"]),
+            [],
+        ),
+    )
+
+    assert resolved == (None, False)
+    assert _scalar(neo4j_driver, "MATCH (person:Person) RETURN count(person) AS count") == 0
+    profiles = {str(row["profile_id"]): row for row in _profile_snapshot(neo4j_driver)}
+    assert profiles["profile-review"]["status"] == "open"
+
+
+def test_v2_blocked_anchor_is_not_returned_as_engine_match(neo4j_driver: Driver) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_identifier(neo4j_driver, "ident-nric", "nric", _NRIC_DIGEST)
+    _seed_identifier(neo4j_driver, "ident-phone", "phone", _PHONE)
+    _seed_person(neo4j_driver, "person-anchored")
+    _seed_person(neo4j_driver, "person-owner")
+    _seed_person_nric(neo4j_driver, "person-anchored", "ident-nric", _NRIC_DIGEST)
+    _seed_person_has_link(neo4j_driver, "person-anchored", "ident-nric")
+    _seed_person_has_link(neo4j_driver, "person-owner", "ident-phone")
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (anchored:Person {person_id: 'person-anchored'}) "
+            "MATCH (owner:Person {person_id: 'person-owner'}) "
+            "CREATE (anchored)-[:NO_MATCH_LOCK {created_at: datetime()}]->(owner)"
+        ).consume()
+    pipeline = IngestPipeline(cast(object, MagicMock()), identity_model="v2")
+
+    resolved = _execute(
+        neo4j_driver,
+        lambda tx: pipeline._resolve_v2_person(
+            tx,
+            _shadow_envelope(nric=True),
+            [_nric_identifier(), _phone_identifier()],
+            [],
+            MatchResult(
+                decision=MatchDecision.MERGE,
+                confidence=1.0,
+                matched_person_id="person-anchored",
+                reasons=["hard_blocked"],
+            ),
+            [],
+        ),
+    )
+
+    assert resolved == (None, False)

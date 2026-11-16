@@ -951,6 +951,44 @@ def _link_address(
     )
 
 
+def attach_person_evidence(
+    tx: ManagedTransaction,
+    *,
+    person_id: str,
+    source_record_pk: str,
+    source_system_key: str,
+    observed_at: str | None,
+    addresses: list[NormalizedAddressModel],
+    attributes: list[NormalizedAttribute],
+    source_trust_tier: str | None = "tier_3",
+    confidence: float | None = 1.0,
+) -> None:
+    """Steps 10–11: attach addresses and facts to an existing Person link.
+
+    Shared by normal linking and Profile promotion so a promoted member writes
+    the same ``LIVES_AT``/``DESCRIBES_ADDRESS``/``HAS_FACT`` evidence as a
+    directly linked record, including each attribute's own ``quality_flag``.
+    Promotion passes ``None`` for the C1-provisional trust/confidence values so
+    those properties stay unset instead of inventing provenance.
+    """
+    for address in addresses:
+        if is_usable(address.quality_flag):
+            _link_address(tx, address, person_id, source_system_key, source_record_pk)
+
+    for attr in attributes:
+        tx.run(
+            queries.CREATE_ATTRIBUTE_FACT,
+            person_id=person_id,
+            source_record_pk=source_record_pk,
+            attribute_name=attr.attribute_name,
+            attribute_value=attr.attribute_value,
+            source_trust_tier=source_trust_tier,
+            confidence=confidence,
+            quality_flag=attr.quality_flag.value,
+            observed_at=observed_at,
+        )
+
+
 def link_record_to_graph(
     tx: ManagedTransaction,
     *,
@@ -982,22 +1020,15 @@ def link_record_to_graph(
         return
     if write_identified_by:
         _link_identifiers(tx, identifiers, person_id, envelope.source_system, source_record_pk)
-    for address in addresses:
-        if is_usable(address.quality_flag):
-            _link_address(tx, address, person_id, envelope.source_system, source_record_pk)
-
-    for attr in attributes:
-        tx.run(
-            queries.CREATE_ATTRIBUTE_FACT,
-            person_id=person_id,
-            source_record_pk=source_record_pk,
-            attribute_name=attr.attribute_name,
-            attribute_value=attr.attribute_value,
-            source_trust_tier="tier_3",
-            confidence=1.0,
-            quality_flag=attr.quality_flag.value,
-            observed_at=envelope.observed_at,
-        )
+    attach_person_evidence(
+        tx,
+        person_id=person_id,
+        source_record_pk=source_record_pk,
+        source_system_key=envelope.source_system,
+        observed_at=envelope.observed_at,
+        addresses=addresses,
+        attributes=attributes,
+    )
 
 
 # --- Step 13: auto-merge bookkeeping --------------------------------------

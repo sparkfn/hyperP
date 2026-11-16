@@ -228,6 +228,9 @@ def test_shadow_flag_only_adds_assertion_writes(
     projection_queries = {
         queries.SOURCE_RECORD_LINKED_TO_PERSON,
         queries.FETCH_RECORD_IDENTIFIER_KEYS,
+        # Shadow also re-derives the Person's HAS projection after activation.
+        queries.FETCH_PARTICIPANT_EVIDENCE,
+        queries.DELETE_STALE_PARTICIPANT_HAS_IDENTIFIER_LINKS,
     }
     assert [call for call in shadow_stream if call[0] not in projection_queries] == v1_stream
 
@@ -328,8 +331,6 @@ def test_shadow_nric_projection_never_writes_legacy_attribution(
         queries.MERGE_PERSON_BY_NRIC,
         queries.PROMOTE_PROFILE,
         queries.REATTRIBUTE_PROFILE_MEMBERS_TO_PERSON,
-        queries.PROJECT_REATTRIBUTED_FACTS_TO_PERSON,
-        queries.PROJECT_REATTRIBUTED_ADDRESSES_TO_PERSON,
         queries.MOVE_PROFILE_MEMBERS,
         queries.FETCH_OPEN_PROFILES_FOR_IDENTIFIERS,
     ):
@@ -409,3 +410,54 @@ def test_v2_snapshot_prefetch_includes_the_continuity_person(monkeypatch: Monkey
             "include_legacy": False,
         }
     ]
+
+
+def test_shadow_quarantine_leaves_legacy_attribution_untouched(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    quarantine = next(scenario for scenario in _SCENARIOS if scenario.name == "quarantine")
+
+    stream, _assertions = _run(quarantine, "v2_shadow", monkeypatch)
+
+    issued = [query for query, _ in stream]
+    # The durable-review path owns link_status='blocked'; shadow must not
+    # materialize the record (which would rewrite that attribution).
+    assert queries.SET_SOURCE_RECORD_PARKED not in issued
+    assert queries.FETCH_RECORD_IDENTIFIER_KEYS not in issued
+
+
+def test_shadow_recomputes_links_after_activation(monkeypatch: MonkeyPatch) -> None:
+    scenario = _Scenario(
+        name="shadow_replacement",
+        envelope=_identity_envelope(),
+        match_result=MatchResult(
+            decision=MatchDecision.MERGE,
+            confidence=1.0,
+            matched_person_id="person-continuity",
+            reasons=["continuity"],
+        ),
+    )
+    plan = PlannedVersion(
+        version=2,
+        active_source_record_pk="sr-prior",
+        prior_person_ids=("person-continuity",),
+        pending_to_reject=None,
+    )
+
+    stream, _assertions = _run(
+        scenario,
+        "v2_shadow",
+        monkeypatch,
+        identifiers=[_phone_identifier()],
+        lifecycle_plan=plan,
+    )
+
+    issued = [query for query, _ in stream]
+    activation_index = issued.index(queries.ACTIVATE_SOURCE_RECORD_VERSION)
+    recompute_indexes = [
+        index for index, query in enumerate(issued) if query == queries.FETCH_PARTICIPANT_EVIDENCE
+    ]
+    assert recompute_indexes
+    # Shadow supersedes the replaced version too, so it must recompute after
+    # activation or the retired phone stays on HAS_IDENTIFIER.
+    assert max(recompute_indexes) > activation_index

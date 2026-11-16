@@ -16,8 +16,8 @@ from typing import NoReturn
 from neo4j import ManagedTransaction, Record
 
 from src.graph import queries
-from src.identifier_scopes import identifier_scope
 from src.identity_links import (
+    MAX_RECORD_EXPANSION,
     IdentifierKey,
     IdentityLinkConflictError,
     LinkRecomputeOutcome,
@@ -25,7 +25,6 @@ from src.identity_links import (
     MaterializationStatus,
     ParticipantEvidence,
     ParticipantKind,
-    PromotionOutcome,
     build_link_rows,
     identifier_key_row,
     identifier_key_tuple,
@@ -33,21 +32,12 @@ from src.identity_links import (
     parse_field_trust,
     sorted_lock_rows,
 )
-from src.models import JsonValue, NormalizedIdentifier, RecordType
-from src.normalizers.nric import is_nric_digest
-from src.nric_anchor import NameDob, nric_anchor_gate
+from src.models import JsonValue
 from src.pipeline_normalization import fanout_cap_for
 
 
 @dataclass(frozen=True)
-class _ProfileState:
-    status: str
-    evidence_version: int
-    promoted_person_id: str | None
-
-
-@dataclass(frozen=True)
-class _OpenProfile:
+class OpenProfile:
     profile_id: str
     evidence_version: int
 
@@ -66,7 +56,7 @@ def recompute_participant_links(
 ) -> LinkRecomputeOutcome:
     """Recompute one participant's derived ``HAS_IDENTIFIER`` links from its evidence."""
     evidence = [
-        _participant_evidence(row)
+        participant_evidence(row)
         for row in tx.run(
             queries.FETCH_PARTICIPANT_EVIDENCE,
             participant_kind=participant_kind,
@@ -74,7 +64,6 @@ def recompute_participant_links(
         )
     ]
     evidence_keys = {identifier_key_tuple(row) for row in evidence}
-    lock_identifiers(tx, [identifier_key_row(key) for key in sorted(evidence_keys)])
     links = build_link_rows(participant_id, evidence)
     link_ids = [str(row["link_id"]) for row in links]
     stale_keys = _delete_stale_links(tx, participant_kind, participant_id, link_ids)
@@ -85,7 +74,7 @@ def recompute_participant_links(
             participant_id=participant_id,
             links=links,
         )
-    _recompute_participant_counts(
+    recompute_participant_counts(
         tx, evidence_keys | {identifier_key_tuple(row) for row in stale_keys}
     )
     return LinkRecomputeOutcome(
@@ -99,21 +88,24 @@ def recompute_participant_links(
 def materialize_profile_for_record(
     tx: ManagedTransaction,
     source_record_pk: str,
+    *,
+    locked_keys: frozenset[tuple[str, str, str]] | None = None,
 ) -> MaterializationOutcome:
     """Materialize, join, or park the Profile cluster containing one SourceRecord.
 
-    Deadlock-free protocol: derive the affected key closure with a key-only read,
-    lock the full sorted closure, then read the cluster evidence under lock. An
-    evidence key outside the closure means a concurrent writer grew the cluster;
-    the transaction is abandoned with :class:`IdentityLinkConflictError` so the
-    caller retries, rather than locking a second time out of order.
+    The caller may pass the already-locked key closure (the pipeline locks one
+    sorted neighbourhood batch before staging). Otherwise this function derives
+    its closure with a key-only read and takes exactly one sorted lock batch. An
+    evidence key outside the locked closure means a concurrent writer grew the
+    cluster; the transaction is abandoned with :class:`IdentityLinkConflictError`.
     """
-    source_keys = _fetch_record_identifier_keys(tx, source_record_pk)
+    source_keys = fetch_record_identifier_keys(tx, source_record_pk)
     if not source_keys:
         return MaterializationOutcome(status="no_keys", profile_id=None)
-    closure_keys = _fetch_cluster_key_closure(tx, source_keys, source_record_pk)
-    locked_keys = sorted({identifier_key_tuple(key) for key in source_keys} | closure_keys)
-    lock_identifiers(tx, [identifier_key_row(key) for key in locked_keys])
+    if locked_keys is None:
+        closure_keys = fetch_cluster_key_closure(tx, source_keys, source_record_pk)
+        locked_keys = frozenset({identifier_key_tuple(key) for key in source_keys} | closure_keys)
+        lock_identifiers(tx, [identifier_key_row(key) for key in sorted(locked_keys)])
     open_profiles, evidence = _fetch_cluster(tx, source_keys, source_record_pk)
     evidence_keys = {identifier_key_tuple(row) for row in evidence}
     if not evidence_keys <= set(locked_keys):
@@ -155,133 +147,46 @@ def materialize_profile_for_record(
     )
 
 
-def promote_profile(
-    tx: ManagedTransaction,
-    *,
-    profile_id: str,
-    identifier: NormalizedIdentifier,
-    source_key: str,
-    record_type: RecordType,
-    incoming: NameDob,
-    holder: NameDob | None = None,
-) -> PromotionOutcome:
-    """Promote an open Profile through the existing NRIC anchor gate.
-
-    The caller supplies the record context; this function evaluates
-    :func:`src.nric_anchor.nric_anchor_gate` itself, so no promotion can bypass
-    it. Only a gate-approved HMAC digest becomes a Person ``nric_key``.
-    """
-    if identifier.identifier_type != "nric" or not is_nric_digest(identifier.normalized_value):
-        return PromotionOutcome(status="rejected", profile_id=profile_id, reason="no_key")
-    gate = nric_anchor_gate(identifier, source_key, record_type, incoming, holder)
-    if not gate.promotes_person:
-        return PromotionOutcome(status="rejected", profile_id=profile_id, reason=gate.reason)
-    nric_key = identifier.normalized_value
-    nric_scope = identifier_scope("nric", identifier.source_instance_id)
-    nric_row = IdentifierKey(
-        identifier_type="nric",
-        identifier_scope=nric_scope,
-        normalized_value=nric_key,
-    )
-    lock_identifiers(tx, [nric_row])
-    state = _require_profile_state(tx, profile_id)
-    if state.status == "promoted":
-        person_row = tx.run(queries.FETCH_PERSON_BY_NRIC, nric_key=nric_key).single()
-        person_id = None if person_row is None else _required_str(person_row, "person_id")
-        promoted_id = state.promoted_person_id
-        if person_id is not None and promoted_id is not None:
-            if _canonical_person_id(tx, person_id) == _canonical_person_id(tx, promoted_id):
-                return PromotionOutcome(
-                    status="already_promoted", profile_id=profile_id, person_id=person_id
-                )
-        raise IdentityLinkConflictError(f"profile {profile_id} is promoted to another Person")
-    if state.status != "open":
-        raise IdentityLinkConflictError(f"profile {profile_id} is not promotable")
-    evidence = [
-        _participant_evidence(row)
-        for row in tx.run(
-            queries.FETCH_PARTICIPANT_EVIDENCE,
-            participant_kind="profile",
-            participant_id=profile_id,
-        )
-    ]
-    evidence_keys = {identifier_key_tuple(row) for row in evidence}
-    lock_identifiers(
-        tx,
-        [
-            identifier_key_row(key)
-            for key in sorted(evidence_keys | {identifier_key_tuple(nric_row)})
-        ],
-    )
-    person_id, person_created = _merge_person_by_nric(tx, nric_key, nric_scope)
-    promoted = tx.run(
-        queries.PROMOTE_PROFILE,
-        profile_id=profile_id,
-        expected_version=state.evidence_version,
-        person_id=person_id,
-    ).single()
-    if promoted is None:
-        raise IdentityLinkConflictError(f"profile {profile_id} changed during promotion")
-    tx.run(
-        queries.REATTRIBUTE_PROFILE_MEMBERS_TO_PERSON,
-        profile_id=profile_id,
-        person_id=person_id,
-    ).consume()
-    tx.run(
-        queries.PROJECT_REATTRIBUTED_FACTS_TO_PERSON,
-        profile_id=profile_id,
-        person_id=person_id,
-    ).consume()
-    tx.run(
-        queries.PROJECT_REATTRIBUTED_ADDRESSES_TO_PERSON,
-        profile_id=profile_id,
-        person_id=person_id,
-    ).consume()
-    recompute_participant_links(tx, "person", person_id)
-    _recompute_participant_counts(tx, {identifier_key_tuple(nric_row)})
-    return PromotionOutcome(
-        status="promoted",
-        profile_id=profile_id,
-        person_id=person_id,
-        person_created=person_created,
-    )
-
-
-def _fetch_record_identifier_keys(
+def fetch_record_identifier_keys(
     tx: ManagedTransaction, source_record_pk: str
 ) -> list[IdentifierKey]:
     return [
-        _key_row_from_record(row)
+        key_row_from_record(row)
         for row in tx.run(queries.FETCH_RECORD_IDENTIFIER_KEYS, source_record_pk=source_record_pk)
     ]
 
 
-def _cap_key_row(key: IdentifierKey) -> dict[str, JsonValue]:
-    """Return one Identifier key row carrying its registry fanout cap."""
+def cap_key_row(key: IdentifierKey) -> dict[str, JsonValue]:
+    """Return one Identifier key row carrying its expansion cap.
+
+    Registry types with a fanout cap keep it; uncapped types fall back to the
+    record-expansion bound so one hub cannot grow a cluster without limit.
+    """
+    configured_cap = fanout_cap_for(key["identifier_type"])
     return {
         "identifier_type": key["identifier_type"],
         "identifier_scope": key["identifier_scope"],
         "normalized_value": key["normalized_value"],
-        "fanout_cap": fanout_cap_for(key["identifier_type"]),
+        "fanout_cap": (configured_cap if configured_cap is not None else MAX_RECORD_EXPANSION),
     }
 
 
-def _open_profiles_for_keys(
+def open_profiles_for_keys(
     tx: ManagedTransaction, keys: Sequence[IdentifierKey]
-) -> list[_OpenProfile]:
+) -> list[OpenProfile]:
     return [
-        _OpenProfile(
-            profile_id=_required_str(row, "profile_id"),
-            evidence_version=_required_int(row, "evidence_version"),
+        OpenProfile(
+            profile_id=required_str(row, "profile_id"),
+            evidence_version=required_int(row, "evidence_version"),
         )
         for row in tx.run(
             queries.FETCH_OPEN_PROFILES_FOR_IDENTIFIERS,
-            identifier_keys=[_cap_key_row(key) for key in keys],
+            identifier_keys=[cap_key_row(key) for key in keys],
         )
     ]
 
 
-def _fetch_cluster_key_closure(
+def fetch_cluster_key_closure(
     tx: ManagedTransaction,
     keys: Sequence[IdentifierKey],
     source_record_pk: str,
@@ -289,13 +194,13 @@ def _fetch_cluster_key_closure(
     """Derive the affected key closure before any lock is taken."""
     return {
         (
-            _required_str(row, "identifier_type"),
-            _required_str(row, "identifier_scope"),
-            _required_str(row, "normalized_value"),
+            required_str(row, "identifier_type"),
+            required_str(row, "identifier_scope"),
+            required_str(row, "normalized_value"),
         )
         for row in tx.run(
             queries.FETCH_CLUSTER_KEY_CLOSURE,
-            identifier_keys=[_cap_key_row(key) for key in keys],
+            identifier_keys=[cap_key_row(key) for key in keys],
             source_record_pk=source_record_pk,
         )
     }
@@ -305,14 +210,14 @@ def _fetch_cluster(
     tx: ManagedTransaction,
     keys: Sequence[IdentifierKey],
     source_record_pk: str,
-) -> tuple[list[_OpenProfile], list[ParticipantEvidence]]:
+) -> tuple[list[OpenProfile], list[ParticipantEvidence]]:
     """Read the locked cluster's open Profiles and full assertion evidence."""
-    open_profiles = _open_profiles_for_keys(tx, keys)
+    open_profiles = open_profiles_for_keys(tx, keys)
     evidence = [
-        _participant_evidence(row)
+        participant_evidence(row)
         for row in tx.run(
             queries.FETCH_CLUSTER_EVIDENCE,
-            identifier_keys=[_cap_key_row(key) for key in keys],
+            identifier_keys=[cap_key_row(key) for key in keys],
             source_record_pk=source_record_pk,
         )
     ]
@@ -336,10 +241,10 @@ def _delete_stale_links(
     raw: object = row["stale_identifier_keys"]
     if not isinstance(raw, list):
         raise ValueError("stale identifier rows are malformed")
-    return [_key_row_from_value(entry) for entry in raw]
+    return [key_row_from_value(entry) for entry in raw]
 
 
-def _recompute_participant_counts(
+def recompute_participant_counts(
     tx: ManagedTransaction,
     keys: Iterable[tuple[str, str, str]],
 ) -> None:
@@ -359,7 +264,7 @@ def _absorb_profile(
     tx: ManagedTransaction,
     keeper_id: str,
     keeper_expected_version: int,
-    loser: _OpenProfile,
+    loser: OpenProfile,
 ) -> int:
     retired = tx.run(
         queries.RETIRE_PROFILE,
@@ -377,70 +282,35 @@ def _absorb_profile(
     if moved is None:
         raise IdentityLinkConflictError(f"profile {keeper_id} changed during union")
     stale_keys = _delete_stale_links(tx, "profile", loser.profile_id, ())
-    _recompute_participant_counts(tx, {identifier_key_tuple(row) for row in stale_keys})
-    return _required_int(moved, "moved_count")
+    recompute_participant_counts(tx, {identifier_key_tuple(row) for row in stale_keys})
+    return required_int(moved, "moved_count")
 
 
-def _require_profile_state(tx: ManagedTransaction, profile_id: str) -> _ProfileState:
-    row = tx.run(queries.FETCH_PROFILE_STATE, profile_id=profile_id).single()
-    if row is None:
-        raise IdentityLinkConflictError(f"profile {profile_id} does not exist")
-    return _ProfileState(
-        status=_required_str(row, "status"),
-        evidence_version=_required_int(row, "evidence_version"),
-        promoted_person_id=_optional_str(row, "promoted_person_id"),
-    )
-
-
-def _merge_person_by_nric(
-    tx: ManagedTransaction,
-    nric_key: str,
-    nric_scope: str,
-) -> tuple[str, bool]:
-    row = tx.run(
-        queries.MERGE_PERSON_BY_NRIC,
-        nric_key=nric_key,
-        identifier_scope=nric_scope,
-    ).single()
-    if row is None:
-        raise IdentityLinkConflictError("NRIC Person anchor did not materialize")
-    created: object = row["was_created"]
-    return _required_str(row, "person_id"), created is True
-
-
-def _canonical_person_id(tx: ManagedTransaction, person_id: str) -> str:
-    """Resolve a Person through MERGED_INTO lineage to its active survivor."""
-    row = tx.run(queries.FETCH_CANONICAL_PERSON_ID, person_id=person_id).single()
-    if row is None:
-        raise IdentityLinkConflictError(f"person {person_id} does not exist")
-    return _required_str(row, "person_id")
-
-
-def _participant_evidence(row: Record) -> ParticipantEvidence:
-    identifier_type = _required_str(row, "identifier_type")
+def participant_evidence(row: Record) -> ParticipantEvidence:
+    identifier_type = required_str(row, "identifier_type")
     field_trust = parse_field_trust(row["field_trust"])
     return ParticipantEvidence(
-        source_record_pk=_required_str(row, "source_record_pk"),
-        identifier_id=_required_str(row, "identifier_id"),
+        source_record_pk=required_str(row, "source_record_pk"),
+        identifier_id=required_str(row, "identifier_id"),
         identifier_type=identifier_type,
-        identifier_scope=_required_str(row, "identifier_scope"),
-        normalized_value=_required_str(row, "normalized_value"),
-        quality_flag=_optional_str(row, "quality_flag"),
-        is_verified=_optional_bool(row, "is_verified"),
+        identifier_scope=required_str(row, "identifier_scope"),
+        normalized_value=required_str(row, "normalized_value"),
+        quality_flag=optional_str(row, "quality_flag"),
+        is_verified=optional_bool(row, "is_verified"),
         trust_tier=field_trust.get(identifier_type) if field_trust is not None else None,
-        observed_at=_optional_str(row, "observed_at"),
+        observed_at=optional_str(row, "observed_at"),
     )
 
 
-def _key_row_from_record(row: Record) -> IdentifierKey:
+def key_row_from_record(row: Record) -> IdentifierKey:
     return IdentifierKey(
-        identifier_type=_required_str(row, "identifier_type"),
-        identifier_scope=_required_str(row, "identifier_scope"),
-        normalized_value=_required_str(row, "normalized_value"),
+        identifier_type=required_str(row, "identifier_type"),
+        identifier_scope=required_str(row, "identifier_scope"),
+        normalized_value=required_str(row, "normalized_value"),
     )
 
 
-def _key_row_from_value(value: object) -> IdentifierKey:
+def key_row_from_value(value: object) -> IdentifierKey:
     if not isinstance(value, dict):
         raise ValueError("identifier key row is malformed")
     identifier_type = value.get("identifier_type")
@@ -459,97 +329,25 @@ def _key_row_from_value(value: object) -> IdentifierKey:
     )
 
 
-def _malformed(key: str) -> NoReturn:
+def malformed(key: str) -> NoReturn:
     raise ValueError(f"{key} evidence is malformed")
 
 
-def _required_str(row: Record, key: str) -> str:
+def required_str(row: Record, key: str) -> str:
     value: object = row[key]
-    return value if isinstance(value, str) else _malformed(key)
+    return value if isinstance(value, str) else malformed(key)
 
 
-def _optional_str(row: Record, key: str) -> str | None:
+def optional_str(row: Record, key: str) -> str | None:
     value: object = row[key]
-    return value if value is None or isinstance(value, str) else _malformed(key)
+    return value if value is None or isinstance(value, str) else malformed(key)
 
 
-def _required_int(row: Record, key: str) -> int:
+def required_int(row: Record, key: str) -> int:
     value: object = row[key]
-    return value if isinstance(value, int) and not isinstance(value, bool) else _malformed(key)
+    return value if isinstance(value, int) and not isinstance(value, bool) else malformed(key)
 
 
-def _optional_bool(row: Record, key: str) -> bool | None:
+def optional_bool(row: Record, key: str) -> bool | None:
     value: object = row[key]
-    return value if value is None or isinstance(value, bool) else _malformed(key)
-
-
-def anchor_person_by_nric(
-    tx: ManagedTransaction,
-    identifier: NormalizedIdentifier,
-) -> tuple[str, bool]:
-    """Anchor a Person by a gate-approved NRIC digest; returns ``(person_id, created)``."""
-    nric_scope = identifier_scope("nric", identifier.source_instance_id)
-    return _merge_person_by_nric(tx, identifier.normalized_value, nric_scope)
-
-
-def anchor_existing_person(
-    tx: ManagedTransaction,
-    person_id: str,
-    identifier: NormalizedIdentifier,
-) -> bool:
-    """Set a Person's NRIC anchor without replacing a different existing key.
-
-    Returns ``True`` when the Person already carries a different ``nric_key``
-    (a conflict to surface, never overwrite) and the anchor was not applied.
-    """
-    nric_scope = identifier_scope("nric", identifier.source_instance_id)
-    row = tx.run(
-        queries.ANCHOR_EXISTING_PERSON_BY_NRIC,
-        person_id=person_id,
-        nric_key=identifier.normalized_value,
-        identifier_scope=nric_scope,
-    ).single()
-    return row is None
-
-
-def promote_profiles_for_nric(
-    tx: ManagedTransaction,
-    identifier: NormalizedIdentifier,
-    *,
-    identifier_keys: Sequence[IdentifierKey],
-    source_key: str,
-    record_type: RecordType,
-    incoming: NameDob,
-) -> tuple[str, ...]:
-    """Promote every open Profile sharing an eligible key with the record.
-
-    Discovery is the record's under-cap cluster projection: Profiles holding the
-    NRIC itself plus Profiles sharing any other usable, candidate-eligible key
-    (the NRIC-less phone cluster the record now anchors). Returns promoted IDs.
-    """
-    nric_scope = identifier_scope("nric", identifier.source_instance_id)
-    key = IdentifierKey(
-        identifier_type="nric",
-        identifier_scope=nric_scope,
-        normalized_value=identifier.normalized_value,
-    )
-    discovery: list[IdentifierKey] = [key]
-    seen = {identifier_key_tuple(key)}
-    for candidate_key in identifier_keys:
-        parts = identifier_key_tuple(candidate_key)
-        if parts not in seen:
-            seen.add(parts)
-            discovery.append(candidate_key)
-    promoted: list[str] = []
-    for profile in _open_profiles_for_keys(tx, discovery):
-        outcome = promote_profile(
-            tx,
-            profile_id=profile.profile_id,
-            identifier=identifier,
-            source_key=source_key,
-            record_type=record_type,
-            incoming=incoming,
-        )
-        if outcome.status == "promoted":
-            promoted.append(profile.profile_id)
-    return tuple(promoted)
+    return value if value is None or isinstance(value, bool) else malformed(key)

@@ -63,9 +63,13 @@ CALL {
 }
 CALL {
     WITH target
-    OPTIONAL MATCH (profile:Profile)-[:HAS_IDENTIFIER]->(target)
-    WHERE profile.status = 'open'
-    RETURN count(DISTINCT profile) AS profile_count
+    // A growing Profile is counted by its members, so sequential joins keep
+    // raising the participant count the fanout cap is measured against.
+    OPTIONAL MATCH (record:SourceRecord)-[:ASSERTS]->(target)
+    WHERE EXISTS {
+        MATCH (record)-[:IN_PROFILE]->(:Profile {status: 'open'})
+    }
+    RETURN count(DISTINCT record) AS profile_member_count
 }
 CALL {
     WITH target
@@ -76,7 +80,7 @@ CALL {
       AND record.reeval_pending = true
     RETURN count(DISTINCT record) AS record_count
 }
-WITH target, person_count + profile_count + record_count AS computed_count
+WITH target, person_count + profile_member_count + record_count AS computed_count
 WHERE target.participant_count IS NULL
    OR target.participant_count <> computed_count
 SET target.participant_count = computed_count

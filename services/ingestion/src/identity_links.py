@@ -30,6 +30,8 @@ LINK_STATUS_ACTIVE = "active"
 LOWEST_TRUST_TIER = "tier_4"
 MATERIALIZATION_MIN_SHARED_RECORDS = 2
 MATERIALIZATION_MIN_INDEPENDENT_KEYS = 2
+#: Cluster-expansion bound for identifier types without a registry fanout cap.
+MAX_RECORD_EXPANSION = 200
 
 
 class IdentifierKey(TypedDict):

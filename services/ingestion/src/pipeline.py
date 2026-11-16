@@ -35,16 +35,19 @@ from src.graph.client import Neo4jClient
 from src.graph.ingestion_control import assert_active_bitrix_fence
 from src.graph.person_list_summary_deltas import PersonListSummaryDeltaCollector
 from src.identifier_scopes import identifier_scope
-from src.identity_link_revisions import IdentityLinkDesiredRevision, append_identity_link_revisions
-from src.identity_link_writes import (
+from src.identity_link_promotion import (
     anchor_existing_person,
     anchor_person_by_nric,
+    promote_profiles_for_nric,
+)
+from src.identity_link_revisions import IdentityLinkDesiredRevision, append_identity_link_revisions
+from src.identity_link_writes import (
+    fetch_cluster_key_closure,
     lock_identifiers,
     materialize_profile_for_record,
-    promote_profiles_for_nric,
     recompute_participant_links,
 )
-from src.identity_links import IdentifierKey
+from src.identity_links import IdentifierKey, identifier_key_row, identifier_key_tuple
 from src.identity_registry import identifier_policy
 from src.matching.deterministic import evaluate_deterministic, prefetch_no_match_lock_owners
 from src.matching.engine import MatchEngine, ambiguous_prior_owners_result
@@ -411,6 +414,12 @@ class IngestPipeline:
             active_exclusion_context,
         )
         person_identifiers = projected_identifiers(envelope, identifiers)
+        # One sorted identifier-lock batch for the whole affected neighbourhood,
+        # taken before staging and before any neighbourhood read, so competing
+        # ingests cannot hold opposite partial lock orders.
+        locked_keys = (
+            self._lock_identity_neighbourhood(tx, identifiers) if self._writes_assertions else None
+        )
         staged = self._stage_source_record(
             tx,
             envelope=envelope,
@@ -420,8 +429,6 @@ class IngestPipeline:
             ingest_run_id=ingest_run_id,
             activation_blueprint=activation_blueprint,
         )
-        if self._writes_assertions:
-            self._lock_identity_inputs(tx, identifiers)
         continuity_person_id = (
             lifecycle_plan.prior_person_ids[0]
             if len(lifecycle_plan.prior_person_ids) == 1
@@ -479,7 +486,13 @@ class IngestPipeline:
                     collector.finalize(tx)
                 if self._identity_model == "v2_shadow":
                     self._project_shadow_identity(
-                        tx, envelope, identifiers, attributes, staged.source_record_pk, None
+                        tx,
+                        envelope,
+                        identifiers,
+                        attributes,
+                        staged.source_record_pk,
+                        None,
+                        locked_keys,
                     )
                 return IngestResult(
                     source_record_id=envelope.source_record_id,
@@ -542,7 +555,13 @@ class IngestPipeline:
                 collector.finalize(tx)
             if self._identity_model == "v2_shadow":
                 self._project_shadow_identity(
-                    tx, envelope, identifiers, attributes, staged.source_record_pk, None
+                    tx,
+                    envelope,
+                    identifiers,
+                    attributes,
+                    staged.source_record_pk,
+                    None,
+                    locked_keys,
                 )
             return IngestResult(
                 source_record_id=envelope.source_record_id,
@@ -567,10 +586,8 @@ class IngestPipeline:
                 lifecycle_plan=lifecycle_plan,
                 collector=collector,
             )
-            if self._identity_model == "v2_shadow":
-                self._project_shadow_identity(
-                    tx, envelope, identifiers, attributes, staged.source_record_pk, None
-                )
+            # Shadow must not re-write quarantined attribution: the legacy
+            # review path owns link_status='blocked' on this record.
             collector.finalize(tx)
             return quarantine_result
         # Capture every existing Person this transaction may write to before
@@ -589,13 +606,16 @@ class IngestPipeline:
                 attributes,
                 match_result,
                 candidates,
+                locked_keys,
             )
             if person_id is None:
                 # Keep the audit trail even when no Person destination exists.
                 match_decision_id = persist_match_decision(
                     tx, match_result, staged.source_record_pk
                 )
-                materialization = materialize_profile_for_record(tx, staged.source_record_pk)
+                materialization = materialize_profile_for_record(
+                    tx, staged.source_record_pk, locked_keys=locked_keys
+                )
                 collector.finalize(tx)
                 return IngestResult(
                     source_record_id=envelope.source_record_id,
@@ -683,6 +703,7 @@ class IngestPipeline:
                 attributes,
                 source_record_pk,
                 person_id,
+                locked_keys,
             )
         accepted = match_result.decision is not MatchDecision.REVIEW
         affected_person_ids = set(lifecycle_plan.prior_person_ids)
@@ -762,7 +783,7 @@ class IngestPipeline:
                 old_source_record_pk=lifecycle_plan.active_source_record_pk,
                 new_source_record_pk=source_record_pk,
             )
-            if self._identity_model == "v2":
+            if self._writes_assertions:
                 # Earlier recomputes ran before the replaced version was marked
                 # superseded (activation above does that, including on the
                 # continuity path); re-run now so retired evidence stops feeding
@@ -804,13 +825,15 @@ class IngestPipeline:
                     ],
                 )
             if not continuity_fast_path:
+                v2_evidence = self._identity_model == "v2"
                 for affected_person_id in sorted(affected_person_ids):
-                    compute_golden_profile(tx, affected_person_id)
+                    compute_golden_profile(tx, affected_person_id, v2_evidence=v2_evidence)
                 audit_person_pairs(
                     tx,
                     person_identifiers,
                     envelope.record_type,
                     collector=collector,
+                    v2_evidence=v2_evidence,
                 )
             mark_profile_analysis_dirty(
                 tx,
@@ -1256,6 +1279,7 @@ class IngestPipeline:
         attributes: list[NormalizedAttribute],
         match_result: MatchResult,
         candidates: list[CandidateResult],
+        locked_keys: frozenset[tuple[str, str, str]] | None = None,
     ) -> tuple[str | None, bool]:
         """Step 6 (v2): anchor by approved NRIC or reuse a matched Person.
 
@@ -1265,30 +1289,35 @@ class IngestPipeline:
         Profile/parked participant; the legacy fallback constructor is never
         reachable here.
         """
-        approved = self._approved_nric(identifiers, attributes, envelope)
-        if approved is not None:
-            anchored_person_id, created = anchor_person_by_nric(tx, approved)
-            if created or not self._anchor_is_blocked(
-                tx, envelope, identifiers, attributes, anchored_person_id
-            ):
-                promote_profiles_for_nric(
-                    tx,
-                    approved,
-                    identifier_keys=self._eligible_identifier_keys(identifiers),
-                    source_key=envelope.source_system,
-                    record_type=envelope.record_type,
-                    incoming=self._incoming_name_dob(attributes),
+        anchored_person_id: str | None = None
+        if match_result.decision is not MatchDecision.REVIEW:
+            approved = self._approved_nric(identifiers, attributes, envelope)
+            if approved is not None:
+                anchored_person_id, created = anchor_person_by_nric(tx, approved)
+                if created or not self._anchor_is_blocked(
+                    tx, envelope, identifiers, attributes, anchored_person_id
+                ):
+                    promote_profiles_for_nric(
+                        tx,
+                        approved,
+                        identifier_keys=self._eligible_identifier_keys(identifiers),
+                        source_key=envelope.source_system,
+                        record_type=envelope.record_type,
+                        incoming=self._incoming_name_dob(attributes),
+                        locked_keys=locked_keys,
+                    )
+                    return anchored_person_id, created
+                # A hard NO_MATCH against the anchored Person (NO_MATCH_LOCK or
+                # a conflicting government ID) outranks the NRIC anchor: never
+                # attach, and let the engine's outcome decide the destination.
+                logger.warning(
+                    "NRIC anchor person %s is hard-blocked for record %s; not attaching",
+                    anchored_person_id,
+                    envelope.source_record_id,
                 )
-                return anchored_person_id, created
-            # A hard NO_MATCH against the anchored Person (NO_MATCH_LOCK or a
-            # conflicting government ID) outranks the NRIC anchor: never attach,
-            # and let the engine's outcome decide the destination.
-            logger.warning(
-                "NRIC anchor person %s is hard-blocked for record %s; not attaching",
-                anchored_person_id,
-                envelope.source_record_id,
-            )
         person_id: str | None = match_result.matched_person_id
+        if person_id == anchored_person_id:
+            person_id = None
         if person_id is None and match_result.decision == MatchDecision.REVIEW and candidates:
             return candidates[0].person_id, False
         return person_id, False
@@ -1329,11 +1358,17 @@ class IngestPipeline:
             and identifier_policy(identifier.identifier_type).candidate_eligible
         ]
 
-    def _lock_identity_inputs(
+    def _lock_identity_neighbourhood(
         self,
         tx: ManagedTransaction,
         identifiers: list[NormalizedIdentifier],
-    ) -> None:
+    ) -> frozenset[tuple[str, str, str]]:
+        """Lock the whole affected identifier neighbourhood in one sorted batch.
+
+        The closure is derived lock-free from the incoming usable keys (the
+        record is not staged yet, so an empty source_record_pk contributes no
+        incoming node) and locked before any neighbourhood read.
+        """
         keys = [
             IdentifierKey(
                 identifier_type=identifier.identifier_type,
@@ -1345,8 +1380,12 @@ class IngestPipeline:
             for identifier in identifiers
             if is_usable(identifier.quality_flag)
         ]
-        if keys:
-            lock_identifiers(tx, keys)
+        if not keys:
+            return frozenset()
+        closure = fetch_cluster_key_closure(tx, keys, "")
+        locked = frozenset({identifier_key_tuple(key) for key in keys} | closure)
+        lock_identifiers(tx, [identifier_key_row(key) for key in sorted(locked)])
+        return locked
 
     @staticmethod
     def _incoming_name_dob(attributes: list[NormalizedAttribute]) -> NameDob:
@@ -1383,6 +1422,7 @@ class IngestPipeline:
         attributes: list[NormalizedAttribute],
         source_record_pk: str,
         person_id: str | None,
+        locked_keys: frozenset[tuple[str, str, str]] | None = None,
     ) -> None:
         """v2_shadow: project C3 links without changing the legacy outcome.
 
@@ -1408,4 +1448,4 @@ class IngestPipeline:
         if linked is not None and person_id is not None:
             recompute_participant_links(tx, "person", person_id)
             return
-        materialize_profile_for_record(tx, source_record_pk)
+        materialize_profile_for_record(tx, source_record_pk, locked_keys=locked_keys)

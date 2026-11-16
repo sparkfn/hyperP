@@ -265,9 +265,13 @@ CALL {
 }
 CALL {
     WITH identifier
-    OPTIONAL MATCH (profile:Profile)-[:HAS_IDENTIFIER]->(identifier)
-    WHERE profile.status = 'open'
-    RETURN count(DISTINCT profile) AS profile_count
+    // A growing Profile is counted by its members: counting the Profile as one
+    // participant would hide sequential joins from the fanout cap.
+    OPTIONAL MATCH (record:SourceRecord)-[:ASSERTS]->(identifier)
+    WHERE EXISTS {
+        MATCH (record)-[:IN_PROFILE]->(:Profile {status: 'open'})
+    }
+    RETURN count(DISTINCT record) AS profile_member_count
 }
 CALL {
     WITH identifier
@@ -278,7 +282,7 @@ CALL {
       AND record.reeval_pending = true
     RETURN count(DISTINCT record) AS record_count
 }
-WITH identifier, person_count + profile_count + record_count AS computed_count
+WITH identifier, person_count + profile_member_count + record_count AS computed_count
 WHERE identifier.participant_count IS NULL
    OR identifier.participant_count <> computed_count
 SET identifier.participant_count = computed_count
@@ -437,10 +441,36 @@ RETURN profile.profile_id AS profile_id
 REATTRIBUTE_PROFILE_MEMBERS_TO_PERSON = """
 MATCH (profile:Profile {profile_id: $profile_id})
 MATCH (record:SourceRecord)-[:IN_PROFILE]->(profile)
+MATCH (record)-[:FROM_SOURCE]->(source:SourceSystem)
 MATCH (person:Person {person_id: $person_id})
+// Serialize against a concurrent ingest of the same source identity before
+// deciding version authority (same lock shape as LOCK_AND_GET_SOURCE_STATE).
+MERGE (identity_lock:SourceRecordIdentityLock {
+    source_system: source.source_key,
+    source_instance_id: coalesce(record.source_instance_id, 'legacy-default'),
+    source_record_id: record.source_record_id
+})
+SET identity_lock.locked_at = datetime()
+WITH DISTINCT record, source, person
+// Exactly one open version of a source identity may be activated: another
+// open version, or a higher version of the same identity, keeps this member
+// parked (IN_PROFILE stays as lineage and nothing else is written).
+WHERE NOT EXISTS {
+    MATCH (other:SourceRecord)-[:FROM_SOURCE]->(source)
+    WHERE other <> record
+      AND coalesce(other.source_instance_id, 'legacy-default')
+          = coalesce(record.source_instance_id, 'legacy-default')
+      AND other.source_record_id = record.source_record_id
+      AND (
+        other.lifecycle_status IN ['active', 'pending_review']
+        OR (other.lifecycle_status IS NULL AND other.is_latest = true)
+        OR toInteger(other.source_record_version)
+           > toInteger(record.source_record_version)
+      )
+}
 OPTIONAL MATCH (record)-[existing:LINKED_TO]->(person)
 WHERE coalesce(existing.is_active, true) = true
-WITH record, person,
+WITH record, source, person,
      (existing IS NOT NULL
       AND record.link_status = 'linked'
       AND record.attribution_status = 'person'
@@ -454,75 +484,40 @@ FOREACH (_ IN CASE WHEN unchanged THEN [] ELSE [1] END |
         record.attribution_status = 'person',
         record.reeval_pending = false,
         record.lifecycle_status = 'active',
+        record.is_latest = true,
         record.activated_at = coalesce(record.activated_at, datetime()),
         record.updated_at = datetime()
 )
 FOREACH (_ IN CASE WHEN coalesce(active_link.is_active, true) = true THEN [] ELSE [1] END |
     SET active_link.is_active = true
 )
-RETURN count(record) AS member_count
+RETURN [member IN collect(CASE WHEN unchanged THEN null ELSE {
+    source_record_pk: record.source_record_pk,
+    normalized_payload: record.normalized_payload,
+    observed_at: toString(record.observed_at),
+    source_key: source.source_key
+} END) WHERE member IS NOT NULL] AS reattributed_members
 """
 
-# Project a promoted Profile member's graph-resident assertion evidence onto the
-# Person using the same edge shapes/properties the legacy link path writes.
-# Derived-write zero-diff: a re-run merges the same edge and only re-asserts
-# `is_active = true`, never rewriting observed timestamps.
-PROJECT_REATTRIBUTED_FACTS_TO_PERSON = """
+FETCH_PROFILE_MEMBER_EVIDENCE = """
 MATCH (profile:Profile {profile_id: $profile_id})
-MATCH (record:SourceRecord)-[:IN_PROFILE]->(profile)
-MATCH (record)-[:ASSERTS]->(fact:ProfileFact)
-MATCH (person:Person {person_id: $person_id})
-OPTIONAL MATCH (person)-[existing:HAS_FACT {
-    source_record_pk: record.source_record_pk,
-    attribute_name: fact.attribute_name,
-    attribute_value: fact.attribute_value
-}]->(record)
-WHERE coalesce(existing.is_active, true) = true
-MERGE (person)-[rel:HAS_FACT {
-    source_record_pk: record.source_record_pk,
-    attribute_name: fact.attribute_name,
-    attribute_value: fact.attribute_value
-}]->(record)
-ON CREATE SET rel.source_trust_tier = 'tier_3',
-              rel.confidence = 1.0,
-              rel.quality_flag = 'valid',
-              rel.is_active = true,
-              rel.is_current_hint = false,
-              rel.observed_at = record.observed_at,
-              rel.created_at = datetime()
-FOREACH (_ IN CASE WHEN coalesce(rel.is_active, true) = true THEN [] ELSE [1] END |
-    SET rel.is_active = true
-)
-RETURN count(rel) AS fact_count
+MATCH (member:SourceRecord)-[:IN_PROFILE]->(profile)
+OPTIONAL MATCH (member)-[:ASSERTS]->(nric:Identifier {identifier_type: 'nric'})
+WITH member, collect(DISTINCT nric.normalized_value) AS nric_values
+OPTIONAL MATCH (member)-[:ASSERTS]->(fact:ProfileFact)
+WHERE fact.attribute_name IN ['full_name', 'dob']
+WITH member, nric_values, collect(DISTINCT fact) AS facts
+RETURN member.source_record_pk AS source_record_pk,
+       nric_values,
+       [item IN facts WHERE item.attribute_name = 'full_name' | item.attribute_value] AS full_names,
+       [item IN facts WHERE item.attribute_name = 'dob' | item.attribute_value] AS dobs
+ORDER BY source_record_pk
 """
 
-PROJECT_REATTRIBUTED_ADDRESSES_TO_PERSON = """
-MATCH (profile:Profile {profile_id: $profile_id})
-MATCH (record:SourceRecord)-[:IN_PROFILE]->(profile)
-MATCH (record)-[:ASSERTS]->(address:Address)
-MATCH (record)-[:FROM_SOURCE]->(source:SourceSystem)
-MATCH (person:Person {person_id: $person_id})
-OPTIONAL MATCH (person)-[existing:LIVES_AT {
-    source_record_pk: record.source_record_pk,
-    source_system_key: source.source_key
-}]->(address)
-WHERE coalesce(existing.is_active, true) = true
-MERGE (person)-[rel:LIVES_AT {
-    source_record_pk: record.source_record_pk,
-    source_system_key: source.source_key
-}]->(address)
-ON CREATE SET rel.is_active = true,
-              rel.is_verified = false,
-              rel.quality_flag = 'valid',
-              rel.first_seen_at = record.observed_at,
-              rel.last_seen_at = record.observed_at,
-              rel.last_confirmed_at = record.observed_at,
-              rel.activated_at = datetime(),
-              rel.retired_at = null
-FOREACH (_ IN CASE WHEN coalesce(rel.is_active, true) = true THEN [] ELSE [1] END |
-    SET rel.is_active = true
-)
-RETURN count(rel) AS address_count
+PERSON_HAS_IDENTIFIER_LINKS = """
+MATCH (person:Person {person_id: $person_id})-[link:HAS_IDENTIFIER]->()
+RETURN count(link) > 0 AS has_links
+LIMIT 1
 """
 
 SOURCE_RECORD_LINKED_TO_PERSON = """

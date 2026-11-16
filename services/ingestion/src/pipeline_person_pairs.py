@@ -55,6 +55,7 @@ def audit_person_pairs(
     record_type: RecordType = RecordType.IDENTITY,
     *,
     collector: PersonListSummaryDeltaCollector,
+    v2_evidence: bool = False,
 ) -> list[str]:
     """Open person↔person review cases for shared-identifier bridges.
 
@@ -107,6 +108,7 @@ def audit_person_pairs(
                     ident,
                     record_type,
                     collector=collector,
+                    v2_evidence=v2_evidence,
                 )
                 if outcome is None:
                     continue
@@ -130,6 +132,7 @@ def _process_pair(
     record_type: RecordType,
     *,
     collector: PersonListSummaryDeltaCollector,
+    v2_evidence: bool,
 ) -> _PairOutcome | None:
     lock = tx.run(
         queries.CHECK_NO_MATCH_LOCK,
@@ -190,6 +193,7 @@ def _process_pair(
             reasons=reasons,
             feature_snapshot=feature_snapshot,
             collector=collector,
+            v2_evidence=v2_evidence,
         )
     if decision == MatchDecision.NO_MATCH:
         return None
@@ -214,6 +218,7 @@ def _auto_merge_pair(
     reasons: list[str],
     feature_snapshot: str,
     collector: PersonListSummaryDeltaCollector,
+    v2_evidence: bool,
 ) -> _PairOutcome:
     record = tx.run(
         queries.CREATE_MATCH_DECISION,
@@ -248,6 +253,7 @@ def _auto_merge_pair(
         match_decision_id=match_decision_id,
         reason="; ".join(reasons),
         collector=collector,
+        v2_evidence=v2_evidence,
     )
     return _PairOutcome(kind="merged", id=merge_event_id)
 

@@ -182,6 +182,7 @@ ingestion/graph/queries/person_pairs.py:FIND_PERSONS_SHARING_IDENTIFIERS_BATCH
 ingestion/graph/queries/persons.py:FETCH_PERSON_ADDRESSES
 ingestion/graph/queries/persons.py:FETCH_PERSON_FACTS
 ingestion/graph/queries/persons.py:FETCH_PERSON_IDENTIFIERS
+ingestion/graph/queries/persons.py:FETCH_PERSON_IDENTIFIERS_V2
 ingestion/graph/queries/persons.py:FETCH_PERSON_MATCH_ADDRESSES
 ingestion/graph/queries/persons.py:FETCH_PERSON_MATCH_FACTS
 ingestion/graph/queries/persons.py:FETCH_PERSON_MATCH_IDENTIFIERS
@@ -217,10 +218,6 @@ _AUTHORITATIVE_MUTATION_READERS: Final[frozenset[str]] = frozenset(
         # Profile promotion re-attributes a member record onto its Person: a
         # current-state LINKED_TO materializer that must reactivate retired links.
         "ingestion/graph/queries/identity_links.py:REATTRIBUTE_PROFILE_MEMBERS_TO_PERSON",
-        # Promotion projects the member records' graph-resident evidence onto the
-        # Person with the legacy link-path edge shapes; both re-assert active state.
-        "ingestion/graph/queries/identity_links.py:PROJECT_REATTRIBUTED_FACTS_TO_PERSON",
-        "ingestion/graph/queries/identity_links.py:PROJECT_REATTRIBUTED_ADDRESSES_TO_PERSON",
         "ingestion/graph/queries/crm_history.py:LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS",
         "ingestion/graph/queries/persons.py:LINK_PERSON_TO_ADDRESS",
         "ingestion/graph/queries/persons.py:LINK_PERSON_TO_IDENTIFIER",
