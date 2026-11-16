@@ -12,12 +12,15 @@ import hashlib
 import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, TypedDict
 
 from src.golden_profile_active_authority import _TRUST_TIER_RANK
 from src.identity_registry import identifier_policy
 from src.models import JsonValue, QualityFlag
 from src.pipeline_normalization import is_usable
+
+if TYPE_CHECKING:
+    from src.identity_link_member_evidence import MemberEvidence
 
 #: Provisional C3 values. Placeholders until C4 computes weights; they must
 #: never feed matching or golden-profile selection.
@@ -103,6 +106,7 @@ class PromotionOutcome:
     person_id: str | None = None
     person_created: bool = False
     reason: str | None = None
+    promoted_members: tuple[MemberEvidence, ...] = ()
 
 
 class IdentityLinkConflictError(RuntimeError):

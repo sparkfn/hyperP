@@ -114,7 +114,22 @@ def materialize_profile_for_record(
         )
     member_pks = sorted({row["source_record_pk"] for row in evidence})
     if len(member_pks) > MAX_RECORD_EXPANSION:
+        detached = tx.run(
+            queries.DETACH_PROFILE_MEMBERS,
+            source_record_pks=[source_record_pk],
+            profile_id=None,
+            expected_version=None,
+        ).single()
+        raw_profile_ids: object = None if detached is None else detached["profile_ids"]
+        detached_profile_ids = (
+            [value for value in raw_profile_ids if isinstance(value, str)]
+            if isinstance(raw_profile_ids, list)
+            else []
+        )
         tx.run(queries.SET_SOURCE_RECORD_PARKED, source_record_pk=source_record_pk)
+        for detached_profile_id in detached_profile_ids:
+            recompute_participant_links(tx, "profile", detached_profile_id)
+        recompute_participant_counts(tx, {identifier_key_tuple(key) for key in source_keys})
         return MaterializationOutcome(status="parked", profile_id=None)
     if not materializes(evidence):
         tx.run(queries.SET_SOURCE_RECORD_PARKED, source_record_pk=source_record_pk)

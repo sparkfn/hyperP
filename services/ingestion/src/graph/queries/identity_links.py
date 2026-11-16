@@ -489,7 +489,8 @@ RETURN [member IN collect(CASE WHEN unchanged THEN null ELSE {
     normalized_payload: record.normalized_payload,
     observed_at: toString(record.observed_at),
     source_key: source.source_key
-} END) WHERE member IS NOT NULL] AS reattributed_members
+} END) WHERE member IS NOT NULL] AS reattributed_members,
+       collect(DISTINCT record.source_record_pk) AS activated_pks
 """
 
 FETCH_PROFILE_MEMBER_EVIDENCE = """
@@ -546,12 +547,11 @@ CALL (member, source) {
       AND coalesce(other.source_instance_id, 'legacy-default')
           = coalesce(member.source_instance_id, 'legacy-default')
       AND other.source_record_id = member.source_record_id
-      AND other.lifecycle_status = 'parked'
       AND toInteger(other.source_record_version)
           > toInteger(member.source_record_version)
     WITH other
     ORDER BY toInteger(other.source_record_version) DESC
-    RETURN head(collect(other)) AS parked_higher
+    RETURN head(collect(other)) AS higher_version
 }
 RETURN member.source_record_pk AS source_record_pk,
        CASE
@@ -559,16 +559,17 @@ RETURN member.source_record_pk AS source_record_pk,
                CASE WHEN toInteger(member.source_record_version)
                          < toInteger(open_version.source_record_version)
                     THEN 'supersede' ELSE 'reopen' END
-           WHEN parked_higher IS NOT NULL THEN 'supersede'
+           WHEN higher_version IS NOT NULL THEN 'supersede'
            ELSE 'activate'
        END AS disposition,
-       coalesce(open_version.source_record_pk, parked_higher.source_record_pk) AS winner_pk
+       coalesce(open_version.source_record_pk, higher_version.source_record_pk) AS winner_pk
 ORDER BY source_record_pk
 """
 
 SUPERSEDE_PROFILE_MEMBERS = """
 UNWIND $rows AS row
 MATCH (member:SourceRecord {source_record_pk: row.source_record_pk})
+WHERE member.lifecycle_status = 'parked'
 MATCH (winner:SourceRecord {source_record_pk: row.winner_pk})
 SET member.lifecycle_status = 'superseded',
     member.is_latest = false,
@@ -576,6 +577,7 @@ SET member.lifecycle_status = 'superseded',
     member.superseded_at = datetime(),
     member.updated_at = datetime()
 MERGE (member)-[:PREVIOUS_VERSION_OF]->(winner)
+RETURN collect(member.source_record_pk) AS superseded_pks
 """
 
 REOPEN_PROFILE_MEMBERS = """
@@ -583,11 +585,26 @@ MATCH (profile:Profile {profile_id: $profile_id})
 UNWIND $source_record_pks AS source_record_pk
 MATCH (record:SourceRecord {source_record_pk: source_record_pk})
       -[member:IN_PROFILE]->(profile)
+WHERE record.lifecycle_status = 'parked'
 DELETE member
 SET record.link_status = 'unlinked',
     record.attribution_status = 'parked',
     record.reeval_pending = true,
     record.attribution_eval_at = datetime()
+"""
+
+DETACH_PROFILE_MEMBERS = """
+UNWIND $source_record_pks AS source_record_pk
+MATCH (record:SourceRecord {source_record_pk: source_record_pk})
+      -[member:IN_PROFILE]->(profile:Profile)
+WHERE profile.status = 'open'
+  AND ($profile_id IS NULL OR profile.profile_id = $profile_id)
+  AND ($expected_version IS NULL OR profile.evidence_version = $expected_version)
+WITH profile, collect(DISTINCT member) AS member_edges
+FOREACH (edge IN member_edges | DELETE edge)
+SET profile.evidence_version = profile.evidence_version + 1,
+    profile.updated_at = datetime()
+RETURN collect(profile.profile_id) AS profile_ids
 """
 
 PERSON_HAS_IDENTIFIER_LINKS = """

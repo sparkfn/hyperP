@@ -17,18 +17,13 @@ from neo4j import ManagedTransaction, Record
 from src.graph import queries
 from src.identifier_scopes import identifier_scope
 from src.identity_link_member_evidence import (
-    MemberClassification,
-    MemberDisposition,
     MemberEvidence,
-    cross_member_contradiction,
-    member_addresses,
-    member_attributes,
-    member_evidence,
-    member_has_nric_conflict,
-    member_holder_rejects,
-    member_row,
-    optional_str_value,
-    required_str_value,
+    attach_member_evidence,
+    classify_members,
+    member_dispositions,
+    member_evidence_rows,
+    str_values,
+    supersede_rows,
 )
 from src.identity_link_writes import (
     lock_identifiers,
@@ -51,7 +46,6 @@ from src.identity_links import (
 from src.models import NormalizedIdentifier, RecordType
 from src.normalizers.nric import is_nric_digest
 from src.nric_anchor import NameDob, nric_anchor_gate
-from src.pipeline_writes import attach_person_evidence
 
 type _KeyTuple = tuple[str, str, str]
 
@@ -72,6 +66,7 @@ def promote_profile(
     record_type: RecordType,
     incoming: NameDob,
     locked_keys: frozenset[_KeyTuple] | None = None,
+    prior_promoted: Sequence[MemberEvidence] = (),
 ) -> PromotionOutcome:
     """Promote an open Profile through the existing NRIC anchor gate.
 
@@ -113,34 +108,39 @@ def promote_profile(
     }
     if not (evidence_keys | {identifier_key_tuple(nric_row)}) <= locked:
         raise IdentityLinkConflictError(f"profile {profile_id} grew beyond its locked key closure")
-    classification = _classify_members(
-        tx, profile_id, identifier, source_key, record_type, incoming
+    members = member_evidence_rows(tx, profile_id)
+    dispositions = member_dispositions(tx, profile_id, members)
+    disposition_by_pk = {item.source_record_pk: item for item in dispositions}
+    activate_members = [
+        member
+        for member in members
+        if disposition_by_pk[member.source_record_pk].disposition == "activate"
+    ]
+    classification = classify_members(
+        activate_members,
+        identifier,
+        source_key,
+        record_type,
+        incoming,
+        prior_promoted,
     )
     if classification.rejection is not None:
         return PromotionOutcome(
             status="rejected", profile_id=profile_id, reason=classification.rejection
         )
-    dispositions = _member_dispositions(tx, profile_id, classification.eligible)
-    activate_pks = [
-        item.source_record_pk for item in dispositions if item.disposition == "activate"
-    ]
-    if not activate_pks:
-        return PromotionOutcome(
-            status="rejected", profile_id=profile_id, reason="no_promotable_members"
+    supersede_entries = supersede_rows(dispositions)
+    reopen_rows = [item.source_record_pk for item in dispositions if item.disposition == "reopen"]
+    if not classification.eligible:
+        return _reject_with_dispositions(
+            tx,
+            profile_id=profile_id,
+            expected_version=state.evidence_version,
+            supersede_entries=supersede_entries,
+            reopen_pks=reopen_rows,
+            count_keys=evidence_keys | {identifier_key_tuple(nric_row)},
         )
-    supersede_rows: list[dict[str, str]] = []
-    for item in dispositions:
-        if item.disposition != "supersede":
-            continue
-        if item.winner_pk is None:
-            raise IdentityLinkConflictError("superseded profile member has no winner version")
-        supersede_rows.append(
-            {"source_record_pk": item.source_record_pk, "winner_pk": item.winner_pk}
-        )
-    reopen_pks = [
-        *classification.excluded,
-        *(item.source_record_pk for item in dispositions if item.disposition == "reopen"),
-    ]
+    activate_pks = [member.source_record_pk for member in classification.eligible]
+    reopen_pks = [*reopen_rows, *classification.excluded]
     person_id, person_created = _merge_person_by_nric(tx, nric_key, nric_scope)
     promoted = tx.run(
         queries.PROMOTE_PROFILE,
@@ -150,8 +150,8 @@ def promote_profile(
     ).single()
     if promoted is None:
         raise IdentityLinkConflictError(f"profile {profile_id} changed during promotion")
-    if supersede_rows:
-        tx.run(queries.SUPERSEDE_PROFILE_MEMBERS, rows=supersede_rows)
+    if supersede_entries:
+        _supersede(tx, supersede_entries)
     if reopen_pks:
         tx.run(
             queries.REOPEN_PROFILE_MEMBERS,
@@ -164,7 +164,19 @@ def promote_profile(
         person_id=person_id,
         source_record_pks=activate_pks,
     ).single()
-    _attach_member_evidence(tx, person_id, reattributed)
+    activated_pks = set(_activated_pks(reattributed))
+    missing_pks = [
+        source_record_pk
+        for source_record_pk in activate_pks
+        if source_record_pk not in activated_pks
+    ]
+    if missing_pks:
+        tx.run(
+            queries.REOPEN_PROFILE_MEMBERS,
+            profile_id=profile_id,
+            source_record_pks=missing_pks,
+        )
+    attach_member_evidence(tx, person_id, reattributed)
     recompute_participant_links(tx, "person", person_id)
     recompute_participant_counts(tx, evidence_keys | {identifier_key_tuple(nric_row)})
     return PromotionOutcome(
@@ -172,6 +184,9 @@ def promote_profile(
         profile_id=profile_id,
         person_id=person_id,
         person_created=person_created,
+        promoted_members=tuple(
+            member for member in classification.eligible if member.source_record_pk in activated_pks
+        ),
     )
 
 
@@ -200,6 +215,7 @@ def promote_profiles_for_nric(
             seen.add(parts)
             discovery.append(candidate_key)
     promoted: list[str] = []
+    promoted_members: list[MemberEvidence] = []
     for profile in open_profiles_for_keys(tx, discovery):
         outcome = promote_profile(
             tx,
@@ -209,9 +225,11 @@ def promote_profiles_for_nric(
             record_type=record_type,
             incoming=incoming,
             locked_keys=locked_keys,
+            prior_promoted=tuple(promoted_members),
         )
         if outcome.status == "promoted":
             promoted.append(profile.profile_id)
+            promoted_members.extend(outcome.promoted_members)
     return tuple(promoted)
 
 
@@ -308,92 +326,52 @@ def _canonical_person_id(tx: ManagedTransaction, person_id: str) -> str:
     return required_str(row, "person_id")
 
 
-def _classify_members(
-    tx: ManagedTransaction,
-    profile_id: str,
-    identifier: NormalizedIdentifier,
-    source_key: str,
-    record_type: RecordType,
-    incoming: NameDob,
-) -> MemberClassification:
-    """Split members into eligible/excluded and reject contradictions."""
-    eligible: list[MemberEvidence] = []
-    excluded: list[str] = []
-    for row in tx.run(queries.FETCH_PROFILE_MEMBER_EVIDENCE, profile_id=profile_id):
-        member = member_evidence(
-            row["source_record_pk"],
-            row["full_names"],
-            row["dobs"],
-            row["nric_records"],
-        )
-        if member_has_nric_conflict(member, identifier.normalized_value) or member_holder_rejects(
-            member, identifier, source_key, record_type, incoming
-        ):
-            excluded.append(member.source_record_pk)
-        else:
-            eligible.append(member)
-    if not eligible:
-        return MemberClassification((), tuple(excluded), "no_promotable_members")
-    if cross_member_contradiction(eligible, identifier, source_key, record_type):
-        return MemberClassification((), (), "nric_contradiction")
-    return MemberClassification(tuple(eligible), tuple(excluded), None)
-
-
-def _member_dispositions(
-    tx: ManagedTransaction,
-    profile_id: str,
-    eligible: Sequence[MemberEvidence],
-) -> list[MemberDisposition]:
-    """Lock each eligible member's identity and classify its version authority."""
-    source_record_pks = [member.source_record_pk for member in eligible]
-    rows = {
-        required_str(row, "source_record_pk"): row
-        for row in tx.run(
-            queries.FETCH_PROFILE_MEMBER_VERSION_DISPOSITION,
-            profile_id=profile_id,
-            source_record_pks=source_record_pks,
-        )
-    }
-    dispositions: list[MemberDisposition] = []
-    for source_record_pk in source_record_pks:
-        row = rows.get(source_record_pk)
-        if row is None:
-            raise IdentityLinkConflictError(f"profile {profile_id} member disposition missing")
-        disposition = required_str(row, "disposition")
-        if disposition not in ("activate", "supersede", "reopen"):
-            raise IdentityLinkConflictError(f"unknown profile member disposition: {disposition}")
-        dispositions.append(
-            MemberDisposition(
-                source_record_pk=source_record_pk,
-                disposition=disposition,
-                winner_pk=optional_str(row, "winner_pk"),
-            )
-        )
-    return dispositions
-
-
-def _attach_member_evidence(
-    tx: ManagedTransaction,
-    person_id: str,
-    row: Record | None,
-) -> None:
-    """Project every newly re-attributed member's own payload onto the Person."""
+def _supersede(tx: ManagedTransaction, rows: Sequence[dict[str, str]]) -> list[str]:
+    row = tx.run(queries.SUPERSEDE_PROFILE_MEMBERS, rows=list(rows)).single()
     if row is None:
-        return
-    raw_members: object = row["reattributed_members"]
-    if not isinstance(raw_members, list):
-        raise ValueError("re-attributed member rows are malformed")
-    for raw_member in raw_members:
-        member = member_row(raw_member)
-        payload = optional_str_value(member["normalized_payload"])
-        attach_person_evidence(
-            tx,
-            person_id=person_id,
-            source_record_pk=required_str_value(member["source_record_pk"]),
-            source_system_key=required_str_value(member["source_key"]),
-            observed_at=optional_str_value(member["observed_at"]),
-            addresses=member_addresses(payload),
-            attributes=member_attributes(payload),
-            source_trust_tier=None,
-            confidence=None,
+        raise IdentityLinkConflictError("profile supersede returned no row")
+    return str_values(row["superseded_pks"])
+
+
+def _activated_pks(row: Record | None) -> list[str]:
+    if row is None:
+        raise IdentityLinkConflictError("profile re-attribution returned no row")
+    return str_values(row["activated_pks"])
+
+
+def _reject_with_dispositions(
+    tx: ManagedTransaction,
+    *,
+    profile_id: str,
+    expected_version: int,
+    supersede_entries: Sequence[dict[str, str]],
+    reopen_pks: Sequence[str],
+    count_keys: set[tuple[str, str, str]],
+) -> PromotionOutcome:
+    """Apply version dispositions when no member of this Profile can activate."""
+    superseded_pks = _supersede(tx, supersede_entries) if supersede_entries else []
+    detached = False
+    if superseded_pks:
+        row = tx.run(
+            queries.DETACH_PROFILE_MEMBERS,
+            source_record_pks=superseded_pks,
+            profile_id=profile_id,
+            expected_version=expected_version,
+        ).single()
+        profile_ids = [] if row is None else str_values(row["profile_ids"])
+        if not profile_ids:
+            raise IdentityLinkConflictError(f"profile {profile_id} changed during detach")
+        detached = True
+    if reopen_pks:
+        tx.run(
+            queries.REOPEN_PROFILE_MEMBERS,
+            profile_id=profile_id,
+            source_record_pks=list(reopen_pks),
         )
+        detached = True
+    if detached:
+        recompute_participant_links(tx, "profile", profile_id)
+        recompute_participant_counts(tx, count_keys)
+    return PromotionOutcome(
+        status="rejected", profile_id=profile_id, reason="no_promotable_members"
+    )
