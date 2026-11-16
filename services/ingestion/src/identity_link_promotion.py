@@ -20,8 +20,10 @@ from src.identity_link_member_evidence import (
     MemberEvidence,
     attach_member_evidence,
     classify_members,
+    cross_member_contradiction,
     member_dispositions,
     member_evidence_rows,
+    person_holder_evidence,
     str_values,
     supersede_rows,
 )
@@ -142,6 +144,16 @@ def promote_profile(
     activate_pks = [member.source_record_pk for member in classification.eligible]
     reopen_pks = [*reopen_rows, *classification.excluded]
     person_id, person_created = _merge_person_by_nric(tx, nric_key, nric_scope)
+    holder_evidence = person_holder_evidence(tx, person_id)
+    if holder_evidence and cross_member_contradiction(
+        [*classification.eligible, *prior_promoted, *holder_evidence],
+        identifier,
+        source_key,
+        record_type,
+    ):
+        return PromotionOutcome(
+            status="rejected", profile_id=profile_id, reason="nric_contradiction"
+        )
     promoted = tx.run(
         queries.PROMOTE_PROFILE,
         profile_id=profile_id,

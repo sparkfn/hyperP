@@ -189,6 +189,19 @@ def member_evidence_rows(tx: ManagedTransaction, profile_id: str) -> list[Member
     ]
 
 
+def person_holder_evidence(tx: ManagedTransaction, person_id: str) -> list[MemberEvidence]:
+    """Read the durable NameDob holder evidence of an anchored Person."""
+    return [
+        member_evidence(
+            row["source_record_pk"],
+            row["full_names"],
+            row["dobs"],
+            [],
+        )
+        for row in tx.run(queries.FETCH_PERSON_HOLDER_EVIDENCE, person_id=person_id)
+    ]
+
+
 def classify_members(
     members: Sequence[MemberEvidence],
     identifier: NormalizedIdentifier,
@@ -235,7 +248,7 @@ def member_dispositions(
         if row is None:
             raise IdentityLinkConflictError(f"profile {profile_id} member disposition missing")
         disposition = required_str(row, "disposition")
-        if disposition not in ("activate", "supersede", "reopen"):
+        if disposition not in ("activate", "supersede", "reopen", "skip"):
             raise IdentityLinkConflictError(f"unknown profile member disposition: {disposition}")
         dispositions.append(
             MemberDisposition(

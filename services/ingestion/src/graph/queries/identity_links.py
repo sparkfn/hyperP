@@ -445,10 +445,11 @@ WHERE record.source_record_pk IN $source_record_pks
 MATCH (record)-[:FROM_SOURCE]->(source:SourceSystem)
 MATCH (person:Person {person_id: $person_id})
 // The disposition read already took every eligible member's identity lock.
-// Exactly one open version of a source identity may be activated: another
-// open version, or a higher version of the same identity, keeps this member
-// parked (IN_PROFILE stays as lineage and nothing else is written).
-WHERE NOT EXISTS {
+// The member's own lifecycle gates activation exactly as it did for the
+// disposition; a record that changed since then is omitted and reopened.
+WHERE record.lifecycle_status = 'parked'
+  AND coalesce(record.link_status, 'unlinked') IN ['unlinked', 'profile']
+  AND NOT EXISTS {
     MATCH (other:SourceRecord)-[:FROM_SOURCE]->(source)
     WHERE other <> record
       AND coalesce(other.source_instance_id, 'legacy-default')
@@ -510,6 +511,21 @@ RETURN member.source_record_pk AS source_record_pk,
 ORDER BY source_record_pk
 """
 
+FETCH_PERSON_HOLDER_EVIDENCE = """
+MATCH (person:Person {person_id: $person_id})
+MATCH (record:SourceRecord)-[linked:LINKED_TO]->(person)
+WHERE coalesce(linked.is_active, true) = true
+  AND coalesce(record.link_status, 'linked') <> 'pending_review'
+  AND coalesce(record.lifecycle_status, 'active') <> 'superseded'
+OPTIONAL MATCH (record)-[:ASSERTS]->(fact:ProfileFact)
+WHERE fact.attribute_name IN ['full_name', 'dob']
+WITH record, collect(DISTINCT fact) AS facts
+RETURN record.source_record_pk AS source_record_pk,
+       [item IN facts WHERE item.attribute_name = 'full_name' | item.attribute_value] AS full_names,
+       [item IN facts WHERE item.attribute_name = 'dob' | item.attribute_value] AS dobs
+ORDER BY source_record_pk
+"""
+
 FETCH_PROFILE_MEMBER_VERSION_DISPOSITION = """
 MATCH (profile:Profile {profile_id: $profile_id})
 UNWIND $source_record_pks AS source_record_pk
@@ -526,7 +542,10 @@ MERGE (lock:SourceRecordIdentityLock {
     source_record_id: member.source_record_id
 })
 SET lock.locked_at = datetime()
-WITH member, source
+WITH member, source,
+     (member.lifecycle_status = 'parked'
+      AND coalesce(member.link_status, 'unlinked')
+          IN ['unlinked', 'profile']) AS member_eligible
 CALL (member, source) {
     WITH member, source
     OPTIONAL MATCH (other:SourceRecord)-[:FROM_SOURCE]->(source)
@@ -535,34 +554,31 @@ CALL (member, source) {
           = coalesce(member.source_instance_id, 'legacy-default')
       AND other.source_record_id = member.source_record_id
       AND (other.lifecycle_status IN ['active', 'pending_review']
-           OR (other.lifecycle_status IS NULL AND other.is_latest = true))
-    WITH other
-    ORDER BY toInteger(other.source_record_version) DESC
-    RETURN head(collect(other)) AS open_version
-}
-CALL (member, source) {
-    WITH member, source
-    OPTIONAL MATCH (other:SourceRecord)-[:FROM_SOURCE]->(source)
-    WHERE other <> member
-      AND coalesce(other.source_instance_id, 'legacy-default')
-          = coalesce(member.source_instance_id, 'legacy-default')
-      AND other.source_record_id = member.source_record_id
-      AND toInteger(other.source_record_version)
-          > toInteger(member.source_record_version)
-    WITH other
-    ORDER BY toInteger(other.source_record_version) DESC
-    RETURN head(collect(other)) AS higher_version
+           OR (other.lifecycle_status IS NULL AND other.is_latest = true)
+           OR toInteger(other.source_record_version)
+              > toInteger(member.source_record_version))
+    WITH other,
+         (other.lifecycle_status IN ['active', 'pending_review']
+          OR (other.lifecycle_status IS NULL AND other.is_latest = true)) AS is_open
+    ORDER BY toInteger(other.source_record_version) DESC, is_open DESC
+    RETURN head(collect(other)) AS winner
 }
 RETURN member.source_record_pk AS source_record_pk,
        CASE
-           WHEN open_version IS NOT NULL THEN
-               CASE WHEN toInteger(member.source_record_version)
-                         < toInteger(open_version.source_record_version)
-                    THEN 'supersede' ELSE 'reopen' END
-           WHEN higher_version IS NOT NULL THEN 'supersede'
-           ELSE 'activate'
+           WHEN NOT member_eligible THEN 'skip'
+           WHEN winner IS NULL THEN 'activate'
+           WHEN toInteger(winner.source_record_version)
+                > toInteger(member.source_record_version) THEN 'supersede'
+           ELSE 'reopen'
        END AS disposition,
-       coalesce(open_version.source_record_pk, higher_version.source_record_pk) AS winner_pk
+       CASE
+           WHEN member_eligible
+                AND winner IS NOT NULL
+                AND toInteger(winner.source_record_version)
+                    > toInteger(member.source_record_version)
+           THEN winner.source_record_pk
+           ELSE null
+       END AS winner_pk
 ORDER BY source_record_pk
 """
 

@@ -2353,6 +2353,183 @@ def test_promotion_ignores_superseded_member_contradiction(neo4j_driver: Driver)
     )
 
 
+def test_promotion_skips_member_owned_by_its_own_lifecycle(neo4j_driver: Driver) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_identifier(neo4j_driver, "ident-nric", "nric", _NRIC_DIGEST)
+    _seed_identifier(neo4j_driver, "ident-phone", "phone", _PHONE)
+    _seed_source_version(
+        neo4j_driver,
+        "sr-pending",
+        "2026-01-01T00:00:00Z",
+        source_record_id="pending-ident",
+        source_record_version=1,
+        lifecycle_status="pending_review",
+    )
+    _seed_parked_record(neo4j_driver, "sr-parked-ok", "2026-01-02T00:00:00Z")
+    _seed_assertion(neo4j_driver, "sr-parked-ok", "ident-phone", "assert-parked-ok")
+    _seed_profile(neo4j_driver, "profile-lifecycle", "sr-pending")
+    _attach_profile_member(neo4j_driver, "profile-lifecycle", "sr-parked-ok")
+    _seed_profile_link(neo4j_driver, "profile-lifecycle", "ident-phone")
+
+    outcome = _promote(neo4j_driver, "profile-lifecycle")
+
+    assert outcome.status == "promoted"
+    records = {
+        str(row["source_record_pk"]): row for row in _record_attribution_snapshot(neo4j_driver)
+    }
+    skipped = records["sr-pending"]
+    assert skipped["lifecycle_status"] == "pending_review"
+    assert skipped["link_status"] == "profile"
+    assert skipped["attribution_status"] == "profile"
+    assert (
+        _scalar(
+            neo4j_driver,
+            "MATCH (:SourceRecord {source_record_pk: 'sr-pending'})"
+            "-[:LINKED_TO]->(:Person) RETURN count(*) AS count",
+        )
+        == 0
+    )
+    assert records["sr-parked-ok"]["link_status"] == "linked"
+
+
+def test_promotion_supersedes_member_with_open_lower_and_higher_version(
+    neo4j_driver: Driver,
+) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_identifier(neo4j_driver, "ident-nric", "nric", _NRIC_DIGEST)
+    _seed_identifier(neo4j_driver, "ident-phone", "phone", _PHONE)
+    _seed_parked_record(
+        neo4j_driver,
+        "sr-winner-v2",
+        "2026-02-01T00:00:00Z",
+        source_record_id="winner-ident",
+        source_record_version=2,
+    )
+    _seed_source_version(
+        neo4j_driver,
+        "sr-winner-v1",
+        "2026-01-01T00:00:00Z",
+        source_record_id="winner-ident",
+        source_record_version=1,
+        lifecycle_status="active",
+        is_latest=True,
+    )
+    _seed_parked_record(
+        neo4j_driver,
+        "sr-winner-v3",
+        "2026-03-01T00:00:00Z",
+        source_record_id="winner-ident",
+        source_record_version=3,
+    )
+    _seed_assertion(neo4j_driver, "sr-winner-v2", "ident-phone", "assert-winner-v2")
+    _seed_profile(neo4j_driver, "profile-winner", "sr-winner-v2")
+    _seed_profile_link(neo4j_driver, "profile-winner", "ident-phone")
+
+    outcome = _promote(neo4j_driver, "profile-winner")
+
+    assert outcome.status == "rejected"
+    assert outcome.reason == "no_promotable_members"
+    records = {
+        str(row["source_record_pk"]): row for row in _record_attribution_snapshot(neo4j_driver)
+    }
+    assert records["sr-winner-v2"]["lifecycle_status"] == "superseded"
+    assert records["sr-winner-v2"]["link_status"] == "profile"
+    assert (
+        _scalar(
+            neo4j_driver,
+            "MATCH (:SourceRecord {source_record_pk: 'sr-winner-v2'})"
+            "-[:PREVIOUS_VERSION_OF]->(:SourceRecord {source_record_pk: 'sr-winner-v3'}) "
+            "RETURN count(*) AS count",
+        )
+        == 1
+    )
+    assert (
+        _scalar(
+            neo4j_driver,
+            "MATCH (:SourceRecord {source_record_pk: 'sr-winner-v2'})"
+            "-[:LINKED_TO]->(:Person) RETURN count(*) AS count",
+        )
+        == 0
+    )
+
+
+def test_promotion_rejects_durable_person_contradiction_on_second_call(
+    neo4j_driver: Driver,
+) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_identifier(neo4j_driver, "ident-nric", "nric", _NRIC_DIGEST)
+    _seed_identifier(neo4j_driver, "ident-email-a", "email", "durable-a@example.com")
+    _seed_identifier(neo4j_driver, "ident-phone-b", "phone", _PHONE)
+    _seed_parked_record(neo4j_driver, "sr-durable-a", "2026-01-01T00:00:00Z")
+    _seed_parked_record(neo4j_driver, "sr-durable-b", "2026-01-02T00:00:00Z")
+    _seed_assertion(neo4j_driver, "sr-durable-a", "ident-email-a", "assert-durable-a")
+    _seed_assertion(neo4j_driver, "sr-durable-b", "ident-phone-b", "assert-durable-b")
+    _seed_asserted_fact(neo4j_driver, "sr-durable-a", "dob", "1980-02-02", "assert-durable-a-dob")
+    _seed_asserted_fact(neo4j_driver, "sr-durable-b", "dob", "1990-03-03", "assert-durable-b-dob")
+    _seed_profile(neo4j_driver, "profile-durable-a", "sr-durable-a")
+    _seed_profile_link(neo4j_driver, "profile-durable-a", "ident-email-a")
+    _seed_profile(neo4j_driver, "profile-durable-b", "sr-durable-b")
+    _seed_profile_link(neo4j_driver, "profile-durable-b", "ident-phone-b")
+    email_key = IdentifierKey(
+        identifier_type="email",
+        identifier_scope="global",
+        normalized_value="durable-a@example.com",
+    )
+    phone_key = IdentifierKey(
+        identifier_type="phone", identifier_scope="global", normalized_value=_PHONE
+    )
+    dob_less = NameDob(full_name=None, dob=None)
+
+    first = _execute(
+        neo4j_driver,
+        lambda tx: promote_profiles_for_nric(
+            tx,
+            _nric_identifier(),
+            identifier_keys=[email_key],
+            source_key="onediver",
+            record_type=RecordType.IDENTITY,
+            incoming=dob_less,
+        ),
+    )
+    assert first == ("profile-durable-a",)
+
+    second = _execute(
+        neo4j_driver,
+        lambda tx: promote_profiles_for_nric(
+            tx,
+            _nric_identifier(),
+            identifier_keys=[phone_key],
+            source_key="onediver",
+            record_type=RecordType.IDENTITY,
+            incoming=dob_less,
+        ),
+    )
+    assert second == ()
+    profiles = {str(row["profile_id"]): row for row in _profile_snapshot(neo4j_driver)}
+    assert profiles["profile-durable-a"]["status"] == "promoted"
+    assert profiles["profile-durable-b"]["status"] == "open"
+    assert (
+        _scalar(
+            neo4j_driver,
+            "MATCH (:SourceRecord {source_record_pk: 'sr-durable-b'})"
+            "-[:LINKED_TO]->(:Person) RETURN count(*) AS count",
+        )
+        == 0
+    )
+    assert (
+        _scalar(
+            neo4j_driver,
+            "MATCH (:SourceRecord {source_record_pk: 'sr-durable-b'})"
+            "-[:IN_PROFILE]->(:Profile {profile_id: 'profile-durable-b'}) "
+            "RETURN count(*) AS count",
+        )
+        == 1
+    )
+
+
 def test_no_activatable_promotion_supersedes_and_detaches_obsolete_member(
     neo4j_driver: Driver,
 ) -> None:
