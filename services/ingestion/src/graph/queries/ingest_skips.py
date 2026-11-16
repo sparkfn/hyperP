@@ -56,6 +56,7 @@ ON CREATE SET
     attempt.created_at = datetime()
 SET attempt.updated_at = datetime()
 MERGE (attempt)-[:ATTEMPT_OF]->(ir)
+WITH ir, attempt
 MATCH (coverage:BitrixBackfillCoverage {
     control_instance_id: $control_instance_id,
     generation_id: $generation_id,
