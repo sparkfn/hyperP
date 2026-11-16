@@ -284,6 +284,57 @@ def _counter_counts(test_graph: _TestGraph) -> dict[str, int]:
     }
 
 
+def _tag_recompute_audit_events(
+    test_graph: _TestGraph,
+    person_ids: Sequence[str],
+) -> None:
+    """Tag golden-recompute audit MergeEvents anchored to this run's Persons.
+
+    ``recompute_golden_profile_tx`` creates ``MergeEvent`` nodes through
+    ``CREATE_RECOMPUTE_AUDIT`` (``CREATE (me)-[:SURVIVOR]->(p)``); they carry no
+    run tag of their own, so anchor them through their survivor Person.
+    """
+    with test_graph.driver.session() as session:
+        session.run(
+            f"""
+            MATCH (event:MergeEvent)-[:SURVIVOR]->(person:Person)
+            WHERE person.person_id IN $person_ids
+            SET event.{_RUN_PROPERTY} = $run_id
+            """,
+            person_ids=list(person_ids),
+            run_id=test_graph.run_id,
+        ).consume()
+
+
+def _tag_review_activation_side_effects(
+    test_graph: _TestGraph,
+    *,
+    source_record_id: str,
+    person_ids: Sequence[str],
+) -> None:
+    """Tag untagged nodes review activation creates for this run.
+
+    ``ACTIVATE_PENDING_REVIEW_RECORD`` MERGEs a ``SourceRecordIdentityLock`` for
+    the pending record's source identity; it has no relationships to anchor
+    through, so it is matched by that identity. Golden recomputation then adds
+    ``MergeEvent`` audit nodes, anchored through their survivor Person.
+    """
+    with test_graph.driver.session() as session:
+        session.run(
+            f"""
+            MATCH (lock:SourceRecordIdentityLock {{
+              source_system: 'bitrix_chat',
+              source_instance_id: 'legacy-default',
+              source_record_id: $source_record_id
+            }})
+            SET lock.{_RUN_PROPERTY} = $run_id
+            """,
+            source_record_id=source_record_id,
+            run_id=test_graph.run_id,
+        ).consume()
+    _tag_recompute_audit_events(test_graph, person_ids)
+
+
 def _counter_properties(test_graph: _TestGraph) -> dict[str, object]:
     with test_graph.driver.session() as session:
         row = session.run(
@@ -1038,6 +1089,11 @@ async def test_review_activation_moves_has_evidence_between_owners(
         )
 
     assert outcome is not None
+    _tag_review_activation_side_effects(
+        neo4j_graph,
+        source_record_id=f"review-record-{neo4j_graph.run_id}",
+        person_ids=[old_person_id, new_person_id],
+    )
     with neo4j_graph.driver.session() as session:
         old_values = {
             record["normalized_value"]
@@ -1148,6 +1204,8 @@ async def test_golden_identifier_evidence_prefers_has_and_keeps_legacy_fallback(
             completeness = await session.execute_write(
                 lambda tx: recompute_golden_profile_tx(tx, person_id, False)
             )
+
+    _tag_recompute_audit_events(neo4j_graph, [person_id])
 
     with neo4j_graph.driver.session() as session:
         golden = session.run(
