@@ -6,7 +6,7 @@ from collections.abc import Iterator
 from contextlib import ExitStack
 from datetime import UTC, datetime
 from typing import cast
-from unittest.mock import DEFAULT, MagicMock, patch
+from unittest.mock import MagicMock, patch
 
 from _txmock import summary_counter_result
 from neo4j import ManagedTransaction
@@ -37,6 +37,8 @@ from src.pipeline_crm_identity import (
     resolve_canonical_crm_contact,
 )
 from src.pipeline_normalization import normalize_envelope_identifiers
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID
+from tests._staging_tx import tx_without_parked_row
 
 
 class _Rows:
@@ -650,11 +652,7 @@ def test_blocked_canonical_owner_persists_durable_pending_review() -> None:
             "blocked_canonical_crm_contact_candidate_ids": ["person-a"],
         },
     )
-    tx_mock = MagicMock()
-    tx_mock.run.side_effect = (
-        lambda query, *_args, **_kwargs: summary_counter_result(query) or DEFAULT
-    )
-    tx = cast(ManagedTransaction, tx_mock)
+    tx = tx_without_parked_row()
 
     with ExitStack() as stack:
         stack.enter_context(patch("src.pipeline.find_candidates", return_value=[]))
@@ -664,6 +662,9 @@ def test_blocked_canonical_owner_persists_durable_pending_review() -> None:
         upsert = stack.enter_context(patch("src.pipeline.upsert_nodes"))
         persist = stack.enter_context(
             patch("src.pipeline.persist_source_record", return_value="deal-sr")
+        )
+        settle = stack.enter_context(
+            patch("src.pipeline.settle_staged_source_record", return_value="deal-sr")
         )
         persist_decision = stack.enter_context(
             patch("src.pipeline.persist_match_decision", return_value="decision-1")
@@ -675,7 +676,7 @@ def test_blocked_canonical_owner_persists_durable_pending_review() -> None:
 
         result = pipeline._execute_ingest(tx, envelope, _contact_identifier(), [], [])
 
-    assert result.dropped is False
+    assert result.parked is False
     assert result.source_record_pk == "deal-sr"
     assert result.match_decision_id == "decision-1"
     assert result.review_case_id == "review-1"
@@ -683,7 +684,16 @@ def test_blocked_canonical_owner_persists_durable_pending_review() -> None:
     assert result.candidate_count == 0
     upsert.assert_not_called()
     link.assert_not_called()
-    assert persist.call_args.kwargs["lifecycle_status"].value == "pending_review"
+    assert persist.call_args.kwargs["lifecycle_status"].value == "parked"
+    assert persist.call_args.kwargs["link_status"] == "unlinked"
+    settle.assert_called_once_with(
+        tx,
+        "deal-sr",
+        link_status="blocked",
+        expected_active_source_record_pk=None,
+        ingest_run_id=None,
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    )
     persist_decision.assert_called_once_with(tx, quarantine, "deal-sr")
     create_review.assert_called_once_with(
         tx,
@@ -723,17 +733,16 @@ def test_crm_multi_merge_persists_provisional_link_without_identity_evidence() -
             quality_flag=QualityFlag.VALID,
         ),
     ]
-    tx_mock = MagicMock()
-    tx_mock.run.side_effect = (
-        lambda query, *_args, **_kwargs: summary_counter_result(query) or DEFAULT
-    )
-    tx = cast(ManagedTransaction, tx_mock)
+    tx = tx_without_parked_row()
 
     with ExitStack() as stack:
         find = stack.enter_context(patch("src.pipeline.find_candidates", return_value=[]))
         upsert = stack.enter_context(patch("src.pipeline.upsert_nodes"))
         persist = stack.enter_context(
             patch("src.pipeline.persist_source_record", return_value="deal-sr")
+        )
+        settle = stack.enter_context(
+            patch("src.pipeline.settle_staged_source_record", return_value="deal-sr")
         )
         stack.enter_context(patch("src.pipeline.persist_match_decision", return_value="decision-1"))
         stack.enter_context(
@@ -754,6 +763,14 @@ def test_crm_multi_merge_persists_provisional_link_without_identity_evidence() -
     find.assert_called_once()
     assert upsert.call_args.args[1] == [identifiers[0]]
     assert persist.call_args.kwargs["identifiers"] == [identifiers[0]]
+    settle.assert_called_once_with(
+        tx,
+        "deal-sr",
+        link_status="pending_review",
+        expected_active_source_record_pk=None,
+        ingest_run_id=None,
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    )
     assert len(link.call_args_list) == 1
     assert link.call_args.kwargs["person_id"] == "person-a"
     assert link.call_args.kwargs["identifiers"] == [identifiers[0]]

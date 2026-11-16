@@ -6,6 +6,7 @@ from datetime import UTC, datetime
 from unittest.mock import MagicMock, patch
 
 import pytest
+from src.graph.queries.ingest_skips import RECONCILE_INGEST_RUN_ACCOUNTING
 from src.incremental_connector import IncrementalPage
 from src.watermark_store import IngestionWatermark
 
@@ -71,8 +72,9 @@ class ErrorConnector(FakeConnector):
 class FakeNeo4jTx:
     """Stub for ManagedTransaction."""
 
-    def __init__(self, run_result: object = None) -> None:
+    def __init__(self, run_result: object = None, *, reconciled: bool = True) -> None:
         self._run_result = run_result
+        self._reconciled = reconciled
         self.calls: list[tuple[str, dict[str, object]]] = []
 
     def run(self, query: str, **kwargs: object) -> FakeNeo4jTx:
@@ -80,16 +82,38 @@ class FakeNeo4jTx:
         return self
 
     def single(self) -> dict[str, object] | None:
-        return {"ingest_run_id": "run-001", "status": "started", "created": True}
+        if self.calls and self.calls[-1][0] == RECONCILE_INGEST_RUN_ACCOUNTING:
+            return {
+                "emitted_count": 0,
+                "persisted_count": 0,
+                "duplicate_count": 0,
+                "pipeline_skip_count": 0,
+                "connector_skip_count": 0,
+                "record_error_count": 0,
+                "stored_skips": 0,
+                "expected_skips": 0,
+                "reconciled": self._reconciled,
+            }
+        return {
+            "ingest_run_id": "run-001",
+            "status": "started",
+            "created": True,
+        }
 
 
 class FakeNeo4jSession:
     """Stub for Neo4j Session."""
 
-    def __init__(self) -> None:
-        self.tx = FakeNeo4jTx()
+    def __init__(self, tx: FakeNeo4jTx | None = None) -> None:
+        self.tx = tx if tx is not None else FakeNeo4jTx()
 
     def execute_write(self, fn: object) -> object:
+        from collections.abc import Callable
+
+        assert isinstance(fn, Callable)
+        return fn(self.tx)
+
+    def execute_read(self, fn: object) -> object:
         from collections.abc import Callable
 
         assert isinstance(fn, Callable)
@@ -105,8 +129,8 @@ class FakeNeo4jSession:
 class FakeNeo4jClient:
     """Stub for Neo4jClient."""
 
-    def __init__(self) -> None:
-        self._session = FakeNeo4jSession()
+    def __init__(self, tx: FakeNeo4jTx | None = None) -> None:
+        self._session = FakeNeo4jSession(tx)
 
     def session(self) -> FakeNeo4jSession:
         return self._session
@@ -360,3 +384,42 @@ def test_max_updated_at_tracks_across_pages(
 
     wm = load_watermark(redis, "test_source")
     assert wm.updated_at == _TS3
+
+
+@patch("src.watermark_runner._load_exclusion_context")
+@patch("src.watermark_runner.IngestPipeline")
+@patch("src.watermark_runner._process_page_records", return_value=(1, 0))
+def test_failed_reconciliation_fails_the_run_without_advancing_the_watermark(
+    mock_process: MagicMock,
+    mock_pipeline: MagicMock,
+    mock_exclusion: MagicMock,
+) -> None:
+    from src.graph import queries
+    from src.watermark_runner import run_incremental
+    from src.watermark_store import load_watermark
+
+    redis = FakeRedis()
+    tx = FakeNeo4jTx(reconciled=False)
+    client = FakeNeo4jClient(tx)
+
+    pages = [_make_page(1, _TS1, has_more=False)]
+    connector = FakeConnector(pages)
+
+    with pytest.raises(RuntimeError, match="Skip ledger reconciliation failed for run run-001"):
+        run_incremental(
+            connector,
+            redis,  # type: ignore[arg-type]
+            client,  # type: ignore[arg-type]
+            shutdown_signal=lambda: False,
+            time_window_closing=lambda: False,
+        )
+
+    # The watermark only advances after a successful reconciliation.
+    wm = load_watermark(redis, "test_source")
+    assert wm.updated_at is None
+    assert connector.closed
+
+    updates = [kwargs for query, kwargs in tx.calls if query == queries.UPDATE_INGEST_RUN]
+    assert updates
+    assert updates[-1]["status"] == "failed"
+    assert updates[-1]["watermark_end"] is None

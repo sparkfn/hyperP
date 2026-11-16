@@ -59,7 +59,11 @@ from src.graph import queries
 from src.graph.bitrix_backfill import BitrixBackfillRepository
 from src.graph.bitrix_source_instances import BitrixSourceInstanceRepository
 from src.graph.client import Neo4jClient
-from src.graph.ingestion_control import BitrixStreamControl, LogicalRunControl
+from src.graph.ingestion_control import (
+    BitrixStreamControl,
+    LogicalRunControl,
+    assert_active_bitrix_fence,
+)
 from src.graph.ingestion_control_models import LogicalRunState
 from src.graph.migrations import (
     reconcile_projection_relationship_lifecycle,
@@ -72,6 +76,7 @@ from src.graph.person_list_summary import (
     person_list_summary_month_rolled_over,
     reconcile_person_list_summary,
 )
+from src.graph.queries.ingest_skips import RECONCILE_INGEST_RUN_ACCOUNTING
 from src.ingestion_config import get_ingestion_config
 from src.knows_materialization_queue import (
     KnowsMaterializationTask,
@@ -369,6 +374,29 @@ def _terminal_checkpoint_counts(state: LogicalRunState) -> tuple[int, int, int, 
         state.retry_count,
         record_count,
     )
+
+
+def _reconcile_split_run_accounting(
+    client: Neo4jClient,
+    *,
+    context: FenceContext,
+    ingest_run_id: str,
+    control_instance_id: str,
+) -> bool:
+    """Recompute one run's durable accounting totals under the active stream fence."""
+
+    def _work(tx: ManagedTransaction) -> bool:
+        # The reconciliation writes the run's durable totals, so a stale attempt must
+        # not be able to mark its own run reconciled.
+        assert_active_bitrix_fence(tx, context)
+        record = tx.run(
+            RECONCILE_INGEST_RUN_ACCOUNTING,
+            ingest_run_id=ingest_run_id,
+            control_instance_id=control_instance_id,
+        ).single()
+        return record is not None and bool(record["reconciled"])
+
+    return client.execute_write(_work)
 
 
 def _logical_control_for_control(
@@ -698,6 +726,15 @@ def _run_split_bitrix_ingestion(
                 and time.monotonic() - started_at > max_runtime_seconds
             ):
                 raise RuntimeError("split Bitrix runtime ceiling was exceeded")
+            if membership is not None and not _reconcile_split_run_accounting(
+                client,
+                context=admission.fence_context,
+                ingest_run_id=admission.fence_context.ingest_run_id,
+                control_instance_id=control_instance_id,
+            ):
+                raise RuntimeError(
+                    "split Bitrix ledger reconciliation failed after the known-owner refresh"
+                )
         except Exception as exc:
             logical.fail_fenced(
                 context=admission.fence_context,

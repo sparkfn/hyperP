@@ -65,6 +65,8 @@ def test_source_record_lifecycle_status_values_are_closed() -> None:
         "superseded",
         "rejected",
         "link_failed",
+        # Persisted but not linked to any Person; invisible to version planning and to readers.
+        "parked",
     ]
 
 

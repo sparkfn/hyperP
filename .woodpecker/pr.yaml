@@ -64,9 +64,9 @@ steps:
       - uv run --package profile-unifier-api mypy --strict services/api/src
       - uv run --package profile-unifier-ingestion mypy --strict services/ingestion/src $(python scripts/ci_selection_manifest.py tool-excludes --tool mypy)
       - mkdir -p .ci-manifests
-      - uv run --package profile-unifier-api pytest services/api/tests --collect-only -q > .ci-manifests/api-default-nodes.txt
+      - uv run --package profile-unifier-api pytest services/api/tests --collect-only -q > .ci-manifests/api-default-nodes.txt || { rc=$?; grep -vE '^services/.*::' .ci-manifests/api-default-nodes.txt; exit $rc; }
       - python scripts/ci_selection_manifest.py verify-nodes --service api --path .ci-manifests/api-default-nodes.txt
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests --collect-only -q > .ci-manifests/ingestion-default-nodes.txt
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests --collect-only -q > .ci-manifests/ingestion-default-nodes.txt || { rc=$?; grep -vE '^services/.*::' .ci-manifests/ingestion-default-nodes.txt; exit $rc; }
       - python scripts/ci_selection_manifest.py verify-nodes --service ingestion --path .ci-manifests/ingestion-default-nodes.txt
       - uv run --package profile-unifier-api pytest services/api/tests
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests --durations=25 --durations-min=1.0
@@ -159,7 +159,7 @@ steps:
       - uv run --package profile-unifier-ingestion python scripts/wait_for_neo4j.py --uri-env HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_URI --user-env HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_USER --password-env HYPERP_NEO4J_PERSON_COMPLETENESS_TEST_PASSWORD --timeout-seconds 90
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_identifier_scope_schema_neo4j.py -q
       - uv run --package profile-unifier-api pytest services/api/tests/test_person_identifiers_neo4j.py services/api/tests/test_person_crm_metrics_neo4j.py services/api/tests/test_persons_list_neo4j_234.py services/api/tests/test_persons_list_possible_match_neo4j.py services/api/tests/test_persons_list_plan_neo4j.py services/api/tests/test_identity_link_revisions_neo4j.py services/api/tests/test_person_graph_neo4j.py services/api/tests/test_person_list_summary_neo4j.py -q
-      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_person_completeness_migration_neo4j.py services/ingestion/tests/test_loyalty_points_migration_neo4j.py services/ingestion/tests/test_crm_deal_count_migration_neo4j.py services/ingestion/tests/test_ingestion_control_instance_migration_neo4j.py services/ingestion/tests/test_identifier_scope_migrations_neo4j.py services/ingestion/tests/test_identity_link_revision_baseline_neo4j.py services/ingestion/tests/test_standalone_crm_census_neo4j.py services/ingestion/tests/test_standalone_crm_lane_a_schema_neo4j.py services/ingestion/tests/test_standalone_crm_source_child_integration_neo4j.py services/ingestion/tests/test_crm_company_membership_neo4j.py -q
+      - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_person_completeness_migration_neo4j.py services/ingestion/tests/test_loyalty_points_migration_neo4j.py services/ingestion/tests/test_crm_deal_count_migration_neo4j.py services/ingestion/tests/test_ingestion_control_instance_migration_neo4j.py services/ingestion/tests/test_identifier_scope_migrations_neo4j.py services/ingestion/tests/test_identity_link_revision_baseline_neo4j.py services/ingestion/tests/test_standalone_crm_census_neo4j.py services/ingestion/tests/test_standalone_crm_lane_a_schema_neo4j.py services/ingestion/tests/test_standalone_crm_source_child_integration_neo4j.py services/ingestion/tests/test_crm_company_membership_neo4j.py services/ingestion/tests/test_identity_foundation_neo4j.py services/ingestion/tests/test_persist_first_neo4j.py -q
       - uv run --package profile-unifier-ingestion pytest services/ingestion/tests/test_person_list_summary_neo4j.py -q -s
       - python scripts/ci_selection_manifest.py query-manifest --workflow .woodpecker/pr.yaml
 

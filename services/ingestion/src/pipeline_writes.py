@@ -22,6 +22,7 @@ from src.identifier_scopes import (
     identifier_scope,
     source_instance_for_identifier,
 )
+from src.identity_assertions import write_assertions
 from src.identity_link_revisions import identity_link_key
 from src.models import (
     CandidateResult,
@@ -45,6 +46,7 @@ from src.models import (
 from src.normalizers.nric import encrypt_nric
 from src.pipeline_normalization import fanout_cap_for, is_usable
 from src.raw_payload import scrub_nric_strings, serialize_raw_payload
+from src.record_lifecycle import SourceLifecycleConflict
 from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID, effective_source_instance_id
 from src.source_version_keys import encode_source_version_key
 
@@ -203,12 +205,6 @@ def upsert_nodes(
 ) -> None:
     """Step 3: ensure Identifier and Address nodes exist."""
     settings = get_settings()
-    # rebase(#490): populate NRIC metadata on assertion identifier rows. In #500,
-    # ``identity_assertions.write_assertions`` runs ``UPSERT_IDENTIFIERS_BATCH`` inside
-    # ``persist_source_record`` before ``upsert_nodes``; parked records that never reach
-    # ``upsert_nodes`` will otherwise create NRIC Identifier nodes with null metadata
-    # until ``_identifier_row`` populates ``hashed_value``, ``nric_masked``,
-    # ``checksum_valid``, ``nric_key_version``, and ``nric_encrypted``.
     identifier_rows: list[dict[str, object]] = []
     for ident in identifiers:
         row: dict[str, object] = {
@@ -283,7 +279,8 @@ def find_candidates(
         )
         # Transition candidate generation: find legacy plaintext holders using plaintext carrier.
         # Removed after L2 rehash backfill.
-        # rebase(#490): same carrier dependency as matching.deterministic._check_government_id;
+        # Note (A3 follow-up): same carrier dependency as
+        # matching.deterministic._check_government_id;
         # the A3 follow-up must restore carrier-equivalence for rows rebuilt without
         # ``nric_plaintext`` so they still reach legacy-plaintext candidates.
         if ident.identifier_type == "nric" and ident.nric_plaintext:
@@ -415,6 +412,46 @@ def retire_address_projection(tx: ManagedTransaction, source_record_pk: str) -> 
 # --- Step 7: persist source record + match decision + review case ---------
 
 
+def link_status_for(match_result: MatchResult, is_new_person: bool) -> str:
+    """Return 'linked' for merge decisions or new persons, else 'pending_review'."""
+    return (
+        "linked"
+        if match_result.decision == MatchDecision.MERGE or is_new_person
+        else "pending_review"
+    )
+
+
+def settle_staged_source_record(
+    tx: ManagedTransaction,
+    source_record_pk: str,
+    *,
+    link_status: str,
+    expected_active_source_record_pk: str | None,
+    ingest_run_id: str | None,
+    control_instance_id: str,
+) -> str:
+    """Transition a staged parked SourceRecord to pending_review before linking.
+
+    A parked row reused from an earlier run is also attached to this run (idempotent), so run
+    lineage matches a record created by this run. Raises SourceLifecycleConflict if the record
+    is not found or not in parked state.
+    """
+    result = tx.run(
+        queries.PROMOTE_STAGED_SOURCE_RECORD,
+        source_record_pk=source_record_pk,
+        link_status=link_status,
+        expected_active_source_record_pk=expected_active_source_record_pk,
+        ingest_run_id=ingest_run_id,
+        control_instance_id=control_instance_id,
+    )
+    record = result.single()
+    if record is None:
+        raise SourceLifecycleConflict(
+            f"staged source record {source_record_pk} is not in parked state or does not exist"
+        )
+    return str(record["source_record_pk"])
+
+
 def persist_source_record(
     tx: ManagedTransaction,
     *,
@@ -422,16 +459,24 @@ def persist_source_record(
     identifiers: list[NormalizedIdentifier],
     addresses: list[NormalizedAddressModel],
     attributes: list[NormalizedAttribute],
-    match_result: MatchResult,
-    is_new_person: bool,
+    match_result: MatchResult | None = None,
+    is_new_person: bool = False,
     ingest_run_id: str | None,
     lifecycle_status: SourceRecordLifecycleStatus,
     expected_active_source_record_pk: str | None,
     activation_blueprint: dict[str, JsonValue] | None = None,
     link_status: str | None = None,
     control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    attribution_status: str | None = None,
+    reeval_pending: bool | None = None,
+    shadow_assertions: bool | None = None,
 ) -> str:
-    """Step 7 + 7b: persist SourceRecord and link to IngestRun."""
+    """Step 7 + 7b: persist SourceRecord and link to IngestRun.
+
+    ``attribution_status``/``reeval_pending`` are only written when supplied, so
+    legacy linked rows keep their exact property set. ``shadow_assertions``
+    additionally writes the v2 shadow identity assertions for this record.
+    """
     normalized = build_normalized_source_payload(
         envelope=envelope,
         identifiers=identifiers,
@@ -442,9 +487,9 @@ def persist_source_record(
     resolved_link_status = (
         link_status
         if link_status is not None
-        else "linked"
-        if match_result.decision == MatchDecision.MERGE or is_new_person
-        else "pending_review"
+        else link_status_for(match_result, is_new_person)
+        if match_result is not None
+        else "unlinked"
     )
     conv_ref = (
         json.dumps(envelope.conversation_ref, default=str)
@@ -522,6 +567,20 @@ def persist_source_record(
             ingest_run_id=ingest_run_id,
             control_instance_id=control_instance_id,
         )
+    if attribution_status is not None or reeval_pending is not None:
+        tx.run(
+            queries.SET_SOURCE_RECORD_ATTRIBUTION,
+            source_record_pk=pk,
+            attribution_status=attribution_status,
+            reeval_pending=reeval_pending,
+        )
+    should_assert = (
+        get_settings().identity_model == "v2_shadow"
+        if shadow_assertions is None
+        else shadow_assertions
+    )
+    if should_assert:
+        write_assertions(tx, pk, normalized)
     return pk
 
 

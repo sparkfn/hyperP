@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 from datetime import UTC, datetime
+from types import SimpleNamespace
 from typing import cast
 
 from neo4j import ManagedTransaction
@@ -183,7 +184,10 @@ def _call_envelope() -> SourceRecordEnvelope:
 def test_direct_crm_records_link_to_the_requested_control_instance(
     monkeypatch: MonkeyPatch,
 ) -> None:
-    monkeypatch.setattr("src.pipeline_crm.load_locked_source_state", lambda *_args: None)
+    monkeypatch.setattr(
+        "src.pipeline_crm.load_locked_source_state",
+        lambda *_args: SimpleNamespace(next_version=1),
+    )
     monkeypatch.setattr("src.pipeline_crm._owner_scope_or_retry", lambda *_args: "in_scope")
     monkeypatch.setattr("src.pipeline_crm._record_activity_unit", lambda *_args, **_kwargs: None)
     monkeypatch.setattr(

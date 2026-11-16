@@ -219,7 +219,8 @@ def _check_government_id(
         if i.identifier_type == "nric" and i.quality_flag == QualityFlag.VALID
     ]
     for govt_id in govt_ids:
-        # rebase(#490): legacy-plaintext equivalence depends on the in-memory ``nric_plaintext``
+        # Note (A3 follow-up): legacy-plaintext equivalence depends on the in-memory
+        # ``nric_plaintext``
         # carrier. A digest-only identifier (e.g. one C1 rebuilds from normalized_payload) misses
         # a legacy-plaintext candidate in the valid query, then trips the conflict query below
         # (hard NO_MATCH + durable lock). The A3 follow-up must restore carrier-equivalence

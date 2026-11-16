@@ -12,7 +12,7 @@ from typing import Protocol
 from neo4j import ManagedTransaction
 
 from src.bitrix_backfill_models import KnownOwnerMembershipSet
-from src.bitrix_backfill_runtime import record_terminal_unit
+from src.bitrix_backfill_runtime import record_terminal_unit, refresh_attempt_key
 from src.bitrix_ingestion_models import ExecutionContext, FenceContext
 from src.connectors.bitrix_openlines.connector import _deal_envelope
 from src.connectors.bitrix_openlines.models import CrmDeal
@@ -23,6 +23,8 @@ from src.graph.bitrix_deal_scope import (
     record_scope_batch_in_transaction,
 )
 from src.graph.client import Neo4jClient
+from src.graph.queries.ingest_skips import WRITE_INGEST_SKIPS
+from src.ingest_skips import skip_row
 from src.models import IngestResult, SourceRecordEnvelope
 from src.pipeline import IngestPipeline
 
@@ -245,7 +247,11 @@ def _record_out_of_scope(
             ],
             fence_context=context.fence_context,
         )
-        result = IngestResult(source_record_id=envelope.source_record_id, dropped=True)
+        result = IngestResult(
+            source_record_id=envelope.source_record_id,
+            excluded=True,
+            skip_reason="excluded_out_of_scope",
+        )
         record_terminal_unit(
             tx,
             context=context,
@@ -253,6 +259,23 @@ def _record_out_of_scope(
             result=result,
             disposition="excluded_out_of_scope",
             scope_state="out_of_scope",
+        )
+        # The skip carries the run's shared refresh attempt key so reconciliation counts
+        # the refresh outcome instead of omitting it as an orphan row.
+        tx.run(
+            WRITE_INGEST_SKIPS,
+            rows=[
+                skip_row(
+                    context.fence_context.ingest_run_id,
+                    "pipeline",
+                    envelope.source_system,
+                    "excluded_out_of_scope",
+                    envelope.source_record_id,
+                    "",
+                    attempt_key=refresh_attempt_key(context),
+                )
+            ],
+            control_instance_id=context.fence_context.control_instance_id,
         )
 
     graph.execute_write(_work)

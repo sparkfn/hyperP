@@ -225,7 +225,8 @@ def test_unresolved_owner_quarantines_crm_history_not_raises(
         execution_context=_execution_context(),
     )
 
-    assert result.dropped is True
+    assert result.excluded is True
+    assert result.skip_reason == "owner_scope_unresolved_retry"
     assert result.retry_pending is False
     assert result.source_record_pk is None
 
@@ -247,7 +248,8 @@ def test_unresolved_owner_quarantines_call_not_raises(
         execution_context=_execution_context(),
     )
 
-    assert result.dropped is True
+    assert result.excluded is True
+    assert result.skip_reason == "owner_scope_unresolved_retry"
     assert result.retry_pending is False
     assert result.source_record_pk is None
 
@@ -282,7 +284,8 @@ def test_quarantine_records_coverage_with_correct_disposition(
         execution_context=_execution_context(),
     )
 
-    assert result.dropped is True
+    assert result.excluded is True
+    assert result.skip_reason == "owner_scope_unresolved_retry"
     assert recorded == [("quarantined_owner_unresolved", "indeterminate")]
 
 
@@ -316,7 +319,8 @@ def test_quarantine_records_coverage_for_call_record(
         execution_context=_execution_context(),
     )
 
-    assert result.dropped is True
+    assert result.excluded is True
+    assert result.skip_reason == "owner_scope_unresolved_retry"
     assert recorded == [("quarantined_owner_unresolved", "indeterminate")]
 
 
@@ -348,7 +352,7 @@ def test_record_activity_unit_resolves_retry_as_quarantined(
         cast(ManagedTransaction, _CaptureTx()),
         context,
         envelope,
-        IngestResult(source_record_id="bitrix-call-900", dropped=True),
+        IngestResult(source_record_id="bitrix-call-900", excluded=True),
         disposition="quarantined_owner_unresolved",
         scope_state="indeterminate",
     )
@@ -385,7 +389,7 @@ def test_record_activity_unit_resolves_retry_as_reviewed_excluded_for_out_of_sco
         cast(ManagedTransaction, _CaptureTx()),
         context,
         envelope,
-        IngestResult(source_record_id="bitrix-call-900", dropped=True),
+        IngestResult(source_record_id="bitrix-call-900", excluded=True),
         disposition="excluded_out_of_scope",
         scope_state="out_of_scope",
     )
@@ -468,5 +472,6 @@ def test_no_retry_pending_after_quarantine(monkeypatch: MonkeyPatch) -> None:
     # The key invariant: no retry_pending means the caller loop won't
     # raise UnresolvedActivityOwnerError and the batch continues.
     assert result.retry_pending is False
-    assert result.dropped is True
+    assert result.excluded is True
+    assert result.skip_reason == "owner_scope_unresolved_retry"
     assert result.errors == []

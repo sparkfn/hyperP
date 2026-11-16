@@ -9,12 +9,10 @@ from urllib.parse import urlparse
 from uuid import uuid4
 
 import pytest
+import src.repositories.neo4j.person as person_module
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient, Response
 from neo4j import AsyncDriver, AsyncGraphDatabase, AsyncSession, Driver, GraphDatabase
-from starlette.routing import Mount
-
-import src.repositories.neo4j.person as person_module
 from src.app import build_app
 from src.auth.deps import get_current_user_or_oauth_client, require_active_user
 from src.auth.models import AuthUser
@@ -22,6 +20,7 @@ from src.graph.queries.graph import MAX_HOPS, MIN_HOPS, get_graph_query, get_nod
 from src.repositories.deps import get_person_repo
 from src.repositories.neo4j.person import Neo4jPersonRepository
 from src.types import GraphEdge, PersonGraph
+from starlette.routing import Mount
 
 
 @dataclass(frozen=True)
@@ -124,6 +123,19 @@ def _seed_graph(test_graph: _TestGraph) -> _SeededGraph:
               value: 'non-repairable-control',
               _person_graph_test_run: $run_id
             })
+            CREATE (parked:SourceRecord {
+              source_record_pk: $parked_source_record_pk,
+              source_version_key: $parked_source_version_key,
+              lifecycle_status: 'parked',
+              fixture_role: 'parked_source',
+              _person_graph_test_run: $run_id
+            })
+            CREATE (fact:ProfileFact {
+              attribute_name: 'full_name',
+              attribute_value: $fact_value,
+              fixture_role: 'profile_fact',
+              _person_graph_test_run: $run_id
+            })
             CREATE (root)-[:IDENTIFIED_BY {
               is_active: true,
               fixture_role: 'active_link'
@@ -143,11 +155,34 @@ def _seed_graph(test_graph: _TestGraph) -> _SeededGraph:
               is_active: false,
               fixture_role: 'retired_final_edge'
             }]->(legacy)
+            CREATE (parked)-[:ASSERTS {
+              assertion_id: $parked_assert_id,
+              fixture_role: 'parked_assert_edge'
+            }]->(active)
+            CREATE (parked)-[:ASSERTS {
+              assertion_id: $fact_assert_id,
+              fixture_role: 'fact_assert_edge'
+            }]->(fact)
+            CREATE (control)-[:ASSERTS {
+              assertion_id: $control_fact_assert_id,
+              fixture_role: 'control_fact_assert_edge'
+            }]->(fact)
+            CREATE (control)-[:ASSERTS {
+              assertion_id: $visible_assert_id,
+              fixture_role: 'visible_assert_edge'
+            }]->(active)
             RETURN elementId(active) AS generic_element_id
             """,
             person_id=person_id,
             retired_person_id=f"retired-person-graph-{test_graph.run_id}",
             run_id=test_graph.run_id,
+            parked_source_record_pk=f"parked-sr-{test_graph.run_id}",
+            parked_source_version_key=f"parked-svk-{test_graph.run_id}",
+            fact_value=f"Ada-{test_graph.run_id}",
+            parked_assert_id=f"assert-parked-{test_graph.run_id}",
+            fact_assert_id=f"assert-fact-{test_graph.run_id}",
+            control_fact_assert_id=f"assert-ctrl-fact-{test_graph.run_id}",
+            visible_assert_id=f"assert-visible-{test_graph.run_id}",
         ).single(strict=True)
     return _SeededGraph(
         person_id=person_id,
@@ -257,6 +292,10 @@ def _assert_lifecycle_graph(person_graph: PersonGraph) -> None:
     assert "retired_branch" not in edges_by_role
     assert "retired_final_edge" not in edges_by_role
     assert set(edges_by_role) == {"active_link", "legacy_link", "control_link"}
+    assert "parked_source" not in nodes_by_role
+    assert "profile_fact" not in nodes_by_role
+    assert all(node.label != "ProfileFact" for node in person_graph.nodes)
+    assert all(edge.type != "ASSERTS" for edge in person_graph.edges)
     assert nodes_by_role["root"].label == "Person"
     assert nodes_by_role["active"].label == "Identifier"
     assert nodes_by_role["legacy"].label == "Address"

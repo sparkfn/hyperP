@@ -304,7 +304,9 @@ def test_api_connector_converts_bundles_for_existing_extraction_pipeline(
         bundles: list[_ChatBundle],
         *,
         on_extraction_failure: object | None = None,
+        on_skip: object | None = None,
     ) -> Iterator[dict[str, JsonValue]]:
+        assert callable(on_skip)
         assert on_extraction_failure is not None
         captured.extend(bundles)
         yield {"source_record_id": "record-1"}
@@ -335,7 +337,9 @@ def test_api_connector_records_bad_extraction_and_continues(
         bundles: list[_ChatBundle],
         *,
         on_extraction_failure: object | None = None,
+        on_skip: object | None = None,
     ) -> Iterator[dict[str, JsonValue]]:
+        assert callable(on_skip)
         assert callable(on_extraction_failure)
         on_extraction_failure(bundles[0], ExtractionFailure("malformed_response", 3))
         yield {"source_record_id": "record-after-failure"}
@@ -379,7 +383,9 @@ def test_api_connector_processes_each_page_without_buffering_all_pages(
         bundles: list[_ChatBundle],
         *,
         on_extraction_failure: object | None = None,
+        on_skip: object | None = None,
     ) -> Iterator[dict[str, JsonValue]]:
+        assert callable(on_skip)
         assert on_extraction_failure is not None
         calls.append(len(bundles))
         yield {"source_record_id": f"record-{len(calls)}"}

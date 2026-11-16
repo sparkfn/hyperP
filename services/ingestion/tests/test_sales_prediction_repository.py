@@ -216,6 +216,12 @@ def test_load_evidence_paginates_with_strictly_advancing_cursor() -> None:
     assert page_calls[1][1]["after_event_identity"] == "evt-Z"
 
 
+def test_deal_version_query_excludes_parked_source_records() -> None:
+    assert "coalesce(deal.lifecycle_status, 'active') <> 'parked'" in (
+        SALES_PREDICTION_DEAL_VERSIONS_FOR_PARENTS
+    )
+
+
 def test_load_evidence_rejects_non_scalar_row_value() -> None:
     row = _Record(
         {

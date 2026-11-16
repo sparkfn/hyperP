@@ -11,6 +11,7 @@ from collections.abc import Callable
 
 from src.config import get_settings
 from src.identifier_scopes import source_instance_for_identifier
+from src.identity_registry import identifier_policy
 from src.models import (
     NormalizedAddress as NormalizedAddressModel,
 )
@@ -50,31 +51,12 @@ _ATTRIBUTE_NORMALIZERS: dict[str, NormalizerFn] = {
     "legal_name": normalize_name,
 }
 
-#: Default cardinality cap for any ``social:*`` identifier type without an
-#: explicit entry in :data:`_FANOUT_CAPS`.
-_DEFAULT_SOCIAL_FANOUT_CAP = 25
-
-#: Per-identifier-type cardinality caps used during candidate generation.
-#: Identifiers whose fanout exceeds the cap are skipped (see CLAUDE.md policy).
-_FANOUT_CAPS: dict[str, int] = {
-    "phone": 50,
-    "email": 100,
-    "nric": 5,
-    "device_id": 25,
-    "social:facebook": _DEFAULT_SOCIAL_FANOUT_CAP,
-    "social:google": _DEFAULT_SOCIAL_FANOUT_CAP,
-    "social:apple": _DEFAULT_SOCIAL_FANOUT_CAP,
-}
-
 # Attributes handled outside the normalizer registry.
 _SKIP_ATTRIBUTES = frozenset({"address"})
 
 
 def fanout_cap_for(identifier_type: str) -> int | None:
-    cap = _FANOUT_CAPS.get(identifier_type)
-    if cap is None and identifier_type.startswith("social:"):
-        return _DEFAULT_SOCIAL_FANOUT_CAP
-    return cap
+    return identifier_policy(identifier_type).fanout_cap
 
 
 def is_usable(quality_flag: QualityFlag) -> bool:

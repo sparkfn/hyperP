@@ -31,6 +31,7 @@ from src.graph.queries.crm_deal_identity_repair_ledger import (
 from src.graph.queries.crm_history_authority import CREATE_CRM_HISTORY_AUTHORITY_CONSTRAINTS
 from src.graph.queries.crm_stage_backfill import CREATE_CRM_STAGE_BACKFILL_CONSTRAINTS
 from src.graph.queries.identifier_scope_schema import CREATE_IDENTIFIER_IDENTITY_SCOPE_UNIQUE
+from src.graph.queries.identity_foundation_schema import CREATE_IDENTITY_FOUNDATION_SCHEMA
 from src.graph.queries.identity_link_revisions import CREATE_IDENTITY_LINK_SCHEMA
 from src.graph.queries.maintenance import (
     DROP_PERSON_NAME_SEARCH_FULLTEXT_INDEX,
@@ -84,6 +85,7 @@ ON (sr.source_version_key)""",
     *CREATE_STANDALONE_CRM_LANE_A_CONSTRAINTS,
     *CREATE_IDENTITY_LINK_SCHEMA,
     CREATE_PERSON_LIST_SUMMARY_COUNTER_CONSTRAINT,
+    *CREATE_IDENTITY_FOUNDATION_SCHEMA,
     """CREATE CONSTRAINT ingestion_reset_generation_unique IF NOT EXISTS
 FOR (reset:IngestionResetGeneration)
 REQUIRE (reset.environment, reset.generation) IS UNIQUE""",

@@ -37,6 +37,11 @@ class FundboxMergedUsersConnector(FundboxConnectorBase):
             excluded_user_ids = self._fetch_excluded_user_ids(conn, surviving_ids)
             for row in chunk:
                 if row.new_user_id is not None and row.new_user_id in excluded_user_ids:
+                    self.record_skip(
+                        "internal_user",
+                        source_record_id=f"fundbox-merged-{row.id}",
+                        locator=f"merged_users#id={row.id}",
+                    )
                     continue
                 ids = IdentifierBag()
                 ids.add("nric", row.nric, verified=True)

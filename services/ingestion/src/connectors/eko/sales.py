@@ -41,4 +41,5 @@ class EkoSalesConnector(SourceConnector):
                 source_system_key="eko_phppos",
                 chunk_size=chunk_size,
                 excluded_person_ids=excluded_person_ids,
+                on_skip=self.record_skip,
             )

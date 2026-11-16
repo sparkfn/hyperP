@@ -401,6 +401,20 @@ def test_rust_spike_is_profiled_and_isolated_in_both_compose_files() -> None:
         assert env["PROJECTION_SYNC_INTERVAL_SECONDS"] == "${PROJECTION_SYNC_INTERVAL_SECONDS:-30}"
 
 
+def test_identity_model_flag_is_wired_identically_and_defaults_to_v1() -> None:
+    for compose_path in (_ROOT_COMPOSE, _STAGING_COMPOSE):
+        document = _read_compose(compose_path)
+        environment = document["x-ingestion-env"]
+        assert isinstance(environment, dict)
+        assert environment["IDENTITY_MODEL"] == "${IDENTITY_MODEL:-v1}"
+        services = document["services"]
+        assert isinstance(services, dict)
+        for name in ("ingestion-worker", "lifecycle-worker", "beat"):
+            service = services[name]
+            assert isinstance(service, dict)
+            assert service["environment"] == environment
+
+
 def test_unapproved_staging_mutation_fails_contract() -> None:
     mutated = deepcopy(_read_compose(_STAGING_COMPOSE))
     services = mutated["services"]

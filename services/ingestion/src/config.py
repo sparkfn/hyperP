@@ -14,6 +14,11 @@ from src.connectors.whatsadmin_api.credentials import (
     whatsadmin_entity_keys_are_distinct,
 )
 
+#: Identity-model rollout switch for the ingestion write path (#490).
+#: ``v1`` keeps the legacy writes; ``v2_shadow`` additionally writes shadow
+#: identity assertions and nothing else changes.
+IdentityModel = Literal["v1", "v2_shadow"]
+
 
 class Settings(BaseSettings):
     """Environment-driven configuration for the ingestion service."""
@@ -47,6 +52,11 @@ class Settings(BaseSettings):
     # NRIC hashing / encryption -----------------------------------------------
     nric_hmac_key: str = ""
     nric_hmac_key_version: str = "v1"
+
+    # Identity model rollout --------------------------------------------------
+    # "v1" keeps the legacy write path; "v2_shadow" additionally writes the
+    # shadow identity assertions (no read-path change).
+    identity_model: IdentityModel = "v1"
 
     # Celery / queue ----------------------------------------------------------
     celery_broker_url: str = "redis://redis:6379/0"
