@@ -29,6 +29,7 @@ security:
 tags:
   - name: Ingestion
   - name: Persons
+  - name: Profiles
   - name: Entities
   - name: Review
   - name: Merge
@@ -221,6 +222,89 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+  /v1/profiles:
+    get:
+      tags: [Profiles]
+      summary: List derived unverified profiles
+      operationId: list_profiles
+      description: |
+        Paginated list of derived C3 Profiles: unverified evidence clusters built
+        from immutable identity assertions. A Profile is not a Person and never
+        participates in Person matching or golden-profile selection. `q` is
+        case-insensitive over the profile id, member source-record ids, asserted
+        full-name facts, and non-government identifier values; NRIC values are
+        never searched. When `status` is omitted, every status is returned.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: q
+          in: query
+          description: Free-text search (min 2 chars); NRIC values are never searched.
+          schema:
+            type: string
+            minLength: 2
+        - name: status
+          in: query
+          description: Defaults to `open`; omit it to return every status.
+          schema:
+            type: string
+            enum: [open, promoted, retired]
+            default: open
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        '200':
+          description: Profile page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileListResponseEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/profiles/{profile_id}:
+    get:
+      tags: [Profiles]
+      summary: Get one derived profile
+      operationId: get_profile
+      description: |
+        Read-only detail for one Profile: member source records, derived weighted
+        identifiers (`score` is a provisional C3 placeholder; C4 owns weights),
+        and the promoted Person id when the cluster has been anchored.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: profile_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Profile detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileDetailResponseEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /v1/persons:
     get:
       tags: [Persons]
@@ -3139,7 +3223,7 @@ components:
             Accepted-version lifecycle authority. link_status independently
             describes domain-link progress. Legacy effective-active records are
             normalized to active in API responses during migration.
-          enum: [active, pending_review, superseded, rejected, link_failed]
+          enum: [active, pending_review, superseded, rejected, link_failed, parked]
         extraction_confidence:
           type:
             - number
@@ -3245,7 +3329,7 @@ components:
           enum: [identity, bankruptcy, rental_flat, relationship, conversation, sales, crm_deal, crm_history, call]
         lifecycle_status:
           type: string
-          enum: [active, pending_review, superseded, rejected, link_failed]
+          enum: [active, pending_review, superseded, rejected, link_failed, parked]
         extraction_confidence:
           type: [number, 'null']
           minimum: 0
@@ -4306,6 +4390,108 @@ components:
           type: [array, 'null']
           items:
             $ref: '#/components/schemas/PopoverDisplayItem'
+      required: [data, meta]
+      additionalProperties: false
+    PersonIdentifier:
+      type: object
+      properties:
+        identifier_type:
+          type: string
+        normalized_value:
+          type: string
+        is_active:
+          type: boolean
+        is_verified:
+          type: boolean
+        last_confirmed_at:
+          type: [string, 'null']
+        source_system_key:
+          type: [string, 'null']
+        source_record_pks:
+          type: array
+          items:
+            type: string
+        source_record_ids:
+          type: array
+          items:
+            type: string
+        entities:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        source_records:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceRecord'
+        score:
+          type: [number, 'null']
+          description: >-
+            Provisional C3 placeholder weight. Not confidence; C4 owns the final
+            scoring formula. Null for legacy-only identifier projections.
+        golden_rank:
+          type: [integer, 'null']
+      required: [identifier_type, normalized_value]
+      additionalProperties: false
+    Profile:
+      type: object
+      properties:
+        profile_id:
+          type: string
+        status:
+          type: string
+          enum: [open, promoted, retired, split]
+          description: >-
+            `split` is reserved for future cluster fission and is never written
+            by C3. `retired` marks a duplicate cluster absorbed by a deterministic
+            union.
+        evidence_version:
+          type: integer
+          minimum: 0
+        materialized_at:
+          type: [string, 'null']
+        promoted_person_id:
+          type: [string, 'null']
+        record_count:
+          type: integer
+          minimum: 0
+        identifier_count:
+          type: integer
+          minimum: 0
+      required: [profile_id, status, evidence_version, record_count, identifier_count]
+      additionalProperties: false
+    ProfileDetail:
+      allOf:
+        - $ref: '#/components/schemas/Profile'
+        - type: object
+          properties:
+            source_records:
+              type: array
+              items:
+                $ref: '#/components/schemas/SourceRecord'
+            identifiers:
+              type: array
+              items:
+                $ref: '#/components/schemas/PersonIdentifier'
+          required: [source_records, identifiers]
+    ProfileListResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Profile'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    ProfileDetailResponseEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/ProfileDetail'
+        meta:
+          $ref: '#/components/schemas/Meta'
       required: [data, meta]
       additionalProperties: false
     PersonDetail:

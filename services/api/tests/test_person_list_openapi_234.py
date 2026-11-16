@@ -112,6 +112,18 @@ def test_static_openapi_preserves_the_person_endpoint_matrix() -> None:
         "items"
     ] == {"$ref": "#/components/schemas/Person"}
 
+    profiles_list = schema["paths"]["/v1/profiles"]["get"]
+    profiles_detail = schema["paths"]["/v1/profiles/{profile_id}"]["get"]
+    assert profiles_list["operationId"] == "list_profiles"
+    assert profiles_detail["operationId"] == "get_profile"
+    assert "/oauth2/v1/profiles" not in schema["paths"]
+    profile_identifier = schema["components"]["schemas"]["PersonIdentifier"]["properties"]
+    assert "score" in profile_identifier
+    assert "golden_rank" in profile_identifier
+    for schema_name in ("SourceRecord", "SourceRecordView"):
+        lifecycle = schema["components"]["schemas"][schema_name]["properties"]["lifecycle_status"]
+        assert "parked" in lifecycle["enum"]
+
 
 def test_static_openapi_documents_machine_exact_identifier_search() -> None:
     schema = yaml.safe_load(_STATIC_OPENAPI.read_text(encoding="utf-8"))
