@@ -174,6 +174,7 @@ def _seed_parked_record(
     source_record_id: str | None = None,
     source_record_version: int = 1,
     normalized_payload: str | None = None,
+    record_hash: str | None = None,
 ) -> None:
     with driver.session() as session:
         session.run(
@@ -182,6 +183,7 @@ def _seed_parked_record(
             "source_record_id: $source_record_id, "
             "source_instance_id: 'legacy-default', "
             "source_record_version: $source_record_version, "
+            "record_hash: $record_hash, "
             "lifecycle_status: 'parked', link_status: 'unlinked', "
             "attribution_status: 'parked', reeval_pending: true, "
             "observed_at: datetime($observed_at), "
@@ -189,6 +191,7 @@ def _seed_parked_record(
             source_record_pk=source_record_pk,
             source_record_id=source_record_id or source_record_pk,
             source_record_version=source_record_version,
+            record_hash=record_hash,
             normalized_payload=normalized_payload,
             observed_at=observed_at,
         ).consume()
@@ -216,6 +219,17 @@ def _seed_assertion(
             assertion_id=assertion_id,
             quality_flag=quality_flag,
             is_verified=is_verified,
+        ).consume()
+
+
+def _seed_address(driver: Driver) -> None:
+    """Seed the Address node a promoted member's payload resolves onto."""
+    with driver.session() as session:
+        session.run(
+            "MERGE (address:Address {country_code: 'SG', postal_code: '018989', "
+            "street_name: 'Marina Boulevard', street_number: '10', unit_number: '12-34'}) "
+            "ON CREATE SET address.address_id = randomUUID(), "
+            "address.normalized_full = '10 Marina Boulevard 12-34'"
         ).consume()
 
 
@@ -1124,6 +1138,7 @@ def test_promotion_discovers_profile_through_shared_non_nric_key(neo4j_driver: D
     _seed_source_system(neo4j_driver)
     _seed_identifier(neo4j_driver, "ident-nric", "nric", _NRIC_DIGEST)
     _seed_identifier(neo4j_driver, "ident-phone", "phone", _PHONE)
+    _seed_address(neo4j_driver)
     payload = json.dumps(
         {
             "identifiers": [],
@@ -1564,6 +1579,7 @@ def test_promotion_activates_only_the_newest_version_of_an_identity(
         "2026-01-01T00:00:00Z",
         source_record_id="dup-ident",
         source_record_version=1,
+        record_hash="sha256:v1",
     )
     _seed_parked_record(
         neo4j_driver,
@@ -1571,6 +1587,7 @@ def test_promotion_activates_only_the_newest_version_of_an_identity(
         "2026-02-01T00:00:00Z",
         source_record_id="dup-ident",
         source_record_version=2,
+        record_hash="sha256:v2",
     )
     for source_record_pk in ("sr-v1", "sr-v2"):
         _seed_assertion(neo4j_driver, source_record_pk, "ident-phone", f"assert-{source_record_pk}")

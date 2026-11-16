@@ -168,7 +168,9 @@ def test_pair_at_040_auto_merges_instead_of_opening_review(
         match_decision_id: str,
         reason: str,
         collector: object,
+        v2_evidence: bool = False,
     ) -> str:
+        assert v2_evidence is False
         merges.append((absorbed_id, survivor_id))
         return "me-1"
 
