@@ -1,0 +1,187 @@
+"""Derived C3 identity-link helpers over immutable C1 ``ASSERTS`` evidence.
+
+Foundation only: deterministic link IDs, assertion-evidence aggregation, the
+Profile materialization threshold, and canonical Identifier lock ordering.
+There is no scoring formula and no Cypher here; writers live in the pipeline
+layer.
+"""
+
+from __future__ import annotations
+
+import hashlib
+from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
+from typing import TypedDict
+
+from src.golden_profile_active_authority import _TRUST_TIER_RANK
+from src.identity_registry import identifier_policy
+from src.models import QualityFlag
+from src.pipeline_normalization import is_usable
+
+#: Provisional C3 values. Placeholders until C4 computes weights; they must
+#: never feed matching or golden-profile selection.
+PROVISIONAL_SCORE = 0.0
+PROVISIONAL_EXCLUSIVITY = 0.0
+PROVISIONAL_RANK_SCORE = 0.0
+PROVISIONAL_POLICY_VERSION = "c3-provisional"
+LINK_BASIS = "ASSERTS"
+LINK_STATUS_ACTIVE = "active"
+LOWEST_TRUST_TIER = "tier_4"
+MATERIALIZATION_MIN_SHARED_RECORDS = 2
+MATERIALIZATION_MIN_INDEPENDENT_KEYS = 2
+
+
+class IdentifierKey(TypedDict):
+    """One Identifier node identity, used for locking and link targeting."""
+
+    identifier_type: str
+    identifier_scope: str
+    normalized_value: str
+
+
+class AssertionEvidence(TypedDict):
+    """One SourceRecord ``ASSERTS`` row feeding a link computation.
+
+    ``quality_flag`` and ``is_verified`` are ``None`` when an older shadow
+    assertion predates that metadata; :func:`aggregate_link` and
+    :func:`materializes` apply the documented fallback rules for those rows.
+    ``observed_at`` is the evidenced SourceRecord's ISO-8601 observation time.
+    """
+
+    source_record_pk: str
+    identifier_type: str
+    identifier_scope: str
+    normalized_value: str
+    quality_flag: str | None
+    is_verified: bool | None
+    trust_tier: str | None
+    observed_at: str | None
+
+
+@dataclass(frozen=True)
+class LinkAggregate:
+    """Derived ``HAS_IDENTIFIER`` values for one participant/Identifier pair."""
+
+    assertion_count: int
+    source_count: int
+    verified_count: int
+    max_tier: str
+    first_seen_at: str | None
+    last_seen_at: str | None
+    last_confirmed_at: str | None
+    score: float = PROVISIONAL_SCORE
+    exclusivity: float = PROVISIONAL_EXCLUSIVITY
+    rank_score: float = PROVISIONAL_RANK_SCORE
+    golden_rank: int | None = None
+    basis: str = LINK_BASIS
+    status: str = LINK_STATUS_ACTIVE
+    policy_version: str = PROVISIONAL_POLICY_VERSION
+
+
+def link_id(participant_id: str, identifier_id: str) -> str:
+    """Return the deterministic ``HAS_IDENTIFIER`` identity for a pair."""
+    identity = f"{participant_id}|{identifier_id}"
+    return hashlib.sha1(identity.encode("utf-8")).hexdigest()
+
+
+def aggregate_link(evidence: Sequence[AssertionEvidence]) -> LinkAggregate:
+    """Aggregate the assertion evidence of one participant/Identifier pair.
+
+    Observation boundaries are taken from the evidenced SourceRecords. An
+    assertion missing ``quality_flag`` or ``is_verified`` contributes nothing to
+    ``verified_count`` and only the lowest trust tier; ``last_confirmed_at`` is
+    the most recent observation that still evidences the link.
+    """
+    observations = sorted(row["observed_at"] for row in evidence if row["observed_at"])
+    first_seen_at = observations[0] if observations else None
+    last_seen_at = observations[-1] if observations else None
+    return LinkAggregate(
+        assertion_count=len(evidence),
+        source_count=len({row["source_record_pk"] for row in evidence}),
+        verified_count=sum(
+            1 for row in evidence if _has_complete_metadata(row) and row["is_verified"] is True
+        ),
+        max_tier=max(
+            (_evidence_tier(row) for row in evidence),
+            default=LOWEST_TRUST_TIER,
+            key=_tier_rank,
+        ),
+        first_seen_at=first_seen_at,
+        last_seen_at=last_seen_at,
+        last_confirmed_at=last_seen_at,
+    )
+
+
+def materializes(evidence: Sequence[AssertionEvidence]) -> bool:
+    """Return whether the evidence crosses the C3 Profile materialization threshold.
+
+    A cluster materializes when two attributed records share an eligible key, or
+    when one record asserts two independent eligible high-entropy keys. Eligible
+    keys are usable, ``candidate_eligible`` Identifier nodes with complete
+    assertion metadata; an older assertion missing ``quality_flag`` or
+    ``is_verified`` never counts as one.
+    """
+    records_by_key: dict[tuple[str, str, str], set[str]] = {}
+    keys_by_record: dict[str, set[tuple[str, str, str]]] = {}
+    for row in evidence:
+        if not _is_independent_key(row):
+            continue
+        key = (row["identifier_type"], row["identifier_scope"], row["normalized_value"])
+        records_by_key.setdefault(key, set()).add(row["source_record_pk"])
+        keys_by_record.setdefault(row["source_record_pk"], set()).add(key)
+    if any(
+        len(records) >= MATERIALIZATION_MIN_SHARED_RECORDS for records in records_by_key.values()
+    ):
+        return True
+    return any(
+        len(keys) >= MATERIALIZATION_MIN_INDEPENDENT_KEYS for keys in keys_by_record.values()
+    )
+
+
+def sorted_lock_rows(keys: Iterable[IdentifierKey]) -> list[IdentifierKey]:
+    """Return Identifier keys in the canonical lock acquisition order."""
+    return sorted(
+        keys,
+        key=lambda key: (
+            key["identifier_type"],
+            key["identifier_scope"],
+            key["normalized_value"],
+        ),
+    )
+
+
+def _has_complete_metadata(row: AssertionEvidence) -> bool:
+    return row["quality_flag"] is not None and row["is_verified"] is not None
+
+
+def _quality(row: AssertionEvidence) -> QualityFlag | None:
+    value = row["quality_flag"]
+    if value is None:
+        return None
+    try:
+        return QualityFlag(value)
+    except ValueError:
+        return None
+
+
+def _tier_rank(tier: str) -> int:
+    return _TRUST_TIER_RANK.get(tier, 0)
+
+
+def _evidence_tier(row: AssertionEvidence) -> str:
+    if not _has_complete_metadata(row):
+        return LOWEST_TRUST_TIER
+    tier = row["trust_tier"]
+    if isinstance(tier, str) and tier in _TRUST_TIER_RANK:
+        return tier
+    return LOWEST_TRUST_TIER
+
+
+def _is_independent_key(row: AssertionEvidence) -> bool:
+    quality = _quality(row)
+    return (
+        quality is not None
+        and is_usable(quality)
+        and _has_complete_metadata(row)
+        and identifier_policy(row["identifier_type"]).candidate_eligible
+    )

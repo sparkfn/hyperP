@@ -51,8 +51,33 @@ MATCH (target:Identifier {
 MERGE (sr)-[assertion:ASSERTS {assertion_id: input.assertion_id}]->(target)
 ON CREATE SET assertion.field_path = input.field_path,
               assertion.role = 'subject',
+              assertion.quality_flag = input.quality_flag,
+              assertion.is_verified = input.is_verified,
               assertion.created_at = datetime()
-RETURN count(assertion) AS assertion_count
+WITH DISTINCT target
+CALL {
+    WITH target
+    OPTIONAL MATCH (person:Person)-[:HAS_IDENTIFIER]->(target)
+    WHERE person.status = 'active'
+    RETURN count(DISTINCT person) AS person_count
+}
+CALL {
+    WITH target
+    OPTIONAL MATCH (profile:Profile)-[:HAS_IDENTIFIER]->(target)
+    WHERE profile.status = 'open'
+    RETURN count(DISTINCT profile) AS profile_count
+}
+CALL {
+    WITH target
+    OPTIONAL MATCH (record:SourceRecord)-[:ASSERTS]->(target)
+    WHERE record.lifecycle_status = 'parked'
+      AND record.link_status = 'unlinked'
+      AND record.attribution_status = 'parked'
+      AND record.reeval_pending = true
+    RETURN count(DISTINCT record) AS record_count
+}
+SET target.participant_count = person_count + profile_count + record_count
+RETURN count(target) AS identifier_count
 """
 
 ASSERT_ADDRESSES = """
