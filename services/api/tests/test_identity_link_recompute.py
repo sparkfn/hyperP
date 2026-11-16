@@ -2,7 +2,49 @@
 
 from __future__ import annotations
 
-from src.graph.identity_link_recompute import build_link_rows
+from collections.abc import AsyncIterator
+
+import pytest
+from src.graph.identity_link_recompute import (
+    build_link_rows,
+    recompute_person_has_identifier_links,
+)
+from src.graph.queries.identity_links import (
+    FETCH_PERSON_ASSERTION_EVIDENCE,
+    LOCK_PERSON_FOR_LINK_RECOMPUTE,
+)
+
+
+class _EmptyResult:
+    async def single(self) -> None:
+        return None
+
+    def __aiter__(self) -> AsyncIterator[object]:
+        return self
+
+    async def __anext__(self) -> object:
+        raise StopAsyncIteration
+
+
+class _RecordingTransaction:
+    def __init__(self) -> None:
+        self.queries: list[str] = []
+
+    async def run(self, query: str, **_params: object) -> _EmptyResult:
+        self.queries.append(query)
+        return _EmptyResult()
+
+
+@pytest.mark.asyncio
+async def test_recompute_takes_person_lock_before_reading_evidence() -> None:
+    tx = _RecordingTransaction()
+
+    await recompute_person_has_identifier_links(tx, "person-1")  # type: ignore[arg-type]
+
+    assert tx.queries[0] == LOCK_PERSON_FOR_LINK_RECOMPUTE
+    assert tx.queries.index(LOCK_PERSON_FOR_LINK_RECOMPUTE) < tx.queries.index(
+        FETCH_PERSON_ASSERTION_EVIDENCE
+    )
 
 
 def _evidence(

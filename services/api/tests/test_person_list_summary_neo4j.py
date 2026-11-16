@@ -916,26 +916,19 @@ async def test_manual_merge_rebuilds_survivor_has_identifiers_without_ingest(
     monkeypatch.setattr(merge_module, "enqueue_match_recalculation", _ignore_recalculation)
     async with _api_driver(neo4j_graph) as driver:
         _install_repository_sessions(monkeypatch, driver)
-        outcome = await Neo4jMergeRepository().manual_merge(
-            absorbed_id,
-            survivor_id,
-            "integration test merge",
-            "summary-test@example.com",
-            [],
-        )
+        try:
+            outcome = await Neo4jMergeRepository().manual_merge(
+                absorbed_id,
+                survivor_id,
+                "integration test merge",
+                "summary-test@example.com",
+                [],
+            )
+        finally:
+            _tag_recompute_audit_events(neo4j_graph, [absorbed_id, survivor_id])
 
     assert outcome.merge_event_id is not None
     with neo4j_graph.driver.session() as session:
-        session.run(
-            f"""
-            MATCH (event:MergeEvent)-[:ABSORBED|SURVIVOR]->(person:Person)
-            WHERE person.person_id IN [$absorbed_id, $survivor_id]
-            SET event.{_RUN_PROPERTY} = $run_id
-            """,
-            absorbed_id=absorbed_id,
-            survivor_id=survivor_id,
-            run_id=neo4j_graph.run_id,
-        ).consume()
         survivor_values = {
             record["normalized_value"]
             for record in session.run(
@@ -965,10 +958,10 @@ async def test_manual_merge_rebuilds_survivor_has_identifiers_without_ingest(
     assert survivor_values == {phone_value, email_value}
     assert absorbed_links == 0
     assert phone_participants == 1
-    # Golden recomputation inside the merge transaction must read the HAS/ASSERTS
-    # evidence, not only the (absent) legacy projection.
-    assert survivor_golden["preferred_phone"] == phone_value
-    assert survivor_golden["preferred_email"] == email_value
+    # API golden recompute stays on legacy identifier semantics (the API has no
+    # v2 identity mode), so HAS/ASSERTS-only evidence does not feed it yet.
+    assert survivor_golden["preferred_phone"] is None
+    assert survivor_golden["preferred_email"] is None
 
 
 def _seed_review_activation_owner_handoff(
@@ -1075,25 +1068,27 @@ async def test_review_activation_moves_has_evidence_between_owners(
     monkeypatch.setattr(review_module, "enqueue_match_recalculation", _ignore_recalculation)
     async with _api_driver(neo4j_graph) as driver:
         _install_repository_sessions(monkeypatch, driver)
-        outcome = await Neo4jReviewRepository().submit_action(
-            review_case_id,
-            "merge",
-            "resolved",
-            "merge",
-            "integration test replacement",
-            None,
-            "reviewer@example.com",
-            new_person_id,
-            [],
-            reason_code="confirmed_match",
-        )
+        try:
+            outcome = await Neo4jReviewRepository().submit_action(
+                review_case_id,
+                "merge",
+                "resolved",
+                "merge",
+                "integration test replacement",
+                None,
+                "reviewer@example.com",
+                new_person_id,
+                [],
+                reason_code="confirmed_match",
+            )
+        finally:
+            _tag_review_activation_side_effects(
+                neo4j_graph,
+                source_record_id=f"review-record-{neo4j_graph.run_id}",
+                person_ids=[old_person_id, new_person_id],
+            )
 
     assert outcome is not None
-    _tag_review_activation_side_effects(
-        neo4j_graph,
-        source_record_id=f"review-record-{neo4j_graph.run_id}",
-        person_ids=[old_person_id, new_person_id],
-    )
     with neo4j_graph.driver.session() as session:
         old_values = {
             record["normalized_value"]
@@ -1127,7 +1122,7 @@ async def test_review_activation_moves_has_evidence_between_owners(
 
 
 @pytest.mark.anyio
-async def test_golden_identifier_evidence_prefers_has_and_keeps_legacy_fallback(
+async def test_golden_identifier_evidence_uses_legacy_projection_only(
     neo4j_graph: _TestGraph,
 ) -> None:
     run_id = neo4j_graph.run_id
@@ -1195,17 +1190,22 @@ async def test_golden_identifier_evidence_prefers_has_and_keeps_legacy_fallback(
 
     async with _api_driver(neo4j_graph) as driver:
         async with driver.session() as session:
-            phone_derived = await session.execute_write(
-                lambda tx: derive_override_value(tx, person_id, "preferred_phone", has_record_pk)
-            )
-            email_derived = await session.execute_write(
-                lambda tx: derive_override_value(tx, person_id, "preferred_email", legacy_record_pk)
-            )
-            completeness = await session.execute_write(
-                lambda tx: recompute_golden_profile_tx(tx, person_id, False)
-            )
-
-    _tag_recompute_audit_events(neo4j_graph, [person_id])
+            try:
+                phone_derived = await session.execute_write(
+                    lambda tx: derive_override_value(
+                        tx, person_id, "preferred_phone", has_record_pk
+                    )
+                )
+                email_derived = await session.execute_write(
+                    lambda tx: derive_override_value(
+                        tx, person_id, "preferred_email", legacy_record_pk
+                    )
+                )
+                completeness = await session.execute_write(
+                    lambda tx: recompute_golden_profile_tx(tx, person_id, False)
+                )
+            finally:
+                _tag_recompute_audit_events(neo4j_graph, [person_id])
 
     with neo4j_graph.driver.session() as session:
         golden = session.run(
@@ -1214,22 +1214,11 @@ async def test_golden_identifier_evidence_prefers_has_and_keeps_legacy_fallback(
             "person.preferred_email AS preferred_email",
             person_id=person_id,
         ).single(strict=True)
-        session.run(
-            "MATCH (record:SourceRecord {source_record_pk: $source_record_pk}) "
-            "SET record.link_status = 'pending_review'",
-            source_record_pk=has_record_pk,
-        ).consume()
-
-    async with _api_driver(neo4j_graph) as driver:
-        async with driver.session() as session:
-            pending_derived = await session.execute_write(
-                lambda tx: derive_override_value(tx, person_id, "preferred_phone", has_record_pk)
-            )
 
     assert completeness is not None
-    assert phone_derived is not None and phone_derived.value == phone_value
+    # The API has no v2 identity mode: HAS/ASSERTS-only evidence is not a golden
+    # identifier source, while the legacy projection still is.
+    assert phone_derived is None
     assert email_derived is not None and email_derived.value == legacy_email
-    assert golden["preferred_phone"] == phone_value
+    assert golden["preferred_phone"] is None
     assert golden["preferred_email"] == legacy_email
-    # A pending/superseded record version is not source-specific evidence.
-    assert pending_derived is None

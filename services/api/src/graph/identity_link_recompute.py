@@ -32,6 +32,7 @@ from src.graph.queries.identity_links import (
     DELETE_PERSON_HAS_IDENTIFIER_LINKS,
     DELETE_STALE_PERSON_HAS_IDENTIFIER_LINKS,
     FETCH_PERSON_ASSERTION_EVIDENCE,
+    LOCK_PERSON_FOR_LINK_RECOMPUTE,
     MERGE_PERSON_HAS_IDENTIFIER_LINKS,
     RECOMPUTE_IDENTIFIER_PARTICIPANT_COUNTS,
 )
@@ -120,6 +121,7 @@ def build_link_rows(
 
 async def recompute_person_has_identifier_links(tx: AsyncManagedTransaction, person_id: str) -> int:
     """Re-derive one Person's ``HAS_IDENTIFIER`` links from attributed evidence."""
+    await tx.run(LOCK_PERSON_FOR_LINK_RECOMPUTE, person_id=person_id)
     evidence = await _fetch_evidence(tx, person_id)
     links, link_ids = build_link_rows(person_id, evidence)
     stale_keys = await _delete_stale_links(tx, person_id, link_ids)
@@ -143,6 +145,7 @@ async def release_person_has_identifier_links(tx: AsyncManagedTransaction, perso
     The merged Person's identity reads resolve through the canonical survivor,
     so its HAS projection must not keep an identifier participant alive.
     """
+    await tx.run(LOCK_PERSON_FOR_LINK_RECOMPUTE, person_id=person_id)
     result = await tx.run(DELETE_PERSON_HAS_IDENTIFIER_LINKS, person_id=person_id)
     released_keys: set[IdentifierKeyTuple] = set()
     async for record in result:

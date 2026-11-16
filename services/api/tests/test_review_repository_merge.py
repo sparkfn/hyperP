@@ -48,6 +48,7 @@ from src.graph.queries.identity_links import (
     DELETE_PERSON_HAS_IDENTIFIER_LINKS,
     DELETE_STALE_PERSON_HAS_IDENTIFIER_LINKS,
     FETCH_PERSON_ASSERTION_EVIDENCE,
+    LOCK_PERSON_FOR_LINK_RECOMPUTE,
     MERGE_PERSON_HAS_IDENTIFIER_LINKS,
     RECOMPUTE_IDENTIFIER_PARTICIPANT_COUNTS,
 )
@@ -188,6 +189,8 @@ class _Tx:
         self.events: list[str] = []
 
     async def run(self, query: str, **params: object) -> _AsyncResult:
+        if query == LOCK_PERSON_FOR_LINK_RECOMPUTE:
+            return _AsyncResult(None)
         if is_summary_capture_query(query) or is_summary_apply_query(query):
             self.summary_calls.append(query)
             return _AsyncResult(SUMMARY_APPLY_ROW if is_summary_apply_query(query) else None)
@@ -1226,6 +1229,8 @@ class _LifecycleTx:
         self.summary_calls: list[str] = []
 
     async def run(self, query: str, **params: object) -> _StateResult:
+        if query == LOCK_PERSON_FOR_LINK_RECOMPUTE:
+            return _StateResult(None)
         if is_summary_capture_query(query) or is_summary_apply_query(query):
             self.summary_calls.append(query)
             return _StateResult(SUMMARY_APPLY_ROW if is_summary_apply_query(query) else None)

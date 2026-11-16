@@ -14,7 +14,8 @@ vi.mock("next/link", () => ({
   ),
 }));
 
-import ProfilesPage, { profilesBasePath } from "../page";
+import ProfilesPage from "../page";
+import { profilesBasePath } from "../profiles-query";
 
 afterEach(cleanup);
 

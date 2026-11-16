@@ -8,6 +8,16 @@ ingest. Semantics mirror the ingestion writer, which remains the authority.
 
 from __future__ import annotations
 
+# Neo4j takes write locks on both endpoints when a relationship is created or
+# deleted. Serializing the whole read-then-delete recompute on the Person node
+# makes it mutually exclusive with ingestion's LINKED_TO/HAS writes for that
+# Person, closing the window where evidence read before a concurrent write is
+# later deleted. Value-preserving so the write cannot alter Person data.
+LOCK_PERSON_FOR_LINK_RECOMPUTE = """
+MATCH (p:Person {person_id: $person_id})
+SET p.person_id = p.person_id
+"""
+
 FETCH_PERSON_ASSERTION_EVIDENCE = """
 MATCH (person:Person {person_id: $person_id})
 MATCH (record:SourceRecord)-[linked:LINKED_TO]->(person)
@@ -134,9 +144,12 @@ CALL {
 }
 CALL {
     WITH identifier
-    OPTIONAL MATCH (profile:Profile)-[:HAS_IDENTIFIER]->(identifier)
-    WHERE profile.status = 'open'
-    RETURN count(DISTINCT profile) AS profile_count
+    // Mirrors ingestion: an open Profile counts by its members.
+    OPTIONAL MATCH (record:SourceRecord)-[:ASSERTS]->(identifier)
+    WHERE EXISTS {
+        MATCH (record)-[:IN_PROFILE]->(:Profile {status: 'open'})
+    }
+    RETURN count(DISTINCT record) AS profile_member_count
 }
 CALL {
     WITH identifier
@@ -147,7 +160,7 @@ CALL {
       AND record.reeval_pending = true
     RETURN count(DISTINCT record) AS record_count
 }
-WITH identifier, person_count + profile_count + record_count AS computed_count
+WITH identifier, person_count + profile_member_count + record_count AS computed_count
 WHERE identifier.participant_count IS NULL
    OR identifier.participant_count <> computed_count
 SET identifier.participant_count = computed_count

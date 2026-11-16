@@ -19,26 +19,12 @@ import type { Profile } from "@/lib/api-types-person";
 import { formatDate } from "@/lib/display";
 import { usePaginatedFetch } from "@/lib/usePaginatedFetch";
 
-const STATUS_OPTIONS = [
-  { value: "open", label: "Open" },
-  { value: "promoted", label: "Promoted" },
-  { value: "retired", label: "Retired" },
-  { value: "all", label: "All statuses" },
-] as const;
-
-type StatusFilter = (typeof STATUS_OPTIONS)[number]["value"];
-
-function isStatusFilter(value: string): value is StatusFilter {
-  return STATUS_OPTIONS.some((option) => option.value === value);
-}
-
-export function profilesBasePath(query: string, status: StatusFilter): string {
-  const params = new URLSearchParams();
-  if (query.length >= 2) params.set("q", query);
-  // "all" must be sent explicitly: the API defaults an absent status to open.
-  params.set("status", status);
-  return `/bff/profiles?${params.toString()}`;
-}
+import {
+  STATUS_OPTIONS,
+  isStatusFilter,
+  profilesBasePath,
+  type StatusFilter,
+} from "./profiles-query";
 
 function ProfilesTable({ basePath }: { basePath: string }): ReactElement {
   const page = usePaginatedFetch<Profile>(basePath);
