@@ -20,15 +20,24 @@ class Neo4jProfileRepository:
     ) -> tuple[list[Profile], int]:
         q = filters.get("q")
         status = filters.get("status")
-        parameters = {
-            "q": q.lower() if q else None,
-            "status": status,
-            "skip": skip,
-            "limit": limit,
-        }
+        q_value = q.lower() if q else None
         async with get_session() as session:
-            total_record = await (await session.run(COUNT_PROFILES, **parameters)).single()
-            result = await session.run(LIST_PROFILES, **parameters)
+            total_record = await (
+                await session.run(
+                    COUNT_PROFILES,
+                    q=q_value,
+                    status=status,
+                    skip=skip,
+                    limit=limit,
+                )
+            ).single()
+            result = await session.run(
+                LIST_PROFILES,
+                q=q_value,
+                status=status,
+                skip=skip,
+                limit=limit,
+            )
             records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
         return [map_profile(record) for record in records], to_total(total_record)
 
