@@ -1246,7 +1246,7 @@ class IngestPipeline:
         """
         approved = self._approved_nric(identifiers, attributes, envelope)
         if approved is not None:
-            person_id, created = anchor_person_by_nric(tx, approved)
+            anchored_person_id, created = anchor_person_by_nric(tx, approved)
             promote_profiles_for_nric(
                 tx,
                 approved,
@@ -1254,8 +1254,8 @@ class IngestPipeline:
                 record_type=envelope.record_type,
                 incoming=self._incoming_name_dob(attributes),
             )
-            return person_id, created
-        person_id = match_result.matched_person_id
+            return anchored_person_id, created
+        person_id: str | None = match_result.matched_person_id
         if person_id is None and match_result.decision == MatchDecision.REVIEW and candidates:
             return candidates[0].person_id, False
         return person_id, False
