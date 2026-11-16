@@ -301,14 +301,14 @@ def test_neo4j_services_are_isolated_and_each_has_retained_consumers() -> None:
             for service in services
             if isinstance(service, dict)
         }
-        assert set(by_name) == {
-            *expected_services, "postgres-spike-python", "postgres-spike-rust"
-        }
+        assert set(by_name) == {*expected_services, "postgres-spike-python", "postgres-spike-rust"}
         for postgres_name in ("postgres-spike-python", "postgres-spike-rust"):
             postgres = by_name[postgres_name]
             assert postgres["image"] == "postgres:16.10-bookworm"
             assert postgres["environment"] == {
-                "POSTGRES_USER": "postgres", "POSTGRES_PASSWORD": "ci-spike", "POSTGRES_DB": "postgres"
+                "POSTGRES_USER": "postgres",
+                "POSTGRES_PASSWORD": "ci-spike",
+                "POSTGRES_DB": "postgres",
             }
         for service_name, password in expected_services.items():
             service = by_name[service_name]
@@ -445,6 +445,7 @@ _EXPECTED_QUERY_TEST_PATHS = frozenset(
         "services/ingestion/tests/test_identifier_scope_schema_neo4j.py",
         "services/ingestion/tests/test_identity_foundation_neo4j.py",
         "services/ingestion/tests/test_identity_link_revision_baseline_neo4j.py",
+        "services/ingestion/tests/test_identity_links_neo4j.py",
         "services/ingestion/tests/test_ingestion_control_instance_migration_neo4j.py",
         "services/ingestion/tests/test_loyalty_points_migration_neo4j.py",
         "services/ingestion/tests/test_persist_first_neo4j.py",
@@ -462,6 +463,7 @@ _EXPECTED_QUERY_TEST_PATHS = frozenset(
         "services/api/tests/test_persons_list_plan_neo4j.py",
         "services/api/tests/test_persons_list_possible_match_neo4j.py",
         "services/api/tests/test_person_list_summary_neo4j.py",
+        "services/api/tests/test_profiles_neo4j.py",
     }
 )
 

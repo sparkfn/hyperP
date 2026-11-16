@@ -14,10 +14,12 @@ from src.connectors.whatsadmin_api.credentials import (
     whatsadmin_entity_keys_are_distinct,
 )
 
-#: Identity-model rollout switch for the ingestion write path (#490).
-#: ``v1`` keeps the legacy writes; ``v2_shadow`` additionally writes shadow
-#: identity assertions and nothing else changes.
-IdentityModel = Literal["v1", "v2_shadow"]
+#: Identity-model rollout switch for the ingestion write path (#490, #499).
+#: ``v1`` keeps the legacy writes; ``v2_shadow`` additionally writes the C1
+#: assertions and C3 identity projection while the legacy outcome stays
+#: authoritative; ``v2`` makes the C3 projection authoritative and only an
+#: NRIC anchor constructs a Person.
+IdentityModel = Literal["v1", "v2_shadow", "v2"]
 
 
 class Settings(BaseSettings):
@@ -55,7 +57,8 @@ class Settings(BaseSettings):
 
     # Identity model rollout --------------------------------------------------
     # "v1" keeps the legacy write path; "v2_shadow" additionally writes the
-    # shadow identity assertions (no read-path change).
+    # C1 assertions and C3 identity projection (no authoritative change);
+    # "v2" resolves identity through the C3 projection.
     identity_model: IdentityModel = "v1"
 
     # Celery / queue ----------------------------------------------------------

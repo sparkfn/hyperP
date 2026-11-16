@@ -23,6 +23,10 @@ from src.graph.converters import (
 )
 from src.graph.crm_deal_count import recompute_person_crm_deal_counts
 from src.graph.golden_profile import recompute_golden_profile_tx
+from src.graph.identity_link_recompute import (
+    recompute_person_has_identifier_links,
+    release_person_has_identifier_links,
+)
 from src.graph.mappers import (
     map_possible_match_detail,
     map_review_case_detail,
@@ -1011,9 +1015,22 @@ async def _pending_record_merge_tx(
     activated = await activated_result.single()
     if activated is None:
         raise _ReviewResolutionAbortError("pending activation lost after review claim")
+    # Activation retires the previous version's LINKED_TO edges and re-links the
+    # replacement to its approved Person. Re-derive the HAS_IDENTIFIER
+    # projection for every affected Person — including the approved Person even
+    # if the returned list is absent or malformed — before any golden recompute,
+    # so a replaced owner's obsolete evidence drops now rather than on a later
+    # ingest.
     affected = activated.get("affected_person_ids", [])
+    affected_values = (
+        [value for value in affected if isinstance(value, str)]
+        if isinstance(affected, list)
+        else []
+    )
+    for person_id in sorted({proposed_person_id, *affected_values}):
+        await recompute_person_has_identifier_links(tx, person_id)
     if isinstance(affected, list):
-        affected_person_ids = sorted({value for value in affected if isinstance(value, str)})
+        affected_person_ids = sorted(set(affected_values))
         # Capture the affected Persons before the profile recompute: the
         # activation does not change their preferred fields, so this snapshot
         # is still the pre-recompute state.
@@ -1397,6 +1414,11 @@ async def _action_tx(
             effective_at=to_str(merge_record["created_at"]),
         )
         out["redirected_review_case_ids"] = redirected_ids
+        # The review merge moved the evidence's LINKED_TO edges like a manual
+        # merge: re-derive the survivor's HAS projection and release the
+        # absorbed Person's before the golden recompute.
+        await recompute_person_has_identifier_links(tx, survivor_id)
+        await release_person_has_identifier_links(tx, absorbed_id)
         await recompute_golden_profile_tx(tx, survivor_id, False)
         if golden_profile_selections:
             await _apply_golden_profile_selections_tx(

@@ -95,6 +95,8 @@ def test_mcp_tools_match_every_canonical_api_operation() -> None:
     # tool name cannot drift with the route path.
     assert "submit_bulk_review_action" in operation_ids
     assert "submit_bulk_review_action" in tool_names
+    assert {"list_profiles", "get_profile"} <= operation_ids
+    assert {"list_profiles", "get_profile"} <= tool_names
 
 
 def _initialize_mcp(client: TestClient) -> str:

@@ -22,19 +22,21 @@ import src.repositories.neo4j.report as report_module
 import src.repositories.neo4j.review as review_module
 from neo4j import (
     AsyncDriver,
-    AsyncManagedTransaction,
     AsyncGraphDatabase,
+    AsyncManagedTransaction,
     AsyncSession,
     Driver,
     GraphDatabase,
 )
 from neo4j.exceptions import Neo4jError
+from src.graph.golden_profile import derive_override_value, recompute_golden_profile_tx
+from src.graph.person_list_summary_deltas import PersonListSummaryDeltaCollector
 from src.graph.queries.person_list_summary import (
     CREATE_PERSON_LIST_SUMMARY_COUNTER_CONSTRAINT,
     ENSURE_PERSON_LIST_SUMMARY_COUNTER,
     PERSON_LIST_SUMMARY_COUNTER_KEY,
 )
-from src.graph.person_list_summary_deltas import PersonListSummaryDeltaCollector
+from src.graph.queries.persons import GET_PERSON_IDENTIFIERS
 from src.graph.queries.persons_list import (
     GET_PERSON_LIST_CORE_SUMMARY,
     GET_PERSON_LIST_CRM_SUMMARY,
@@ -280,6 +282,57 @@ def _counter_counts(test_graph: _TestGraph) -> dict[str, int]:
         "deals_this_month_count": int(row["deals_this_month_count"]),
         "all_deals_count": int(row["all_deals_count"]),
     }
+
+
+def _tag_recompute_audit_events(
+    test_graph: _TestGraph,
+    person_ids: Sequence[str],
+) -> None:
+    """Tag golden-recompute audit MergeEvents anchored to this run's Persons.
+
+    ``recompute_golden_profile_tx`` creates ``MergeEvent`` nodes through
+    ``CREATE_RECOMPUTE_AUDIT`` (``CREATE (me)-[:SURVIVOR]->(p)``); they carry no
+    run tag of their own, so anchor them through their survivor Person.
+    """
+    with test_graph.driver.session() as session:
+        session.run(
+            f"""
+            MATCH (event:MergeEvent)-[:SURVIVOR]->(person:Person)
+            WHERE person.person_id IN $person_ids
+            SET event.{_RUN_PROPERTY} = $run_id
+            """,
+            person_ids=list(person_ids),
+            run_id=test_graph.run_id,
+        ).consume()
+
+
+def _tag_review_activation_side_effects(
+    test_graph: _TestGraph,
+    *,
+    source_record_id: str,
+    person_ids: Sequence[str],
+) -> None:
+    """Tag untagged nodes review activation creates for this run.
+
+    ``ACTIVATE_PENDING_REVIEW_RECORD`` MERGEs a ``SourceRecordIdentityLock`` for
+    the pending record's source identity; it has no relationships to anchor
+    through, so it is matched by that identity. Golden recomputation then adds
+    ``MergeEvent`` audit nodes, anchored through their survivor Person.
+    """
+    with test_graph.driver.session() as session:
+        session.run(
+            f"""
+            MATCH (lock:SourceRecordIdentityLock {{
+              source_system: 'bitrix_chat',
+              source_instance_id: 'legacy-default',
+              source_record_id: $source_record_id
+            }})
+            SET lock.{_RUN_PROPERTY} = $run_id
+            """,
+            source_record_id=source_record_id,
+            run_id=test_graph.run_id,
+        ).consume()
+    _tag_recompute_audit_events(test_graph, person_ids)
 
 
 def _counter_properties(test_graph: _TestGraph) -> dict[str, object]:
@@ -790,3 +843,382 @@ async def test_report_execute_cannot_mutate_the_graph_or_counter(
         )
     assert graph_after == graph_before
     assert counter_after == counter_before
+
+
+def _seed_merge_identity_evidence(test_graph: _TestGraph) -> tuple[str, str, str, str]:
+    """Seed an absorbed Person whose linked record evidences an absorbed-only key."""
+    absorbed_id = f"merge-has-absorbed-{test_graph.run_id}"
+    survivor_id = f"merge-has-survivor-{test_graph.run_id}"
+    phone_value = f"merge-phone-{test_graph.run_id}"
+    email_value = f"merge-email-{test_graph.run_id}@example.test"
+    with test_graph.driver.session() as session:
+        session.run(
+            f"""
+            MERGE (source:SourceSystem {{source_key: 'bitrix_chat'}})
+            ON CREATE SET source.{_RUN_PROPERTY} = $run_id
+            WITH source
+            CREATE (absorbed:Person {{
+              person_id: $absorbed_id, status: 'active', {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (survivor:Person {{
+              person_id: $survivor_id, status: 'active', is_high_risk: false,
+              is_high_value: false, {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (phone:Identifier {{
+              identifier_id: 'ident-merge-phone-' + $run_id,
+              identifier_type: 'phone', identifier_scope: 'global',
+              normalized_value: $phone_value, {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (email:Identifier {{
+              identifier_id: 'ident-merge-email-' + $run_id,
+              identifier_type: 'email', identifier_scope: 'global',
+              normalized_value: $email_value, {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (record:SourceRecord {{
+              source_record_pk: $record_pk, record_type: 'identity',
+              lifecycle_status: 'active', is_latest: true, link_status: 'linked',
+              observed_at: datetime('2026-01-01T00:00:00Z'), {_RUN_PROPERTY}: $run_id
+            }})-[:FROM_SOURCE]->(source)
+            CREATE (record)-[:LINKED_TO {{is_active: true}}]->(absorbed)
+            CREATE (record)-[:ASSERTS {{
+              assertion_id: 'assert-merge-phone-' + $run_id,
+              quality_flag: 'valid', is_verified: true
+            }}]->(phone)
+            CREATE (record)-[:ASSERTS {{
+              assertion_id: 'assert-merge-email-' + $run_id,
+              quality_flag: 'valid', is_verified: true
+            }}]->(email)
+            CREATE (absorbed)-[:HAS_IDENTIFIER {{
+              link_id: 'stale-merge-phone-' + $run_id, status: 'active',
+              verified_count: 1, computed_at: datetime()
+            }}]->(phone)
+            """,
+            run_id=test_graph.run_id,
+            absorbed_id=absorbed_id,
+            survivor_id=survivor_id,
+            phone_value=phone_value,
+            email_value=email_value,
+            record_pk=f"merge-has-record-{test_graph.run_id}",
+        ).consume()
+    return absorbed_id, survivor_id, phone_value, email_value
+
+
+@pytest.mark.anyio
+async def test_manual_merge_rebuilds_survivor_has_identifiers_without_ingest(
+    neo4j_graph: _TestGraph,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    absorbed_id, survivor_id, phone_value, email_value = _seed_merge_identity_evidence(neo4j_graph)
+
+    def _ignore_recalculation(_review_case_ids: list[str]) -> None:
+        return None
+
+    monkeypatch.setattr(merge_module, "enqueue_match_recalculation", _ignore_recalculation)
+    async with _api_driver(neo4j_graph) as driver:
+        _install_repository_sessions(monkeypatch, driver)
+        try:
+            outcome = await Neo4jMergeRepository().manual_merge(
+                absorbed_id,
+                survivor_id,
+                "integration test merge",
+                "summary-test@example.com",
+                [],
+            )
+        finally:
+            _tag_recompute_audit_events(neo4j_graph, [absorbed_id, survivor_id])
+
+    assert outcome.merge_event_id is not None
+    with neo4j_graph.driver.session() as session:
+        survivor_values = {
+            record["normalized_value"]
+            for record in session.run(
+                GET_PERSON_IDENTIFIERS,
+                person_id=survivor_id,
+                skip=0,
+                limit=20,
+            )
+        }
+        absorbed_links = session.run(
+            "MATCH (:Person {person_id: $person_id})-[:HAS_IDENTIFIER]->() "
+            "RETURN count(*) AS count",
+            person_id=absorbed_id,
+        ).single(strict=True)["count"]
+        phone_participants = session.run(
+            "MATCH (identifier:Identifier {normalized_value: $value}) "
+            "RETURN identifier.participant_count AS count",
+            value=phone_value,
+        ).single(strict=True)["count"]
+        survivor_golden = session.run(
+            "MATCH (person:Person {person_id: $person_id}) "
+            "RETURN person.preferred_phone AS preferred_phone, "
+            "person.preferred_email AS preferred_email",
+            person_id=survivor_id,
+        ).single(strict=True)
+
+    assert survivor_values == {phone_value, email_value}
+    assert absorbed_links == 0
+    assert phone_participants == 1
+    # API golden recompute stays on legacy identifier semantics (the API has no
+    # v2 identity mode), so HAS/ASSERTS-only evidence does not feed it yet.
+    assert survivor_golden["preferred_phone"] is None
+    assert survivor_golden["preferred_email"] is None
+
+
+def _seed_review_activation_owner_handoff(
+    test_graph: _TestGraph,
+) -> tuple[str, str, str, str, str]:
+    """Seed a pending replacement that moves identity evidence from A to B."""
+    run_id = test_graph.run_id
+    old_person_id = f"review-old-{run_id}"
+    new_person_id = f"review-new-{run_id}"
+    old_phone = f"review-old-phone-{run_id}"
+    new_phone = f"review-new-phone-{run_id}"
+    review_case_id = f"review-case-{run_id}"
+    with test_graph.driver.session() as session:
+        session.run(
+            f"""
+            MERGE (source:SourceSystem {{source_key: 'bitrix_chat'}})
+            ON CREATE SET source.{_RUN_PROPERTY} = $run_id
+            WITH source
+            CREATE (old_person:Person {{
+              person_id: $old_person_id, status: 'active', is_high_risk: false,
+              is_high_value: false, {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (new_person:Person {{
+              person_id: $new_person_id, status: 'active', is_high_risk: false,
+              is_high_value: false, {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (old_record:SourceRecord {{
+              source_record_pk: $old_pk, source_record_id: $source_record_id,
+              source_instance_id: 'legacy-default', record_type: 'identity',
+              lifecycle_status: 'active', is_latest: true, link_status: 'linked',
+              observed_at: datetime('2026-01-01T00:00:00Z'), {_RUN_PROPERTY}: $run_id
+            }})-[:FROM_SOURCE]->(source)
+            CREATE (old_record)-[:LINKED_TO {{is_active: true}}]->(old_person)
+            CREATE (pending:SourceRecord {{
+              source_record_pk: $pending_pk, source_record_id: $source_record_id,
+              source_instance_id: 'legacy-default', record_type: 'identity',
+              lifecycle_status: 'pending_review', is_latest: false,
+              link_status: 'pending_review',
+              expected_active_source_record_pk: $old_pk,
+              normalized_payload: '{{}}',
+              observed_at: datetime('2026-02-01T00:00:00Z'), {_RUN_PROPERTY}: $run_id
+            }})-[:FROM_SOURCE]->(source)
+            CREATE (old_identifier:Identifier {{
+              identifier_id: $old_identifier_id, identifier_type: 'phone',
+              identifier_scope: 'global', normalized_value: $old_phone,
+              {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (new_identifier:Identifier {{
+              identifier_id: $new_identifier_id, identifier_type: 'phone',
+              identifier_scope: 'global', normalized_value: $new_phone,
+              {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (old_record)-[:ASSERTS {{
+              assertion_id: 'assert-old-' + $run_id,
+              quality_flag: 'valid', is_verified: true
+            }}]->(old_identifier)
+            CREATE (pending)-[:ASSERTS {{
+              assertion_id: 'assert-new-' + $run_id,
+              quality_flag: 'valid', is_verified: true
+            }}]->(new_identifier)
+            CREATE (old_person)-[:HAS_IDENTIFIER {{
+              link_id: 'stale-old-' + $run_id, status: 'active',
+              verified_count: 1, computed_at: datetime()
+            }}]->(old_identifier)
+            CREATE (md:MatchDecision {{
+              match_decision_id: $decision_id, decision: 'review',
+              {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (md)-[:ABOUT_LEFT]->(pending)
+            CREATE (md)-[:ABOUT_RIGHT]->(new_person)
+            CREATE (rc:ReviewCase {{
+              review_case_id: $review_case_id, queue_state: 'open',
+              created_at: datetime(), {_RUN_PROPERTY}: $run_id
+            }})-[:FOR_DECISION]->(md)
+            """,
+            run_id=run_id,
+            old_person_id=old_person_id,
+            new_person_id=new_person_id,
+            old_pk=f"review-old-record-{run_id}",
+            pending_pk=f"review-pending-record-{run_id}",
+            source_record_id=f"review-record-{run_id}",
+            old_identifier_id=f"review-old-ident-{run_id}",
+            new_identifier_id=f"review-new-ident-{run_id}",
+            old_phone=old_phone,
+            new_phone=new_phone,
+            decision_id=f"review-decision-{run_id}",
+            review_case_id=review_case_id,
+        ).consume()
+    return old_person_id, new_person_id, old_phone, new_phone, review_case_id
+
+
+@pytest.mark.anyio
+async def test_review_activation_moves_has_evidence_between_owners(
+    neo4j_graph: _TestGraph,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    old_person_id, new_person_id, old_phone, new_phone, review_case_id = (
+        _seed_review_activation_owner_handoff(neo4j_graph)
+    )
+
+    def _ignore_recalculation(_review_case_ids: list[str]) -> None:
+        return None
+
+    monkeypatch.setattr(review_module, "enqueue_match_recalculation", _ignore_recalculation)
+    async with _api_driver(neo4j_graph) as driver:
+        _install_repository_sessions(monkeypatch, driver)
+        try:
+            outcome = await Neo4jReviewRepository().submit_action(
+                review_case_id,
+                "merge",
+                "resolved",
+                "merge",
+                "integration test replacement",
+                None,
+                "reviewer@example.com",
+                new_person_id,
+                [],
+                reason_code="confirmed_match",
+            )
+        finally:
+            _tag_review_activation_side_effects(
+                neo4j_graph,
+                source_record_id=f"review-record-{neo4j_graph.run_id}",
+                person_ids=[old_person_id, new_person_id],
+            )
+
+    assert outcome is not None
+    with neo4j_graph.driver.session() as session:
+        old_values = {
+            record["normalized_value"]
+            for record in session.run(
+                GET_PERSON_IDENTIFIERS, person_id=old_person_id, skip=0, limit=20
+            )
+        }
+        new_values = {
+            record["normalized_value"]
+            for record in session.run(
+                GET_PERSON_IDENTIFIERS, person_id=new_person_id, skip=0, limit=20
+            )
+        }
+        old_has = session.run(
+            "MATCH (:Person {person_id: $person_id})-[:HAS_IDENTIFIER]->() "
+            "RETURN count(*) AS count",
+            person_id=old_person_id,
+        ).single(strict=True)["count"]
+        old_identifier_participants = session.run(
+            "MATCH (identifier:Identifier {normalized_value: $value}) "
+            "RETURN identifier.participant_count AS count",
+            value=old_phone,
+        ).single(strict=True)["count"]
+
+    # The replaced owner's obsolete identifier is gone; the approved Person owns
+    # the replacement evidence immediately, without any later ingest.
+    assert old_has == 0
+    assert old_values == set()
+    assert old_identifier_participants == 0
+    assert new_values == {new_phone}
+
+
+@pytest.mark.anyio
+async def test_golden_identifier_evidence_uses_legacy_projection_only(
+    neo4j_graph: _TestGraph,
+) -> None:
+    run_id = neo4j_graph.run_id
+    person_id = f"golden-has-person-{run_id}"
+    has_record_pk = f"golden-has-record-{run_id}"
+    legacy_record_pk = f"golden-legacy-record-{run_id}"
+    phone_value = f"golden-has-phone-{run_id}"
+    legacy_email = f"golden-legacy-{run_id}@example.test"
+    with neo4j_graph.driver.session() as session:
+        session.run(
+            f"""
+            MERGE (source:SourceSystem {{source_key: 'bitrix_chat'}})
+            ON CREATE SET source.{_RUN_PROPERTY} = $run_id
+            WITH source
+            CREATE (person:Person {{
+              person_id: $person_id, status: 'active', is_high_risk: false,
+              is_high_value: false, {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (phone:Identifier {{
+              identifier_id: $phone_identifier_id, identifier_type: 'phone',
+              identifier_scope: 'global', normalized_value: $phone_value,
+              {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (legacy_email:Identifier {{
+              identifier_id: $email_identifier_id, identifier_type: 'email',
+              identifier_scope: 'global', normalized_value: $legacy_email,
+              {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (has_record:SourceRecord {{
+              source_record_pk: $has_record_pk, record_type: 'identity',
+              lifecycle_status: 'active', is_latest: true, link_status: 'linked',
+              observed_at: datetime('2026-01-01T00:00:00Z'), {_RUN_PROPERTY}: $run_id
+            }})-[:FROM_SOURCE]->(source)
+            CREATE (has_record)-[:LINKED_TO {{is_active: true}}]->(person)
+            CREATE (has_record)-[:ASSERTS {{
+              assertion_id: 'assert-golden-phone-' + $run_id,
+              quality_flag: 'valid', is_verified: true
+            }}]->(phone)
+            CREATE (legacy_record:SourceRecord {{
+              source_record_pk: $legacy_record_pk, record_type: 'identity',
+              lifecycle_status: 'active', is_latest: true, link_status: 'linked',
+              observed_at: datetime('2026-01-02T00:00:00Z'), {_RUN_PROPERTY}: $run_id
+            }})-[:FROM_SOURCE]->(source)
+            CREATE (legacy_record)-[:LINKED_TO {{is_active: true}}]->(person)
+            CREATE (person)-[:IDENTIFIED_BY {{
+              is_active: true, is_verified: true,
+              source_system_key: source.source_key,
+              source_record_pk: $legacy_record_pk
+            }}]->(legacy_email)
+            CREATE (person)-[:HAS_IDENTIFIER {{
+              link_id: 'has-golden-phone-' + $run_id, status: 'active',
+              verified_count: 1, last_confirmed_at: '2026-01-01T00:00:00Z',
+              computed_at: datetime()
+            }}]->(phone)
+            """,
+            run_id=run_id,
+            person_id=person_id,
+            phone_identifier_id=f"golden-phone-{run_id}",
+            email_identifier_id=f"golden-email-{run_id}",
+            has_record_pk=has_record_pk,
+            legacy_record_pk=legacy_record_pk,
+            phone_value=phone_value,
+            legacy_email=legacy_email,
+        ).consume()
+
+    async with _api_driver(neo4j_graph) as driver:
+        async with driver.session() as session:
+            try:
+                phone_derived = await session.execute_write(
+                    lambda tx: derive_override_value(
+                        tx, person_id, "preferred_phone", has_record_pk
+                    )
+                )
+                email_derived = await session.execute_write(
+                    lambda tx: derive_override_value(
+                        tx, person_id, "preferred_email", legacy_record_pk
+                    )
+                )
+                completeness = await session.execute_write(
+                    lambda tx: recompute_golden_profile_tx(tx, person_id, False)
+                )
+            finally:
+                _tag_recompute_audit_events(neo4j_graph, [person_id])
+
+    with neo4j_graph.driver.session() as session:
+        golden = session.run(
+            "MATCH (person:Person {person_id: $person_id}) "
+            "RETURN person.preferred_phone AS preferred_phone, "
+            "person.preferred_email AS preferred_email",
+            person_id=person_id,
+        ).single(strict=True)
+
+    assert completeness is not None
+    # The API has no v2 identity mode: HAS/ASSERTS-only evidence is not a golden
+    # identifier source, while the legacy projection still is.
+    assert phone_derived is None
+    assert email_derived is not None and email_derived.value == legacy_email
+    assert golden["preferred_phone"] is None
+    assert golden["preferred_email"] == legacy_email

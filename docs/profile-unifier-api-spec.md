@@ -393,7 +393,9 @@ resolve `address_id` themselves.
 ```
 
 `lifecycle_status` is required and is one of `active`, `pending_review`,
-`superseded`, `rejected`, or `link_failed`. It identifies accepted-version
+`superseded`, `rejected`, `link_failed`, or `parked`. `parked` marks a staged
+row whose identity attribution is unresolved (unlinked, awaiting Profile
+materialization, or provisional review). It identifies accepted-version
 authority; `link_status` only reports domain-link progress and must not be used
 to select the accepted version. Person-facing source-record reads return active
 records. During migration they also treat a legacy record with null lifecycle
@@ -781,6 +783,48 @@ Supported expansions:
   }
 }
 ```
+
+## Profiles (derived, unverified)
+
+C3 Profiles are derived, unverified evidence clusters built from immutable
+identity assertions. A Profile is **not** a Person: it has no golden profile,
+never participates in person matching, merging, or review-merge actions, and is
+promoted one-way into a Person only when a gate-approved NRIC digest anchors it.
+Profiles are exposed only on the authenticated frontend contract (`/app/v2`,
+served path `/profiles`) and therefore through MCP; they are absent from the
+OAuth2 machine subset and from the public share surface.
+
+### GET /v1/profiles
+
+Paginated list. `status` defaults to `open` when omitted; pass `all` to return
+every status (`open`, `promoted`, `retired`; `split` is reserved and never
+written by C3).
+`q` is case-insensitive over the profile id, member source-record ids, asserted
+full-name facts, and non-government identifier values. NRIC values are never
+searched and are never returned unmasked. A `q` shorter than 2 characters after
+trimming returns `400 invalid_request`. `meta.next_cursor` is the authoritative
+continuation signal; `meta.total_count` carries the exact matching total.
+
+Each row carries `profile_id`, `status`, `evidence_version`, `materialized_at`,
+`promoted_person_id`, `record_count`, and `identifier_count`.
+
+### GET /v1/profiles/{profile_id}
+
+Read-only detail: the list fields plus `source_records` (member SourceRecords;
+profile-attributed evidence normally has `lifecycle_status: "parked"`) and
+`identifiers` (weighted `HAS_IDENTIFIER` rows). Unknown ids return
+`404 profile_not_found`.
+
+Identifier rows reuse the person identifier shape and add optional `score` and
+`golden_rank`. `score` is a provisional C3 placeholder and must not be presented
+as confidence; C4 owns the scoring formula. `golden_rank` stays null until C4.
+Legacy `IDENTIFIED_BY`-only projections keep both fields null.
+
+### Authorization
+
+- active authenticated frontend or MCP caller carrying `persons:read`
+- machine OAuth clients presenting `persons:read` on the frontend/MCP mount can read Profiles (by design); the dedicated OAuth2 machine mount (`/oauth2/v1`) does not expose them
+- deliberately absent from the OAuth2 machine subset and the public surface
 
 ## POST /v1/persons/{person_id}/nric/reveal
 

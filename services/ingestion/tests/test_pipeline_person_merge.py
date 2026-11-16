@@ -91,7 +91,7 @@ def test_merge_person_pair_runs_rewires_and_recomputes_profile(
     recomputed: list[str] = []
     monkeypatch.setattr(
         "src.pipeline_person_merge.compute_golden_profile",
-        lambda tx, person_id: recomputed.append(person_id),
+        lambda tx, person_id, **_kwargs: recomputed.append(person_id),
     )
     tx = _MergeTx()
     collector = PersonListSummaryDeltaCollector()

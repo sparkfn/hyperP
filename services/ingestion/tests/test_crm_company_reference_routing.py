@@ -79,8 +79,8 @@ class _Session:
 
     def execute_write(self, work: object) -> object:
         tx_mock = MagicMock()
-        tx_mock.run.side_effect = (
-            lambda query, *_args, **_kwargs: summary_counter_result(query) or DEFAULT
+        tx_mock.run.side_effect = lambda query, *_args, **_kwargs: (
+            summary_counter_result(query) or DEFAULT
         )
         return cast(object, work)(tx_mock)  # type: ignore[operator]
 
@@ -193,7 +193,7 @@ def test_company_reference_persistence_never_creates_or_matches_a_person(
 
     assert result.source_record_pk == "sr-303"
     assert persisted["identifiers"] == []
-    assert persisted["is_new_person"] is False
+    assert persisted.get("person_created", False) is False
     assert persisted["link_status"] == "not_applicable"
     match_result = persisted["match_result"]
     assert isinstance(match_result, MatchResult)

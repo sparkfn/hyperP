@@ -118,6 +118,54 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/profiles": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List derived unverified profiles
+         * @description Paginated list of derived C3 Profiles: unverified evidence clusters built
+         *     from immutable identity assertions. A Profile is not a Person and never
+         *     participates in Person matching or golden-profile selection. `q` is
+         *     case-insensitive over the profile id, member source-record ids, asserted
+         *     full-name facts, and non-government identifier values; NRIC values are
+         *     never searched. `status` defaults to `open` when omitted; pass `all` to
+         *     return every status.
+         */
+        get: operations["list_profiles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/v1/profiles/{profile_id}": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get one derived profile
+         * @description Read-only detail for one Profile: member source records, derived weighted
+         *     identifiers (`score` is a provisional C3 placeholder; C4 owns weights),
+         *     and the promoted Person id when the cluster has been anchored.
+         */
+        get: operations["get_profile"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/persons": {
         parameters: {
             query?: never;
@@ -752,7 +800,8 @@ export interface paths {
          *     `identifier_type` values: `phone`, `email`, `nric`,
          *     `external_customer_id`, `membership_id`, `crm_contact_id`, `loyalty_id`,
          *     and `custom`. Matching compares the canonical normalized value stored by
-         *     ingestion, so callers must send the normalized value.
+         *     ingestion; for `nric`, input is canonicalized and keyed server-side against
+         *     both keyed digests and legacy records.
          *
          *     For exact identifier searches, a successful request returns every
          *     non-merged Person linked to the matching Identifier through an
@@ -1578,7 +1627,7 @@ export interface components {
              * @description Accepted-version lifecycle authority. link_status independently describes domain-link progress. Legacy effective-active records are normalized to active in API responses during migration.
              * @enum {string}
              */
-            lifecycle_status: "active" | "pending_review" | "superseded" | "rejected" | "link_failed";
+            lifecycle_status: "active" | "pending_review" | "superseded" | "rejected" | "link_failed" | "parked";
             extraction_confidence?: number | null;
             extraction_method?: string | null;
             link_status: string;
@@ -1633,7 +1682,7 @@ export interface components {
             /** @enum {string} */
             record_type: "identity" | "bankruptcy" | "rental_flat" | "relationship" | "conversation" | "sales" | "crm_deal" | "crm_history" | "call";
             /** @enum {string} */
-            lifecycle_status: "active" | "pending_review" | "superseded" | "rejected" | "link_failed";
+            lifecycle_status: "active" | "pending_review" | "superseded" | "rejected" | "link_failed" | "parked";
             extraction_confidence?: number | null;
             extraction_method?: string | null;
             link_status: string;
@@ -1900,10 +1949,7 @@ export interface components {
             };
         };
         BulkReviewActionRequest: {
-            /**
-             * Format: uuid
-             * @description Review cases to action, in the order the outcomes are reported. A repeated id is reported as `duplicate_review_case_id` and is actioned only once.
-             */
+            /** @description Review cases to action, in the order the outcomes are reported. A repeated id is reported as `duplicate_review_case_id` and is actioned only once. */
             review_case_ids: string[];
             action_type: components["schemas"]["BulkReviewActionType"];
             reason_code: components["schemas"]["ReviewActionReasonCode"];
@@ -2147,6 +2193,48 @@ export interface components {
             data: components["schemas"]["Person"][];
             meta: components["schemas"]["Meta"];
             display_items?: components["schemas"]["PopoverDisplayItem"][] | null;
+        };
+        PersonIdentifier: {
+            identifier_type: string;
+            normalized_value: string;
+            is_active?: boolean;
+            is_verified?: boolean;
+            last_confirmed_at?: string | null;
+            source_system_key?: string | null;
+            source_record_pks?: string[];
+            source_record_ids?: string[];
+            entities?: {
+                [key: string]: unknown;
+            }[];
+            source_records?: components["schemas"]["SourceRecord"][];
+            /** @description Provisional C3 placeholder weight. Not confidence; C4 owns the final scoring formula. Null for legacy-only identifier projections. */
+            score?: number | null;
+            golden_rank?: number | null;
+        };
+        Profile: {
+            profile_id: string;
+            /**
+             * @description `split` is reserved for future cluster fission and is never written by C3. `retired` marks a duplicate cluster absorbed by a deterministic union.
+             * @enum {string}
+             */
+            status: "open" | "promoted" | "retired" | "split";
+            evidence_version: number;
+            materialized_at?: string | null;
+            promoted_person_id?: string | null;
+            record_count: number;
+            identifier_count: number;
+        };
+        ProfileDetail: components["schemas"]["Profile"] & {
+            source_records: components["schemas"]["SourceRecord"][];
+            identifiers: components["schemas"]["PersonIdentifier"][];
+        };
+        ProfileListResponseEnvelope: {
+            data: components["schemas"]["Profile"][];
+            meta: components["schemas"]["Meta"];
+        };
+        ProfileDetailResponseEnvelope: {
+            data: components["schemas"]["ProfileDetail"];
+            meta: components["schemas"]["Meta"];
         };
         PersonDetail: components["schemas"]["PersonSummary"] & {
             identifiers: {
@@ -2966,6 +3054,65 @@ export interface operations {
             403: components["responses"]["Forbidden"];
             404: components["responses"]["NotFound"];
             409: components["responses"]["Conflict"];
+        };
+    };
+    list_profiles: {
+        parameters: {
+            query?: {
+                /** @description Free-text search (min 2 chars); NRIC values are never searched. */
+                q?: string;
+                /** @description Defaults to `open`; `all` returns every status. */
+                status?: "open" | "promoted" | "retired" | "all";
+                cursor?: string;
+                limit?: number;
+            };
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Profile page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileListResponseEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    get_profile: {
+        parameters: {
+            query?: never;
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path: {
+                profile_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Profile detail */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ProfileDetailResponseEnvelope"];
+                };
+            };
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+            404: components["responses"]["NotFound"];
         };
     };
     listPersons: {
@@ -4087,7 +4234,7 @@ export interface operations {
             query?: {
                 /** @description Exact identifier type. Supported values: `phone`, `email`, `nric`, `external_customer_id`, `membership_id`, `crm_contact_id`, `loyalty_id`, and `custom`. Must be supplied together with a nonblank `value`; anything else returns `400 invalid_request`. */
                 identifier_type?: string;
-                /** @description Canonical normalized identifier value stored by ingestion. Must be nonblank and supplied together with `identifier_type`. */
+                /** @description Canonical normalized identifier value stored by ingestion; for `nric`, plaintext or canonical values are canonicalized and keyed server-side. Must be nonblank and supplied together with `identifier_type`. */
                 value?: string;
                 q?: string;
                 status?: components["schemas"]["PersonStatus"];

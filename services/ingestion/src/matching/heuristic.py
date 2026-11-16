@@ -126,9 +126,11 @@ def evaluate_heuristic(
     record_type: RecordType = RecordType.IDENTITY,
     *,
     phone_fanout_cache: dict[str, int] | None = None,
+    snapshot: CandidateSnapshot | None = None,
 ) -> MatchResult:
     """Conditional-weight heuristic scoring across phone/email/DOB/name/address."""
-    snapshot = fetch_candidate_snapshot(tx, candidate_person_id)
+    if snapshot is None:
+        snapshot = fetch_candidate_snapshot(tx, candidate_person_id)
 
     score = 0.0
     reasons: list[str] = []

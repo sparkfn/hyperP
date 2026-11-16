@@ -24,6 +24,7 @@ from src.identifier_scopes import (
 )
 from src.identity_assertions import write_assertions
 from src.identity_link_revisions import identity_link_key
+from src.identity_registry import identifier_policy
 from src.models import (
     CandidateResult,
     ChatDifficulty,
@@ -31,6 +32,7 @@ from src.models import (
     ChatPurpose,
     ChatTone,
     EngineType,
+    IdentityCandidate,
     JsonValue,
     MatchDecision,
     MatchResult,
@@ -363,11 +365,80 @@ def exceeds_fanout_cap(
     return True
 
 
+def find_identity_candidates(
+    tx: ManagedTransaction,
+    identifiers: list[NormalizedIdentifier],
+    source_record_pk: str,
+) -> tuple[list[CandidateResult], list[IdentityCandidate]]:
+    """Step 4 (v2): discover Person, Profile, and parked-record participants.
+
+    Returns Person candidates for the existing scorer plus the Profile/unlinked
+    participants that feed Profile materialization. Fanout caps, hub
+    corroboration, depth bounds, and the 100/200 limits are enforced in Cypher.
+    """
+    rows = [
+        {
+            "input_index": index,
+            "identifier_type": ident.identifier_type,
+            "identifier_scope": identifier_scope(ident.identifier_type, ident.source_instance_id),
+            "normalized_value": ident.normalized_value,
+            "fanout_cap": fanout_cap_for(ident.identifier_type),
+        }
+        for index, ident in enumerate(identifiers)
+        if is_usable(ident.quality_flag)
+        and identifier_policy(ident.identifier_type).candidate_eligible
+    ]
+    people: list[CandidateResult] = []
+    others: list[IdentityCandidate] = []
+    if not rows:
+        return people, others
+    for record in tx.run(
+        queries.FIND_PARTICIPANT_CANDIDATES,
+        identifiers=rows,
+        source_record_pk=source_record_pk,
+    ):
+        participant_kind = str(record["participant_kind"])
+        participant_id = str(record["participant_id"])
+        if participant_kind == "person":
+            people.append(CandidateResult(person_id=participant_id, source="identifier"))
+        else:
+            others.append(
+                IdentityCandidate(
+                    participant_kind=participant_kind,
+                    participant_id=participant_id,
+                    shared_key_count=int(record["shared_key_count"]),
+                )
+            )
+    return people, others
+
+
+def find_person_candidates(
+    tx: ManagedTransaction,
+    identifiers: list[NormalizedIdentifier],
+    *,
+    candidate_mode: str,
+) -> list[CandidateResult]:
+    """Return only Person participants for ownership decisions.
+
+    CRM ownership must never resolve to a Profile or a parked SourceRecord, so
+    v2 filters the participant query to Person rows and legacy keeps its
+    IDENTIFIED_BY candidate generation.
+    """
+    if candidate_mode == "v2":
+        people, _others = find_identity_candidates(tx, identifiers, "")
+        return people
+    return find_candidates(tx, identifiers, [])
+
+
 # --- Step 6: person creation ----------------------------------------------
 
 
-def create_person(tx: ManagedTransaction) -> str:
-    """Create a Person + person_created MergeEvent. Returns the new ``person_id``."""
+def create_person_legacy(tx: ManagedTransaction) -> str:
+    """Create a Person + person_created MergeEvent (v1/v2_shadow legacy only).
+
+    Unreachable from the v2 identity model, where only a gate-approved NRIC
+    ``MERGE`` constructs a Person.
+    """
     create_result = tx.run(queries.CREATE_PERSON)
     record = create_result.single()
     assert record is not None, "CREATE_PERSON must return a row"
@@ -412,11 +483,11 @@ def retire_address_projection(tx: ManagedTransaction, source_record_pk: str) -> 
 # --- Step 7: persist source record + match decision + review case ---------
 
 
-def link_status_for(match_result: MatchResult, is_new_person: bool) -> str:
-    """Return 'linked' for merge decisions or new persons, else 'pending_review'."""
+def link_status_for(match_result: MatchResult, *, person_created: bool = False) -> str:
+    """Return 'linked' for merge decisions or actual Person creation, else 'pending_review'."""
     return (
         "linked"
-        if match_result.decision == MatchDecision.MERGE or is_new_person
+        if match_result.decision == MatchDecision.MERGE or person_created
         else "pending_review"
     )
 
@@ -460,7 +531,7 @@ def persist_source_record(
     addresses: list[NormalizedAddressModel],
     attributes: list[NormalizedAttribute],
     match_result: MatchResult | None = None,
-    is_new_person: bool = False,
+    person_created: bool = False,
     ingest_run_id: str | None,
     lifecycle_status: SourceRecordLifecycleStatus,
     expected_active_source_record_pk: str | None,
@@ -487,7 +558,7 @@ def persist_source_record(
     resolved_link_status = (
         link_status
         if link_status is not None
-        else link_status_for(match_result, is_new_person)
+        else link_status_for(match_result, person_created=person_created)
         if match_result is not None
         else "unlinked"
     )
@@ -880,6 +951,44 @@ def _link_address(
     )
 
 
+def attach_person_evidence(
+    tx: ManagedTransaction,
+    *,
+    person_id: str,
+    source_record_pk: str,
+    source_system_key: str,
+    observed_at: str | None,
+    addresses: list[NormalizedAddressModel],
+    attributes: list[NormalizedAttribute],
+    source_trust_tier: str | None = "tier_3",
+    confidence: float | None = 1.0,
+) -> None:
+    """Steps 10–11: attach addresses and facts to an existing Person link.
+
+    Shared by normal linking and Profile promotion so a promoted member writes
+    the same ``LIVES_AT``/``DESCRIBES_ADDRESS``/``HAS_FACT`` evidence as a
+    directly linked record, including each attribute's own ``quality_flag``.
+    Promotion passes ``None`` for the C1-provisional trust/confidence values so
+    those properties stay unset instead of inventing provenance.
+    """
+    for address in addresses:
+        if is_usable(address.quality_flag):
+            _link_address(tx, address, person_id, source_system_key, source_record_pk)
+
+    for attr in attributes:
+        tx.run(
+            queries.CREATE_ATTRIBUTE_FACT,
+            person_id=person_id,
+            source_record_pk=source_record_pk,
+            attribute_name=attr.attribute_name,
+            attribute_value=attr.attribute_value,
+            source_trust_tier=source_trust_tier,
+            confidence=confidence,
+            quality_flag=attr.quality_flag.value,
+            observed_at=observed_at,
+        )
+
+
 def link_record_to_graph(
     tx: ManagedTransaction,
     *,
@@ -890,6 +999,7 @@ def link_record_to_graph(
     person_id: str,
     source_record_pk: str,
     attach_evidence: bool = True,
+    write_identified_by: bool = True,
 ) -> None:
     """Steps 8–11: wire the source record into the Person subgraph.
 
@@ -908,23 +1018,17 @@ def link_record_to_graph(
         recompute_person_crm_deal_counts(tx, [person_id])
     if not attach_evidence:
         return
-    _link_identifiers(tx, identifiers, person_id, envelope.source_system, source_record_pk)
-    for address in addresses:
-        if is_usable(address.quality_flag):
-            _link_address(tx, address, person_id, envelope.source_system, source_record_pk)
-
-    for attr in attributes:
-        tx.run(
-            queries.CREATE_ATTRIBUTE_FACT,
-            person_id=person_id,
-            source_record_pk=source_record_pk,
-            attribute_name=attr.attribute_name,
-            attribute_value=attr.attribute_value,
-            source_trust_tier="tier_3",
-            confidence=1.0,
-            quality_flag=attr.quality_flag.value,
-            observed_at=envelope.observed_at,
-        )
+    if write_identified_by:
+        _link_identifiers(tx, identifiers, person_id, envelope.source_system, source_record_pk)
+    attach_person_evidence(
+        tx,
+        person_id=person_id,
+        source_record_pk=source_record_pk,
+        source_system_key=envelope.source_system,
+        observed_at=envelope.observed_at,
+        addresses=addresses,
+        attributes=attributes,
+    )
 
 
 # --- Step 13: auto-merge bookkeeping --------------------------------------

@@ -144,7 +144,7 @@ def test_persist_source_record_passes_scrubbed_raw_payload() -> None:
             reasons=[],
             matched_person_id="p-1",
         ),
-        is_new_person=False,
+        person_created=False,
         ingest_run_id=None,
         lifecycle_status=SourceRecordLifecycleStatus.ACTIVE,
         expected_active_source_record_pk=None,

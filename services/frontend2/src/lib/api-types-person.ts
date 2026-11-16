@@ -1,7 +1,7 @@
 // Hand-mirrored from services/api/src/types.py and routes/{merge,survivorship}.py.
 // Lives outside api-types.ts so the shared module stays untouched.
 
-import type { PersonEntitySummary, SourceRecordType } from "./api-types";
+import type { PersonEntitySummary, SourceRecord, SourceRecordType } from "./api-types";
 
 export type { SourceRecordType };
 
@@ -10,7 +10,8 @@ export type SourceRecordLifecycleStatus =
   | "pending_review"
   | "superseded"
   | "rejected"
-  | "link_failed";
+  | "link_failed"
+  | "parked";
 
 export interface PersonBankruptcyCase {
   bankruptcy_case_id: string;
@@ -152,6 +153,33 @@ export interface PersonIdentifier {
   source_record_ids: string[] | null;
   entities: PersonEntitySummary[];
   source_records: PersonSourceRecord[];
+  // Derived C3 weights; present only on HAS_IDENTIFIER-backed rows. `score` is
+  // a provisional placeholder until C4 and must never be shown as confidence.
+  score?: number | null;
+  golden_rank?: number | null;
+}
+
+// --- Derived C3 profiles ---
+
+export type ProfileStatus = "open" | "promoted" | "retired" | "split";
+
+export interface Profile {
+  profile_id: string;
+  status: ProfileStatus;
+  evidence_version: number;
+  materialized_at: string | null;
+  promoted_person_id: string | null;
+  record_count: number;
+  identifier_count: number;
+}
+
+export type ProfileSourceRecord = SourceRecord & {
+  lifecycle_status: SourceRecordLifecycleStatus;
+};
+
+export interface ProfileDetail extends Profile {
+  source_records: ProfileSourceRecord[];
+  identifiers: PersonIdentifier[];
 }
 
 // --- Request bodies ---

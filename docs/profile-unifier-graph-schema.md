@@ -357,6 +357,70 @@ different matching criteria later. `rental_flat` is a place register and is
   retried at end-of-run. See
   [`profile-unifier-entity-and-sales.md`](profile-unifier-entity-and-sales.md).
 
+### Profile (C3, derived)
+
+A `Profile` is a derived, rebuildable projection of C1 `ASSERTS` evidence: an
+unverified cluster of source records that share eligible identifiers but are not
+anchored by a gate-approved NRIC. It is **not** a Person — no golden-profile
+fields, no `MERGED_INTO` lineage, no review merge, and no match-engine scoring.
+
+```cypher
+CREATE (profile:Profile {
+  profile_id: randomUUID(),      // stable random UUID assigned at creation
+  status: 'open',                // open | promoted | retired; split is reserved
+  evidence_version: 0,           // CAS token; increments only on real evidence change
+  materialized_at: datetime(),   // never rewritten after creation
+  updated_at: datetime(),        // advances only with evidence_version
+  promoted_person_id: null       // set on one-way NRIC promotion
+})
+```
+
+Status values:
+
+- `open` — unverified evidence cluster, eligible for candidate expansion.
+- `promoted` — anchored by a gate-approved NRIC digest; `promoted_person_id`
+  and `PROMOTED_TO` record the Person. Promotion is one-way; no demotion exists.
+- `retired` — duplicate cluster absorbed by the deterministic union.
+- `split` — reserved for future cluster fission; C3 never writes it.
+
+Materialization threshold: a cluster materializes when two attributed records
+share an eligible key, or when one record asserts two independent eligible
+high-entropy keys (distinct usable, candidate-eligible Identifier nodes with
+complete assertion metadata). Below the threshold the record stays
+`lifecycle_status='parked'`, `link_status='unlinked'`, `attribution_status='parked'`,
+`reeval_pending=true` and remains visible through `ASSERTS`.
+
+Attributed members use `(SourceRecord)-[:IN_PROFILE]->(Profile)` with
+`link_status='profile'`, `attribution_status='profile'`, `reeval_pending=false`.
+Bridged open Profiles are unioned deterministically: the lowest `profile_id` is
+kept, members and links move to it, and every loser becomes `retired`.
+
+Every Profile write is CAS-guarded on `status='open' AND evidence_version=$expected`;
+the version increments only on an actual evidence change. The derived-write
+zero-diff invariant holds: an unchanged recompute performs no edge/property
+writes, and `materialized_at`/`first_seen_at` are preserved when evidence changes.
+
+Provisional `HAS_IDENTIFIER` values are fixed placeholders until C4:
+`score=0.0`, `exclusivity=0.0`, `rank_score=0.0`, `golden_rank` unset,
+`basis='ASSERTS'`, `status='active'`, `policy_version='c3-provisional'`. They are
+never consumed by matching, ranking, or golden-profile selection.
+
+`Identifier.participant_count` is derived from direct eligible participants — an
+active Person, an open Profile, or a current parked/unlinked/parked/reeval_pending
+SourceRecord — and recomputed, never incremented.
+
+Identity-model modes:
+
+| Mode | Behaviour |
+| --- | --- |
+| `v1` | Legacy writes and matching only; no C3 projection. |
+| `v2_shadow` | Legacy outcome stays authoritative; C1 assertions and the C3 projection are additionally written without changing legacy counts. |
+| `v2` | C3 projection is authoritative: only a gate-approved NRIC `MERGE` creates a Person, NRIC-less outcomes become Profile/parked, and `IDENTIFIED_BY` is not written. |
+
+v2 NRIC equality is exact HMAC-digest equality across
+`NormalizedIdentifier.normalized_value`, `Identifier.normalized_value`, and
+`Person.nric_key`; there is no plaintext fallback.
+
 ### Identity assertions and skips
 
 `ASSERTS` records immutable source attribution from a `SourceRecord` to shared
@@ -378,8 +442,10 @@ An `IngestRunAttempt` node stores durable counters for one process attempt and l
 `IngestRun` for cumulative reconciliation.
 Optional SourceRecord attribution properties are `attribution_status`,
 `attribution_score` (reserved for later work), `attribution_eval_at`, and
-`reeval_pending`. `IDENTITY_MODEL=v1` is the default; `v2_shadow` adds ASSERTS
-writes only and does not change matching or linking behavior.
+`reeval_pending`. `IDENTITY_MODEL=v1` is the default; `v2_shadow` additionally
+writes C1 assertions and the derived C3 projection while the legacy outcome
+remains authoritative; `v2` makes the C3 projection authoritative. See the
+Profile section above for the mode table.
 
 Every IngestPipeline record is staged as `parked` first and settled to
 `pending_review`/`active` once linked. A parked row reused by a later run is attached to that
@@ -562,7 +628,11 @@ this as a closed enum.
 | --- | --- | --- | --- | --- |
 | `IDENTIFIED_BY` | Person | Identifier | `is_verified`, `verification_method`, `is_active`, `quality_flag`, `first_seen_at`, `last_seen_at`, `last_confirmed_at`, `source_system_key`, `source_record_pk` | Links a person to an identity signal. Rich properties track verification, aging, and provenance. |
 | `LIVES_AT` | Person | Address | `is_active`, `is_verified`, `source_system_key`, `source_record_pk`, `first_seen_at`, `last_seen_at`, `last_confirmed_at`, `quality_flag` | Links a person to a normalized address. Same aging and verification model as `IDENTIFIED_BY`. |
-| `LINKED_TO` | SourceRecord | Person | `linked_at` | Associates an ingested record with its resolved person. |
+| `LINKED_TO` | SourceRecord | Person | `linked_at`, `is_active` (legacy rows default active) | Associates an ingested record with its resolved person. Re-attribution reactivates an inactive link. |
+| `HAS_IDENTIFIER` | Person / Profile | Identifier | `link_id`, `assertion_count`, `source_count`, `verified_count`, `max_tier`, `first_seen_at`, `last_seen_at`, `last_confirmed_at`, `score`, `exclusivity`, `rank_score`, `golden_rank`, `basis`, `status`, `policy_version`, `computed_at` | Derived C3 evidence link. `link_id` is the deterministic SHA1 of `participant_id|identifier_id`; weights are fixed provisional placeholders until C4. |
+| `IN_PROFILE` | SourceRecord | Profile | — | Profile membership, retained as lineage after promotion. |
+| `ANCHORED_BY` | Person | Identifier | — | Person is anchored by a gate-approved NRIC digest (`Person.nric_key`). |
+| `PROMOTED_TO` | Profile | Person | — | One-way result of NRIC promotion. |
 | `FROM_SOURCE` | SourceRecord / IngestRun | SourceSystem | — | Provenance. |
 | `OWNED_BY` | SourceRecord | Entity | — | Record-scoped ownership for a shared multi-entity SourceSystem. |
 | `PART_OF_RUN` | SourceRecord | IngestRun | — | Groups records by ingestion batch. |
@@ -813,6 +883,19 @@ CREATE CONSTRAINT person_id_unique IF NOT EXISTS
 
 CREATE CONSTRAINT identifier_id_unique IF NOT EXISTS
   FOR (id:Identifier) REQUIRE id.identifier_id IS UNIQUE;
+
+// C3 identity links and unverified Profiles (#499)
+CREATE CONSTRAINT profile_id_unique IF NOT EXISTS
+  FOR (profile:Profile) REQUIRE profile.profile_id IS UNIQUE;
+
+CREATE CONSTRAINT person_nric_key_unique IF NOT EXISTS
+  FOR (person:Person) REQUIRE person.nric_key IS UNIQUE;
+
+CREATE CONSTRAINT has_identifier_link_id_unique IF NOT EXISTS
+  FOR ()-[link:HAS_IDENTIFIER]-() REQUIRE link.link_id IS UNIQUE;
+
+CREATE INDEX profile_status_materialized_at IF NOT EXISTS
+  FOR (profile:Profile) ON (profile.status, profile.materialized_at);
 
 CREATE CONSTRAINT source_system_key_unique IF NOT EXISTS
   FOR (ss:SourceSystem) REQUIRE ss.source_key IS UNIQUE;

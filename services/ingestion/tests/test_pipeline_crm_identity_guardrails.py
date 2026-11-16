@@ -275,13 +275,14 @@ def test_multi_contact_duplicate_owners_create_actionable_review() -> None:
     def candidates(
         _tx: ManagedTransaction,
         identifiers: list[NormalizedIdentifier],
-        _addresses: list[object],
+        *,
+        candidate_mode: str,
     ) -> list[CandidateResult]:
         contact_id = identifiers[0].normalized_value
         assert contact_id in {"contact-1", "contact-2"}
         return [CandidateResult(person_id=person_id) for person_id in ["person-a", "person-b"]]
 
-    with patch("src.pipeline.find_candidates", side_effect=candidates):
+    with patch("src.pipeline.find_person_candidates", side_effect=candidates):
         result = pipeline._resolve_ambiguous_crm_deal_contacts(
             cast(ManagedTransaction, MagicMock()),
             envelope,
@@ -321,13 +322,14 @@ def test_shared_multi_contact_owner_respects_active_no_match_lock() -> None:
     def candidates(
         _tx: ManagedTransaction,
         _identifiers: list[NormalizedIdentifier],
-        _addresses: list[object],
+        *,
+        candidate_mode: str,
     ) -> list[CandidateResult]:
         return [CandidateResult(person_id="person-a")]
 
     tx = cast(ManagedTransaction, MagicMock())
     with (
-        patch("src.pipeline.find_candidates", side_effect=candidates),
+        patch("src.pipeline.find_person_candidates", side_effect=candidates),
         patch(
             "src.pipeline.prefetch_no_match_lock_owners",
             return_value={"person-a": "person-b"},
@@ -368,7 +370,8 @@ def test_disjoint_multi_contact_owners_are_not_selectable() -> None:
     def candidates(
         _tx: ManagedTransaction,
         identifiers: list[NormalizedIdentifier],
-        _addresses: list[object],
+        *,
+        candidate_mode: str,
     ) -> list[CandidateResult]:
         person_ids = (
             ["person-a", "person-b"]
@@ -377,7 +380,7 @@ def test_disjoint_multi_contact_owners_are_not_selectable() -> None:
         )
         return [CandidateResult(person_id=person_id) for person_id in person_ids]
 
-    with patch("src.pipeline.find_candidates", side_effect=candidates):
+    with patch("src.pipeline.find_person_candidates", side_effect=candidates):
         result = pipeline._resolve_ambiguous_crm_deal_contacts(
             cast(ManagedTransaction, MagicMock()),
             envelope,
@@ -804,7 +807,8 @@ def test_crm_channel_match_with_strong_name_mismatch_never_auto_merges() -> None
 
     assert result.decision is not MatchDecision.MERGE
     assert result.additional_linked_person_ids == []
-    assert result.is_new_person is True
+    assert result.decision is MatchDecision.NO_MATCH
+    assert result.matched_person_id is None
 
 
 def test_repair_plan_requires_independent_provenance_for_automatic_retention() -> None:

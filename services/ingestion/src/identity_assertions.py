@@ -136,7 +136,8 @@ def _identifier_row(
     normalized_value = _string(raw, "normalized_value")
     if identifier_type is None or normalized_value is None:
         raise _MalformedEntryError
-    if not is_usable(_quality(raw)):
+    quality = _quality(raw)
+    if not is_usable(quality):
         return None
     source_instance_id = _optional_string(raw.get("source_instance_id"))
     scope = identifier_scope(identifier_type, source_instance_id)
@@ -157,6 +158,8 @@ def _identifier_row(
         "nric_encrypted": _optional_string(raw.get("nric_encrypted")) if is_nric else None,
         "target_id": target_id,
         "field_path": field_path,
+        "quality_flag": quality.value,
+        "is_verified": _optional_bool(raw.get("is_verified")),
         "assertion_id": _assertion_id(source_record_pk, field_path, target_id),
     }
 

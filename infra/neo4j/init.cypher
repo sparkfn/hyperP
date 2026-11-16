@@ -150,6 +150,19 @@ CREATE INDEX source_record_attribution_status IF NOT EXISTS
 CREATE INDEX source_record_reeval_pending IF NOT EXISTS
   FOR (sr:SourceRecord) ON (sr.reeval_pending);
 
+// C3 identity links and unverified Profiles (#499). Additive and idempotent.
+CREATE CONSTRAINT profile_id_unique IF NOT EXISTS
+  FOR (profile:Profile) REQUIRE profile.profile_id IS UNIQUE;
+
+CREATE CONSTRAINT person_nric_key_unique IF NOT EXISTS
+  FOR (person:Person) REQUIRE person.nric_key IS UNIQUE;
+
+CREATE CONSTRAINT has_identifier_link_id_unique IF NOT EXISTS
+  FOR ()-[link:HAS_IDENTIFIER]-() REQUIRE link.link_id IS UNIQUE;
+
+CREATE INDEX profile_status_materialized_at IF NOT EXISTS
+  FOR (profile:Profile) ON (profile.status, profile.materialized_at);
+
 // Stage-history replay, review, reconciliation, and outbox claim paths.
 CREATE INDEX stage_history_unit_run_sequence IF NOT EXISTS
   FOR (unit:StageHistoryUnit) ON (unit.logical_run_id, unit.page_sequence);

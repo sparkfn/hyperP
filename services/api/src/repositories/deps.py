@@ -18,6 +18,7 @@ from src.repositories.neo4j.ingest import Neo4jIngestRepository
 from src.repositories.neo4j.merge import Neo4jMergeRepository
 from src.repositories.neo4j.nric import Neo4jNricRevealRepository
 from src.repositories.neo4j.person import Neo4jPersonRepository
+from src.repositories.neo4j.profile import Neo4jProfileRepository
 from src.repositories.neo4j.report import Neo4jReportRepository
 from src.repositories.neo4j.review import Neo4jReviewRepository
 from src.repositories.neo4j.sales import Neo4jSalesRepository
@@ -32,12 +33,14 @@ from src.repositories.protocols.ingest import IngestRepository
 from src.repositories.protocols.merge import MergeRepository
 from src.repositories.protocols.nric import NricRevealRepository
 from src.repositories.protocols.person import PersonRepository
+from src.repositories.protocols.profile import ProfileRepository
 from src.repositories.protocols.report import ReportRepository
 from src.repositories.protocols.review import ReviewRepository
 from src.repositories.protocols.sales import SalesRepository
 from src.repositories.protocols.survivorship import SurvivorshipRepository
 
 _person_repo: PersonRepository = Neo4jPersonRepository()
+_profile_repo: ProfileRepository = Neo4jProfileRepository()
 _entity_repo: EntityRepository = Neo4jEntityRepository()
 _sales_repo: SalesRepository = Neo4jSalesRepository()
 _merge_repo: MergeRepository = Neo4jMergeRepository()
@@ -55,6 +58,10 @@ _nric_repo: NricRevealRepository = Neo4jNricRevealRepository()
 
 def get_person_repo() -> PersonRepository:
     return _person_repo
+
+
+def get_profile_repo() -> ProfileRepository:
+    return _profile_repo
 
 
 def get_entity_repo() -> EntityRepository:

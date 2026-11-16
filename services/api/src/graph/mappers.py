@@ -507,6 +507,11 @@ def map_person_entity_dict(raw: GraphValue) -> PersonEntitySummary:
     )
 
 
+def map_source_record_list(value: GraphValue) -> list[SourceRecord]:
+    """Map a list of source-record projections from a graph value."""
+    return _map_source_records(value)
+
+
 def _map_source_records(value: GraphValue) -> list[SourceRecord]:
     if not isinstance(value, list):
         return []
@@ -542,6 +547,8 @@ def map_person_identifier(record: GraphRecord) -> PersonIdentifier:
         source_record_ids=to_str_list(record.get("source_record_ids")),
         entities=entities,
         source_records=_map_source_records(record.get("source_records")),
+        score=to_optional_float(record.get("score")),
+        golden_rank=to_optional_int(record.get("golden_rank")),
     )
 
 

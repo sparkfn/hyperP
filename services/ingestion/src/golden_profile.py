@@ -66,9 +66,18 @@ class _LegacyGoldenProfile(GoldenProfileFields):
     person_id: str
 
 
-def compute_golden_profile(tx: ManagedTransaction, person_id: str) -> _LegacyGoldenProfile:
-    """Compute and persist the legacy profile using its established survivorship rules."""
-    facts, identifiers, addresses = _fetch_person_evidence(tx, person_id)
+def compute_golden_profile(
+    tx: ManagedTransaction,
+    person_id: str,
+    *,
+    v2_evidence: bool = False,
+) -> _LegacyGoldenProfile:
+    """Compute and persist the golden profile using its survivorship rules.
+
+    ``v2_evidence`` selects the HAS-first identifier read used by the v2
+    identity mode; every other mode keeps the exact legacy projection.
+    """
+    facts, identifiers, addresses = _fetch_person_evidence(tx, person_id, v2_evidence)
     fields = _apply_survivorship(facts, identifiers, addresses)
     profile: _LegacyGoldenProfile = {"person_id": person_id, **fields}
     tx.run(
@@ -93,14 +102,14 @@ def compute_golden_profile(tx: ManagedTransaction, person_id: str) -> _LegacyGol
 
 
 def _fetch_person_evidence(
-    tx: ManagedTransaction, person_id: str
+    tx: ManagedTransaction, person_id: str, v2_evidence: bool
 ) -> tuple[list[_LegacyFact], list[_LegacyIdentifier], list[_LegacyAddress]]:
+    identifiers_query = (
+        queries.FETCH_PERSON_IDENTIFIERS_V2 if v2_evidence else queries.FETCH_PERSON_IDENTIFIERS
+    )
     return (
         [_legacy_fact(row) for row in tx.run(queries.FETCH_PERSON_FACTS, person_id=person_id)],
-        [
-            _legacy_identifier(row)
-            for row in tx.run(queries.FETCH_PERSON_IDENTIFIERS, person_id=person_id)
-        ],
+        [_legacy_identifier(row) for row in tx.run(identifiers_query, person_id=person_id)],
         [
             _legacy_address(row)
             for row in tx.run(queries.FETCH_PERSON_ADDRESSES, person_id=person_id)

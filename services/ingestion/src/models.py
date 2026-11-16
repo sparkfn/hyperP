@@ -525,6 +525,19 @@ class CandidateResult(BaseModel):
     source: str = "identifier"  # "identifier" or "address"
 
 
+class IdentityCandidate(BaseModel):
+    """A v2 identity participant discovered through shared identifiers.
+
+    ``participant_kind`` is ``person``, ``profile``, or ``source_record``. Only
+    Person participants reach the existing match engine; Profiles and parked
+    SourceRecords feed the materializer/promoter.
+    """
+
+    participant_kind: str
+    participant_id: str
+    shared_key_count: int = 0
+
+
 class MatchResult(BaseModel):
     """Output of the match engine chain."""
 
@@ -544,7 +557,6 @@ class MatchResult(BaseModel):
     # CRM ambiguity reviews expose every supported destination through one
     # selectable review case instead of silently choosing one candidate.
     review_candidate_person_ids: list[str] = Field(default_factory=list)
-    is_new_person: bool = False
     feature_snapshot: dict[str, JsonValue] = Field(default_factory=dict)
 
 

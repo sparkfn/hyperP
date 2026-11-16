@@ -87,7 +87,6 @@ def test_continuity_with_no_alternative_forces_review_not_new_person() -> None:
         )
     assert result.decision is MatchDecision.REVIEW
     assert result.matched_person_id == "prior"
-    assert result.is_new_person is False
 
 
 def test_continuity_with_additional_destination_forces_review() -> None:

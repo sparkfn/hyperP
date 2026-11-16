@@ -44,6 +44,14 @@ from src.graph.queries import (
     build_review_action_cypher,
 )
 from src.graph.queries.identity_link_revisions import APPEND_IDENTITY_LINK_REVISIONS
+from src.graph.queries.identity_links import (
+    DELETE_PERSON_HAS_IDENTIFIER_LINKS,
+    DELETE_STALE_PERSON_HAS_IDENTIFIER_LINKS,
+    FETCH_PERSON_ASSERTION_EVIDENCE,
+    LOCK_PERSON_FOR_LINK_RECOMPUTE,
+    MERGE_PERSON_HAS_IDENTIFIER_LINKS,
+    RECOMPUTE_IDENTIFIER_PARTICIPANT_COUNTS,
+)
 from src.graph.queries.person_list_summary import (
     APPLY_PERSON_LIST_SUMMARY_DELTAS,
     CAPTURE_PERSON_SUMMARY_CONTRIBUTIONS,
@@ -157,16 +165,40 @@ class _Call:
     params: Params
 
 
+IDENTITY_LINK_RECOMPUTE_QUERIES: frozenset[str] = frozenset(
+    {
+        FETCH_PERSON_ASSERTION_EVIDENCE,
+        DELETE_STALE_PERSON_HAS_IDENTIFIER_LINKS,
+        MERGE_PERSON_HAS_IDENTIFIER_LINKS,
+        RECOMPUTE_IDENTIFIER_PARTICIPANT_COUNTS,
+        DELETE_PERSON_HAS_IDENTIFIER_LINKS,
+    }
+)
+
+
+def _identity_link_recompute_event(params: Mapping[str, object]) -> str:
+    person_id = params.get("person_id")
+    return f"has_recompute:{person_id if isinstance(person_id, str) else 'counts'}"
+
+
 class _Tx:
     def __init__(self, records: Sequence[Record | None]) -> None:
         self._records: list[Record | None] = list(records)
         self.calls: list[_Call] = []
         self.summary_calls: list[str] = []
+        self.events: list[str] = []
 
     async def run(self, query: str, **params: object) -> _AsyncResult:
+        if query == LOCK_PERSON_FOR_LINK_RECOMPUTE:
+            return _AsyncResult(None)
         if is_summary_capture_query(query) or is_summary_apply_query(query):
             self.summary_calls.append(query)
             return _AsyncResult(SUMMARY_APPLY_ROW if is_summary_apply_query(query) else None)
+        if query in IDENTITY_LINK_RECOMPUTE_QUERIES:
+            self.events.append(_identity_link_recompute_event(params))
+            if query == MERGE_PERSON_HAS_IDENTIFIER_LINKS:
+                return _AsyncResult({"link_count": 0})
+            return _AsyncResult(None)
         self.calls.append(_Call(query=query, params=params))
         record = self._records.pop(0) if self._records else None
         return _AsyncResult(record)
@@ -262,6 +294,13 @@ async def test_review_merge_uses_requested_survivor_person() -> None:
         CAPTURE_PERSON_SUMMARY_CONTRIBUTIONS,
         CAPTURE_PERSON_SUMMARY_CONTRIBUTIONS,
         APPLY_PERSON_LIST_SUMMARY_DELTAS,
+    ]
+    # The review merge re-derives the survivor's HAS projection and releases the
+    # absorbed Person's before the golden recompute.
+    assert tx.events == [
+        "has_recompute:person-b",
+        "has_recompute:person-b",
+        "has_recompute:person-a",
     ]
 
 
@@ -1190,9 +1229,16 @@ class _LifecycleTx:
         self.summary_calls: list[str] = []
 
     async def run(self, query: str, **params: object) -> _StateResult:
+        if query == LOCK_PERSON_FOR_LINK_RECOMPUTE:
+            return _StateResult(None)
         if is_summary_capture_query(query) or is_summary_apply_query(query):
             self.summary_calls.append(query)
             return _StateResult(SUMMARY_APPLY_ROW if is_summary_apply_query(query) else None)
+        if query in IDENTITY_LINK_RECOMPUTE_QUERIES:
+            self.events.append(_identity_link_recompute_event(params))
+            if query == MERGE_PERSON_HAS_IDENTIFIER_LINKS:
+                return _StateResult({"link_count": 0})
+            return _StateResult(None)
         self.calls.append((query, params))
         if query == GET_PERSONS_FOR_REVIEW_MERGE:
             return _StateResult(None)
@@ -1292,10 +1338,27 @@ async def test_pending_record_review_can_select_any_persisted_crm_candidate(
 
     assert result is not None
     assert _activation_call(tx)["approved_person_id"] == "person-b"
+    # Activation re-links the pending record, then the approved Person's HAS
+    # projection is re-derived from the newly attributed evidence.
+    recompute_events = [event for event in tx.events if event.startswith("has_recompute:")]
+    assert recompute_events
+    assert tx.events.index("activate") < tx.events.index(recompute_events[0])
 
 
 def _activation_call(tx: _LifecycleTx) -> Mapping[str, object]:
     return next(params for query, params in tx.calls if query == ACTIVATE_PENDING_REVIEW_RECORD)
+
+
+def _has_recompute_people(tx: _LifecycleTx) -> list[str]:
+    """Deduped, order-preserving Person ids from the HAS-recompute fake events."""
+    people: list[str] = []
+    for event in tx.events:
+        if not event.startswith("has_recompute:"):
+            continue
+        person_id = event.removeprefix("has_recompute:")
+        if person_id not in people:
+            people.append(person_id)
+    return people
 
 
 async def _submit_lifecycle(tx: _LifecycleTx, action: ApiReviewActionType) -> object:
@@ -1349,13 +1412,22 @@ async def test_pending_replacement_activates_payload_recomputes_once_then_closes
     params = _activation_call(tx)
     assert params["expected_active_source_record_pk"] == "active-v1"
     assert params["identifiers"] == payload["identifiers"]
-    assert tx.events == [
+    assert [event for event in tx.events if not event.startswith("has_recompute:")] == [
         "claim",
         "activate",
         "crm_recompute:person-a",
         "recompute:person-a",
         "close",
     ]
+    assert _has_recompute_people(tx) == ["person-a"]
+    has_indexes = [
+        index for index, event in enumerate(tx.events) if event.startswith("has_recompute:")
+    ]
+    first_crm_index = next(
+        index for index, event in enumerate(tx.events) if event.startswith("crm_recompute:")
+    )
+    assert has_indexes
+    assert all(tx.events.index("activate") < index < first_crm_index for index in has_indexes)
 
 
 @pytest.mark.asyncio
@@ -1379,7 +1451,7 @@ async def test_pending_reassignment_recomputes_distinct_people_in_sorted_order(
     await _submit_lifecycle(tx, ApiReviewActionType.MERGE)
 
     assert _activation_call(tx)["approved_person_id"] == "person-a"
-    assert tx.events == [
+    assert [event for event in tx.events if not event.startswith("has_recompute:")] == [
         "claim",
         "activate",
         "crm_recompute:person-a,person-z",
@@ -1387,6 +1459,17 @@ async def test_pending_reassignment_recomputes_distinct_people_in_sorted_order(
         "recompute:person-z",
         "close",
     ]
+    # The reassignment touches both owners: each distinct Person is recomputed
+    # once, in sorted order, after activation and before golden recomputation.
+    assert _has_recompute_people(tx) == ["person-a", "person-z"]
+    has_indexes = [
+        index for index, event in enumerate(tx.events) if event.startswith("has_recompute:")
+    ]
+    first_crm_index = next(
+        index for index, event in enumerate(tx.events) if event.startswith("crm_recompute:")
+    )
+    assert has_indexes
+    assert all(tx.events.index("activate") < index < first_crm_index for index in has_indexes)
 
 
 @pytest.mark.asyncio
@@ -2552,3 +2635,65 @@ async def test_submit_bulk_action_reports_per_item_outcomes() -> None:
         "reviewer@example.com",
         "confirmed_match",
     )
+
+
+@pytest.mark.asyncio
+async def test_pending_approval_recomputes_every_affected_has_projection(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tx = _LifecycleTx(
+        expected_old="active-v1",
+        active_old="active-v1",
+        proposed="person-b",
+        prior="person-a",
+        affected=["person-a", "person-b"],
+    )
+    recomputed: list[str] = []
+    golden: list[str] = []
+
+    async def recompute_has(_tx: object, person_id: str) -> int:
+        recomputed.append(person_id)
+        return 0
+
+    async def recompute_golden(_tx: object, person_id: str, _invalidate: bool) -> None:
+        golden.append(person_id)
+
+    monkeypatch.setattr(review_module, "recompute_person_has_identifier_links", recompute_has)
+    monkeypatch.setattr(review_module, "recompute_golden_profile_tx", recompute_golden)
+
+    await _submit_lifecycle(tx, ApiReviewActionType.MERGE)
+
+    # The replaced owner and the approved Person both lose/regain evidence in
+    # this activation, so both projections are re-derived before golden profiles.
+    assert recomputed == ["person-a", "person-b"]
+    assert golden == ["person-a", "person-b"]
+
+
+@pytest.mark.asyncio
+async def test_pending_approval_recomputes_approved_person_when_affected_list_is_malformed(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    tx = _LifecycleTx(
+        expected_old=None,
+        active_old=None,
+        proposed="person-b",
+        # A malformed entry must not suppress the approved Person's recompute.
+        affected=[123],
+    )
+    recomputed: list[str] = []
+    golden: list[str] = []
+
+    async def recompute_has(_tx: object, person_id: str) -> int:
+        recomputed.append(person_id)
+        return 0
+
+    async def recompute_golden(_tx: object, person_id: str, _invalidate: bool) -> None:
+        golden.append(person_id)
+
+    monkeypatch.setattr(review_module, "recompute_person_has_identifier_links", recompute_has)
+    monkeypatch.setattr(review_module, "recompute_golden_profile_tx", recompute_golden)
+
+    await _submit_lifecycle(tx, ApiReviewActionType.MERGE)
+
+    assert recomputed == ["person-b"]
+    assert golden == []

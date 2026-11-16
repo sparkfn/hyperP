@@ -10,6 +10,7 @@ from src.golden_profile import compute_golden_profile
 from src.graph import queries
 from src.graph.crm_deal_count import recompute_person_crm_deal_counts
 from src.graph.person_list_summary_deltas import PersonListSummaryDeltaCollector
+from src.identity_link_writes import recompute_participant_links
 from src.profile_analysis_dirty import mark_profile_analysis_dirty
 
 
@@ -83,6 +84,7 @@ def merge_person_pair(
     match_decision_id: str,
     reason: str,
     collector: PersonListSummaryDeltaCollector,
+    v2_evidence: bool = False,
 ) -> str:
     """Rewire an absorbed person into its survivor and return the merge-event id.
 
@@ -177,10 +179,22 @@ def merge_person_pair(
             survivor_id=survivor_id,
             merge_event_id=merge_event_id,
         )
+    if _has_has_identifier_links(tx, absorbed_id) or _has_has_identifier_links(tx, survivor_id):
+        recompute_participant_links(tx, "person", survivor_id)
+        recompute_participant_links(tx, "person", absorbed_id)
     recompute_person_crm_deal_counts(tx, [absorbed_id, survivor_id])
-    compute_golden_profile(tx, survivor_id)
+    compute_golden_profile(tx, survivor_id, v2_evidence=v2_evidence)
     mark_profile_analysis_dirty(tx, person_ids=affected_person_ids)
     return merge_event_id
+
+
+def _has_has_identifier_links(tx: ManagedTransaction, person_id: str) -> bool:
+    """Whether this Person has any derived HAS_IDENTIFIER edge (dual-written).
+
+    The data-driven gate keeps pure-v1 graphs on the untouched legacy stream.
+    """
+    row = tx.run(queries.PERSON_HAS_IDENTIFIER_LINKS, person_id=person_id).single()
+    return bool(row is not None and row["has_links"] is True)
 
 
 def _profile_analysis_merge_person_ids(

@@ -45,6 +45,13 @@ from src.graph.queries.identity_link_revisions import (
     LIST_IDENTITY_LINK_EVENTS,
     LIST_IDENTITY_LINK_SNAPSHOT,
 )
+from src.graph.queries.identity_links import (
+    DELETE_PERSON_HAS_IDENTIFIER_LINKS,
+    DELETE_STALE_PERSON_HAS_IDENTIFIER_LINKS,
+    FETCH_PERSON_ASSERTION_EVIDENCE,
+    MERGE_PERSON_HAS_IDENTIFIER_LINKS,
+    RECOMPUTE_IDENTIFIER_PARTICIPANT_COUNTS,
+)
 from src.graph.queries.ingestion import (
     CHECK_ACTIVE_RESET_GENERATION,
     CHECK_BITRIX_API_ADMISSION,
@@ -132,6 +139,11 @@ from src.graph.queries.profile_analysis import (
     GET_PERSON_PROFILE_ANALYSES,
     GET_PERSON_PROFILE_ANALYSIS_HISTORY,
     REQUEUE_FAILED_PROFILE_ANALYSIS_REQUEST,
+)
+from src.graph.queries.profiles import (
+    COUNT_PROFILES,
+    GET_PROFILE,
+    LIST_PROFILES,
 )
 from src.graph.queries.reports import (
     CREATE_REPORT,
@@ -255,7 +267,12 @@ __all__ = [
     "CREATE_UNMERGE_AUDIT",
     "DEFAULT_HOPS",
     "DELETE_LOCK",
+    "DELETE_PERSON_HAS_IDENTIFIER_LINKS",
     "DELETE_REPORT",
+    "DELETE_STALE_PERSON_HAS_IDENTIFIER_LINKS",
+    "FETCH_PERSON_ASSERTION_EVIDENCE",
+    "MERGE_PERSON_HAS_IDENTIFIER_LINKS",
+    "RECOMPUTE_IDENTIFIER_PARTICIPANT_COUNTS",
     "EXECUTE_MANUAL_MERGE",
     "FIND_PERSON_BY_IDENTIFIER",
     "FLAG_AFFECTED_RECORDS_FOR_REVIEW",
@@ -356,6 +373,9 @@ __all__ = [
     "get_graph_query",
     "get_node_graph_query",
     "RECOMPUTE_PERSON_CRM_DEAL_COUNTS",
+    "COUNT_PROFILES",
+    "GET_PROFILE",
+    "LIST_PROFILES",
 ]
 
 # Identity-link stream schema is created by both services because API lifecycle

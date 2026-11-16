@@ -256,6 +256,50 @@ RETURN id.identifier_type AS identifier_type,
        src.record_type AS source_record_type
 """
 
+# v2 identity mode has no legacy IDENTIFIED_BY projection, so golden-profile
+# survivorship reads the derived HAS_IDENTIFIER projection first and falls back
+# to legacy rows only for identifiers the projection does not cover. Shadow and
+# v1 keep the exact legacy query above.
+FETCH_PERSON_IDENTIFIERS_V2 = """
+MATCH (p:Person {person_id: $person_id})
+CALL {
+  WITH p
+  MATCH (p)-[has:HAS_IDENTIFIER {status: 'active'}]->(id:Identifier)
+  OPTIONAL MATCH (record:SourceRecord)-[:ASSERTS]->(id)
+  WHERE EXISTS {
+    MATCH (record)-[linked:LINKED_TO]->(p)
+    WHERE coalesce(linked.is_active, true) = true
+      AND coalesce(record.link_status, 'linked') <> 'pending_review'
+      AND coalesce(record.lifecycle_status, 'active') <> 'superseded'
+  }
+  WITH id, has, record
+  ORDER BY coalesce(record.source_record_pk, '')
+  WITH id, has,
+       head([value IN collect(record.record_type) WHERE value IS NOT NULL]) AS source_record_type
+  RETURN id,
+         coalesce(has.verified_count, 0) > 0 AS is_verified,
+         has.last_confirmed_at AS last_confirmed_at,
+         source_record_type
+  UNION
+  WITH p
+  MATCH (p)-[rel:IDENTIFIED_BY]->(id:Identifier)
+  WHERE coalesce(rel.is_active, true) = true
+    AND NOT EXISTS { MATCH (p)-[:HAS_IDENTIFIER {status: 'active'}]->(id) }
+  OPTIONAL MATCH (src:SourceRecord {source_record_pk: rel.source_record_pk})
+  RETURN id,
+         rel.is_verified AS is_verified,
+         rel.last_confirmed_at AS last_confirmed_at,
+         src.record_type AS source_record_type
+}
+RETURN id.identifier_type AS identifier_type,
+       id.normalized_value AS normalized_value,
+       id.nric_masked AS nric_masked,
+       is_verified,
+       last_confirmed_at,
+       source_record_type
+ORDER BY identifier_type, normalized_value
+"""
+
 FETCH_PERSON_ADDRESSES = """
 MATCH (p:Person {person_id: $person_id})-[rel:LIVES_AT]->(addr:Address)
 WHERE coalesce(rel.is_active, true) = true

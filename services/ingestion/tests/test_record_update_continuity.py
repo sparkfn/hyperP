@@ -561,6 +561,6 @@ def test_crm_contact_change_uses_full_matching_and_projection_refresh() -> None:
         ingest_run_id=None,
         control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
     )
-    golden.assert_called_once_with(tx, "person-a")
+    golden.assert_called_once_with(tx, "person-a", v2_evidence=False)
     audit.assert_called_once()
     merge_event.assert_called_once()
