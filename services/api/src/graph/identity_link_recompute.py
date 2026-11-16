@@ -18,6 +18,7 @@ from dataclasses import dataclass
 from typing import TypedDict
 
 from neo4j import AsyncManagedTransaction, Record
+from pydantic.types import JsonValue
 
 from src.graph.converters import (
     to_int,
@@ -34,7 +35,6 @@ from src.graph.queries.identity_links import (
     MERGE_PERSON_HAS_IDENTIFIER_LINKS,
     RECOMPUTE_IDENTIFIER_PARTICIPANT_COUNTS,
 )
-from src.types import JsonValue
 
 LOWEST_TRUST_TIER = "tier_4"
 LINK_BASIS = "ASSERTS"
@@ -76,19 +76,29 @@ def link_id(person_id: str, identifier_id: str) -> str:
     return hashlib.sha1(f"{person_id}|{identifier_id}".encode()).hexdigest()
 
 
-def build_link_rows(person_id: str, evidence: Sequence[_Evidence]) -> list[dict[str, JsonValue]]:
-    """Build one deterministic ``HAS_IDENTIFIER`` row per evidenced Identifier."""
+def build_link_rows(
+    person_id: str,
+    evidence: Sequence[_Evidence],
+) -> tuple[list[dict[str, JsonValue]], list[str]]:
+    """Build one deterministic ``HAS_IDENTIFIER`` row per evidenced Identifier.
+
+    Returns the parameter rows plus their ``link_id`` strings, so callers never
+    read ids back out of the JsonValue parameter dicts.
+    """
     grouped: dict[IdentifierKeyTuple, list[_Evidence]] = {}
     for row in evidence:
         key = (row["identifier_type"], row["identifier_scope"], row["normalized_value"])
         grouped.setdefault(key, []).append(row)
     links: list[dict[str, JsonValue]] = []
+    link_ids: list[str] = []
     for key in sorted(grouped):
         pair = grouped[key]
         aggregate = _aggregate(pair)
+        resolved_link_id = link_id(person_id, pair[0]["identifier_id"])
+        link_ids.append(resolved_link_id)
         links.append(
             {
-                "link_id": link_id(person_id, pair[0]["identifier_id"]),
+                "link_id": resolved_link_id,
                 "identifier_id": pair[0]["identifier_id"],
                 "assertion_count": aggregate.assertion_count,
                 "source_count": aggregate.source_count,
@@ -105,14 +115,13 @@ def build_link_rows(person_id: str, evidence: Sequence[_Evidence]) -> list[dict[
                 "policy_version": PROVISIONAL_POLICY_VERSION,
             }
         )
-    return links
+    return links, link_ids
 
 
 async def recompute_person_has_identifier_links(tx: AsyncManagedTransaction, person_id: str) -> int:
     """Re-derive one Person's ``HAS_IDENTIFIER`` links from attributed evidence."""
     evidence = await _fetch_evidence(tx, person_id)
-    links = build_link_rows(person_id, evidence)
-    link_ids = [to_str(link["link_id"]) for link in links]
+    links, link_ids = build_link_rows(person_id, evidence)
     stale_keys = await _delete_stale_links(tx, person_id, link_ids)
     link_count = 0
     if links:

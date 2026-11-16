@@ -100,6 +100,7 @@ MATCH (person)-[link:HAS_IDENTIFIER]->(identifier:Identifier)
 WHERE NOT link.link_id IN $link_ids
 WITH collect(DISTINCT link) AS stale_links, collect(DISTINCT identifier) AS stale_identifiers
 FOREACH (stale_link IN stale_links | DELETE stale_link)
+WITH stale_identifiers
 UNWIND stale_identifiers AS identifier
 RETURN identifier.identifier_type AS identifier_type,
        identifier.identifier_scope AS identifier_scope,
@@ -111,6 +112,7 @@ MATCH (person:Person {person_id: $person_id})
 MATCH (person)-[link:HAS_IDENTIFIER]->(identifier:Identifier)
 WITH collect(DISTINCT link) AS links, collect(DISTINCT identifier) AS identifiers
 FOREACH (link IN links | DELETE link)
+WITH identifiers
 UNWIND identifiers AS identifier
 RETURN identifier.identifier_type AS identifier_type,
        identifier.identifier_scope AS identifier_scope,
