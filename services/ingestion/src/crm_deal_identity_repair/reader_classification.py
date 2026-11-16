@@ -163,6 +163,8 @@ ingestion/graph/queries/identity_link_revision_migrations.py:LIST_IDENTITY_LINK_
 ingestion/graph/queries/knows.py:RESOLVE_KNOWS_ENDPOINTS
 ingestion/graph/queries/knows.py:RESOLVE_PERSON_FROM_SOURCE_RECORD_ID
 ingestion/graph/queries/knows.py:RESOLVE_PERSON_FROM_SOURCE_RECORD_PK
+ingestion/graph/queries/identity_links.py:FETCH_CLUSTER_EVIDENCE
+ingestion/graph/queries/identity_links.py:FETCH_PARTICIPANT_EVIDENCE
 ingestion/graph/queries/knows.py:SCAN_CHAT_RELATIONSHIP_SOURCE_RECORDS
 ingestion/graph/queries/knows.py:SCAN_CONTACT_SOURCE_RECORDS
 ingestion/graph/queries/matching.py:CHECK_IDENTIFIER_FANOUT
@@ -208,6 +210,9 @@ _AUTHORITATIVE_MUTATION_READERS: Final[frozenset[str]] = frozenset(
         "api/graph/queries/review.py:ACTIVATE_PENDING_REVIEW_RECORD",
         "api/graph/queries/review.py:LINK_REVIEW_SALES_PURCHASED_ORDER",
         "ingestion/graph/queries/crm_history.py:LINK_CONVERSATION_TO_CRM_HISTORY",
+        # Profile promotion re-attributes a member record onto its Person: a
+        # current-state LINKED_TO materializer that must reactivate retired links.
+        "ingestion/graph/queries/identity_links.py:REATTRIBUTE_PROFILE_MEMBERS_TO_PERSON",
         "ingestion/graph/queries/crm_history.py:LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS",
         "ingestion/graph/queries/persons.py:LINK_PERSON_TO_ADDRESS",
         "ingestion/graph/queries/persons.py:LINK_PERSON_TO_IDENTIFIER",

@@ -63,7 +63,10 @@ WITH collect(DISTINCT parked) + collect(DISTINCT member)
 UNWIND records AS record
 WITH DISTINCT record
 WHERE record IS NOT NULL
-  AND NOT EXISTS { MATCH (record)-[:LINKED_TO]->(:Person) }
+  AND NOT EXISTS {
+      MATCH (record)-[linked:LINKED_TO]->(:Person)
+      WHERE coalesce(linked.is_active, true) = true
+  }
 MATCH (record)-[assertion:ASSERTS]->(asserted:Identifier)
 OPTIONAL MATCH (record)-[:FROM_SOURCE]->(source:SourceSystem)
 RETURN DISTINCT record.source_record_pk AS source_record_pk,
@@ -83,7 +86,8 @@ CALL {
     WITH $participant_kind AS kind, $participant_id AS participant_id
     WITH kind, participant_id
     WHERE kind = 'person'
-    MATCH (record:SourceRecord)-[:LINKED_TO]->(:Person {person_id: participant_id})
+    MATCH (record:SourceRecord)-[linked:LINKED_TO]->(:Person {person_id: participant_id})
+    WHERE coalesce(linked.is_active, true) = true
     RETURN record
     UNION
     WITH $participant_kind AS kind, $participant_id AS participant_id
@@ -354,16 +358,20 @@ MATCH (profile:Profile {profile_id: $profile_id})
 MATCH (record:SourceRecord)-[:IN_PROFILE]->(profile)
 MATCH (person:Person {person_id: $person_id})
 OPTIONAL MATCH (record)-[existing:LINKED_TO]->(person)
+WHERE coalesce(existing.is_active, true) = true
 WITH record,
      (existing IS NOT NULL
       AND record.link_status = 'linked'
       AND record.attribution_status = 'person'
       AND coalesce(record.reeval_pending, false) = false) AS unchanged
-MERGE (record)-[:LINKED_TO]->(person)
+MERGE (record)-[active_link:LINKED_TO]->(person)
 FOREACH (_ IN CASE WHEN unchanged THEN [] ELSE [1] END |
     SET record.link_status = 'linked',
         record.attribution_status = 'person',
         record.reeval_pending = false
+)
+FOREACH (_ IN CASE WHEN coalesce(active_link.is_active, true) = true THEN [] ELSE [1] END |
+    SET active_link.is_active = true
 )
 RETURN count(record) AS member_count
 """

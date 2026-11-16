@@ -228,15 +228,18 @@ def test_build_link_rows_groups_evidence_per_identifier() -> None:
         ],
     )
 
+    # Groups are emitted in canonical key order (identifier_type, scope, value),
+    # the same order used for Identifier lock acquisition: email before phone.
     assert [row["link_id"] for row in rows] == [
-        link_id("profile-1", "identifier-1"),
         link_id("profile-1", "identifier-2"),
+        link_id("profile-1", "identifier-1"),
     ]
-    assert rows[0]["identifier_id"] == "identifier-1"
-    assert rows[0]["assertion_count"] == 2
-    assert rows[0]["source_count"] == 2
+    assert rows[0]["identifier_id"] == "identifier-2"
+    assert rows[0]["assertion_count"] == 1
     assert rows[0]["max_tier"] == "tier_2"
-    assert rows[1]["assertion_count"] == 1
+    assert rows[1]["identifier_id"] == "identifier-1"
+    assert rows[1]["assertion_count"] == 2
+    assert rows[1]["source_count"] == 2
 
 
 def test_parse_field_trust_handles_json_maps_and_malformed_values() -> None:
