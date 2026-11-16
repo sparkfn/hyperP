@@ -503,6 +503,8 @@ WITH member, collect(DISTINCT CASE WHEN nric IS NULL THEN null ELSE {
 } END) AS nric_records
 OPTIONAL MATCH (member)-[:ASSERTS]->(fact:ProfileFact)
 WHERE fact.attribute_name IN ['full_name', 'dob']
+WITH member, nric_records, fact
+ORDER BY fact.attribute_name, fact.attribute_value
 WITH member, nric_records, collect(DISTINCT fact) AS facts
 RETURN member.source_record_pk AS source_record_pk,
        nric_records,
@@ -513,17 +515,37 @@ ORDER BY source_record_pk
 
 FETCH_PERSON_HOLDER_EVIDENCE = """
 MATCH (person:Person {person_id: $person_id})
-MATCH (record:SourceRecord)-[linked:LINKED_TO]->(person)
-WHERE coalesce(linked.is_active, true) = true
-  AND coalesce(record.link_status, 'linked') <> 'pending_review'
-  AND coalesce(record.lifecycle_status, 'active') <> 'superseded'
-OPTIONAL MATCH (record)-[:ASSERTS]->(fact:ProfileFact)
-WHERE fact.attribute_name IN ['full_name', 'dob']
-WITH record, collect(DISTINCT fact) AS facts
-RETURN record.source_record_pk AS source_record_pk,
-       [item IN facts WHERE item.attribute_name = 'full_name' | item.attribute_value] AS full_names,
-       [item IN facts WHERE item.attribute_name = 'dob' | item.attribute_value] AS dobs
-ORDER BY source_record_pk
+CALL (person) {
+    WITH person
+    OPTIONAL MATCH (record:SourceRecord)-[linked:LINKED_TO]->(person)
+    WHERE coalesce(linked.is_active, true) = true
+      AND coalesce(record.link_status, 'linked') <> 'pending_review'
+      AND coalesce(record.lifecycle_status, 'active') <> 'superseded'
+    OPTIONAL MATCH (record)-[:ASSERTS]->(fact:ProfileFact)
+    WHERE fact.attribute_name IN ['full_name', 'dob']
+    WITH fact
+    ORDER BY fact.attribute_name, fact.attribute_value
+    RETURN collect(DISTINCT CASE WHEN fact IS NULL THEN null ELSE {
+        attribute_name: fact.attribute_name, attribute_value: fact.attribute_value
+    } END) AS asserted_facts
+}
+CALL (person) {
+    WITH person
+    OPTIONAL MATCH (person)-[fact:HAS_FACT]->(:SourceRecord)
+    WHERE coalesce(fact.is_active, true) = true
+      AND fact.attribute_name IN ['full_name', 'dob']
+    WITH fact
+    ORDER BY fact.attribute_name, fact.attribute_value
+    RETURN collect(DISTINCT CASE WHEN fact IS NULL THEN null ELSE {
+        attribute_name: fact.attribute_name, attribute_value: fact.attribute_value
+    } END) AS legacy_facts
+}
+WITH asserted_facts + legacy_facts AS evidence
+RETURN $person_id AS source_record_pk,
+       [item IN evidence WHERE item IS NOT NULL
+        AND item.attribute_name = 'full_name' | item.attribute_value] AS full_names,
+       [item IN evidence WHERE item IS NOT NULL
+        AND item.attribute_name = 'dob' | item.attribute_value] AS dobs
 """
 
 FETCH_PROFILE_MEMBER_VERSION_DISPOSITION = """

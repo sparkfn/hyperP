@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 
+from src.identity_link_member_evidence import MemberEvidence, cross_member_contradiction
 from src.identity_links import (
     LOWEST_TRUST_TIER,
     AssertionEvidence,
@@ -18,6 +19,7 @@ from src.identity_links import (
     parse_field_trust,
     sorted_lock_rows,
 )
+from src.models import NormalizedIdentifier, QualityFlag, RecordType
 
 
 def _row(
@@ -257,3 +259,39 @@ def test_identifier_key_tuple_round_trips() -> None:
     key = _key("phone", "global", "+6591234567")
 
     assert identifier_key_row(identifier_key_tuple(key)) == key
+
+
+def _evidence(pk: str, *, dobs: tuple[str, ...]) -> MemberEvidence:
+    return MemberEvidence(source_record_pk=pk, full_names=(), dobs=dobs, nric_entries=())
+
+
+def test_durable_holder_values_are_compared_but_never_self_checked() -> None:
+    identifier = NormalizedIdentifier(
+        identifier_type="nric",
+        normalized_value="e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855",
+        is_verified=True,
+        quality_flag=QualityFlag.VALID,
+        checksum_valid=True,
+    )
+    # A Person aggregating two stored DOBs is not, by itself, a contradiction.
+    holder = _evidence("person-1", dobs=("1980-01-01", "1990-01-01"))
+    member = _evidence("sr-1", dobs=("1980-01-01",))
+    contradiction = cross_member_contradiction(
+        [member], identifier, "onediver", RecordType.IDENTITY, durable_holders=[holder]
+    )
+    # ...but a member disagreeing with any stored value is.
+    assert contradiction is True
+    agreeing = _evidence("sr-2", dobs=())
+    assert (
+        cross_member_contradiction(
+            [agreeing], identifier, "onediver", RecordType.IDENTITY, durable_holders=[holder]
+        )
+        is False
+    )
+    # A single record asserting two DOBs contradicts itself.
+    assert cross_member_contradiction(
+        [_evidence("sr-3", dobs=("1980-01-01", "1990-01-01"))],
+        identifier,
+        "onediver",
+        RecordType.IDENTITY,
+    )

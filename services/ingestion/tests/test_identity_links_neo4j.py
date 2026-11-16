@@ -2530,6 +2530,91 @@ def test_promotion_rejects_durable_person_contradiction_on_second_call(
     )
 
 
+def test_promotion_rejects_legacy_person_fact_contradiction(neo4j_driver: Driver) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_identifier(neo4j_driver, "ident-nric", "nric", _NRIC_DIGEST)
+    _seed_identifier(neo4j_driver, "ident-holder-phone", "phone", _PHONE)
+    _seed_person(neo4j_driver, "person-legacy-holder")
+    _seed_person_nric(neo4j_driver, "person-legacy-holder", "ident-nric", _NRIC_DIGEST)
+    _seed_linked_record(
+        neo4j_driver, "sr-legacy-holder", "person-legacy-holder", link_status="linked"
+    )
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (person:Person {person_id: 'person-legacy-holder'}) "
+            "MATCH (record:SourceRecord {source_record_pk: 'sr-legacy-holder'}) "
+            "CREATE (person)-[:HAS_FACT {attribute_name: 'dob', "
+            "attribute_value: '1980-02-02', quality_flag: 'valid', is_active: true}]->(record)"
+        ).consume()
+    _seed_parked_record(neo4j_driver, "sr-holder-member", "2026-01-02T00:00:00Z")
+    _seed_assertion(neo4j_driver, "sr-holder-member", "ident-holder-phone", "assert-holder-phone")
+    _seed_asserted_fact(neo4j_driver, "sr-holder-member", "dob", "1990-03-03", "assert-holder-dob")
+    _seed_profile(neo4j_driver, "profile-holder-b", "sr-holder-member")
+    _seed_profile_link(neo4j_driver, "profile-holder-b", "ident-holder-phone")
+
+    promoted = _execute(
+        neo4j_driver,
+        lambda tx: promote_profiles_for_nric(
+            tx,
+            _nric_identifier(),
+            identifier_keys=[
+                IdentifierKey(
+                    identifier_type="phone",
+                    identifier_scope="global",
+                    normalized_value=_PHONE,
+                )
+            ],
+            source_key="onediver",
+            record_type=RecordType.IDENTITY,
+            incoming=NameDob(full_name=None, dob=None),
+        ),
+    )
+
+    assert promoted == ()
+    profiles = {str(row["profile_id"]): row for row in _profile_snapshot(neo4j_driver)}
+    assert profiles["profile-holder-b"]["status"] == "open"
+    assert (
+        _scalar(
+            neo4j_driver,
+            "MATCH (:SourceRecord {source_record_pk: 'sr-holder-member'})"
+            "-[:LINKED_TO]->(:Person) RETURN count(*) AS count",
+        )
+        == 0
+    )
+
+
+def test_promotion_rejects_member_asserting_conflicting_dobs(neo4j_driver: Driver) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_identifier(neo4j_driver, "ident-nric", "nric", _NRIC_DIGEST)
+    _seed_identifier(neo4j_driver, "ident-multi-phone", "phone", _PHONE)
+    _seed_parked_record(neo4j_driver, "sr-multi-dob", "2026-01-01T00:00:00Z")
+    _seed_assertion(neo4j_driver, "sr-multi-dob", "ident-multi-phone", "assert-multi-phone")
+    _seed_asserted_fact(neo4j_driver, "sr-multi-dob", "dob", "1980-02-02", "assert-multi-dob-a")
+    _seed_asserted_fact(neo4j_driver, "sr-multi-dob", "dob", "1990-03-03", "assert-multi-dob-b")
+    _seed_profile(neo4j_driver, "profile-multi-dob", "sr-multi-dob")
+    _seed_profile_link(neo4j_driver, "profile-multi-dob", "ident-multi-phone")
+
+    outcome = _promote(
+        neo4j_driver,
+        "profile-multi-dob",
+        incoming=NameDob(full_name=None, dob=None),
+    )
+
+    assert outcome.status == "rejected"
+    assert outcome.reason == "nric_contradiction"
+    profiles = {str(row["profile_id"]): row for row in _profile_snapshot(neo4j_driver)}
+    assert profiles["profile-multi-dob"]["status"] == "open"
+    assert (
+        _scalar(
+            neo4j_driver,
+            "MATCH (:SourceRecord)-[:LINKED_TO]->(:Person) RETURN count(*) AS count",
+        )
+        == 0
+    )
+
+
 def test_no_activatable_promotion_supersedes_and_detaches_obsolete_member(
     neo4j_driver: Driver,
 ) -> None:

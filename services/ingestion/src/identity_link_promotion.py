@@ -146,10 +146,11 @@ def promote_profile(
     person_id, person_created = _merge_person_by_nric(tx, nric_key, nric_scope)
     holder_evidence = person_holder_evidence(tx, person_id)
     if holder_evidence and cross_member_contradiction(
-        [*classification.eligible, *prior_promoted, *holder_evidence],
+        [*classification.eligible, *prior_promoted],
         identifier,
         source_key,
         record_type,
+        durable_holders=holder_evidence,
     ):
         return PromotionOutcome(
             status="rejected", profile_id=profile_id, reason="nric_contradiction"

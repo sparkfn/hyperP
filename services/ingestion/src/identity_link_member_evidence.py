@@ -23,12 +23,9 @@ from src.pipeline_writes import attach_person_evidence
 @dataclass(frozen=True)
 class MemberEvidence:
     source_record_pk: str
-    full_name: str | None
-    dob: str | None
+    full_names: tuple[str, ...]
+    dobs: tuple[str, ...]
     nric_entries: tuple[tuple[str, bool | None], ...]
-
-    def name_dob(self) -> NameDob:
-        return NameDob(full_name=self.full_name, dob=self.dob)
 
 
 @dataclass(frozen=True)
@@ -54,10 +51,20 @@ def member_evidence(
     """Parse one ``FETCH_PROFILE_MEMBER_EVIDENCE`` row."""
     return MemberEvidence(
         source_record_pk=required_str_value(source_record_pk),
-        full_name=next(iter(str_values(full_names)), None),
-        dob=next(iter(str_values(dobs)), None),
+        full_names=_sorted_values(full_names),
+        dobs=_sorted_values(dobs),
         nric_entries=_nric_entries(nric_entries),
     )
+
+
+def _sorted_values(value: object) -> tuple[str, ...]:
+    return tuple(sorted(set(str_values(value))))
+
+
+def _name_dob_combinations(member: MemberEvidence) -> tuple[NameDob, ...]:
+    names: Sequence[str | None] = member.full_names if member.full_names else (None,)
+    dobs: Sequence[str | None] = member.dobs if member.dobs else (None,)
+    return tuple(NameDob(full_name=full_name, dob=dob) for full_name in names for dob in dobs)
 
 
 def member_has_nric_conflict(member: MemberEvidence, incoming_value: str) -> bool:
@@ -74,9 +81,11 @@ def member_holder_rejects(
     record_type: RecordType,
     incoming: NameDob,
 ) -> bool:
-    """Whether the member's own holder facts contradict the incoming record."""
-    gate = nric_anchor_gate(identifier, source_key, record_type, incoming, member.name_dob())
-    return not gate.promotes_person
+    """Whether any holder combination contradicts the incoming record."""
+    return any(
+        not nric_anchor_gate(identifier, source_key, record_type, incoming, holder).promotes_person
+        for holder in _name_dob_combinations(member)
+    )
 
 
 def cross_member_contradiction(
@@ -84,21 +93,33 @@ def cross_member_contradiction(
     identifier: NormalizedIdentifier,
     source_key: str,
     record_type: RecordType,
+    *,
+    durable_holders: Sequence[MemberEvidence] = (),
 ) -> bool:
-    """Whether any ordered pair of remaining members contradicts itself."""
-    for left in eligible:
-        for right in eligible:
-            if left.source_record_pk == right.source_record_pk:
+    """Whether any value combination of these items contradicts itself.
+
+    Each record's own values are checked against each other (a record asserting
+    two different DOBs is contradictory). ``durable_holders`` aggregate a
+    Person's stored facts from many records, so they are only compared against
+    the other items, never self-checked.
+    """
+    for item in eligible:
+        combinations = _name_dob_combinations(item)
+        for left in combinations:
+            for right in combinations:
+                gate = nric_anchor_gate(identifier, source_key, record_type, left, right)
+                if not gate.promotes_person:
+                    return True
+    items = [*eligible, *durable_holders]
+    for left_item in items:
+        for right_item in items:
+            if left_item is right_item:
                 continue
-            gate = nric_anchor_gate(
-                identifier,
-                source_key,
-                record_type,
-                left.name_dob(),
-                right.name_dob(),
-            )
-            if not gate.promotes_person:
-                return True
+            for left in _name_dob_combinations(left_item):
+                for right in _name_dob_combinations(right_item):
+                    gate = nric_anchor_gate(identifier, source_key, record_type, left, right)
+                    if not gate.promotes_person:
+                        return True
     return False
 
 
