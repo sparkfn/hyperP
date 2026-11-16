@@ -22,19 +22,20 @@ import src.repositories.neo4j.report as report_module
 import src.repositories.neo4j.review as review_module
 from neo4j import (
     AsyncDriver,
-    AsyncManagedTransaction,
     AsyncGraphDatabase,
+    AsyncManagedTransaction,
     AsyncSession,
     Driver,
     GraphDatabase,
 )
 from neo4j.exceptions import Neo4jError
+from src.graph.person_list_summary_deltas import PersonListSummaryDeltaCollector
 from src.graph.queries.person_list_summary import (
     CREATE_PERSON_LIST_SUMMARY_COUNTER_CONSTRAINT,
     ENSURE_PERSON_LIST_SUMMARY_COUNTER,
     PERSON_LIST_SUMMARY_COUNTER_KEY,
 )
-from src.graph.person_list_summary_deltas import PersonListSummaryDeltaCollector
+from src.graph.queries.persons import GET_PERSON_IDENTIFIERS
 from src.graph.queries.persons_list import (
     GET_PERSON_LIST_CORE_SUMMARY,
     GET_PERSON_LIST_CRM_SUMMARY,
@@ -790,3 +791,119 @@ async def test_report_execute_cannot_mutate_the_graph_or_counter(
         )
     assert graph_after == graph_before
     assert counter_after == counter_before
+
+
+def _seed_merge_identity_evidence(test_graph: _TestGraph) -> tuple[str, str, str, str]:
+    """Seed an absorbed Person whose linked record evidences an absorbed-only key."""
+    absorbed_id = f"merge-has-absorbed-{test_graph.run_id}"
+    survivor_id = f"merge-has-survivor-{test_graph.run_id}"
+    phone_value = f"merge-phone-{test_graph.run_id}"
+    email_value = f"merge-email-{test_graph.run_id}@example.test"
+    with test_graph.driver.session() as session:
+        session.run(
+            f"""
+            MERGE (source:SourceSystem {{source_key: 'bitrix_chat'}})
+            ON CREATE SET source.{_RUN_PROPERTY} = $run_id
+            WITH source
+            CREATE (absorbed:Person {{
+              person_id: $absorbed_id, status: 'active', {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (survivor:Person {{
+              person_id: $survivor_id, status: 'active', is_high_risk: false,
+              is_high_value: false, {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (phone:Identifier {{
+              identifier_id: 'ident-merge-phone-' + $run_id,
+              identifier_type: 'phone', identifier_scope: 'global',
+              normalized_value: $phone_value, {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (email:Identifier {{
+              identifier_id: 'ident-merge-email-' + $run_id,
+              identifier_type: 'email', identifier_scope: 'global',
+              normalized_value: $email_value, {_RUN_PROPERTY}: $run_id
+            }})
+            CREATE (record:SourceRecord {{
+              source_record_pk: $record_pk, record_type: 'identity',
+              lifecycle_status: 'active', is_latest: true, link_status: 'linked',
+              observed_at: datetime('2026-01-01T00:00:00Z'), {_RUN_PROPERTY}: $run_id
+            }})-[:FROM_SOURCE]->(source)
+            CREATE (record)-[:LINKED_TO {{is_active: true}}]->(absorbed)
+            CREATE (record)-[:ASSERTS {{
+              assertion_id: 'assert-merge-phone-' + $run_id,
+              quality_flag: 'valid', is_verified: true
+            }}]->(phone)
+            CREATE (record)-[:ASSERTS {{
+              assertion_id: 'assert-merge-email-' + $run_id,
+              quality_flag: 'valid', is_verified: true
+            }}]->(email)
+            CREATE (absorbed)-[:HAS_IDENTIFIER {{
+              link_id: 'stale-merge-phone-' + $run_id, status: 'active',
+              verified_count: 1, computed_at: datetime()
+            }}]->(phone)
+            """,
+            run_id=test_graph.run_id,
+            absorbed_id=absorbed_id,
+            survivor_id=survivor_id,
+            phone_value=phone_value,
+            email_value=email_value,
+            record_pk=f"merge-has-record-{test_graph.run_id}",
+        ).consume()
+    return absorbed_id, survivor_id, phone_value, email_value
+
+
+@pytest.mark.anyio
+async def test_manual_merge_rebuilds_survivor_has_identifiers_without_ingest(
+    neo4j_graph: _TestGraph,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    absorbed_id, survivor_id, phone_value, email_value = _seed_merge_identity_evidence(neo4j_graph)
+
+    def _ignore_recalculation(_review_case_ids: list[str]) -> None:
+        return None
+
+    monkeypatch.setattr(merge_module, "enqueue_match_recalculation", _ignore_recalculation)
+    async with _api_driver(neo4j_graph) as driver:
+        _install_repository_sessions(monkeypatch, driver)
+        outcome = await Neo4jMergeRepository().manual_merge(
+            absorbed_id,
+            survivor_id,
+            "integration test merge",
+            "summary-test@example.com",
+            [],
+        )
+
+    assert outcome.merge_event_id is not None
+    with neo4j_graph.driver.session() as session:
+        session.run(
+            f"""
+            MATCH (event:MergeEvent)-[:ABSORBED|SURVIVOR]->(person:Person)
+            WHERE person.person_id IN [$absorbed_id, $survivor_id]
+            SET event.{_RUN_PROPERTY} = $run_id
+            """,
+            absorbed_id=absorbed_id,
+            survivor_id=survivor_id,
+            run_id=neo4j_graph.run_id,
+        ).consume()
+        survivor_values = {
+            record["normalized_value"]
+            for record in session.run(
+                GET_PERSON_IDENTIFIERS,
+                person_id=survivor_id,
+                skip=0,
+                limit=20,
+            )
+        }
+        absorbed_links = session.run(
+            "MATCH (:Person {person_id: $person_id})-[:HAS_IDENTIFIER]->() "
+            "RETURN count(*) AS count",
+            person_id=absorbed_id,
+        ).single(strict=True)["count"]
+        phone_participants = session.run(
+            "MATCH (identifier:Identifier {normalized_value: $value}) "
+            "RETURN identifier.participant_count AS count",
+            value=phone_value,
+        ).single(strict=True)["count"]
+
+    assert survivor_values == {phone_value, email_value}
+    assert absorbed_links == 0
+    assert phone_participants == 1

@@ -125,6 +125,33 @@ def test_static_openapi_preserves_the_person_endpoint_matrix() -> None:
         assert "parked" in lifecycle["enum"]
 
 
+def test_static_openapi_profile_detail_composition_keeps_its_own_members() -> None:
+    schema = yaml.safe_load(_STATIC_OPENAPI.read_text(encoding="utf-8"))
+    profile_detail = schema["components"]["schemas"]["ProfileDetail"]
+
+    effective_properties: dict[str, object] = {}
+    for member in profile_detail["allOf"]:
+        if "$ref" in member:
+            base_name = member["$ref"].rsplit("/", 1)[-1]
+            base = schema["components"]["schemas"][base_name]
+            # A closed allOf base rejects the detail-only members below.
+            assert base.get("additionalProperties") is not False
+            effective_properties.update(base.get("properties", {}))
+        else:
+            assert member.get("additionalProperties") is not False
+            effective_properties.update(member.get("properties", {}))
+    assert {"source_records", "identifiers"} <= set(effective_properties)
+
+    status_parameter = next(
+        parameter
+        for parameter in schema["paths"]["/v1/profiles"]["get"]["parameters"]
+        if parameter.get("name") == "status"
+    )
+    assert status_parameter["schema"]["enum"] == ["open", "promoted", "retired", "all"]
+    assert status_parameter["schema"]["default"] == "open"
+    assert "all" in status_parameter["description"]
+
+
 def test_static_openapi_documents_machine_exact_identifier_search() -> None:
     schema = yaml.safe_load(_STATIC_OPENAPI.read_text(encoding="utf-8"))
     operation = schema["paths"]["/oauth2/v1/persons/search"]["get"]

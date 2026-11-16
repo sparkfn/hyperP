@@ -241,9 +241,23 @@ async def test_manual_merge_recomputes_and_applies_selections_in_mutation_transa
         events.append("selections")
         return "ok"
 
+    async def recompute_links(inner_tx: AsyncManagedTransaction, person_id: str) -> int:
+        assert inner_tx is tx
+        assert person_id == "person-b"
+        events.append("links")
+        return 1
+
+    async def release_links(inner_tx: AsyncManagedTransaction, person_id: str) -> int:
+        assert inner_tx is tx
+        assert person_id == "person-a"
+        events.append("release")
+        return 1
+
     monkeypatch.setattr(merge_module, "_manual_merge_tx", merge)
     monkeypatch.setattr(merge_module, "recompute_golden_profile_tx", recompute)
     monkeypatch.setattr(merge_module, "_apply_golden_profile_selections_tx", apply_selections)
+    monkeypatch.setattr(merge_module, "recompute_person_has_identifier_links", recompute_links)
+    monkeypatch.setattr(merge_module, "release_person_has_identifier_links", release_links)
 
     outcome = await merge_module._manual_merge_with_profile_tx(
         tx,
@@ -255,7 +269,9 @@ async def test_manual_merge_recomputes_and_applies_selections_in_mutation_transa
     )
 
     assert outcome.merge_event_id == "merge-1"
-    assert events == ["merge", "recompute", "selections"]
+    # The survivor's HAS projection is re-derived and the absorbed Person's
+    # released before the golden profile recompute.
+    assert events == ["merge", "links", "release", "recompute", "selections"]
     # The maintained summary counter is captured before the merge and published
     # once after the profile recompute and the golden-profile selections.
     assert tx.summary_calls == [
@@ -495,8 +511,16 @@ async def test_unmerge_recomputes_both_profiles_in_mutation_transaction(
         assert invalidate_analysis is False
         recomputed.append(person_id)
 
+    linked: list[str] = []
+
+    async def recompute_links(inner_tx: AsyncManagedTransaction, person_id: str) -> int:
+        assert inner_tx is tx
+        linked.append(person_id)
+        return 1
+
     monkeypatch.setattr(merge_module, "_unmerge_tx", unmerge)
     monkeypatch.setattr(merge_module, "recompute_golden_profile_tx", recompute)
+    monkeypatch.setattr(merge_module, "recompute_person_has_identifier_links", recompute_links)
 
     result = await merge_module._unmerge_with_profiles_tx(
         tx,
@@ -506,6 +530,7 @@ async def test_unmerge_recomputes_both_profiles_in_mutation_transaction(
     )
 
     assert result is not None
+    assert linked == ["person-a", "person-c"]
     assert recomputed == ["person-a", "person-c"]
     # The unmerge captures the absorbed and survivor persons before the revert
     # and publishes the delta once after both profile recomputes.

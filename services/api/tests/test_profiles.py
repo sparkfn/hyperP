@@ -126,6 +126,15 @@ def test_list_profiles_forwards_q_status_and_cursor() -> None:
     assert repo.calls == [(ProfileListFilters(q="Ada", status="promoted"), 20, 5)]
 
 
+def test_list_profiles_maps_explicit_all_status_to_no_filter() -> None:
+    client, repo = _client()
+
+    response = client.get("/profiles", params={"status": "all"})
+
+    assert response.status_code == 200
+    assert repo.calls == [(ProfileListFilters(q=None, status=None), 0, 20)]
+
+
 def test_list_profiles_rejects_short_queries() -> None:
     client, repo = _client()
 

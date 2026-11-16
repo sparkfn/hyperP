@@ -13,6 +13,10 @@ from src.graph.client import get_session
 from src.graph.converters import to_str, to_str_list
 from src.graph.crm_deal_count import recompute_person_crm_deal_counts
 from src.graph.golden_profile import recompute_golden_profile_tx
+from src.graph.identity_link_recompute import (
+    recompute_person_has_identifier_links,
+    release_person_has_identifier_links,
+)
 from src.graph.person_list_summary_deltas import (
     PersonListSummaryDeltaCollector,
     find_deal_element_ids_for_persons,
@@ -179,6 +183,10 @@ async def _manual_merge_with_profile_tx(
     outcome = await _manual_merge_tx(tx, from_id, to_id, reason, actor_id)
     if outcome.merge_event_id is None:
         return outcome
+    # The merge moved the evidence's LINKED_TO edges to the survivor; re-derive
+    # its HAS_IDENTIFIER projection and release the absorbed Person's stale one.
+    await recompute_person_has_identifier_links(tx, to_id)
+    await release_person_has_identifier_links(tx, from_id)
     await recompute_golden_profile_tx(tx, to_id, False)
     if golden_profile_selections:
         await _apply_golden_profile_selections_tx(tx, to_id, golden_profile_selections)
@@ -370,6 +378,10 @@ async def _unmerge_with_profiles_tx(
             return None
         if result.absorbed_id != absorbed_id or result.current_survivor_id != current_survivor_id:
             raise _UnmergeLineageChangedError("unmerge target moved after summary capture")
+        # Revert moved the evidence's LINKED_TO edges back; re-derive both
+        # Persons' HAS_IDENTIFIER projections so HAS-first reads follow it.
+        await recompute_person_has_identifier_links(tx, result.absorbed_id)
+        await recompute_person_has_identifier_links(tx, result.current_survivor_id)
         await recompute_golden_profile_tx(tx, result.absorbed_id, False)
         await recompute_golden_profile_tx(tx, result.current_survivor_id, False)
         await collector.finalize(tx)

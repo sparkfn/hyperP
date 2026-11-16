@@ -233,7 +233,8 @@ paths:
         participates in Person matching or golden-profile selection. `q` is
         case-insensitive over the profile id, member source-record ids, asserted
         full-name facts, and non-government identifier values; NRIC values are
-        never searched. When `status` is omitted, every status is returned.
+        never searched. `status` defaults to `open` when omitted; pass `all` to
+        return every status.
       security:
         - bearerAuth: []
       parameters:
@@ -246,10 +247,10 @@ paths:
             minLength: 2
         - name: status
           in: query
-          description: Defaults to `open`; omit it to return every status.
+          description: Defaults to `open`; `all` returns every status.
           schema:
             type: string
-            enum: [open, promoted, retired]
+            enum: [open, promoted, retired, all]
             default: open
         - name: cursor
           in: query
@@ -4459,7 +4460,8 @@ components:
           type: integer
           minimum: 0
       required: [profile_id, status, evidence_version, record_count, identifier_count]
-      additionalProperties: false
+      # Open base: ProfileDetail composes it with allOf, and a closed base would
+      # reject the detail-only source_records/identifiers members.
     ProfileDetail:
       allOf:
         - $ref: '#/components/schemas/Profile'

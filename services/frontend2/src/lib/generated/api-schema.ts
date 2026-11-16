@@ -132,7 +132,8 @@ export interface paths {
          *     participates in Person matching or golden-profile selection. `q` is
          *     case-insensitive over the profile id, member source-record ids, asserted
          *     full-name facts, and non-government identifier values; NRIC values are
-         *     never searched. When `status` is omitted, every status is returned.
+         *     never searched. `status` defaults to `open` when omitted; pass `all` to
+         *     return every status.
          */
         get: operations["list_profiles"];
         put?: never;
@@ -3060,8 +3061,8 @@ export interface operations {
             query?: {
                 /** @description Free-text search (min 2 chars); NRIC values are never searched. */
                 q?: string;
-                /** @description Defaults to `open`; omit it to return every status. */
-                status?: "open" | "promoted" | "retired";
+                /** @description Defaults to `open`; `all` returns every status. */
+                status?: "open" | "promoted" | "retired" | "all";
                 cursor?: string;
                 limit?: number;
             };

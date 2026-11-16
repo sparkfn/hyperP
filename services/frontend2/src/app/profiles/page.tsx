@@ -32,12 +32,12 @@ function isStatusFilter(value: string): value is StatusFilter {
   return STATUS_OPTIONS.some((option) => option.value === value);
 }
 
-function profilesBasePath(query: string, status: StatusFilter): string {
+export function profilesBasePath(query: string, status: StatusFilter): string {
   const params = new URLSearchParams();
   if (query.length >= 2) params.set("q", query);
-  if (status !== "all") params.set("status", status);
-  const queryString = params.toString();
-  return queryString ? `/bff/profiles?${queryString}` : "/bff/profiles";
+  // "all" must be sent explicitly: the API defaults an absent status to open.
+  params.set("status", status);
+  return `/bff/profiles?${params.toString()}`;
 }
 
 function ProfilesTable({ basePath }: { basePath: string }): ReactElement {

@@ -27,12 +27,33 @@ WHERE coalesce(link.is_active, true) = true
 WITH p, addr, count(DISTINCT sr) AS source_record_count
 CALL {
   WITH p
-  OPTIONAL MATCH (p)-[p_identifier:IDENTIFIED_BY]->(:Identifier)
-    <-[ci_identifier:IDENTIFIED_BY]-(ci:Person)
-    WHERE coalesce(p_identifier.is_active, true) = true
-      AND coalesce(ci_identifier.is_active, true) = true
-      AND ci.person_id <> p.person_id AND ci.status <> 'merged'
-  WITH p, collect(DISTINCT ci) AS identifier_conn
+  // Dual-source own identifiers (HAS-first, deduped legacy fallback) and the
+  // Persons that share them, mirroring GET_PERSON_BY_ID's connection subquery
+  // so a HAS-only Person's connection_count is current.
+  OPTIONAL MATCH (p)-[:HAS_IDENTIFIER {status: 'active'}]->(has_own:Identifier)
+  WITH p, [identifier IN collect(DISTINCT has_own) WHERE identifier IS NOT NULL] AS has_ids
+  OPTIONAL MATCH (p)-[own_identifier:IDENTIFIED_BY]->(legacy_own:Identifier)
+  WHERE coalesce(own_identifier.is_active, true) = true
+  WITH p, has_ids,
+       [identifier IN collect(DISTINCT legacy_own)
+        WHERE identifier IS NOT NULL AND NOT identifier IN has_ids] AS legacy_ids
+  WITH p, has_ids + legacy_ids AS own_ids
+  UNWIND (CASE WHEN size(own_ids) = 0 THEN [null] ELSE own_ids END) AS own_id
+  OPTIONAL MATCH (own_id)<-[:HAS_IDENTIFIER {status: 'active'}]-(has_ci:Person)
+  WHERE has_ci.person_id <> p.person_id AND has_ci.status <> 'merged'
+  WITH p, own_id,
+       [other IN collect(DISTINCT has_ci) WHERE other IS NOT NULL] AS has_others
+  OPTIONAL MATCH (own_id)<-[ci_identifier:IDENTIFIED_BY]-(legacy_ci:Person)
+  WHERE coalesce(ci_identifier.is_active, true) = true
+    AND legacy_ci.person_id <> p.person_id AND legacy_ci.status <> 'merged'
+  WITH p, has_others,
+       [other IN collect(DISTINCT legacy_ci)
+        WHERE other IS NOT NULL AND NOT other IN has_others] AS legacy_others
+  WITH p, collect(has_others + legacy_others) AS other_lists
+  WITH p, reduce(acc = [], item_list IN other_lists | acc + item_list) AS flat_others
+  UNWIND (CASE WHEN size(flat_others) = 0 THEN [null] ELSE flat_others END) AS other
+  WITH p, [identifier_conn IN collect(DISTINCT other)
+           WHERE identifier_conn IS NOT NULL] AS identifier_conn
   OPTIONAL MATCH (p)-[p_address:LIVES_AT]->(:Address)
     <-[ca_address:LIVES_AT]-(ca:Person)
     WHERE coalesce(p_address.is_active, true) = true

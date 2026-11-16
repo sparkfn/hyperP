@@ -23,6 +23,7 @@ from src.graph.converters import (
 )
 from src.graph.crm_deal_count import recompute_person_crm_deal_counts
 from src.graph.golden_profile import recompute_golden_profile_tx
+from src.graph.identity_link_recompute import recompute_person_has_identifier_links
 from src.graph.mappers import (
     map_possible_match_detail,
     map_review_case_detail,
@@ -1011,6 +1012,9 @@ async def _pending_record_merge_tx(
     activated = await activated_result.single()
     if activated is None:
         raise _ReviewResolutionAbortError("pending activation lost after review claim")
+    # Activation re-linked the record to its approved Person; re-derive that
+    # Person's HAS_IDENTIFIER projection from the newly attributed evidence.
+    await recompute_person_has_identifier_links(tx, proposed_person_id)
     affected = activated.get("affected_person_ids", [])
     if isinstance(affected, list):
         affected_person_ids = sorted({value for value in affected if isinstance(value, str)})

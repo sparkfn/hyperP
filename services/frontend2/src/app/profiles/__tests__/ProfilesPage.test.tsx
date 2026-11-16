@@ -14,7 +14,7 @@ vi.mock("next/link", () => ({
   ),
 }));
 
-import ProfilesPage from "../page";
+import ProfilesPage, { profilesBasePath } from "../page";
 
 afterEach(cleanup);
 
@@ -49,6 +49,13 @@ describe("ProfilesPage", () => {
     expect(screen.getByText("Unverified")).toBeTruthy();
     expect(screen.getByText("profile-1").closest("a")?.getAttribute("href")).toBe(
       "/profiles/profile-1",
+    );
+  });
+
+  it("sends an explicit status=all filter instead of omitting it", () => {
+    expect(profilesBasePath("", "all")).toBe("/bff/profiles?status=all");
+    expect(profilesBasePath("ada", "promoted")).toBe(
+      "/bff/profiles?q=ada&status=promoted",
     );
   });
 });

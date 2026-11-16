@@ -796,8 +796,9 @@ OAuth2 machine subset and from the public share surface.
 
 ### GET /v1/profiles
 
-Paginated list. `status` defaults to `open`; omit it to return every status
-(`open`, `promoted`, `retired`; `split` is reserved and never written by C3).
+Paginated list. `status` defaults to `open` when omitted; pass `all` to return
+every status (`open`, `promoted`, `retired`; `split` is reserved and never
+written by C3).
 `q` is case-insensitive over the profile id, member source-record ids, asserted
 full-name facts, and non-government identifier values. NRIC values are never
 searched and are never returned unmasked. A `q` shorter than 2 characters after
@@ -822,6 +823,7 @@ Legacy `IDENTIFIED_BY`-only projections keep both fields null.
 ### Authorization
 
 - active authenticated frontend or MCP caller carrying `persons:read`
+- machine OAuth clients presenting `persons:read` on the frontend/MCP mount can read Profiles (by design); the dedicated OAuth2 machine mount (`/oauth2/v1`) does not expose them
 - deliberately absent from the OAuth2 machine subset and the public surface
 
 ## POST /v1/persons/{person_id}/nric/reveal

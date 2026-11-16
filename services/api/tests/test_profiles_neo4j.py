@@ -316,3 +316,54 @@ def test_person_lookup_and_detail_are_unchanged_with_profiles_present(
     detail = _rows(neo4j_driver, GET_PERSON_BY_ID, person_id=person_id)[0]
     assert detail["person"]["person_id"] == person_id
     assert detail["source_record_count"] == 1
+
+
+def _seed_shared_has_identifier(graph: _TestGraph) -> tuple[str, str, str]:
+    run_id = graph.run_id
+    left_id = f"has-left-{run_id}"
+    right_id = f"has-right-{run_id}"
+    value = f"shared-phone-{run_id}"
+    with graph.driver.session() as session:
+        session.run(
+            """
+            CREATE (left:Person {
+              person_id: $left_id, status: 'active', _person_identifiers_test_run: $run_id
+            })
+            CREATE (right:Person {
+              person_id: $right_id, status: 'active', _person_identifiers_test_run: $run_id
+            })
+            CREATE (identifier:Identifier {
+              identifier_type: 'phone', identifier_scope: 'global',
+              normalized_value: $value, _person_identifiers_test_run: $run_id
+            })
+            CREATE (left)-[:HAS_IDENTIFIER {
+              link_id: 'has-left-' + $run_id, status: 'active', verified_count: 1,
+              computed_at: datetime()
+            }]->(identifier)
+            CREATE (right)-[:HAS_IDENTIFIER {
+              link_id: 'has-right-' + $run_id, status: 'active', verified_count: 1,
+              computed_at: datetime()
+            }]->(identifier)
+            """,
+            run_id=run_id,
+            left_id=left_id,
+            right_id=right_id,
+            value=value,
+        ).consume()
+    return left_id, right_id, value
+
+
+def test_find_person_by_identifier_counts_has_only_connections(
+    neo4j_driver: _TestGraph,
+) -> None:
+    left_id, right_id, value = _seed_shared_has_identifier(neo4j_driver)
+
+    rows = _rows(
+        neo4j_driver,
+        FIND_PERSON_BY_IDENTIFIER,
+        identifier_type="phone",
+        values=[value],
+    )
+
+    connection_counts = {row["person"]["person_id"]: row["connection_count"] for row in rows}
+    assert connection_counts == {left_id: 1, right_id: 1}

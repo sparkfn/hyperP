@@ -36,7 +36,9 @@ async def list_profiles(
             request,
         )
     skip, page_limit = page_window(cursor, limit)
-    filters = ProfileListFilters(q=q_clean, status=status)
+    # ``all`` is an explicit UI/BFF filter for "every status"; the bare default
+    # stays ``open`` for callers that omit the parameter.
+    filters = ProfileListFilters(q=q_clean, status=None if status == "all" else status)
     profiles, total = await repo.get_page(filters, skip, page_limit)
     has_more = skip + page_limit < total
     return envelope(
