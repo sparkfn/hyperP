@@ -45,7 +45,8 @@ from src.identity_link_writes import (
     recompute_participant_links,
 )
 from src.identity_links import IdentifierKey
-from src.matching.deterministic import prefetch_no_match_lock_owners
+from src.identity_registry import identifier_policy
+from src.matching.deterministic import evaluate_deterministic, prefetch_no_match_lock_owners
 from src.matching.engine import MatchEngine, ambiguous_prior_owners_result
 from src.matching.snapshot import fetch_candidate_snapshots
 from src.models import (
@@ -135,6 +136,23 @@ def _is_match_only_record(source_key: str, record_type: RecordType) -> bool:
         or record_type in MATCH_ONLY_RECORD_TYPES
         or record_type not in PERSON_CREATING_RECORD_TYPES
     )
+
+
+def _snapshot_person_ids(
+    candidates: list[CandidateResult],
+    continuity_person_id: str | None,
+) -> list[str]:
+    """Candidate ids plus the continuity Person, deduped with order preserved.
+
+    v2 snapshot prefetch must cover every Person the engine will score: the
+    continuity Person is inserted inside ``MatchEngine.evaluate`` even when no
+    shared identifier discovered it, and without this it falls back to the
+    IDENTIFIED_BY-only single snapshot, blind to C3 evidence.
+    """
+    person_ids = [candidate.person_id for candidate in candidates]
+    if continuity_person_id is not None and continuity_person_id not in person_ids:
+        person_ids.append(continuity_person_id)
+    return person_ids
 
 
 def _persons_touched_by_match(
@@ -486,16 +504,12 @@ class IngestPipeline:
                     addresses[0] if addresses else None,
                     attributes,
                     record_type=envelope.record_type,
-                    continuity_person_id=(
-                        lifecycle_plan.prior_person_ids[0]
-                        if lifecycle_plan.prior_person_ids
-                        else None
-                    ),
+                    continuity_person_id=continuity_person_id,
                     person_score_limit=50 if v2_mode else None,
                     snapshots=(
                         fetch_candidate_snapshots(
                             tx,
-                            [candidate.person_id for candidate in candidates],
+                            _snapshot_person_ids(candidates, continuity_person_id),
                             include_legacy=False,
                         )
                         if v2_mode
@@ -748,6 +762,13 @@ class IngestPipeline:
                 old_source_record_pk=lifecycle_plan.active_source_record_pk,
                 new_source_record_pk=source_record_pk,
             )
+            if self._identity_model == "v2":
+                # Earlier recomputes ran before the replaced version was marked
+                # superseded (activation above does that, including on the
+                # continuity path); re-run now so retired evidence stops feeding
+                # HAS_IDENTIFIER. A no-op recompute writes nothing (zero-diff).
+                for affected_person_id in sorted(affected_person_ids):
+                    recompute_participant_links(tx, "person", affected_person_id)
             if envelope.record_type == RecordType.CRM_DEAL:
                 tx.run(
                     queries.ACTIVATE_PENDING_CALLS_FOR_DEAL,
@@ -1247,18 +1268,66 @@ class IngestPipeline:
         approved = self._approved_nric(identifiers, attributes, envelope)
         if approved is not None:
             anchored_person_id, created = anchor_person_by_nric(tx, approved)
-            promote_profiles_for_nric(
-                tx,
-                approved,
-                source_key=envelope.source_system,
-                record_type=envelope.record_type,
-                incoming=self._incoming_name_dob(attributes),
+            if created or not self._anchor_is_blocked(
+                tx, envelope, identifiers, attributes, anchored_person_id
+            ):
+                promote_profiles_for_nric(
+                    tx,
+                    approved,
+                    identifier_keys=self._eligible_identifier_keys(identifiers),
+                    source_key=envelope.source_system,
+                    record_type=envelope.record_type,
+                    incoming=self._incoming_name_dob(attributes),
+                )
+                return anchored_person_id, created
+            # A hard NO_MATCH against the anchored Person (NO_MATCH_LOCK or a
+            # conflicting government ID) outranks the NRIC anchor: never attach,
+            # and let the engine's outcome decide the destination.
+            logger.warning(
+                "NRIC anchor person %s is hard-blocked for record %s; not attaching",
+                anchored_person_id,
+                envelope.source_record_id,
             )
-            return anchored_person_id, created
         person_id: str | None = match_result.matched_person_id
         if person_id is None and match_result.decision == MatchDecision.REVIEW and candidates:
             return candidates[0].person_id, False
         return person_id, False
+
+    @staticmethod
+    def _anchor_is_blocked(
+        tx: ManagedTransaction,
+        envelope: SourceRecordEnvelope,
+        identifiers: list[NormalizedIdentifier],
+        attributes: list[NormalizedAttribute],
+        person_id: str,
+    ) -> bool:
+        """Whether the deterministic engine hard-blocks this record from ``person_id``."""
+        blocked = evaluate_deterministic(
+            tx,
+            person_id,
+            identifiers,
+            attributes,
+            envelope.record_type,
+            v2_evidence=True,
+            include_plaintext_carrier=False,
+        )
+        return blocked is not None and blocked.decision == MatchDecision.NO_MATCH
+
+    @staticmethod
+    def _eligible_identifier_keys(identifiers: list[NormalizedIdentifier]) -> list[IdentifierKey]:
+        """The record's usable, candidate-eligible keys for Profile discovery."""
+        return [
+            IdentifierKey(
+                identifier_type=identifier.identifier_type,
+                identifier_scope=identifier_scope(
+                    identifier.identifier_type, identifier.source_instance_id
+                ),
+                normalized_value=identifier.normalized_value,
+            )
+            for identifier in identifiers
+            if is_usable(identifier.quality_flag)
+            and identifier_policy(identifier.identifier_type).candidate_eligible
+        ]
 
     def _lock_identity_inputs(
         self,
@@ -1315,7 +1384,13 @@ class IngestPipeline:
         source_record_pk: str,
         person_id: str | None,
     ) -> None:
-        """v2_shadow: project C3 links without changing the legacy outcome."""
+        """v2_shadow: project C3 links without changing the legacy outcome.
+
+        Promotion is v2-only: shadow never re-attributes Profile members or
+        writes legacy-owned ``LINKED_TO``/attribution fields. It may anchor the
+        legacy-resolved Person (conflict-guarded), recompute that Person's links,
+        and materialize/park Profiles for records legacy left unlinked.
+        """
         approved = self._approved_nric(identifiers, attributes, envelope)
         if approved is not None:
             if person_id is None:
@@ -1325,15 +1400,7 @@ class IngestPipeline:
                     "Shadow NRIC anchor conflict for person %s; legacy key kept", person_id
                 )
                 return
-            promoted = promote_profiles_for_nric(
-                tx,
-                approved,
-                source_key=envelope.source_system,
-                record_type=envelope.record_type,
-                incoming=self._incoming_name_dob(attributes),
-            )
-            if not promoted:
-                recompute_participant_links(tx, "person", person_id)
+            recompute_participant_links(tx, "person", person_id)
             return
         linked = tx.run(
             queries.SOURCE_RECORD_LINKED_TO_PERSON, source_record_pk=source_record_pk

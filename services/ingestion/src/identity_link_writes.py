@@ -33,9 +33,10 @@ from src.identity_links import (
     parse_field_trust,
     sorted_lock_rows,
 )
-from src.models import NormalizedIdentifier, RecordType
+from src.models import JsonValue, NormalizedIdentifier, RecordType
 from src.normalizers.nric import is_nric_digest
 from src.nric_anchor import NameDob, nric_anchor_gate
+from src.pipeline_normalization import fanout_cap_for
 
 
 @dataclass(frozen=True)
@@ -99,14 +100,26 @@ def materialize_profile_for_record(
     tx: ManagedTransaction,
     source_record_pk: str,
 ) -> MaterializationOutcome:
-    """Materialize, join, or park the Profile cluster containing one SourceRecord."""
+    """Materialize, join, or park the Profile cluster containing one SourceRecord.
+
+    Deadlock-free protocol: derive the affected key closure with a key-only read,
+    lock the full sorted closure, then read the cluster evidence under lock. An
+    evidence key outside the closure means a concurrent writer grew the cluster;
+    the transaction is abandoned with :class:`IdentityLinkConflictError` so the
+    caller retries, rather than locking a second time out of order.
+    """
     source_keys = _fetch_record_identifier_keys(tx, source_record_pk)
     if not source_keys:
         return MaterializationOutcome(status="no_keys", profile_id=None)
-    lock_identifiers(tx, source_keys)
+    closure_keys = _fetch_cluster_key_closure(tx, source_keys, source_record_pk)
+    locked_keys = sorted({identifier_key_tuple(key) for key in source_keys} | closure_keys)
+    lock_identifiers(tx, [identifier_key_row(key) for key in locked_keys])
     open_profiles, evidence = _fetch_cluster(tx, source_keys, source_record_pk)
-    cluster_keys = {identifier_key_tuple(row) for row in evidence}
-    lock_identifiers(tx, [identifier_key_row(key) for key in sorted(cluster_keys)])
+    evidence_keys = {identifier_key_tuple(row) for row in evidence}
+    if not evidence_keys <= set(locked_keys):
+        raise IdentityLinkConflictError(
+            f"cluster for record {source_record_pk} grew beyond its locked key closure"
+        )
     if not materializes(evidence):
         tx.run(queries.SET_SOURCE_RECORD_PARKED, source_record_pk=source_record_pk)
         return MaterializationOutcome(status="parked", profile_id=None)
@@ -175,10 +188,12 @@ def promote_profile(
     if state.status == "promoted":
         person_row = tx.run(queries.FETCH_PERSON_BY_NRIC, nric_key=nric_key).single()
         person_id = None if person_row is None else _required_str(person_row, "person_id")
-        if person_id is not None and person_id == state.promoted_person_id:
-            return PromotionOutcome(
-                status="already_promoted", profile_id=profile_id, person_id=person_id
-            )
+        promoted_id = state.promoted_person_id
+        if person_id is not None and promoted_id is not None:
+            if _canonical_person_id(tx, person_id) == _canonical_person_id(tx, promoted_id):
+                return PromotionOutcome(
+                    status="already_promoted", profile_id=profile_id, person_id=person_id
+                )
         raise IdentityLinkConflictError(f"profile {profile_id} is promoted to another Person")
     if state.status != "open":
         raise IdentityLinkConflictError(f"profile {profile_id} is not promotable")
@@ -212,6 +227,16 @@ def promote_profile(
         profile_id=profile_id,
         person_id=person_id,
     ).consume()
+    tx.run(
+        queries.PROJECT_REATTRIBUTED_FACTS_TO_PERSON,
+        profile_id=profile_id,
+        person_id=person_id,
+    ).consume()
+    tx.run(
+        queries.PROJECT_REATTRIBUTED_ADDRESSES_TO_PERSON,
+        profile_id=profile_id,
+        person_id=person_id,
+    ).consume()
     recompute_participant_links(tx, "person", person_id)
     _recompute_participant_counts(tx, {identifier_key_tuple(nric_row)})
     return PromotionOutcome(
@@ -231,6 +256,16 @@ def _fetch_record_identifier_keys(
     ]
 
 
+def _cap_key_row(key: IdentifierKey) -> dict[str, JsonValue]:
+    """Return one Identifier key row carrying its registry fanout cap."""
+    return {
+        "identifier_type": key["identifier_type"],
+        "identifier_scope": key["identifier_scope"],
+        "normalized_value": key["normalized_value"],
+        "fanout_cap": fanout_cap_for(key["identifier_type"]),
+    }
+
+
 def _open_profiles_for_keys(
     tx: ManagedTransaction, keys: Sequence[IdentifierKey]
 ) -> list[_OpenProfile]:
@@ -239,8 +274,31 @@ def _open_profiles_for_keys(
             profile_id=_required_str(row, "profile_id"),
             evidence_version=_required_int(row, "evidence_version"),
         )
-        for row in tx.run(queries.FETCH_OPEN_PROFILES_FOR_IDENTIFIERS, identifier_keys=list(keys))
+        for row in tx.run(
+            queries.FETCH_OPEN_PROFILES_FOR_IDENTIFIERS,
+            identifier_keys=[_cap_key_row(key) for key in keys],
+        )
     ]
+
+
+def _fetch_cluster_key_closure(
+    tx: ManagedTransaction,
+    keys: Sequence[IdentifierKey],
+    source_record_pk: str,
+) -> set[tuple[str, str, str]]:
+    """Derive the affected key closure before any lock is taken."""
+    return {
+        (
+            _required_str(row, "identifier_type"),
+            _required_str(row, "identifier_scope"),
+            _required_str(row, "normalized_value"),
+        )
+        for row in tx.run(
+            queries.FETCH_CLUSTER_KEY_CLOSURE,
+            identifier_keys=[_cap_key_row(key) for key in keys],
+            source_record_pk=source_record_pk,
+        )
+    }
 
 
 def _fetch_cluster(
@@ -249,18 +307,12 @@ def _fetch_cluster(
     source_record_pk: str,
 ) -> tuple[list[_OpenProfile], list[ParticipantEvidence]]:
     """Read the locked cluster's open Profiles and full assertion evidence."""
-    open_profiles = [
-        _OpenProfile(
-            profile_id=_required_str(row, "profile_id"),
-            evidence_version=_required_int(row, "evidence_version"),
-        )
-        for row in tx.run(queries.FETCH_OPEN_PROFILES_FOR_IDENTIFIERS, identifier_keys=list(keys))
-    ]
+    open_profiles = _open_profiles_for_keys(tx, keys)
     evidence = [
         _participant_evidence(row)
         for row in tx.run(
             queries.FETCH_CLUSTER_EVIDENCE,
-            identifier_keys=list(keys),
+            identifier_keys=[_cap_key_row(key) for key in keys],
             source_record_pk=source_record_pk,
         )
     ]
@@ -354,6 +406,14 @@ def _merge_person_by_nric(
         raise IdentityLinkConflictError("NRIC Person anchor did not materialize")
     created: object = row["was_created"]
     return _required_str(row, "person_id"), created is True
+
+
+def _canonical_person_id(tx: ManagedTransaction, person_id: str) -> str:
+    """Resolve a Person through MERGED_INTO lineage to its active survivor."""
+    row = tx.run(queries.FETCH_CANONICAL_PERSON_ID, person_id=person_id).single()
+    if row is None:
+        raise IdentityLinkConflictError(f"person {person_id} does not exist")
+    return _required_str(row, "person_id")
 
 
 def _participant_evidence(row: Record) -> ParticipantEvidence:
@@ -456,19 +516,32 @@ def promote_profiles_for_nric(
     tx: ManagedTransaction,
     identifier: NormalizedIdentifier,
     *,
+    identifier_keys: Sequence[IdentifierKey],
     source_key: str,
     record_type: RecordType,
     incoming: NameDob,
 ) -> tuple[str, ...]:
-    """Promote every open Profile holding the NRIC identifier; returns promoted IDs."""
+    """Promote every open Profile sharing an eligible key with the record.
+
+    Discovery is the record's under-cap cluster projection: Profiles holding the
+    NRIC itself plus Profiles sharing any other usable, candidate-eligible key
+    (the NRIC-less phone cluster the record now anchors). Returns promoted IDs.
+    """
     nric_scope = identifier_scope("nric", identifier.source_instance_id)
     key = IdentifierKey(
         identifier_type="nric",
         identifier_scope=nric_scope,
         normalized_value=identifier.normalized_value,
     )
+    discovery: list[IdentifierKey] = [key]
+    seen = {identifier_key_tuple(key)}
+    for candidate_key in identifier_keys:
+        parts = identifier_key_tuple(candidate_key)
+        if parts not in seen:
+            seen.add(parts)
+            discovery.append(candidate_key)
     promoted: list[str] = []
-    for profile in _open_profiles_for_keys(tx, [key]):
+    for profile in _open_profiles_for_keys(tx, discovery):
         outcome = promote_profile(
             tx,
             profile_id=profile.profile_id,

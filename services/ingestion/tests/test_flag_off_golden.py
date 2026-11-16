@@ -22,10 +22,13 @@ from src.models import (
     CandidateResult,
     MatchDecision,
     MatchResult,
+    NormalizedIdentifier,
+    QualityFlag,
     RecordType,
     SourceRecordEnvelope,
 )
 from src.pipeline import IngestPipeline
+from src.record_lifecycle import PlannedVersion
 
 #: ``create_review_case_if_needed`` stamps the SLA deadline from the wall clock.
 _CLOCK_PARAM_KEYS = frozenset({"sla_due_at"})
@@ -57,6 +60,11 @@ class _StreamTx(_RecordingTx):
         queries.CREATE_MERGE_EVENT_AUTO_MERGE: {"merge_event_id": "me-1"},
         queries.ACTIVATE_FIRST_SOURCE_RECORD_VERSION: {"source_record_pk": "sr-new"},
         queries.ACTIVATE_SOURCE_RECORD_VERSION: {"source_record_pk": "sr-new"},
+        queries.MERGE_PERSON_BY_NRIC: {
+            "person_id": "person-anchored",
+            "identifier_id": "ident-nric",
+            "was_created": True,
+        },
     }
 
     def run(self, query: str, **kwargs: object) -> _Result | _SummaryCounterResult:
@@ -167,6 +175,9 @@ def _run(
     scenario: _Scenario,
     identity_model: IdentityModel,
     monkeypatch: MonkeyPatch,
+    *,
+    identifiers: list[NormalizedIdentifier] | None = None,
+    lifecycle_plan: PlannedVersion | None = None,
 ) -> tuple[list[tuple[str, dict[str, object]]], list[tuple[str, dict[str, object]]]]:
     tx = _StreamTx()
     pipeline = IngestPipeline(cast(object, MagicMock()), identity_model=identity_model)
@@ -186,7 +197,14 @@ def _run(
     )
     envelope = scenario.envelope.model_copy(update={"source_record_version": "1"})
 
-    pipeline._execute_ingest(cast(ManagedTransaction, tx), envelope, [], [], [])
+    pipeline._execute_ingest(
+        cast(ManagedTransaction, tx),
+        envelope,
+        list(identifiers or []),
+        [],
+        [],
+        lifecycle_plan=lifecycle_plan,
+    )
 
     return _stream(tx), assertions
 
@@ -250,3 +268,144 @@ def test_v2_parked_outcome_persists_match_decision_without_review_case(
     assert queries.CREATE_MATCH_DECISION in issued
     assert queries.CREATE_REVIEW_CASE not in issued
     assert queries.PROMOTE_STAGED_SOURCE_RECORD not in issued
+
+
+_NRIC_DIGEST = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
+
+
+def _nric_envelope() -> SourceRecordEnvelope:
+    return SourceRecordEnvelope(
+        source_system="fundbox",
+        source_record_id="fundbox-user-nric",
+        record_type=RecordType.IDENTITY,
+        observed_at="2026-05-08T09:47:25+00:00",
+        record_hash="sha256:identity-nric",
+        raw_payload={"user_id": "1"},
+    )
+
+
+def _nric_identifier() -> NormalizedIdentifier:
+    return NormalizedIdentifier(
+        identifier_type="nric",
+        normalized_value=_NRIC_DIGEST,
+        is_verified=True,
+        quality_flag=QualityFlag.VALID,
+        checksum_valid=True,
+    )
+
+
+def _phone_identifier() -> NormalizedIdentifier:
+    return NormalizedIdentifier(
+        identifier_type="phone",
+        normalized_value="+6591234567",
+        quality_flag=QualityFlag.VALID,
+    )
+
+
+def test_shadow_nric_projection_never_writes_legacy_attribution(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    scenario = _Scenario(
+        name="nric_shadow",
+        envelope=_nric_envelope(),
+        match_result=MatchResult(
+            decision=MatchDecision.MERGE,
+            confidence=1.0,
+            matched_person_id="person-a",
+            reasons=["exact_nric_match"],
+        ),
+        candidates=(CandidateResult(person_id="person-a", source="identifier"),),
+    )
+    identifiers = [_nric_identifier(), _phone_identifier()]
+    v1_stream, _v1_assertions = _run(scenario, "v1", monkeypatch, identifiers=identifiers)
+    shadow_stream, _shadow_assertions = _run(
+        scenario, "v2_shadow", monkeypatch, identifiers=identifiers
+    )
+
+    issued = [query for query, _ in shadow_stream]
+    assert queries.ANCHOR_EXISTING_PERSON_BY_NRIC in issued
+    for forbidden in (
+        queries.MERGE_PERSON_BY_NRIC,
+        queries.PROMOTE_PROFILE,
+        queries.REATTRIBUTE_PROFILE_MEMBERS_TO_PERSON,
+        queries.PROJECT_REATTRIBUTED_FACTS_TO_PERSON,
+        queries.PROJECT_REATTRIBUTED_ADDRESSES_TO_PERSON,
+        queries.MOVE_PROFILE_MEMBERS,
+        queries.FETCH_OPEN_PROFILES_FOR_IDENTIFIERS,
+    ):
+        assert forbidden not in issued
+    legacy_mutations = {
+        queries.LINK_SOURCE_RECORD_TO_PERSON,
+        queries.LINK_PERSON_TO_IDENTIFIER,
+        queries.LINK_PERSON_TO_ADDRESS,
+        queries.LINK_SOURCE_RECORD_TO_ADDRESS,
+        queries.CREATE_ATTRIBUTE_FACT,
+        queries.PROMOTE_STAGED_SOURCE_RECORD,
+    }
+    assert [call for call in shadow_stream if call[0] in legacy_mutations] == [
+        call for call in v1_stream if call[0] in legacy_mutations
+    ]
+
+
+def test_v2_nric_anchor_discovers_profiles_through_shared_keys(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    scenario = _Scenario(
+        name="nric_new_person",
+        envelope=_nric_envelope(),
+        match_result=MatchResult(
+            decision=MatchDecision.MERGE,
+            confidence=1.0,
+            reasons=["no_candidates"],
+        ),
+    )
+
+    stream, _assertions = _run(
+        scenario, "v2", monkeypatch, identifiers=[_nric_identifier(), _phone_identifier()]
+    )
+
+    discovery = [
+        params for query, params in stream if query == queries.FETCH_OPEN_PROFILES_FOR_IDENTIFIERS
+    ]
+    assert len(discovery) == 1
+    key_rows = discovery[0]["identifier_keys"]
+    assert isinstance(key_rows, list)
+    assert [row["identifier_type"] for row in key_rows] == ["nric", "phone"]
+    assert [row["fanout_cap"] for row in key_rows] == [5, 50]
+
+
+def test_v2_snapshot_prefetch_includes_the_continuity_person(monkeypatch: MonkeyPatch) -> None:
+    scenario = _Scenario(
+        name="continuity_snapshot",
+        envelope=_identity_envelope(),
+        match_result=MatchResult(
+            decision=MatchDecision.MERGE,
+            confidence=1.0,
+            matched_person_id="person-continuity",
+            reasons=["continuity"],
+        ),
+    )
+    plan = PlannedVersion(
+        version=2,
+        active_source_record_pk="sr-prior",
+        prior_person_ids=("person-continuity",),
+        pending_to_reject=None,
+    )
+
+    stream, _assertions = _run(
+        scenario,
+        "v2",
+        monkeypatch,
+        identifiers=[_phone_identifier()],
+        lifecycle_plan=plan,
+    )
+
+    snapshot_calls = [
+        params for query, params in stream if query == queries.CANDIDATE_SNAPSHOT_BATCH
+    ]
+    assert snapshot_calls == [
+        {
+            "candidates": [{"input_index": 0, "person_id": "person-continuity"}],
+            "include_legacy": False,
+        }
+    ]

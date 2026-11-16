@@ -98,6 +98,7 @@ _AUTHORITATIVE_READERS: Final[frozenset[str]] = frozenset(
     """api/graph/queries/crm.py:GET_PERSON_BITRIX_DEAL_SCOPE
 api/graph/queries/crm.py:GET_PERSON_CRM_DEAL_METRICS
 api/graph/queries/graph.py:_QUERY_BODY
+api/graph/queries/identity_links.py:FETCH_PERSON_ASSERTION_EVIDENCE
 api/graph/queries/crm.py:_daily_buckets
 api/graph/queries/entities.py:LIST_ENTITIES
 api/graph/queries/entities.py:LIST_FILTER_SOURCE_SYSTEMS
@@ -163,6 +164,7 @@ ingestion/graph/queries/identity_link_revision_migrations.py:LIST_IDENTITY_LINK_
 ingestion/graph/queries/knows.py:RESOLVE_KNOWS_ENDPOINTS
 ingestion/graph/queries/knows.py:RESOLVE_PERSON_FROM_SOURCE_RECORD_ID
 ingestion/graph/queries/knows.py:RESOLVE_PERSON_FROM_SOURCE_RECORD_PK
+ingestion/graph/queries/identity_links.py:FETCH_CLUSTER_KEY_CLOSURE
 ingestion/graph/queries/identity_links.py:FETCH_CLUSTER_EVIDENCE
 ingestion/graph/queries/identity_links.py:FETCH_PARTICIPANT_EVIDENCE
 ingestion/graph/queries/identity_links.py:SOURCE_RECORD_LINKED_TO_PERSON
@@ -215,6 +217,10 @@ _AUTHORITATIVE_MUTATION_READERS: Final[frozenset[str]] = frozenset(
         # Profile promotion re-attributes a member record onto its Person: a
         # current-state LINKED_TO materializer that must reactivate retired links.
         "ingestion/graph/queries/identity_links.py:REATTRIBUTE_PROFILE_MEMBERS_TO_PERSON",
+        # Promotion projects the member records' graph-resident evidence onto the
+        # Person with the legacy link-path edge shapes; both re-assert active state.
+        "ingestion/graph/queries/identity_links.py:PROJECT_REATTRIBUTED_FACTS_TO_PERSON",
+        "ingestion/graph/queries/identity_links.py:PROJECT_REATTRIBUTED_ADDRESSES_TO_PERSON",
         "ingestion/graph/queries/crm_history.py:LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS",
         "ingestion/graph/queries/persons.py:LINK_PERSON_TO_ADDRESS",
         "ingestion/graph/queries/persons.py:LINK_PERSON_TO_IDENTIFIER",

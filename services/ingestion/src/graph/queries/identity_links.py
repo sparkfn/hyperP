@@ -34,12 +34,59 @@ MATCH (identifier:Identifier {
     identifier_scope: key.identifier_scope,
     normalized_value: key.normalized_value
 })
+// An over-cap hub key never drives expansion on its own; a Profile reachable
+// through any under-cap key is still included.
+WHERE key.fanout_cap IS NULL
+   OR coalesce(identifier.participant_count, 0) <= key.fanout_cap
 MATCH (profile:Profile)-[:HAS_IDENTIFIER]->(identifier)
 WHERE profile.status = 'open'
 WITH DISTINCT profile
 RETURN profile.profile_id AS profile_id,
        profile.evidence_version AS evidence_version
 ORDER BY profile_id
+"""
+
+#: Cap-aware cluster expansion. ``$identifier_keys`` rows carry ``fanout_cap``;
+#: an over-cap key contributes no expansion by itself, while a record or Profile
+#: also reached through an under-cap key stays in the cluster (and keeps every
+#: Profile member). ``FETCH_CLUSTER_KEY_CLOSURE`` and ``FETCH_CLUSTER_EVIDENCE``
+#: must keep identical expansion so the locked closure contains every key the
+#: evidence read can return.
+FETCH_CLUSTER_KEY_CLOSURE = """
+UNWIND $identifier_keys AS key
+MATCH (identifier:Identifier {
+    identifier_type: key.identifier_type,
+    identifier_scope: key.identifier_scope,
+    normalized_value: key.normalized_value
+})
+WITH key, identifier,
+     (key.fanout_cap IS NOT NULL
+      AND coalesce(identifier.participant_count, 0) > key.fanout_cap) AS over_cap
+OPTIONAL MATCH (parked:SourceRecord)-[:ASSERTS]->(identifier)
+WHERE NOT over_cap
+  AND parked.lifecycle_status = 'parked'
+  AND parked.link_status = 'unlinked'
+  AND parked.attribution_status = 'parked'
+  AND parked.reeval_pending = true
+OPTIONAL MATCH (profile:Profile)-[:HAS_IDENTIFIER]->(identifier)
+WHERE NOT over_cap
+  AND profile.status = 'open'
+OPTIONAL MATCH (member:SourceRecord)-[:IN_PROFILE]->(profile)
+OPTIONAL MATCH (incoming:SourceRecord {source_record_pk: $source_record_pk})
+WITH collect(DISTINCT parked) + collect(DISTINCT member)
+   + collect(DISTINCT incoming) AS records
+UNWIND records AS record
+WITH DISTINCT record
+WHERE record IS NOT NULL
+  AND NOT EXISTS {
+      MATCH (record)-[linked:LINKED_TO]->(:Person)
+      WHERE coalesce(linked.is_active, true) = true
+  }
+MATCH (record)-[:ASSERTS]->(asserted:Identifier)
+RETURN DISTINCT asserted.identifier_type AS identifier_type,
+       asserted.identifier_scope AS identifier_scope,
+       asserted.normalized_value AS normalized_value
+ORDER BY identifier_type, identifier_scope, normalized_value
 """
 
 FETCH_CLUSTER_EVIDENCE = """
@@ -49,13 +96,18 @@ MATCH (identifier:Identifier {
     identifier_scope: key.identifier_scope,
     normalized_value: key.normalized_value
 })
+WITH key, identifier,
+     (key.fanout_cap IS NOT NULL
+      AND coalesce(identifier.participant_count, 0) > key.fanout_cap) AS over_cap
 OPTIONAL MATCH (parked:SourceRecord)-[:ASSERTS]->(identifier)
-WHERE parked.lifecycle_status = 'parked'
+WHERE NOT over_cap
+  AND parked.lifecycle_status = 'parked'
   AND parked.link_status = 'unlinked'
   AND parked.attribution_status = 'parked'
   AND parked.reeval_pending = true
 OPTIONAL MATCH (profile:Profile)-[:HAS_IDENTIFIER]->(identifier)
-WHERE profile.status = 'open'
+WHERE NOT over_cap
+  AND profile.status = 'open'
 OPTIONAL MATCH (member:SourceRecord)-[:IN_PROFILE]->(profile)
 OPTIONAL MATCH (incoming:SourceRecord {source_record_pk: $source_record_pk})
 WITH collect(DISTINCT parked) + collect(DISTINCT member)
@@ -89,6 +141,10 @@ CALL {
     MATCH (record:SourceRecord)-[linked:LINKED_TO]->(:Person {person_id: participant_id})
     WHERE coalesce(linked.is_active, true) = true
       AND coalesce(record.link_status, 'linked') <> 'pending_review'
+      // A replaced version keeps its LINKED_TO edge but no longer evidences the
+      // Person; retirement writes lifecycle_status='superseded'. Pre-lifecycle
+      // rows (NULL) are treated as active.
+      AND coalesce(record.lifecycle_status, 'active') <> 'superseded'
     RETURN record
     UNION
     WITH $participant_kind AS kind, $participant_id AS participant_id
@@ -316,13 +372,24 @@ RETURN moved_count AS moved_count
 """
 
 MERGE_PERSON_BY_NRIC = """
+// MERGE on the unique nric_key is the only Person constructor: concurrent
+// first anchors converge on one node instead of racing a CREATE against the
+// unique constraint. The holder may then have been merged away, so resolve
+// through MERGED_INTO lineage (path-compressed to one hop, chained
+// defensively) to its active survivor before anchoring; a merged node never
+// gains a second anchor.
 OPTIONAL MATCH (existing:Person {nric_key: $nric_key})
 WITH existing IS NOT NULL AS existed
-MERGE (person:Person {nric_key: $nric_key})
-ON CREATE SET person.person_id = randomUUID(),
-              person.status = 'active',
-              person.created_at = datetime()
-WITH person, existed
+MERGE (holder:Person {nric_key: $nric_key})
+ON CREATE SET holder.person_id = randomUUID(),
+              holder.status = 'active',
+              holder.created_at = datetime()
+WITH holder, existed
+OPTIONAL MATCH (holder)-[:MERGED_INTO*1..]->(survivor:Person)
+WHERE survivor.status = 'active'
+WITH holder, existed, survivor
+ORDER BY coalesce(survivor.person_id, '') LIMIT 1
+WITH coalesce(survivor, holder) AS person, existed
 MERGE (identifier:Identifier {
     identifier_type: 'nric',
     identifier_scope: $identifier_scope,
@@ -337,9 +404,22 @@ RETURN person.person_id AS person_id,
 """
 
 FETCH_PERSON_BY_NRIC = """
-MATCH (person:Person {nric_key: $nric_key})
+MATCH (holder:Person {nric_key: $nric_key})
+OPTIONAL MATCH (holder)-[:MERGED_INTO*1..]->(survivor:Person)
+WHERE survivor.status = 'active'
+WITH coalesce(survivor, holder) AS person
 RETURN person.person_id AS person_id
-ORDER BY person.person_id
+ORDER BY person_id
+LIMIT 1
+"""
+
+FETCH_CANONICAL_PERSON_ID = """
+MATCH (person:Person {person_id: $person_id})
+OPTIONAL MATCH (person)-[:MERGED_INTO*1..]->(survivor:Person)
+WHERE survivor.status = 'active'
+WITH coalesce(survivor, person) AS canonical
+RETURN canonical.person_id AS person_id
+ORDER BY person_id
 LIMIT 1
 """
 
@@ -364,17 +444,85 @@ WITH record, person,
      (existing IS NOT NULL
       AND record.link_status = 'linked'
       AND record.attribution_status = 'person'
-      AND coalesce(record.reeval_pending, false) = false) AS unchanged
+      AND coalesce(record.reeval_pending, false) = false
+      AND record.lifecycle_status = 'active') AS unchanged
 MERGE (record)-[active_link:LINKED_TO]->(person)
+// Promotion is a delayed link: mirror the lifecycle a legacy-linked record is
+// activated to, without rewriting version markers or timestamps on re-runs.
 FOREACH (_ IN CASE WHEN unchanged THEN [] ELSE [1] END |
     SET record.link_status = 'linked',
         record.attribution_status = 'person',
-        record.reeval_pending = false
+        record.reeval_pending = false,
+        record.lifecycle_status = 'active',
+        record.activated_at = coalesce(record.activated_at, datetime()),
+        record.updated_at = datetime()
 )
 FOREACH (_ IN CASE WHEN coalesce(active_link.is_active, true) = true THEN [] ELSE [1] END |
     SET active_link.is_active = true
 )
 RETURN count(record) AS member_count
+"""
+
+# Project a promoted Profile member's graph-resident assertion evidence onto the
+# Person using the same edge shapes/properties the legacy link path writes.
+# Derived-write zero-diff: a re-run merges the same edge and only re-asserts
+# `is_active = true`, never rewriting observed timestamps.
+PROJECT_REATTRIBUTED_FACTS_TO_PERSON = """
+MATCH (profile:Profile {profile_id: $profile_id})
+MATCH (record:SourceRecord)-[:IN_PROFILE]->(profile)
+MATCH (record)-[:ASSERTS]->(fact:ProfileFact)
+MATCH (person:Person {person_id: $person_id})
+OPTIONAL MATCH (person)-[existing:HAS_FACT {
+    source_record_pk: record.source_record_pk,
+    attribute_name: fact.attribute_name,
+    attribute_value: fact.attribute_value
+}]->(record)
+WHERE coalesce(existing.is_active, true) = true
+MERGE (person)-[rel:HAS_FACT {
+    source_record_pk: record.source_record_pk,
+    attribute_name: fact.attribute_name,
+    attribute_value: fact.attribute_value
+}]->(record)
+ON CREATE SET rel.source_trust_tier = 'tier_3',
+              rel.confidence = 1.0,
+              rel.quality_flag = 'valid',
+              rel.is_active = true,
+              rel.is_current_hint = false,
+              rel.observed_at = record.observed_at,
+              rel.created_at = datetime()
+FOREACH (_ IN CASE WHEN coalesce(rel.is_active, true) = true THEN [] ELSE [1] END |
+    SET rel.is_active = true
+)
+RETURN count(rel) AS fact_count
+"""
+
+PROJECT_REATTRIBUTED_ADDRESSES_TO_PERSON = """
+MATCH (profile:Profile {profile_id: $profile_id})
+MATCH (record:SourceRecord)-[:IN_PROFILE]->(profile)
+MATCH (record)-[:ASSERTS]->(address:Address)
+MATCH (record)-[:FROM_SOURCE]->(source:SourceSystem)
+MATCH (person:Person {person_id: $person_id})
+OPTIONAL MATCH (person)-[existing:LIVES_AT {
+    source_record_pk: record.source_record_pk,
+    source_system_key: source.source_key
+}]->(address)
+WHERE coalesce(existing.is_active, true) = true
+MERGE (person)-[rel:LIVES_AT {
+    source_record_pk: record.source_record_pk,
+    source_system_key: source.source_key
+}]->(address)
+ON CREATE SET rel.is_active = true,
+              rel.is_verified = false,
+              rel.quality_flag = 'valid',
+              rel.first_seen_at = record.observed_at,
+              rel.last_seen_at = record.observed_at,
+              rel.last_confirmed_at = record.observed_at,
+              rel.activated_at = datetime(),
+              rel.retired_at = null
+FOREACH (_ IN CASE WHEN coalesce(rel.is_active, true) = true THEN [] ELSE [1] END |
+    SET rel.is_active = true
+)
+RETURN count(rel) AS address_count
 """
 
 SOURCE_RECORD_LINKED_TO_PERSON = """
@@ -388,6 +536,12 @@ LIMIT 1
 ANCHOR_EXISTING_PERSON_BY_NRIC = """
 MATCH (person:Person {person_id: $person_id})
 WHERE person.nric_key IS NULL OR person.nric_key = $nric_key
+// The digest is uniquely keyed: another Person (merged or active) holding it
+// must surface as a conflict instead of tripping the unique constraint.
+OPTIONAL MATCH (holder:Person {nric_key: $nric_key})
+WHERE holder.person_id <> person.person_id
+WITH person, holder
+WHERE holder IS NULL
 SET person.nric_key = $nric_key
 WITH person
 MERGE (identifier:Identifier {
