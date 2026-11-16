@@ -49,6 +49,12 @@ def build_frontend_app() -> FastAPI:
                     "merge, and survivorship."
                 ),
             },
+            {
+                "name": "Profiles",
+                "description": (
+                    "Derived, unverified identity-evidence clusters awaiting promotion."
+                ),
+            },
             {"name": "Reports", "description": "Saved Cypher report definitions and execution."},
             {
                 "name": "Review",

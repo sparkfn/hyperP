@@ -24,7 +24,7 @@ SourceRecordTypeLiteral = Literal[
     "call",
 ]
 SourceRecordLifecycleStatus = Literal[
-    "active", "pending_review", "superseded", "rejected", "link_failed"
+    "active", "pending_review", "superseded", "rejected", "link_failed", "parked"
 ]
 
 # --- Enums ---
@@ -259,6 +259,10 @@ class PersonIdentifier(BaseModel):
     source_record_ids: list[str] = Field(default_factory=list)
     entities: list[PersonEntitySummary] = Field(default_factory=list)
     source_records: list[SourceRecord] = Field(default_factory=list)
+    # Derived C3 weights. Present only on HAS_IDENTIFIER-backed rows; legacy
+    # IDENTIFIED_BY-only identifiers keep both fields null.
+    score: float | None = None
+    golden_rank: int | None = None
 
 
 class PersonSharedIdentifierCandidate(BaseModel):
@@ -764,3 +768,22 @@ class NricReveal(BaseModel):
     revealed_at: str
     values: list[str] = Field(default_factory=list)
     unavailable_count: int = Field(ge=0)
+
+
+class Profile(BaseModel):
+    """An unverified evidence cluster derived from C1 assertions."""
+
+    profile_id: str
+    status: str
+    evidence_version: int = 0
+    materialized_at: str | None = None
+    promoted_person_id: str | None = None
+    record_count: int = 0
+    identifier_count: int = 0
+
+
+class ProfileDetail(Profile):
+    """Profile detail: member SourceRecords and derived weighted identifiers."""
+
+    source_records: list[SourceRecord] = Field(default_factory=list)
+    identifiers: list[PersonIdentifier] = Field(default_factory=list)

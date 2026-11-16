@@ -312,3 +312,23 @@ def test_map_possible_match_detail_groups_source_records() -> None:
     assert group.identifier_type == "phone"
     assert group.candidate_source_records[0].source_record_pk == "sr-c"
     assert group.current_person_source_records[0].source_record_pk == "sr-p"
+
+
+def test_map_person_identifier_maps_has_weight_fields() -> None:
+    identifier = map_person_identifier(
+        {
+            "identifier_type": "phone",
+            "normalized_value": "+6591234567",
+            "is_active": True,
+            "is_verified": True,
+            "score": 0.42,
+            "golden_rank": 2,
+        }
+    )
+
+    assert identifier.score == 0.42
+    assert identifier.golden_rank == 2
+    assert (
+        map_person_identifier({"identifier_type": "phone", "normalized_value": "+6591234567"}).score
+        is None
+    )
