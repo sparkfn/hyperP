@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, type FormEvent, type ReactElement } from "react";
+import React, { useState, type FormEvent, type ReactElement } from "react";
 import Link from "next/link";
 import Button from "@mui/material/Button";
 import Chip from "@mui/material/Chip";
