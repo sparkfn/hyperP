@@ -1,21 +1,22 @@
 """Derived C3 identity-link helpers over immutable C1 ``ASSERTS`` evidence.
 
-Foundation only: deterministic link IDs, assertion-evidence aggregation, the
-Profile materialization threshold, and canonical Identifier lock ordering.
-There is no scoring formula and no Cypher here; writers live in the pipeline
-layer.
+Pure helpers: deterministic link IDs, assertion-evidence aggregation, the
+Profile materialization threshold, canonical Identifier lock ordering, and the
+behaviour-free writer contract types. There is no scoring formula and no Cypher
+here; the transaction writer lives in :mod:`src.identity_link_writes`.
 """
 
 from __future__ import annotations
 
 import hashlib
+import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 from src.golden_profile_active_authority import _TRUST_TIER_RANK
 from src.identity_registry import identifier_policy
-from src.models import QualityFlag
+from src.models import JsonValue, QualityFlag
 from src.pipeline_normalization import is_usable
 
 #: Provisional C3 values. Placeholders until C4 computes weights; they must
@@ -56,6 +57,54 @@ class AssertionEvidence(TypedDict):
     is_verified: bool | None
     trust_tier: str | None
     observed_at: str | None
+
+
+class ParticipantEvidence(AssertionEvidence):
+    """One attributed SourceRecord assertion row including its Identifier ID."""
+
+    identifier_id: str
+
+
+ParticipantKind = Literal["person", "profile"]
+
+MaterializationStatus = Literal["no_keys", "parked", "created", "joined"]
+
+PromotionStatus = Literal["promoted", "already_promoted", "rejected"]
+
+
+@dataclass(frozen=True)
+class LinkRecomputeOutcome:
+    """Counts from one participant's ``HAS_IDENTIFIER`` recompute."""
+
+    participant_kind: ParticipantKind
+    participant_id: str
+    link_count: int
+    stale_link_count: int
+
+
+@dataclass(frozen=True)
+class MaterializationOutcome:
+    """Result of materializing the cluster containing one SourceRecord."""
+
+    status: MaterializationStatus
+    profile_id: str | None
+    absorbed_profile_ids: tuple[str, ...] = ()
+    member_count: int = 0
+
+
+@dataclass(frozen=True)
+class PromotionOutcome:
+    """Result of a gate-approved NRIC promotion of an open Profile."""
+
+    status: PromotionStatus
+    profile_id: str
+    person_id: str | None = None
+    person_created: bool = False
+    reason: str | None = None
+
+
+class IdentityLinkConflictError(RuntimeError):
+    """A CAS-guarded Profile or link write lost to concurrent modification."""
 
 
 @dataclass(frozen=True)
@@ -112,6 +161,41 @@ def aggregate_link(evidence: Sequence[AssertionEvidence]) -> LinkAggregate:
     )
 
 
+def build_link_rows(
+    participant_id: str,
+    evidence: Sequence[ParticipantEvidence],
+) -> list[dict[str, JsonValue]]:
+    """Build one deterministic ``HAS_IDENTIFIER`` row per evidenced Identifier."""
+    grouped: dict[tuple[str, str, str], list[ParticipantEvidence]] = {}
+    for row in evidence:
+        key = (row["identifier_type"], row["identifier_scope"], row["normalized_value"])
+        grouped.setdefault(key, []).append(row)
+    links: list[dict[str, JsonValue]] = []
+    for key in sorted(grouped):
+        pair = grouped[key]
+        aggregate = aggregate_link(pair)
+        link: dict[str, JsonValue] = {
+            "link_id": link_id(participant_id, pair[0]["identifier_id"]),
+            "identifier_id": pair[0]["identifier_id"],
+            "assertion_count": aggregate.assertion_count,
+            "source_count": aggregate.source_count,
+            "verified_count": aggregate.verified_count,
+            "max_tier": aggregate.max_tier,
+            "first_seen_at": aggregate.first_seen_at,
+            "last_seen_at": aggregate.last_seen_at,
+            "last_confirmed_at": aggregate.last_confirmed_at,
+            "score": aggregate.score,
+            "exclusivity": aggregate.exclusivity,
+            "rank_score": aggregate.rank_score,
+            "golden_rank": aggregate.golden_rank,
+            "basis": aggregate.basis,
+            "status": aggregate.status,
+            "policy_version": aggregate.policy_version,
+        }
+        links.append(link)
+    return links
+
+
 def materializes(evidence: Sequence[AssertionEvidence]) -> bool:
     """Return whether the evidence crosses the C3 Profile materialization threshold.
 
@@ -148,6 +232,37 @@ def sorted_lock_rows(keys: Iterable[IdentifierKey]) -> list[IdentifierKey]:
             key["normalized_value"],
         ),
     )
+
+
+def identifier_key_tuple(key: IdentifierKey) -> tuple[str, str, str]:
+    """Return an Identifier key's canonical tuple form."""
+    return (key["identifier_type"], key["identifier_scope"], key["normalized_value"])
+
+
+def identifier_key_row(parts: tuple[str, str, str]) -> IdentifierKey:
+    """Return an Identifier key TypedDict from its canonical tuple form."""
+    return IdentifierKey(
+        identifier_type=parts[0],
+        identifier_scope=parts[1],
+        normalized_value=parts[2],
+    )
+
+
+def parse_field_trust(value: object) -> dict[str, str] | None:
+    """Parse the bootstrap-stored JSON field-trust map; None when malformed."""
+    parsed: object = value
+    if isinstance(parsed, str):
+        try:
+            parsed = json.loads(parsed)
+        except json.JSONDecodeError:
+            return None
+    if not isinstance(parsed, dict):
+        return None
+    result: dict[str, str] = {}
+    for key, item in parsed.items():
+        if isinstance(key, str) and isinstance(item, str):
+            result[key] = item
+    return result
 
 
 def _has_complete_metadata(row: AssertionEvidence) -> bool:

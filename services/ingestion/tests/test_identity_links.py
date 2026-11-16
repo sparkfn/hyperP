@@ -8,9 +8,14 @@ from src.identity_links import (
     LOWEST_TRUST_TIER,
     AssertionEvidence,
     IdentifierKey,
+    ParticipantEvidence,
     aggregate_link,
+    build_link_rows,
+    identifier_key_row,
+    identifier_key_tuple,
     link_id,
     materializes,
+    parse_field_trust,
     sorted_lock_rows,
 )
 
@@ -187,3 +192,65 @@ def test_sorted_lock_rows_use_type_scope_value_order() -> None:
     ]
     # Input order is left untouched.
     assert rows[0] == _key("phone", "global", "+6591234567")
+
+
+def _participant_row(
+    *,
+    identifier_id: str = "identifier-1",
+    source_record_pk: str = "source-1",
+    identifier_type: str = "phone",
+    normalized_value: str = "+6591234567",
+) -> ParticipantEvidence:
+    return ParticipantEvidence(
+        source_record_pk=source_record_pk,
+        identifier_id=identifier_id,
+        identifier_type=identifier_type,
+        identifier_scope="global",
+        normalized_value=normalized_value,
+        quality_flag="valid",
+        is_verified=True,
+        trust_tier="tier_2",
+        observed_at="2026-01-01T00:00:00Z",
+    )
+
+
+def test_build_link_rows_groups_evidence_per_identifier() -> None:
+    rows = build_link_rows(
+        "profile-1",
+        [
+            _participant_row(source_record_pk="source-1"),
+            _participant_row(source_record_pk="source-2"),
+            _participant_row(
+                identifier_id="identifier-2",
+                identifier_type="email",
+                normalized_value="user@example.com",
+            ),
+        ],
+    )
+
+    assert [row["link_id"] for row in rows] == [
+        link_id("profile-1", "identifier-1"),
+        link_id("profile-1", "identifier-2"),
+    ]
+    assert rows[0]["identifier_id"] == "identifier-1"
+    assert rows[0]["assertion_count"] == 2
+    assert rows[0]["source_count"] == 2
+    assert rows[0]["max_tier"] == "tier_2"
+    assert rows[1]["assertion_count"] == 1
+
+
+def test_parse_field_trust_handles_json_maps_and_malformed_values() -> None:
+    assert parse_field_trust('{"nric": "tier_4", "phone": "tier_1"}') == {
+        "nric": "tier_4",
+        "phone": "tier_1",
+    }
+    assert parse_field_trust({"phone": "tier_1"}) == {"phone": "tier_1"}
+    assert parse_field_trust("{not-json") is None
+    assert parse_field_trust(["phone"]) is None
+    assert parse_field_trust(None) is None
+
+
+def test_identifier_key_tuple_round_trips() -> None:
+    key = _key("phone", "global", "+6591234567")
+
+    assert identifier_key_row(identifier_key_tuple(key)) == key

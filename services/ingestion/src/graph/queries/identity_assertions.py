@@ -76,7 +76,10 @@ CALL {
       AND record.reeval_pending = true
     RETURN count(DISTINCT record) AS record_count
 }
-SET target.participant_count = person_count + profile_count + record_count
+WITH target, person_count + profile_count + record_count AS computed_count
+WHERE target.participant_count IS NULL
+   OR target.participant_count <> computed_count
+SET target.participant_count = computed_count
 RETURN count(target) AS identifier_count
 """
 
