@@ -165,8 +165,10 @@ ingestion/graph/queries/knows.py:RESOLVE_PERSON_FROM_SOURCE_RECORD_ID
 ingestion/graph/queries/knows.py:RESOLVE_PERSON_FROM_SOURCE_RECORD_PK
 ingestion/graph/queries/identity_links.py:FETCH_CLUSTER_EVIDENCE
 ingestion/graph/queries/identity_links.py:FETCH_PARTICIPANT_EVIDENCE
+ingestion/graph/queries/identity_links.py:SOURCE_RECORD_LINKED_TO_PERSON
 ingestion/graph/queries/knows.py:SCAN_CHAT_RELATIONSHIP_SOURCE_RECORDS
 ingestion/graph/queries/knows.py:SCAN_CONTACT_SOURCE_RECORDS
+ingestion/graph/queries/matching.py:CANDIDATE_SNAPSHOT_BATCH
 ingestion/graph/queries/matching.py:CHECK_IDENTIFIER_FANOUT
 ingestion/graph/queries/matching.py:FIND_CANDIDATES_BY_ADDRESS
 ingestion/graph/queries/matching.py:FIND_CANDIDATES_BY_ADDRESSES_BATCH

@@ -44,7 +44,7 @@ from src.models import (
     SourceRecordLifecycleStatus,
 )
 from src.pipeline_writes import (
-    create_person,
+    create_person_legacy,
     link_record_to_graph,
     persist_source_record,
     upsert_nodes,
@@ -490,12 +490,12 @@ def _write_registered_crm_contact(
             addresses=[],
             attributes=[],
             match_result=MatchResult(decision=MatchDecision.NO_MATCH),
-            is_new_person=True,
+            person_created=True,
             ingest_run_id=None,
             lifecycle_status=SourceRecordLifecycleStatus.ACTIVE,
             expected_active_source_record_pk=None,
         )
-        person_id = create_person(tx)
+        person_id = create_person_legacy(tx)
         link_record_to_graph(
             tx,
             envelope=envelope,

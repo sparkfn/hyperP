@@ -86,7 +86,6 @@ def _assert_all_equal(results: list[MatchResult]) -> None:
         assert other.reasons == first.reasons
         assert other.engine_type == first.engine_type
         assert other.matched_person_id == first.matched_person_id
-        assert other.is_new_person == first.is_new_person
 
 
 def test_deterministic_nric_merge_identical_across_system_family() -> None:
@@ -218,3 +217,18 @@ def test_heuristic_identity_and_bankruptcy_identical_relationship_promotes() -> 
     relationship = _evaluate(RecordType.RELATIONSHIP)
     assert relationship.decision == MatchDecision.MERGE
     assert any("promot" in r.lower() for r in relationship.reasons)
+
+
+def test_person_score_limit_counts_continuity_inside_the_limit() -> None:
+    candidates = {
+        f"person-{index:02d}": CandidateResult(person_id=f"person-{index:02d}")
+        for index in range(60)
+    }
+    # evaluate() inserts the continuity candidate before applying the limit.
+    candidates["continuity"] = CandidateResult(person_id="continuity")
+
+    limited = MatchEngine._limited_candidates(candidates, "continuity", 50)
+
+    assert len(limited) == 50
+    assert "continuity" in limited
+    assert "person-49" not in limited

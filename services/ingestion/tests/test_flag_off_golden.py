@@ -99,6 +99,17 @@ def _deal_envelope() -> SourceRecordEnvelope:
     )
 
 
+_REVIEW_NO_ENGINE_PICK = _Scenario(
+    name="review_no_engine_pick",
+    envelope=_identity_envelope(),
+    match_result=MatchResult(
+        decision=MatchDecision.REVIEW,
+        confidence=0.7,
+        reasons=["ambiguous_candidate"],
+    ),
+    candidates=(CandidateResult(person_id="person-a", source="identifier"),),
+)
+
 _SCENARIOS: tuple[_Scenario, ...] = (
     _Scenario(
         name="matched_merge",
@@ -128,7 +139,6 @@ _SCENARIOS: tuple[_Scenario, ...] = (
         match_result=MatchResult(
             decision=MatchDecision.MERGE,
             confidence=1.0,
-            is_new_person=True,
             reasons=["no_candidates"],
         ),
     ),
@@ -142,6 +152,7 @@ _SCENARIOS: tuple[_Scenario, ...] = (
             feature_snapshot={"crm_deal_quarantine": True},
         ),
     ),
+    _REVIEW_NO_ENGINE_PICK,
 )
 
 
@@ -163,6 +174,10 @@ def _run(
     monkeypatch.setattr(
         "src.pipeline.find_candidates",
         lambda *_args, **_kwargs: list(scenario.candidates),
+    )
+    monkeypatch.setattr(
+        "src.pipeline.find_identity_candidates",
+        lambda *_args, **_kwargs: (list(scenario.candidates), []),
     )
     assertions: list[tuple[str, dict[str, object]]] = []
     monkeypatch.setattr(
@@ -190,4 +205,48 @@ def test_shadow_flag_only_adds_assertion_writes(
     v1_queries = [query for query, _ in v1_stream]
     assert queries.CREATE_SOURCE_RECORD in v1_queries
     assert queries.PROMOTE_STAGED_SOURCE_RECORD in v1_queries
-    assert shadow_stream == v1_stream
+    # Shadow mode may add only the C3 projection reads; the legacy stream is
+    # otherwise identical and the legacy outcome is preserved.
+    projection_queries = {
+        queries.SOURCE_RECORD_LINKED_TO_PERSON,
+        queries.FETCH_RECORD_IDENTIFIER_KEYS,
+    }
+    assert [call for call in shadow_stream if call[0] not in projection_queries] == v1_stream
+
+
+@pytest.mark.parametrize("scenario", _SCENARIOS, ids=[scenario.name for scenario in _SCENARIOS])
+def test_v2_never_uses_the_legacy_person_fallback(
+    scenario: _Scenario,
+    monkeypatch: MonkeyPatch,
+) -> None:
+    v2_stream, _assertions = _run(scenario, "v2", monkeypatch)
+
+    v2_queries = [query for query, _ in v2_stream]
+    assert queries.CREATE_PERSON not in v2_queries
+    assert queries.MERGE_PERSON_BY_NRIC not in v2_queries
+
+
+def test_v2_review_with_candidate_links_provisionally_and_opens_a_review_case(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    stream, _assertions = _run(_REVIEW_NO_ENGINE_PICK, "v2", monkeypatch)
+
+    issued = [query for query, _ in stream]
+    assert queries.CREATE_MATCH_DECISION in issued
+    assert queries.CREATE_REVIEW_CASE in issued
+    assert queries.PROMOTE_STAGED_SOURCE_RECORD in issued
+    # No evidence rows were answered by the fake, so the provisional record's
+    # identifiers cannot reach HAS_IDENTIFIER in this REVIEW outcome.
+    assert queries.MERGE_PARTICIPANT_HAS_IDENTIFIER_LINKS not in issued
+
+
+def test_v2_parked_outcome_persists_match_decision_without_review_case(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    parked = next(scenario for scenario in _SCENARIOS if scenario.name == "new_person")
+    stream, _assertions = _run(parked, "v2", monkeypatch)
+
+    issued = [query for query, _ in stream]
+    assert queries.CREATE_MATCH_DECISION in issued
+    assert queries.CREATE_REVIEW_CASE not in issued
+    assert queries.PROMOTE_STAGED_SOURCE_RECORD not in issued

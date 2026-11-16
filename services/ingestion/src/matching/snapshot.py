@@ -121,3 +121,55 @@ def fetch_candidate_snapshot(
         )
     ]
     return CandidateSnapshot(idents=idents, facts=facts, addrs=addrs)
+
+
+def fetch_candidate_snapshots(
+    tx: ManagedTransaction,
+    candidate_person_ids: list[str],
+    *,
+    include_legacy: bool,
+) -> dict[str, CandidateSnapshot]:
+    """Load every candidate snapshot in one UNWIND query, keyed by person ID.
+
+    Reads v2 evidence through ``HAS_IDENTIFIER`` and merges the legacy
+    ``IDENTIFIED_BY`` projection when ``include_legacy`` is set (shadow mode);
+    the v2 projection wins on a duplicate identifier pair.
+    """
+    candidates = [
+        {"input_index": input_index, "person_id": person_id}
+        for input_index, person_id in enumerate(candidate_person_ids)
+    ]
+    snapshots: dict[str, CandidateSnapshot] = {}
+    if not candidates:
+        return snapshots
+    for row in tx.run(
+        queries.CANDIDATE_SNAPSHOT_BATCH,
+        candidates=candidates,
+        include_legacy=include_legacy,
+    ):
+        person_id = str(row["candidate_person_id"])
+        has_identifiers = _record_dicts(row["has_identifiers"])
+        legacy_identifiers = _record_dicts(row["legacy_identifiers"])
+        snapshots[person_id] = CandidateSnapshot(
+            idents=_dedupe_identifiers(has_identifiers, legacy_identifiers),
+            facts=_record_dicts(row["facts"]),
+            addrs=_record_dicts(row["addresses"]),
+        )
+    return snapshots
+
+
+def _record_dicts(value: object) -> list[RecordDict]:
+    if not isinstance(value, list):
+        return []
+    return [item for item in value if isinstance(item, dict)]
+
+
+def _dedupe_identifiers(
+    has_identifiers: list[RecordDict],
+    legacy_identifiers: list[RecordDict],
+) -> list[RecordDict]:
+    merged: dict[tuple[str, str], RecordDict] = {}
+    for row in (*has_identifiers, *legacy_identifiers):
+        key = (str(row.get("identifier_type", "")), str(row.get("normalized_value", "")))
+        merged.setdefault(key, row)
+    return list(merged.values())

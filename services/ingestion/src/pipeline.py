@@ -34,14 +34,26 @@ from src.graph.bootstrap import MATCH_ONLY_SOURCE_KEYS
 from src.graph.client import Neo4jClient
 from src.graph.ingestion_control import assert_active_bitrix_fence
 from src.graph.person_list_summary_deltas import PersonListSummaryDeltaCollector
+from src.identifier_scopes import identifier_scope
 from src.identity_link_revisions import IdentityLinkDesiredRevision, append_identity_link_revisions
+from src.identity_link_writes import (
+    anchor_existing_person,
+    anchor_person_by_nric,
+    lock_identifiers,
+    materialize_profile_for_record,
+    promote_profiles_for_nric,
+    recompute_participant_links,
+)
+from src.identity_links import IdentifierKey
 from src.matching.deterministic import prefetch_no_match_lock_owners
 from src.matching.engine import MatchEngine, ambiguous_prior_owners_result
+from src.matching.snapshot import fetch_candidate_snapshots
 from src.models import (
     MATCH_ONLY_RECORD_TYPES,
     PERSON_CREATING_RECORD_TYPES,
     CandidateResult,
     EngineType,
+    IdentityCandidate,
     IngestResult,
     JsonValue,
     MatchDecision,
@@ -56,6 +68,7 @@ from src.models import (
 from src.models import (
     NormalizedAddress as NormalizedAddressModel,
 )
+from src.nric_anchor import NameDob, nric_anchor_gate
 from src.pipeline_bankruptcy import bankruptcy_case_blueprint, materialize_bankruptcy_case
 from src.pipeline_crm_identity import (
     blocked_crm_owner_result,
@@ -67,6 +80,7 @@ from src.pipeline_crm_identity import (
 )
 from src.pipeline_knows import activate_knows_projection, knows_projection_blueprints
 from src.pipeline_normalization import (
+    is_usable,
     normalize_envelope_addresses,
     normalize_envelope_attributes,
     normalize_envelope_identifiers,
@@ -74,9 +88,11 @@ from src.pipeline_normalization import (
 from src.pipeline_person_pairs import audit_person_pairs
 from src.pipeline_writes import (
     build_normalized_source_payload,
-    create_person,
+    create_person_legacy,
     create_review_case_if_needed,
     find_candidates,
+    find_identity_candidates,
+    find_person_candidates,
     link_record_to_graph,
     link_status_for,
     persist_match_decision,
@@ -179,7 +195,8 @@ class IngestPipeline:
             raise ValueError("supply execution_context or fence_context, not both")
         self._client = client
         resolved_identity_model = identity_model or get_settings().identity_model
-        self._shadow_assertions = resolved_identity_model == "v2_shadow"
+        self._identity_model = resolved_identity_model
+        self._writes_assertions = resolved_identity_model in ("v2_shadow", "v2")
         self._match_engine = MatchEngine()
         self._execution_context = execution_context
         self._fence_context = (
@@ -385,6 +402,8 @@ class IngestPipeline:
             ingest_run_id=ingest_run_id,
             activation_blueprint=activation_blueprint,
         )
+        if self._writes_assertions:
+            self._lock_identity_inputs(tx, identifiers)
         continuity_person_id = (
             lifecycle_plan.prior_person_ids[0]
             if len(lifecycle_plan.prior_person_ids) == 1
@@ -408,18 +427,26 @@ class IngestPipeline:
                 matched_person_id=lifecycle_plan.prior_person_ids[0],
             )
         else:
-            candidates = find_candidates(tx, identifiers, addresses)
+            _parked_participants: list[IdentityCandidate] = []
+            if self._identity_model == "v2":
+                candidates, _parked_participants = find_identity_candidates(
+                    tx, identifiers, staged.source_record_pk
+                )
+            else:
+                candidates = find_candidates(tx, identifiers, addresses)
             multi_contact_result = self._resolve_ambiguous_crm_deal_contacts(
                 tx,
                 envelope,
                 identifiers,
                 continuity_person_id=continuity_person_id,
+                candidate_mode=self._identity_model,
             )
             canonical_contact_result = resolve_canonical_crm_contact(
                 tx,
                 envelope,
                 identifiers,
                 continuity_person_id=continuity_person_id,
+                candidate_mode=self._identity_model,
             )
             if (
                 self._requires_ambiguous_crm_contact_resolution(envelope)
@@ -432,6 +459,10 @@ class IngestPipeline:
                 )
                 if rejected_pending:
                     collector.finalize(tx)
+                if self._identity_model == "v2_shadow":
+                    self._project_shadow_identity(
+                        tx, envelope, identifiers, attributes, staged.source_record_pk, None
+                    )
                 return IngestResult(
                     source_record_id=envelope.source_record_id,
                     source_record_pk=staged.source_record_pk,
@@ -447,6 +478,7 @@ class IngestPipeline:
             elif canonical_contact_result is not None:
                 match_result = canonical_contact_result
             else:
+                v2_mode = self._identity_model == "v2"
                 match_result = self._match_engine.evaluate(
                     tx,
                     candidates,
@@ -459,6 +491,18 @@ class IngestPipeline:
                         if lifecycle_plan.prior_person_ids
                         else None
                     ),
+                    person_score_limit=50 if v2_mode else None,
+                    snapshots=(
+                        fetch_candidate_snapshots(
+                            tx,
+                            [candidate.person_id for candidate in candidates],
+                            include_legacy=False,
+                        )
+                        if v2_mode
+                        else None
+                    ),
+                    v2_evidence=v2_mode,
+                    include_plaintext_carrier=not v2_mode,
                 )
         crm_identity_plan = plan_crm_deal_identity(
             envelope,
@@ -482,6 +526,10 @@ class IngestPipeline:
             )
             if rejected_pending:
                 collector.finalize(tx)
+            if self._identity_model == "v2_shadow":
+                self._project_shadow_identity(
+                    tx, envelope, identifiers, attributes, staged.source_record_pk, None
+                )
             return IngestResult(
                 source_record_id=envelope.source_record_id,
                 source_record_pk=staged.source_record_pk,
@@ -505,6 +553,10 @@ class IngestPipeline:
                 lifecycle_plan=lifecycle_plan,
                 collector=collector,
             )
+            if self._identity_model == "v2_shadow":
+                self._project_shadow_identity(
+                    tx, envelope, identifiers, attributes, staged.source_record_pk, None
+                )
             collector.finalize(tx)
             return quarantine_result
         # Capture every existing Person this transaction may write to before
@@ -515,13 +567,41 @@ class IngestPipeline:
         )
         if not continuity_fast_path:
             upsert_nodes(tx, person_identifiers, addresses)
-        person_id, is_new_person = self._resolve_person(tx, match_result, candidates)
+        if self._identity_model == "v2":
+            person_id, person_created = self._resolve_v2_person(
+                tx,
+                envelope,
+                identifiers,
+                attributes,
+                match_result,
+                candidates,
+            )
+            if person_id is None:
+                # Keep the audit trail even when no Person destination exists.
+                match_decision_id = persist_match_decision(
+                    tx, match_result, staged.source_record_pk
+                )
+                materialization = materialize_profile_for_record(tx, staged.source_record_pk)
+                collector.finalize(tx)
+                return IngestResult(
+                    source_record_id=envelope.source_record_id,
+                    source_record_pk=staged.source_record_pk,
+                    candidate_count=len(candidates),
+                    match_decision=match_result.decision,
+                    ingest_run_id=ingest_run_id,
+                    match_decision_id=match_decision_id,
+                    parked=materialization.status == "parked",
+                )
+            is_new_person = person_created
+        else:
+            person_id, is_new_person = self._resolve_legacy_person(tx, match_result, candidates)
+            person_created = is_new_person
         if is_new_person:
             collector.mark_new(person_ids=[person_id])
         settle_staged_source_record(
             tx,
             staged.source_record_pk,
-            link_status=link_status_for(match_result, is_new_person),
+            link_status=link_status_for(match_result, person_created=person_created),
             expected_active_source_record_pk=lifecycle_plan.active_source_record_pk,
             ingest_run_id=ingest_run_id,
             control_instance_id=self._control_instance_id,
@@ -577,7 +657,19 @@ class IngestPipeline:
             person_id=person_id,
             source_record_pk=source_record_pk,
             attach_evidence=not provisional_review,
+            write_identified_by=self._identity_model != "v2",
         )
+        if self._identity_model == "v2":
+            recompute_participant_links(tx, "person", person_id)
+        if self._identity_model == "v2_shadow":
+            self._project_shadow_identity(
+                tx,
+                envelope,
+                identifiers,
+                attributes,
+                source_record_pk,
+                person_id,
+            )
         accepted = match_result.decision is not MatchDecision.REVIEW
         affected_person_ids = set(lifecycle_plan.prior_person_ids)
         if accepted:
@@ -639,7 +731,10 @@ class IngestPipeline:
                 person_id=other_person_id,
                 source_record_pk=source_record_pk,
                 attach_evidence=True,
+                write_identified_by=self._identity_model != "v2",
             )
+            if self._identity_model == "v2":
+                recompute_participant_links(tx, "person", other_person_id)
             affected_person_ids.add(other_person_id)
         # Personâ†”person audit: any usable identifier this record carries that now
         # links 2+ active persons opens a pairwise review case (deduped, fanout-
@@ -875,7 +970,7 @@ class IngestPipeline:
 
         MERGE resolves to an existing person only when the engine emits a
         ``matched_person_id`` â€” a MERGE with no matched person would otherwise
-        fall through to ``_resolve_person``'s create-person fallback, violating
+        fall through to ``_resolve_legacy_person``'s create-person fallback, violating
         the match-only-sources-never-create-persons invariant. REVIEW resolves
         to an existing person only when the engine or the top candidate provides
         one â€” a REVIEW with no ``matched_person_id`` and no candidates has
@@ -901,6 +996,7 @@ class IngestPipeline:
         identifiers: list[NormalizedIdentifier],
         *,
         continuity_person_id: str | None,
+        candidate_mode: str = "v1",
     ) -> MatchResult | None:
         """Resolve only owners shared by every contact and enforce hard blockers."""
         if not IngestPipeline._requires_ambiguous_crm_contact_resolution(envelope):
@@ -910,7 +1006,9 @@ class IngestPipeline:
             return None
         candidate_groups: list[set[str]] = []
         for raw_group in raw_groups:
-            person_ids = IngestPipeline._crm_contact_group_person_ids(tx, envelope, raw_group)
+            person_ids = IngestPipeline._crm_contact_group_person_ids(
+                tx, envelope, raw_group, candidate_mode
+            )
             if not person_ids:
                 return None
             candidate_groups.append(person_ids)
@@ -977,6 +1075,7 @@ class IngestPipeline:
         tx: ManagedTransaction,
         envelope: SourceRecordEnvelope,
         raw_group: object,
+        candidate_mode: str = "v1",
     ) -> set[str]:
         if not isinstance(raw_group, list):
             return set()
@@ -994,7 +1093,12 @@ class IngestPipeline:
         ]
         if not canonical_identifiers:
             return set()
-        return {candidate.person_id for candidate in find_candidates(tx, canonical_identifiers, [])}
+        return {
+            candidate.person_id
+            for candidate in find_person_candidates(
+                tx, canonical_identifiers, candidate_mode=candidate_mode
+            )
+        }
 
     def _stage_source_record(
         self,
@@ -1031,7 +1135,6 @@ class IngestPipeline:
             addresses=addresses,
             attributes=attributes,
             match_result=None,
-            is_new_person=False,
             ingest_run_id=ingest_run_id,
             lifecycle_status=SourceRecordLifecycleStatus.PARKED,
             expected_active_source_record_pk=None,
@@ -1040,7 +1143,7 @@ class IngestPipeline:
             control_instance_id=self._control_instance_id,
             attribution_status="parked",
             reeval_pending=True,
-            shadow_assertions=self._shadow_assertions,
+            shadow_assertions=self._writes_assertions,
         )
         return _Staged(source_record_pk=pk, created=True)
 
@@ -1104,34 +1207,138 @@ class IngestPipeline:
         )
 
     @staticmethod
-    def _resolve_person(
+    def _resolve_legacy_person(
         tx: ManagedTransaction,
         match_result: MatchResult,
         candidates: list[CandidateResult],
     ) -> tuple[str, bool]:
-        """Step 6: pick or create the Person this record will attach to.
+        """Step 6 (v1/v2_shadow): pick or create the legacy Person for this record.
 
-        Returns ``(person_id, is_new_person)``. ``person_id`` is guaranteed
-        to be non-None on return.
+        The only Person-creation path here is the legacy fallback; a matched
+        person, or the top REVIEW candidate, is reused.
         """
-        is_new_person = match_result.is_new_person
         person_id: str | None = match_result.matched_person_id
-
-        if is_new_person:
-            person_id = create_person(tx)
-
-        # REVIEW with no engine-picked person: reuse top candidate or create new.
-        if match_result.decision == MatchDecision.REVIEW and person_id is None:
-            if candidates:
+        if person_id is None:
+            if match_result.decision == MatchDecision.REVIEW and candidates:
                 person_id = candidates[0].person_id
             else:
-                person_id = create_person(tx)
-                is_new_person = True
-
-        # Hard NO_MATCH against a candidate still needs its own Person.
-        if person_id is None and not is_new_person:
-            person_id = create_person(tx)
-            is_new_person = True
-
+                person_id = create_person_legacy(tx)
+                return person_id, True
         assert person_id is not None, "invariant: every record resolves to a person"
-        return person_id, is_new_person
+        return person_id, False
+
+    def _resolve_v2_person(
+        self,
+        tx: ManagedTransaction,
+        envelope: SourceRecordEnvelope,
+        identifiers: list[NormalizedIdentifier],
+        attributes: list[NormalizedAttribute],
+        match_result: MatchResult,
+        candidates: list[CandidateResult],
+    ) -> tuple[str | None, bool]:
+        """Step 6 (v2): anchor by approved NRIC or reuse a matched Person.
+
+        A REVIEW with no engine-picked person reuses the top Person candidate
+        provisionally (mirroring the legacy resolver; no Person is created).
+        NRIC-less records with no Person match return ``None`` and become a
+        Profile/parked participant; the legacy fallback constructor is never
+        reachable here.
+        """
+        approved = self._approved_nric(identifiers, attributes, envelope)
+        if approved is not None:
+            person_id, created = anchor_person_by_nric(tx, approved)
+            promote_profiles_for_nric(
+                tx,
+                approved,
+                source_key=envelope.source_system,
+                record_type=envelope.record_type,
+                incoming=self._incoming_name_dob(attributes),
+            )
+            return person_id, created
+        person_id = match_result.matched_person_id
+        if person_id is None and match_result.decision == MatchDecision.REVIEW and candidates:
+            return candidates[0].person_id, False
+        return person_id, False
+
+    def _lock_identity_inputs(
+        self,
+        tx: ManagedTransaction,
+        identifiers: list[NormalizedIdentifier],
+    ) -> None:
+        keys = [
+            IdentifierKey(
+                identifier_type=identifier.identifier_type,
+                identifier_scope=identifier_scope(
+                    identifier.identifier_type, identifier.source_instance_id
+                ),
+                normalized_value=identifier.normalized_value,
+            )
+            for identifier in identifiers
+            if is_usable(identifier.quality_flag)
+        ]
+        if keys:
+            lock_identifiers(tx, keys)
+
+    @staticmethod
+    def _incoming_name_dob(attributes: list[NormalizedAttribute]) -> NameDob:
+        full_name = next(
+            (a.attribute_value for a in attributes if a.attribute_name == "full_name"), None
+        )
+        dob = next((a.attribute_value for a in attributes if a.attribute_name == "dob"), None)
+        return NameDob(full_name=full_name, dob=dob)
+
+    def _approved_nric(
+        self,
+        identifiers: list[NormalizedIdentifier],
+        attributes: list[NormalizedAttribute],
+        envelope: SourceRecordEnvelope,
+    ) -> NormalizedIdentifier | None:
+        """Return the gate-approved NRIC identifier, if any (digest-only in v2)."""
+        nric = next((i for i in identifiers if i.identifier_type == "nric"), None)
+        if nric is None:
+            return None
+        gate = nric_anchor_gate(
+            nric,
+            envelope.source_system,
+            envelope.record_type,
+            self._incoming_name_dob(attributes),
+            None,
+        )
+        return nric if gate.promotes_person else None
+
+    def _project_shadow_identity(
+        self,
+        tx: ManagedTransaction,
+        envelope: SourceRecordEnvelope,
+        identifiers: list[NormalizedIdentifier],
+        attributes: list[NormalizedAttribute],
+        source_record_pk: str,
+        person_id: str | None,
+    ) -> None:
+        """v2_shadow: project C3 links without changing the legacy outcome."""
+        approved = self._approved_nric(identifiers, attributes, envelope)
+        if approved is not None:
+            if person_id is None:
+                return
+            if anchor_existing_person(tx, person_id, approved):
+                logger.warning(
+                    "Shadow NRIC anchor conflict for person %s; legacy key kept", person_id
+                )
+                return
+            promoted = promote_profiles_for_nric(
+                tx,
+                approved,
+                source_key=envelope.source_system,
+                record_type=envelope.record_type,
+                incoming=self._incoming_name_dob(attributes),
+            )
+            if not promoted:
+                recompute_participant_links(tx, "person", person_id)
+            return
+        linked = tx.run(
+            queries.SOURCE_RECORD_LINKED_TO_PERSON, source_record_pk=source_record_pk
+        ).single()
+        if linked is not None and person_id is not None:
+            recompute_participant_links(tx, "person", person_id)
+            return
+        materialize_profile_for_record(tx, source_record_pk)

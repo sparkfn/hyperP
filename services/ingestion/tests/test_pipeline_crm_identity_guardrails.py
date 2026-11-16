@@ -804,7 +804,8 @@ def test_crm_channel_match_with_strong_name_mismatch_never_auto_merges() -> None
 
     assert result.decision is not MatchDecision.MERGE
     assert result.additional_linked_person_ids == []
-    assert result.is_new_person is True
+    assert result.decision is MatchDecision.NO_MATCH
+    assert result.matched_person_id is None
 
 
 def test_repair_plan_requires_independent_provenance_for_automatic_retention() -> None:

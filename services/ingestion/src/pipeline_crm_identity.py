@@ -17,7 +17,7 @@ from src.models import (
     RecordType,
     SourceRecordEnvelope,
 )
-from src.pipeline_writes import find_candidates
+from src.pipeline_writes import find_person_candidates
 
 _CRM_QUARANTINE_KEY = "crm_deal_quarantine"
 _MERGE_CANDIDATE_KEY = "merge_candidate_person_ids"
@@ -221,6 +221,7 @@ def resolve_canonical_crm_contact(
     identifiers: list[NormalizedIdentifier],
     *,
     continuity_person_id: str | None = None,
+    candidate_mode: str = "v1",
 ) -> MatchResult | None:
     """Resolve a primary Bitrix CRM contact without bypassing hard blockers."""
     if envelope.record_type is not RecordType.CRM_DEAL:
@@ -235,7 +236,7 @@ def resolve_canonical_crm_contact(
     ]
     if not canonical:
         return None
-    canonical_candidates = find_candidates(tx, canonical, [])
+    canonical_candidates = find_person_candidates(tx, canonical, candidate_mode=candidate_mode)
     person_ids = sorted({candidate.person_id for candidate in canonical_candidates})
     if not person_ids:
         return None

@@ -1455,7 +1455,7 @@ def _write_new_support_source_version(
                     matched_person_id="person-a",
                     engine_type=EngineType.DETERMINISTIC,
                 ),
-                is_new_person=False,
+                person_created=False,
                 ingest_run_id=None,
                 lifecycle_status=SourceRecordLifecycleStatus.PENDING_REVIEW,
                 expected_active_source_record_pk=planned.active_source_record_pk,

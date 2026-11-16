@@ -88,6 +88,7 @@ CALL {
     WHERE kind = 'person'
     MATCH (record:SourceRecord)-[linked:LINKED_TO]->(:Person {person_id: participant_id})
     WHERE coalesce(linked.is_active, true) = true
+      AND coalesce(record.link_status, 'linked') <> 'pending_review'
     RETURN record
     UNION
     WITH $participant_kind AS kind, $participant_id AS participant_id
@@ -374,4 +375,28 @@ FOREACH (_ IN CASE WHEN coalesce(active_link.is_active, true) = true THEN [] ELS
     SET active_link.is_active = true
 )
 RETURN count(record) AS member_count
+"""
+
+SOURCE_RECORD_LINKED_TO_PERSON = """
+MATCH (record:SourceRecord {source_record_pk: $source_record_pk})
+      -[linked:LINKED_TO]->(:Person)
+WHERE coalesce(linked.is_active, true) = true
+RETURN record.source_record_pk AS source_record_pk
+LIMIT 1
+"""
+
+ANCHOR_EXISTING_PERSON_BY_NRIC = """
+MATCH (person:Person {person_id: $person_id})
+WHERE person.nric_key IS NULL OR person.nric_key = $nric_key
+SET person.nric_key = $nric_key
+WITH person
+MERGE (identifier:Identifier {
+    identifier_type: 'nric',
+    identifier_scope: $identifier_scope,
+    normalized_value: $nric_key
+})
+ON CREATE SET identifier.identifier_id = randomUUID(),
+              identifier.created_at = datetime()
+MERGE (person)-[:ANCHORED_BY]->(identifier)
+RETURN person.person_id AS person_id
 """

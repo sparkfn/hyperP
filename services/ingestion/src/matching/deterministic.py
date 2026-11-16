@@ -13,6 +13,7 @@ import logging
 
 from neo4j import ManagedTransaction
 
+from src.graph import queries
 from src.models import (
     SYSTEM_FAMILY,
     EngineType,
@@ -102,6 +103,8 @@ def evaluate_deterministic(
     record_type: RecordType,
     *,
     no_match_lock_owners: dict[str, str] | None = None,
+    v2_evidence: bool = False,
+    include_plaintext_carrier: bool = True,
 ) -> MatchResult | None:
     """Apply hard rules. Returns a result or ``None`` to fall through.
 
@@ -110,7 +113,7 @@ def evaluate_deterministic(
     record, the deterministic merge should likewise be suppressed.
     """
     if no_match_lock_owners is None:
-        locked = _check_no_match_lock(tx, candidate_person_id, identifiers)
+        locked = _check_no_match_lock(tx, candidate_person_id, identifiers, v2_evidence=v2_evidence)
     else:
         owner_person_id = no_match_lock_owners.get(candidate_person_id)
         locked = (
@@ -120,7 +123,13 @@ def evaluate_deterministic(
         )
     if locked is not None:
         return locked
-    if govt := _check_government_id(tx, candidate_person_id, identifiers):
+    if govt := _check_government_id(
+        tx,
+        candidate_person_id,
+        identifiers,
+        v2_evidence=v2_evidence,
+        include_plaintext_carrier=include_plaintext_carrier,
+    ):
         # Conflicting govt IDs (hard NO_MATCH) still apply for conversation
         # records; only the MERGE branch is suppressed below.
         if govt.decision == MatchDecision.NO_MATCH:
@@ -129,7 +138,7 @@ def evaluate_deterministic(
             return govt
     if record_type not in SYSTEM_FAMILY:
         return None
-    if trusted := _check_trusted_id(tx, candidate_person_id, identifiers):
+    if trusted := _check_trusted_id(tx, candidate_person_id, identifiers, v2_evidence=v2_evidence):
         return trusted
     return None
 
@@ -138,6 +147,8 @@ def prefetch_no_match_lock_owners(
     tx: ManagedTransaction,
     candidate_person_ids: list[str],
     identifiers: list[NormalizedIdentifier],
+    *,
+    v2_evidence: bool = False,
 ) -> dict[str, str]:
     """Return one active lock owner per blocked candidate in a single query.
 
@@ -162,8 +173,11 @@ def prefetch_no_match_lock_owners(
         for input_index, person_id in enumerate(candidate_person_ids)
     ]
     owners: dict[str, str] = {}
+    lock_query = (
+        queries.FIND_ACTIVE_NO_MATCH_LOCKS_V2 if v2_evidence else _FIND_ACTIVE_NO_MATCH_LOCKS
+    )
     for record in tx.run(
-        _FIND_ACTIVE_NO_MATCH_LOCKS,
+        lock_query,
         candidate_inputs=candidate_inputs,
         identifier_inputs=identifier_inputs,
     ):
@@ -176,9 +190,13 @@ def _check_no_match_lock(
     tx: ManagedTransaction,
     candidate_person_id: str,
     identifiers: list[NormalizedIdentifier],
+    *,
+    v2_evidence: bool = False,
 ) -> MatchResult | None:
     """Hard NO_MATCH if an identifier owner has an active lock vs. candidate."""
-    owners = prefetch_no_match_lock_owners(tx, [candidate_person_id], identifiers)
+    owners = prefetch_no_match_lock_owners(
+        tx, [candidate_person_id], identifiers, v2_evidence=v2_evidence
+    )
     owner_person_id = owners.get(candidate_person_id)
     if owner_person_id is None:
         return None
@@ -207,6 +225,9 @@ def _check_government_id(
     tx: ManagedTransaction,
     candidate_person_id: str,
     identifiers: list[NormalizedIdentifier],
+    *,
+    v2_evidence: bool = False,
+    include_plaintext_carrier: bool = True,
 ) -> MatchResult | None:
     """Government ID hash: exact match → hard MERGE; conflict → hard NO_MATCH.
 
@@ -227,11 +248,19 @@ def _check_government_id(
         # before C1 feeds this check: carry the carrier, or normalize candidate values to
         # digests in Python (plan §2).
         values = [govt_id.normalized_value]
-        if govt_id.nric_plaintext:
+        if include_plaintext_carrier and govt_id.nric_plaintext:
             values.append(govt_id.nric_plaintext)
+        valid_query = (
+            queries.PERSON_HAS_VALID_GOVT_ID_V2 if v2_evidence else _PERSON_HAS_VALID_GOVT_ID
+        )
+        conflicting_query = (
+            queries.PERSON_HAS_CONFLICTING_GOVT_ID_V2
+            if v2_evidence
+            else _PERSON_HAS_CONFLICTING_GOVT_ID
+        )
 
         if tx.run(
-            _PERSON_HAS_VALID_GOVT_ID,
+            valid_query,
             person_id=candidate_person_id,
             values=values,
         ).single():
@@ -248,7 +277,7 @@ def _check_government_id(
             )
 
         if tx.run(
-            _PERSON_HAS_CONFLICTING_GOVT_ID,
+            conflicting_query,
             person_id=candidate_person_id,
             values=values,
         ).single():
@@ -270,6 +299,8 @@ def _check_trusted_id(
     tx: ManagedTransaction,
     candidate_person_id: str,
     identifiers: list[NormalizedIdentifier],
+    *,
+    v2_evidence: bool = False,
 ) -> MatchResult | None:
     """Trusted migration-map IDs: exact match → namespace-scoped hard MERGE."""
     trusted_ids = [
@@ -278,8 +309,11 @@ def _check_trusted_id(
         if i.identifier_type in TRUSTED_ID_TYPES and i.quality_flag == QualityFlag.VALID
     ]
     for tid in trusted_ids:
+        identifier_query = (
+            queries.PERSON_HAS_IDENTIFIER_V2 if v2_evidence else _PERSON_HAS_IDENTIFIER
+        )
         if tx.run(
-            _PERSON_HAS_IDENTIFIER,
+            identifier_query,
             person_id=candidate_person_id,
             identifier_type=tid.identifier_type,
             normalized_value=tid.normalized_value,

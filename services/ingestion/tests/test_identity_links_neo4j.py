@@ -26,8 +26,18 @@ from src.identity_links import (
     PromotionOutcome,
     link_id,
 )
-from src.models import NormalizedIdentifier, QualityFlag, RecordType
+from src.matching.deterministic import evaluate_deterministic
+from src.matching.snapshot import fetch_candidate_snapshots
+from src.models import (
+    CandidateResult,
+    IdentityCandidate,
+    MatchDecision,
+    NormalizedIdentifier,
+    QualityFlag,
+    RecordType,
+)
 from src.nric_anchor import NameDob
+from src.pipeline_writes import find_identity_candidates
 
 _ENV_PREFIX = "HYPERP_NEO4J_CONTROL_MIGRATION_TEST"
 _NRIC_DIGEST = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -585,3 +595,270 @@ def _locked_promotion(
         record_type=RecordType.IDENTITY,
         incoming=NameDob(full_name="Alice Tan", dob="1990-01-01"),
     )
+
+
+def _seed_person(driver: Driver, person_id: str) -> None:
+    with driver.session() as session:
+        session.run(
+            "CREATE (person:Person {person_id: $person_id, status: 'active'})",
+            person_id=person_id,
+        ).consume()
+
+
+def _seed_person_has_link(
+    driver: Driver,
+    person_id: str,
+    identifier_id: str,
+    *,
+    verified_count: int = 1,
+) -> None:
+    with driver.session() as session:
+        session.run(
+            "MATCH (person:Person {person_id: $person_id}) "
+            "MATCH (identifier:Identifier {identifier_id: $identifier_id}) "
+            "CREATE (person)-[:HAS_IDENTIFIER {link_id: $link_id, computed_at: datetime(), "
+            "verified_count: $verified_count}]->(identifier)",
+            person_id=person_id,
+            identifier_id=identifier_id,
+            link_id=link_id(person_id, identifier_id),
+            verified_count=verified_count,
+        ).consume()
+
+
+def _phone_identifier(value: str = _PHONE) -> NormalizedIdentifier:
+    return NormalizedIdentifier(
+        identifier_type="phone", normalized_value=value, quality_flag=QualityFlag.VALID
+    )
+
+
+def _participants(
+    driver: Driver,
+    identifiers: list[NormalizedIdentifier],
+    source_record_pk: str,
+) -> tuple[list[CandidateResult], list[IdentityCandidate]]:
+    return _execute(
+        driver,
+        lambda tx: find_identity_candidates(tx, identifiers, source_record_pk),
+    )
+
+
+def test_parked_participant_is_returned_but_profile_members_are_not_unlinked(
+    neo4j_driver: Driver,
+) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_identifier(neo4j_driver, "ident-phone", "phone", _PHONE)
+    _seed_parked_record(neo4j_driver, "sr-parked", "2026-01-01T00:00:00Z")
+    _seed_assertion(neo4j_driver, "sr-parked", "ident-phone", "assert-parked")
+    _seed_parked_record(neo4j_driver, "sr-incoming", "2026-01-02T00:00:00Z")
+    _seed_assertion(neo4j_driver, "sr-incoming", "ident-phone", "assert-incoming")
+    _seed_parked_record(neo4j_driver, "sr-member", "2026-01-03T00:00:00Z")
+    _seed_assertion(neo4j_driver, "sr-member", "ident-phone", "assert-member")
+    _seed_profile(neo4j_driver, "profile-1", "sr-member")
+    _seed_profile_link(neo4j_driver, "profile-1", "ident-phone")
+
+    _people, others = _participants(neo4j_driver, [_phone_identifier()], "sr-incoming")
+
+    participants = {(item.participant_kind, item.participant_id) for item in others}
+    assert ("source_record", "sr-parked") in participants
+    assert ("profile", "profile-1") in participants
+    assert ("source_record", "sr-incoming") not in participants
+    assert ("source_record", "sr-member") not in participants
+
+
+def test_digest_nric_recall_finds_anchored_person_and_merges_without_plaintext(
+    neo4j_driver: Driver,
+) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_person(neo4j_driver, "person-anchored")
+    _seed_identifier(neo4j_driver, "ident-nric", "nric", _NRIC_DIGEST)
+    _seed_person_has_link(neo4j_driver, "person-anchored", "ident-nric")
+
+    people, _others = _participants(neo4j_driver, [_nric_identifier()], "sr-incoming")
+    assert [candidate.person_id for candidate in people] == ["person-anchored"]
+
+    result = _execute(
+        neo4j_driver,
+        lambda tx: evaluate_deterministic(
+            tx,
+            "person-anchored",
+            [_nric_identifier()],
+            [],
+            RecordType.IDENTITY,
+            v2_evidence=True,
+            include_plaintext_carrier=False,
+        ),
+    )
+    assert result is not None
+    assert result.decision is MatchDecision.MERGE
+
+
+def test_over_cap_hub_only_corroborates_a_direct_key(neo4j_driver: Driver) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_identifier(neo4j_driver, "ident-phone", "phone", _PHONE)
+    _seed_identifier(neo4j_driver, "ident-email", "email", "hub@example.com")
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (phone:Identifier {identifier_id: 'ident-phone'}) "
+            "MATCH (email:Identifier {identifier_id: 'ident-email'}) "
+            "SET phone.participant_count = 100, email.participant_count = 1"
+        ).consume()
+    _seed_person(neo4j_driver, "person-corroborated")
+    _seed_person(neo4j_driver, "person-hub-only")
+    _seed_person_has_link(neo4j_driver, "person-corroborated", "ident-phone")
+    _seed_person_has_link(neo4j_driver, "person-corroborated", "ident-email")
+    _seed_person_has_link(neo4j_driver, "person-hub-only", "ident-phone")
+
+    people, _others = _participants(
+        neo4j_driver,
+        [
+            _phone_identifier(),
+            NormalizedIdentifier(
+                identifier_type="email",
+                normalized_value="hub@example.com",
+                quality_flag=QualityFlag.VALID,
+            ),
+        ],
+        "sr-incoming",
+    )
+
+    assert [candidate.person_id for candidate in people] == ["person-corroborated"]
+
+
+def test_participant_candidates_are_capped_at_one_hundred(neo4j_driver: Driver) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_identifier(neo4j_driver, "ident-limit", "phone", "+6599999999")
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (system:SourceSystem {source_key: 'onediver'}) "
+            "UNWIND range(1, 101) AS index "
+            "CREATE (record:SourceRecord {source_record_pk: 'sr-limit-' + toString(index), "
+            "lifecycle_status: 'parked', link_status: 'unlinked', "
+            "attribution_status: 'parked', reeval_pending: true, "
+            "observed_at: datetime('2026-01-01T00:00:00Z')})-[:FROM_SOURCE]->(system)"
+        ).consume()
+        session.run(
+            "MATCH (identifier:Identifier {identifier_id: 'ident-limit'}) "
+            "UNWIND range(1, 101) AS index "
+            "MATCH (record:SourceRecord {source_record_pk: 'sr-limit-' + toString(index)}) "
+            "CREATE (record)-[:ASSERTS {assertion_id: 'assert-limit-' + toString(index), "
+            "quality_flag: 'valid', is_verified: true}]->(identifier)"
+        ).consume()
+
+    _people, others = _participants(
+        neo4j_driver,
+        [
+            NormalizedIdentifier(
+                identifier_type="phone",
+                normalized_value="+6599999999",
+                quality_flag=QualityFlag.VALID,
+            )
+        ],
+        "sr-incoming",
+    )
+
+    assert len(others) == 100
+    assert others[0].participant_id == "sr-limit-1"
+
+
+def _seed_linked_record(
+    driver: Driver,
+    source_record_pk: str,
+    person_id: str,
+    *,
+    link_status: str,
+    record_type: str = "identity",
+) -> None:
+    with driver.session() as session:
+        session.run(
+            "MATCH (person:Person {person_id: $person_id}) "
+            "CREATE (record:SourceRecord {source_record_pk: $source_record_pk, "
+            "lifecycle_status: 'parked', link_status: $link_status, "
+            "attribution_status: 'person', reeval_pending: false, "
+            "record_type: $record_type, "
+            "observed_at: datetime('2026-01-01T00:00:00Z')})"
+            "-[:LINKED_TO {linked_at: datetime()}]->(person)",
+            source_record_pk=source_record_pk,
+            person_id=person_id,
+            link_status=link_status,
+            record_type=record_type,
+        ).consume()
+
+
+def test_provisional_review_records_do_not_feed_person_links(neo4j_driver: Driver) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_identifier(neo4j_driver, "ident-phone", "phone", _PHONE)
+    _seed_person(neo4j_driver, "person-1")
+    _seed_linked_record(neo4j_driver, "sr-provisional", "person-1", link_status="pending_review")
+    _seed_assertion(neo4j_driver, "sr-provisional", "ident-phone", "assert-provisional")
+
+    _execute(
+        neo4j_driver,
+        lambda tx: recompute_participant_links(tx, "person", "person-1"),
+    )
+    assert (
+        _scalar(
+            neo4j_driver,
+            "MATCH (:Person {person_id: 'person-1'})-[:HAS_IDENTIFIER]->() "
+            "RETURN count(*) AS count",
+        )
+        == 0
+    )
+
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (record:SourceRecord {source_record_pk: 'sr-provisional'}) "
+            "SET record.link_status = 'linked'"
+        ).consume()
+    _execute(
+        neo4j_driver,
+        lambda tx: recompute_participant_links(tx, "person", "person-1"),
+    )
+    assert (
+        _scalar(
+            neo4j_driver,
+            "MATCH (:Person {person_id: 'person-1'})-[:HAS_IDENTIFIER]->"
+            "(:Identifier {identifier_id: 'ident-phone'}) RETURN count(*) AS count",
+        )
+        == 1
+    )
+
+
+def test_batch_snapshot_derives_system_sourcing_from_attributed_records(
+    neo4j_driver: Driver,
+) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_identifier(neo4j_driver, "ident-phone", "phone", _PHONE)
+    _seed_identifier(neo4j_driver, "ident-phone-chat", "phone", "+6598765432")
+    _seed_person(neo4j_driver, "person-system")
+    _seed_person(neo4j_driver, "person-chat")
+    _seed_person_has_link(neo4j_driver, "person-system", "ident-phone")
+    _seed_person_has_link(neo4j_driver, "person-chat", "ident-phone-chat")
+    _seed_linked_record(neo4j_driver, "sr-identity", "person-system", link_status="linked")
+    _seed_assertion(neo4j_driver, "sr-identity", "ident-phone", "assert-identity")
+    _seed_linked_record(
+        neo4j_driver,
+        "sr-conversation",
+        "person-chat",
+        link_status="linked",
+        record_type="conversation",
+    )
+    _seed_assertion(neo4j_driver, "sr-conversation", "ident-phone-chat", "assert-chat")
+
+    snapshots = _execute(
+        neo4j_driver,
+        lambda tx: fetch_candidate_snapshots(
+            tx, ["person-system", "person-chat"], include_legacy=False
+        ),
+    )
+
+    system_phone = snapshots["person-system"].phones_by_value()[_PHONE]
+    assert system_phone["is_verified"] is True
+    assert system_phone["is_system_sourced"] is True
+    chat_phone = snapshots["person-chat"].phones_by_value()["+6598765432"]
+    assert chat_phone["is_system_sourced"] is False

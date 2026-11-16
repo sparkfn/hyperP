@@ -231,6 +231,18 @@ def _fetch_record_identifier_keys(
     ]
 
 
+def _open_profiles_for_keys(
+    tx: ManagedTransaction, keys: Sequence[IdentifierKey]
+) -> list[_OpenProfile]:
+    return [
+        _OpenProfile(
+            profile_id=_required_str(row, "profile_id"),
+            evidence_version=_required_int(row, "evidence_version"),
+        )
+        for row in tx.run(queries.FETCH_OPEN_PROFILES_FOR_IDENTIFIERS, identifier_keys=list(keys))
+    ]
+
+
 def _fetch_cluster(
     tx: ManagedTransaction,
     keys: Sequence[IdentifierKey],
@@ -409,3 +421,62 @@ def _required_int(row: Record, key: str) -> int:
 def _optional_bool(row: Record, key: str) -> bool | None:
     value: object = row[key]
     return value if value is None or isinstance(value, bool) else _malformed(key)
+
+
+def anchor_person_by_nric(
+    tx: ManagedTransaction,
+    identifier: NormalizedIdentifier,
+) -> tuple[str, bool]:
+    """Anchor a Person by a gate-approved NRIC digest; returns ``(person_id, created)``."""
+    nric_scope = identifier_scope("nric", identifier.source_instance_id)
+    return _merge_person_by_nric(tx, identifier.normalized_value, nric_scope)
+
+
+def anchor_existing_person(
+    tx: ManagedTransaction,
+    person_id: str,
+    identifier: NormalizedIdentifier,
+) -> bool:
+    """Set a Person's NRIC anchor without replacing a different existing key.
+
+    Returns ``True`` when the Person already carries a different ``nric_key``
+    (a conflict to surface, never overwrite) and the anchor was not applied.
+    """
+    nric_scope = identifier_scope("nric", identifier.source_instance_id)
+    row = tx.run(
+        queries.ANCHOR_EXISTING_PERSON_BY_NRIC,
+        person_id=person_id,
+        nric_key=identifier.normalized_value,
+        identifier_scope=nric_scope,
+    ).single()
+    return row is None
+
+
+def promote_profiles_for_nric(
+    tx: ManagedTransaction,
+    identifier: NormalizedIdentifier,
+    *,
+    source_key: str,
+    record_type: RecordType,
+    incoming: NameDob,
+) -> tuple[str, ...]:
+    """Promote every open Profile holding the NRIC identifier; returns promoted IDs."""
+    nric_scope = identifier_scope("nric", identifier.source_instance_id)
+    key = IdentifierKey(
+        identifier_type="nric",
+        identifier_scope=nric_scope,
+        normalized_value=identifier.normalized_value,
+    )
+    promoted: list[str] = []
+    for profile in _open_profiles_for_keys(tx, [key]):
+        outcome = promote_profile(
+            tx,
+            profile_id=profile.profile_id,
+            identifier=identifier,
+            source_key=source_key,
+            record_type=record_type,
+            incoming=incoming,
+        )
+        if outcome.status == "promoted":
+            promoted.append(profile.profile_id)
+    return tuple(promoted)

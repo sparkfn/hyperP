@@ -77,7 +77,6 @@ def ingest_reference_record(
                 confidence=1.0,
                 reasons=["non_person_source_reference"],
             ),
-            is_new_person=False,
             ingest_run_id=ingest_run_id,
             lifecycle_status=SourceRecordLifecycleStatus.PENDING_REVIEW,
             expected_active_source_record_pk=plan.active_source_record_pk,
