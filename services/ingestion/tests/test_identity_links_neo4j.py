@@ -572,13 +572,21 @@ def test_golden_top3_decay_anchors_per_identifier_type(neo4j_driver: Driver) -> 
     _seed_person(neo4j_driver, "person-1")
     _seed_identifier(neo4j_driver, "ident-old", "phone", "+6591111111")
     _seed_identifier(neo4j_driver, "ident-new", "phone", "+6592222222")
-    _seed_identifier(neo4j_driver, "ident-email", "email", "shared@example.com")
+    _seed_identifier(neo4j_driver, "ident-email-old", "email", "old@example.com")
+    _seed_identifier(neo4j_driver, "ident-email-new", "email", "shared@example.com")
     _seed_linked_record(
         neo4j_driver,
         "sr-old",
         "person-1",
         link_status="linked",
         observed_at="2026-01-01T00:00:00Z",
+    )
+    _seed_linked_record(
+        neo4j_driver,
+        "sr-mid",
+        "person-1",
+        link_status="linked",
+        observed_at="2026-07-01T00:00:00Z",
     )
     _seed_linked_record(
         neo4j_driver,
@@ -589,7 +597,20 @@ def test_golden_top3_decay_anchors_per_identifier_type(neo4j_driver: Driver) -> 
     )
     _seed_assertion(neo4j_driver, "sr-old", "ident-old", "assert-old")
     _seed_assertion(neo4j_driver, "sr-new", "ident-new", "assert-new")
-    _seed_assertion(neo4j_driver, "sr-old", "ident-email", "assert-email")
+    _seed_assertion(neo4j_driver, "sr-old", "ident-email-old", "assert-old-email")
+    _seed_assertion(neo4j_driver, "sr-mid", "ident-email-new", "assert-new-email")
+    # Trust tiers resolve through the record's source system (without it the
+    # tier falls back to tier_4). The email reference is the max email
+    # observation (2026-07-01), not the phone max: the old email decays over
+    # 181 of email's 730-day half-life, proving per-type anchoring and
+    # per-type half-lives at once.
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (system:SourceSystem {source_key: 'onediver'}) "
+            "UNWIND ['sr-old', 'sr-mid', 'sr-new'] AS pk "
+            "MATCH (record:SourceRecord {source_record_pk: pk}) "
+            "MERGE (record)-[:FROM_SOURCE]->(system)"
+        ).consume()
 
     _execute(neo4j_driver, lambda tx: recompute_participant_links(tx, "person", "person-1"))
     _execute(neo4j_driver, lambda tx: compute_golden_profile(tx, "person-1", v2_evidence=True))
@@ -598,10 +619,10 @@ def test_golden_top3_decay_anchors_per_identifier_type(neo4j_driver: Driver) -> 
     assert links["ident-new"]["golden_rank"] == 1
     assert links["ident-old"]["golden_rank"] == 2
     assert links["ident-old"]["rank_score"] == 0.5
-    # The email's own-type reference is its own last observation, so it does
-    # not decay against the newer phone reference.
-    assert links["ident-email"]["golden_rank"] == 1
-    assert links["ident-email"]["rank_score"] == 0.69
+    assert links["ident-email-new"]["golden_rank"] == 1
+    assert links["ident-email-new"]["rank_score"] == 0.69
+    assert links["ident-email-old"]["golden_rank"] == 2
+    assert links["ident-email-old"]["rank_score"] == 0.581046
     persons = _person_golden_snapshot(neo4j_driver)
     assert len(persons) == 1
     assert persons[0]["preferred_phone"] == "+6592222222"

@@ -165,11 +165,11 @@ def test_provisional_link_weight_defaults_to_one() -> None:
 
 
 def test_weighted_conversation_cap_uses_attach_band() -> None:
-    identifiers = [_phone_ident("+6591234567"), _email_ident("user@example.com")]
-    rows = [
-        _link_row("phone", "+6591234567", system_sourced=True),
-        _link_row("email", "user@example.com", system_sourced=True),
-    ]
+    # Uncorroborated evidence (no system source, no name) never promotes, so a
+    # high additive score is capped: legacy at 0.39, weighted at 0.69 — union,
+    # never attach, on additive score alone.
+    identifiers = [_phone_ident(f"+659000000{i}") for i in range(1, 6)]
+    rows = [_link_row("phone", f"+659000000{i}", system_sourced=False) for i in range(1, 6)]
     legacy_confidence, _, _ = _score(
         _FanoutTx(),
         identifiers,

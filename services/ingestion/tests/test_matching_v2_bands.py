@@ -336,9 +336,9 @@ class _PipeTx:
     """Recording fake answering the pipeline's persisted-write queries."""
 
     _ROWS: dict[str, dict[str, object]] = {
-        "CREATE_SOURCE_RECORD": {"source_record_pk": "sr-new"},
-        "PROMOTE_STAGED_SOURCE_RECORD": {"source_record_pk": "sr-new"},
-        "CREATE_MATCH_DECISION": {"match_decision_id": "md-1"},
+        queries.CREATE_SOURCE_RECORD: {"source_record_pk": "sr-new"},
+        queries.PROMOTE_STAGED_SOURCE_RECORD: {"source_record_pk": "sr-new"},
+        queries.CREATE_MATCH_DECISION: {"match_decision_id": "md-1"},
     }
 
     def __init__(self) -> None:
