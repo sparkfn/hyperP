@@ -27,12 +27,15 @@ def parse_golden_top(
         return None
     values: dict[str, list[GoldenTopValue]] = {"phone": [], "email": [], "nric": []}
     for identifier_type in _DISPLAY_TYPES:
-        entry = raw.get(identifier_type)
-        if not isinstance(entry, dict):
+        entries = raw.get(identifier_type)
+        if not isinstance(entries, list):
             continue
-        value = _parse_value(entry)
-        if value is not None:
-            values[identifier_type].append(value)
+        for item in entries[:_MAX_VALUES_PER_TYPE]:
+            if not isinstance(item, dict):
+                continue
+            value = _parse_value(item)
+            if value is not None:
+                values[identifier_type].append(value)
     conflicts = _parse_conflicts(golden_conflicts)
     if conflicts is None:
         return None

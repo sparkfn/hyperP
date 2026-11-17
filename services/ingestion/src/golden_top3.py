@@ -23,7 +23,7 @@ from src.identity_links import IdentifierKey, identifier_key_row, identifier_key
 from src.identity_registry import identifier_policy
 from src.models import JsonValue, QualityFlag
 from src.normalizers.email import normalize_email
-from src.normalizers.nric import masked_for
+from src.normalizers.nric import is_nric_digest, masked_for, normalize_nric
 from src.normalizers.phone import normalize_phone
 from src.nric_anchor import LinkDecision
 
@@ -198,23 +198,31 @@ def resolve_pins(
     return PinResolution(pinned=pinned, unresolved=tuple(sorted(unresolved)))
 
 
-def build_golden_payload(ranked: Sequence[RankedLink]) -> dict[str, dict[str, object]]:
-    """Build the per-type rank-1 golden payload (nric masked)."""
-    winners: dict[str, TopLink] = {}
+def build_golden_payload(
+    ranked: Sequence[RankedLink],
+) -> dict[str, list[dict[str, object]]]:
+    """Build the per-type top-3 golden payload in rank order (nric masked)."""
+    by_rank: dict[str, dict[int, TopLink]] = {}
     for item in ranked:
-        if item.rank == 1 and item.link.identifier_type not in winners:
-            winners[item.link.identifier_type] = item.link
-    payload: dict[str, dict[str, object]] = {}
-    for identifier_type in sorted(winners):
-        link = winners[identifier_type]
-        payload[identifier_type] = {
-            "value": _display_value(link),
-            "rank": 1,
-            "score": link.score,
-            "verified": link.verified,
-            "last_confirmed_at": link.last_confirmed_at,
-            "source_count": link.source_count,
-        }
+        if item.rank is None:
+            continue
+        by_rank.setdefault(item.link.identifier_type, {})[item.rank] = item.link
+    payload: dict[str, list[dict[str, object]]] = {}
+    for identifier_type in sorted(by_rank):
+        entries: list[dict[str, object]] = []
+        for rank in sorted(by_rank[identifier_type]):
+            link = by_rank[identifier_type][rank]
+            entries.append(
+                {
+                    "value": _display_value(link),
+                    "rank": rank,
+                    "score": link.score,
+                    "verified": link.verified,
+                    "last_confirmed_at": link.last_confirmed_at,
+                    "source_count": link.source_count,
+                }
+            )
+        payload[identifier_type] = entries
     return payload
 
 
@@ -288,6 +296,15 @@ def _normalized_custom_value(identifier_type: str, custom_value: str) -> str | N
     if identifier_type == "email":
         normalized, quality = normalize_email(custom_value)
         return normalized if quality == QualityFlag.VALID else None
+    if identifier_type == "nric":
+        # Digest-shaped values are already normalized. Raw NRICs canonicalize
+        # here, but they still cannot match HMAC-digest links — those pins
+        # resolve by source_record_pk instead.
+        if is_nric_digest(custom_value):
+            return custom_value
+        compact = "".join(custom_value.split())
+        normalized, quality = normalize_nric(compact)
+        return normalized if quality == QualityFlag.VALID else None
     return custom_value
 
 
@@ -303,14 +320,16 @@ def _empty_picks() -> dict[str, str | None]:
     return {identifier_type: None for identifier_type in DISPLAY_IDENTIFIER_TYPES}
 
 
-def _picks_from_payload(payload: Mapping[str, Mapping[str, object]]) -> dict[str, str | None]:
+def _picks_from_payload(
+    payload: Mapping[str, Sequence[Mapping[str, object]]],
+) -> dict[str, str | None]:
     """Return rank-1 picks from a golden payload (nric already masked)."""
     picks = _empty_picks()
     for identifier_type in DISPLAY_IDENTIFIER_TYPES:
-        entry = payload.get(identifier_type)
-        if entry is None:
+        entries = payload.get(identifier_type)
+        if not entries:
             continue
-        value = entry.get("value")
+        value = entries[0].get("value")
         picks[identifier_type] = value if value is None or isinstance(value, str) else None
     return picks
 

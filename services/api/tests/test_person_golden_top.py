@@ -26,30 +26,44 @@ def _person_record(golden_json: str | None, golden_conflicts: str | None) -> dic
 def _golden_json() -> str:
     return json.dumps(
         {
-            "email": {
-                "value": "user@example.com",
-                "rank": 1,
-                "score": 0.9,
-                "verified": True,
-                "last_confirmed_at": "2026-02-01T00:00:00Z",
-                "source_count": 2,
-            },
-            "nric": {
-                "value": "S****123A",
-                "rank": 1,
-                "score": 1.0,
-                "verified": True,
-                "last_confirmed_at": "2026-01-01T00:00:00Z",
-                "source_count": 1,
-            },
-            "phone": {
-                "value": "+6591234567",
-                "rank": 1,
-                "score": 0.95,
-                "verified": False,
-                "last_confirmed_at": None,
-                "source_count": 3,
-            },
+            "email": [
+                {
+                    "value": "user@example.com",
+                    "rank": 1,
+                    "score": 0.9,
+                    "verified": True,
+                    "last_confirmed_at": "2026-02-01T00:00:00Z",
+                    "source_count": 2,
+                }
+            ],
+            "nric": [
+                {
+                    "value": "S****123A",
+                    "rank": 1,
+                    "score": 1.0,
+                    "verified": True,
+                    "last_confirmed_at": "2026-01-01T00:00:00Z",
+                    "source_count": 1,
+                }
+            ],
+            "phone": [
+                {
+                    "value": "+6591234567",
+                    "rank": 1,
+                    "score": 0.95,
+                    "verified": False,
+                    "last_confirmed_at": None,
+                    "source_count": 3,
+                },
+                {
+                    "value": "+6597654321",
+                    "rank": 2,
+                    "score": 0.6,
+                    "verified": True,
+                    "last_confirmed_at": "2026-03-01T00:00:00Z",
+                    "source_count": 1,
+                },
+            ],
         },
         sort_keys=True,
     )
@@ -64,6 +78,8 @@ def test_parse_golden_top_reads_rank_one_values_with_masked_nric() -> None:
     assert block.phone[0].score == 0.95
     assert block.phone[0].verified is False
     assert block.phone[0].source_count == 3
+    assert block.phone[1].value == "+6597654321"
+    assert block.phone[1].rank == 2
     assert block.email[0].value == "user@example.com"
     assert block.nric[0].value == "S****123A"
     assert block.conflicts == []
@@ -142,5 +158,6 @@ def test_map_unlinked_profile_carries_value_score() -> None:
 def test_strip_public_person_nulls_golden_top() -> None:
     person = map_person(_person_record(_golden_json(), "[]"))
     assert person.golden_top is not None
+    assert len(person.golden_top.phone) == 2
 
     assert _strip_public_person(person).golden_top is None

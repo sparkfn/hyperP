@@ -465,22 +465,34 @@ def _seed_golden_person(graph: _TestGraph, golden_json: str, golden_conflicts: s
 def _golden_json() -> str:
     return json.dumps(
         {
-            "email": {
-                "value": "user@example.com",
-                "rank": 1,
-                "score": 0.9,
-                "verified": True,
-                "last_confirmed_at": "2026-02-01T00:00:00Z",
-                "source_count": 2,
-            },
-            "phone": {
-                "value": "+6590000001",
-                "rank": 1,
-                "score": 0.95,
-                "verified": False,
-                "last_confirmed_at": None,
-                "source_count": 3,
-            },
+            "email": [
+                {
+                    "value": "user@example.com",
+                    "rank": 1,
+                    "score": 0.9,
+                    "verified": True,
+                    "last_confirmed_at": "2026-02-01T00:00:00Z",
+                    "source_count": 2,
+                }
+            ],
+            "phone": [
+                {
+                    "value": "+6590000001",
+                    "rank": 1,
+                    "score": 0.95,
+                    "verified": False,
+                    "last_confirmed_at": None,
+                    "source_count": 3,
+                },
+                {
+                    "value": "+6590000002",
+                    "rank": 2,
+                    "score": 0.6,
+                    "verified": True,
+                    "last_confirmed_at": "2026-03-01T00:00:00Z",
+                    "source_count": 1,
+                },
+            ],
         },
         sort_keys=True,
     )
@@ -496,6 +508,8 @@ def test_person_detail_golden_top_matches_rank_one_preferred_values(
 
     assert person.golden_top is not None
     assert person.golden_top.phone[0].value == person.preferred_phone == "+6590000001"
+    assert person.golden_top.phone[1].value == "+6590000002"
+    assert person.golden_top.phone[1].rank == 2
     assert person.golden_top.email[0].value == person.preferred_email == "user@example.com"
     assert person.golden_top.conflicts == []
 

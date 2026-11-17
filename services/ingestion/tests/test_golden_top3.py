@@ -166,7 +166,32 @@ def test_ranks_top_three_per_type_and_leaves_rest_unranked() -> None:
     assert outcome.picks["phone"] == "+6590000001"
     assert outcome.picks["email"] is None
     assert outcome.golden_json is not None
-    assert json.loads(outcome.golden_json)["phone"]["value"] == "+6590000001"
+    assert json.loads(outcome.golden_json)["phone"] == [
+        {
+            "value": "+6590000001",
+            "rank": 1,
+            "score": 0.9,
+            "verified": True,
+            "last_confirmed_at": "2026-02-01T00:00:00Z",
+            "source_count": 1,
+        },
+        {
+            "value": "+6590000002",
+            "rank": 2,
+            "score": 0.8,
+            "verified": True,
+            "last_confirmed_at": "2026-02-01T00:00:00Z",
+            "source_count": 1,
+        },
+        {
+            "value": "+6590000003",
+            "rank": 3,
+            "score": 0.7,
+            "verified": True,
+            "last_confirmed_at": "2026-02-01T00:00:00Z",
+            "source_count": 1,
+        },
+    ]
 
 
 def test_rank1_equals_preferred_picks_with_masked_nric_and_conflict() -> None:
@@ -190,14 +215,24 @@ def test_rank1_equals_preferred_picks_with_masked_nric_and_conflict() -> None:
 
     assert outcome.picks["nric"] == "S****123A"
     assert outcome.golden_json is not None
-    assert json.loads(outcome.golden_json)["nric"] == {
-        "value": "S****123A",
-        "rank": 1,
-        "score": 0.9,
-        "verified": True,
-        "last_confirmed_at": "2026-02-01T00:00:00Z",
-        "source_count": 1,
-    }
+    assert json.loads(outcome.golden_json)["nric"] == [
+        {
+            "value": "S****123A",
+            "rank": 1,
+            "score": 0.9,
+            "verified": True,
+            "last_confirmed_at": "2026-02-01T00:00:00Z",
+            "source_count": 1,
+        },
+        {
+            "value": "S****456B",
+            "rank": 2,
+            "score": 0.8,
+            "verified": True,
+            "last_confirmed_at": "2026-02-01T00:00:00Z",
+            "source_count": 1,
+        },
+    ]
     assert json.loads(outcome.golden_conflicts) == [
         {"type": "nric", "reason": "multiple_valid_values", "values": ["S****123A", "S****456B"]}
     ]
@@ -225,7 +260,7 @@ def test_pin_by_source_record_pk_outranks_score() -> None:
 
     assert outcome.picks["phone"] == "+6590000001"
     assert outcome.golden_json is not None
-    assert json.loads(outcome.golden_json)["phone"]["value"] == "+6590000001"
+    assert json.loads(outcome.golden_json)["phone"][0]["value"] == "+6590000001"
 
 
 def test_pin_by_custom_value_matches_normalized_email() -> None:
@@ -249,6 +284,25 @@ def test_pin_by_custom_value_matches_normalized_email() -> None:
     _fake, outcome = _materialize(rows)
 
     assert outcome.picks["email"] == "user@example.com"
+
+
+def test_pin_by_custom_value_normalizes_nric() -> None:
+    canonical = _top_link("link-canonical", "nric", "S1234567A", 0.5)
+    digest = _top_link("link-digest", "nric", _NRIC_A, 0.9)
+    parsed = resolve_pins(
+        [canonical, digest],
+        (OverrideEntry("preferred_nric", "s 1234567a", None, False, False),),
+        "person-1",
+    )
+    assert set(parsed.pinned) == {"link-canonical"}
+    assert parsed.unresolved == ()
+    parsed_digest = resolve_pins(
+        [canonical, digest],
+        (OverrideEntry("preferred_nric", _NRIC_A, None, False, False),),
+        "person-1",
+    )
+    assert set(parsed_digest.pinned) == {"link-digest"}
+    assert parsed_digest.unresolved == ()
 
 
 def test_unresolved_pin_yields_conflict_and_keeps_score_order() -> None:
@@ -320,7 +374,7 @@ def test_ordering_tiebreaks_verified_time_and_value() -> None:
     assert outcome.picks["phone"] == "+6590000002"
     assert outcome.golden_json is not None
     payload = json.loads(outcome.golden_json)
-    assert payload["phone"]["last_confirmed_at"] == "2026-02-01T00:00:00Z"
+    assert payload["phone"][0]["last_confirmed_at"] == "2026-02-01T00:00:00Z"
 
 
 def test_normalized_value_breaks_remaining_ties() -> None:
@@ -370,7 +424,7 @@ def test_nric_without_mask_renders_null_value() -> None:
     ranked = rank_links(links, set())
     payload = build_golden_payload(ranked)
 
-    assert payload["nric"]["value"] is None
+    assert payload["nric"][0]["value"] is None
 
 
 def test_determinism_across_runs() -> None:

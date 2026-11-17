@@ -556,7 +556,7 @@ def test_golden_top3_pin_drives_preferred_phone(neo4j_driver: Driver) -> None:
     assert len(persons) == 1
     assert persons[0]["preferred_phone"] == "+6591111111"
     assert persons[0]["golden_json"] is not None
-    assert json.loads(str(persons[0]["golden_json"]))["phone"]["value"] == "+6591111111"
+    assert json.loads(str(persons[0]["golden_json"]))["phone"][0]["value"] == "+6591111111"
 
     before_links = _link_snapshot(neo4j_driver)
     before_persons = _person_golden_snapshot(neo4j_driver)
@@ -631,8 +631,8 @@ def test_golden_top3_decay_anchors_per_identifier_type(neo4j_driver: Driver) -> 
     assert persons[0]["golden_json"] is not None
     golden = json.loads(str(persons[0]["golden_json"]))
     assert set(golden) == {"email", "phone"}
-    assert golden["phone"]["value"] == "+6592222222"
-    assert golden["email"]["value"] == "shared@example.com"
+    assert golden["phone"][0]["value"] == "+6592222222"
+    assert golden["email"][0]["value"] == "shared@example.com"
 
     before_links = _link_snapshot(neo4j_driver)
     before_persons = _person_golden_snapshot(neo4j_driver)

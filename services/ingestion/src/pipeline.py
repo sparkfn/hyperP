@@ -780,9 +780,6 @@ class IngestPipeline:
             if self._identity_model == "v2":
                 recompute_participant_links(tx, "person", other_person_id)
             affected_person_ids.add(other_person_id)
-        # Personâ†”person audit: any usable identifier this record carries that now
-        # links 2+ active persons opens a pairwise review case (deduped, fanout-
-        # capped). Audit-only â€” never merges or links persons.
         if accepted:
             activate_staged_version(
                 tx,

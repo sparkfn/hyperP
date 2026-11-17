@@ -84,7 +84,7 @@ CREATE (p:Person {
   profile_completeness_score: 0.0,
   golden_profile_computed_at: null,
   golden_profile_version: null,
-  golden_json: null,              // top-3 golden snapshot (phone/email/nric rank 1 + conflicts)
+  golden_json: null,              // top-3 golden snapshot (phone/email/nric ranks 1..3 + conflicts)
   golden_conflicts: null,         // JSON array of GoldenTopConflict / pin_unresolved entries
 
   created_at: datetime(),
@@ -924,7 +924,7 @@ CREATE CONSTRAINT match_decision_id_unique IF NOT EXISTS
 CREATE CONSTRAINT review_case_id_unique IF NOT EXISTS
   FOR (rc:ReviewCase) REQUIRE rc.review_case_id IS UNIQUE;
 
-CREATE CONSTRAINT review_case_key_unique IF NOT EXISTS
+CREATE CONSTRAINT review_case_case_key_unique IF NOT EXISTS
   FOR (rc:ReviewCase) REQUIRE rc.case_key IS UNIQUE;
 
 CREATE CONSTRAINT merge_event_id_unique IF NOT EXISTS
