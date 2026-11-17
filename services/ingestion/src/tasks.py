@@ -103,7 +103,6 @@ from src.main import (
 )
 from src.matching.pair_score import score_person_pair
 from src.pipeline_knows import KnowsMaterializationPhase, materialize_knows_batch
-from src.pipeline_person_pairs import _ENGINE_VERSION, _POLICY_VERSION
 from src.resumable import AttemptStatus, CheckpointDescriptor
 from src.source_instances import (
     LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
@@ -2000,6 +1999,12 @@ def recalculate_pair_audit_match_task(self: Task, review_case_id: str) -> str:
     finally:
         client.close()
     return review_case_id
+
+
+#: Legacy pair-audit rescoring versions (the pair auditor was removed in #492;
+#: these stay frozen so existing cases keep their recorded provenance).
+_ENGINE_VERSION = "v0.1.0"
+_POLICY_VERSION = "v0.1.0"
 
 
 def _recalculate_pair_audit_match_in_tx(tx: ManagedTransaction, review_case_id: str) -> str:

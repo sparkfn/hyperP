@@ -78,7 +78,6 @@ def _run_conversation(
         stack.enter_context(patch("src.pipeline.activate_staged_version"))
         stack.enter_context(patch("src.pipeline.materialize_bankruptcy_case"))
         stack.enter_context(patch("src.pipeline.compute_golden_profile"))
-        stack.enter_context(patch("src.pipeline.audit_person_pairs"))
         stack.enter_context(patch("src.pipeline.record_auto_merge_event"))
         knows = stack.enter_context(
             patch("src.pipeline.activate_knows_projection", return_value=knows_materializable)

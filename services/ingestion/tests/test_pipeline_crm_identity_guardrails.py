@@ -753,7 +753,6 @@ def test_crm_multi_merge_persists_provisional_link_without_identity_evidence() -
         )
         link = stack.enter_context(patch("src.pipeline.link_record_to_graph"))
         activate = stack.enter_context(patch("src.pipeline.activate_staged_version"))
-        audit = stack.enter_context(patch("src.pipeline.audit_person_pairs"))
         stack.enter_context(patch("src.pipeline.mark_profile_analysis_dirty"))
         stack.enter_context(patch("src.pipeline.record_auto_merge_event"))
         stack.enter_context(patch("src.pipeline.materialize_bankruptcy_case"))
@@ -779,7 +778,6 @@ def test_crm_multi_merge_persists_provisional_link_without_identity_evidence() -
     assert link.call_args.kwargs["identifiers"] == [identifiers[0]]
     assert link.call_args.kwargs["attach_evidence"] is False
     activate.assert_not_called()
-    audit.assert_not_called()
 
 
 def test_crm_channel_match_with_strong_name_mismatch_never_auto_merges() -> None:

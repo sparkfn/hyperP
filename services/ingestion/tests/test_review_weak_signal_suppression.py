@@ -29,7 +29,6 @@ from src.models import (
     SourceRecordLifecycleStatus,
 )
 from src.pipeline import IngestPipeline
-from src.pipeline_person_pairs import _open_review_case
 from src.pipeline_writes import (
     REVIEW_CASES_CREATED_COUNTER,
     REVIEW_DECISIONS_SUPPRESSED_COUNTER,
@@ -285,33 +284,47 @@ def test_other_review_cases_remain_unchanged_and_are_classified(
     assert REVIEW_CASES_CREATED_COUNTER[key] == 1
 
 
-def test_pair_audit_case_records_real_match_decision_id_and_created_counter(
+def test_exception_path_case_records_match_decision_id_and_created_counter(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
     tx = _Transaction(
         {
-            queries.CREATE_PERSON_PAIR_REVIEW_CASE: {
-                "review_case_id": "pair-review-1",
-                "match_decision_id": "pair-decision-1",
+            queries.CREATE_REVIEW_CASE_BY_KEY: {
+                "review_case_id": "keyed-review-1",
             }
         }
     )
+    result = MatchResult(
+        decision=MatchDecision.REVIEW,
+        confidence=0.79,
+        reasons=["Anchored ambiguity among 2 persons within the attach margin"],
+        engine_type=EngineType.HEURISTIC,
+        matched_person_id="person-a",
+        review_candidate_person_ids=["person-a", "person-b"],
+        review_reason="anchored_ambiguity",
+    )
 
     with caplog.at_level(logging.INFO, logger="src.pipeline_writes"):
-        result = _open_review_case(
+        review_case_id = create_review_case_if_needed(
             cast(ManagedTransaction, tx),
-            left_person_id="person-a",
-            right_person_id="person-b",
-            confidence=0.25,
-            reasons=["Shared phone links two active persons"],
-            feature_snapshot="{}",
+            result,
+            "decision-1",
+            source_system="onediver",
+            exception_only=True,
+            record_identity="onediver||record-1",
         )
 
-    assert result is not None
-    assert result.id == "pair-review-1"
-    assert "md.match_decision_id AS match_decision_id" in tx.calls[0][0]
+    assert review_case_id == "keyed-review-1"
+    assert tx.calls[0][0] == queries.CREATE_REVIEW_CASE_BY_KEY
+    assert set(tx.calls[0][1]) == {
+        "case_key",
+        "reason_code",
+        "priority",
+        "sla_due_at",
+        "match_decision_id",
+    }
     key = next(iter(REVIEW_CASES_CREATED_COUNTER))
-    assert key[:3] == ("pair_audit", "shared_identifier_bridge", "pair_audit_bridge")
+    assert key[:3] == ("heuristic", "anchored_ambiguity", "onediver")
     _assert_today(key[3])
     assert REVIEW_CASES_CREATED_COUNTER[key] == 1
     message = next(
@@ -319,11 +332,11 @@ def test_pair_audit_case_records_real_match_decision_id_and_created_counter(
         for record in caplog.records
         if "event=review_case_created" in record.getMessage()
     )
-    assert "review_case_id=pair-review-1" in message
-    assert "match_decision_id=pair-decision-1" in message
-    assert "engine_type=pair_audit" in message
-    assert "reason_code=shared_identifier_bridge" in message
-    assert "source_system=pair_audit_bridge" in message
+    assert "review_case_id=keyed-review-1" in message
+    assert "match_decision_id=decision-1" in message
+    assert "engine_type=heuristic" in message
+    assert "reason_code=anchored_ambiguity" in message
+    assert "source_system=onediver" in message
     assert f"day_utc={key[3]}" in message
 
 

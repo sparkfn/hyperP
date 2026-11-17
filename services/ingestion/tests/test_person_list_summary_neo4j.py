@@ -71,6 +71,7 @@ from src.graph.queries.person_list_summary import (
 )
 from src.graph.queries.staging_reset import STAGING_RESET_CLEAR_GRAPH
 from src.models import JsonValue, SourceRecordEnvelope
+from src.nric_anchor import LinkDecision
 from src.pipeline import IngestPipeline
 from src.pipeline_addresses import ingest_address_record
 from src.pipeline_person_merge import merge_person_pair
@@ -1260,6 +1261,9 @@ def test_auto_merge_retires_the_absorbed_person(
             match_decision_id="md-1",
             reason="threshold met",
             collector=collector,
+            link_decision=LinkDecision(
+                kind="alias", person_id="p-survivor", nric_keys=("abc",), reason="test alias"
+            ),
         )
         collector.finalize(tx)
         return merge_event_id

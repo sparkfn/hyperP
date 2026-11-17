@@ -52,7 +52,7 @@ from src.models import (
     RecordType,
     SourceRecordEnvelope,
 )
-from src.nric_anchor import NameDob
+from src.nric_anchor import LinkDecision, NameDob
 from src.pipeline import IngestPipeline
 from src.pipeline_person_merge import merge_person_pair
 from src.pipeline_writes import find_identity_candidates, persist_nric_contradiction_review
@@ -3357,6 +3357,12 @@ def test_pair_audit_merge_maintains_has_projection(neo4j_driver: Driver) -> None
             match_decision_id="md-merge",
             reason="pair audit",
             collector=PersonListSummaryDeltaCollector(),
+            link_decision=LinkDecision(
+                kind="alias",
+                person_id="person-survivor",
+                nric_keys=("abc",),
+                reason="test alias",
+            ),
         ),
     )
 

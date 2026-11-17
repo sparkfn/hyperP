@@ -90,7 +90,6 @@ from src.pipeline_normalization import (
     normalize_envelope_attributes,
     normalize_envelope_identifiers,
 )
-from src.pipeline_person_pairs import audit_person_pairs
 from src.pipeline_writes import (
     build_normalized_source_payload,
     create_person_legacy,
@@ -843,13 +842,6 @@ class IngestPipeline:
                     # rank-1-vs-legacy parity; legacy preferred_* stay authoritative.
                     for affected_person_id in sorted(affected_person_ids):
                         materialize_golden_top3(tx, affected_person_id, locked_keys=locked_keys)
-                audit_person_pairs(
-                    tx,
-                    person_identifiers,
-                    envelope.record_type,
-                    collector=collector,
-                    v2_evidence=v2_evidence,
-                )
             mark_profile_analysis_dirty(
                 tx,
                 source_record_pks=(

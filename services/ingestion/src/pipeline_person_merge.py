@@ -11,6 +11,7 @@ from src.graph import queries
 from src.graph.crm_deal_count import recompute_person_crm_deal_counts
 from src.graph.person_list_summary_deltas import PersonListSummaryDeltaCollector
 from src.identity_link_writes import recompute_participant_links
+from src.nric_anchor import LinkDecision
 from src.profile_analysis_dirty import mark_profile_analysis_dirty
 
 
@@ -84,13 +85,23 @@ def merge_person_pair(
     match_decision_id: str,
     reason: str,
     collector: PersonListSummaryDeltaCollector,
+    link_decision: LinkDecision,
     v2_evidence: bool = False,
 ) -> str:
     """Rewire an absorbed person into its survivor and return the merge-event id.
 
+    Alias-only: the merge requires an NRIC-alias ``LinkDecision`` naming one
+    of the pair (the L2 NRIC-alias remediation building block). Anything else
+    raises without touching the graph.
+
     The collector is required and is never finalized here: the caller owns the
     summary-delta maintenance for the whole transaction.
     """
+    if link_decision.kind != "alias" or link_decision.person_id not in (
+        absorbed_id,
+        survivor_id,
+    ):
+        raise ValueError("merge_person_pair requires an alias LinkDecision for one of the pair")
     affected_person_ids = _profile_analysis_merge_person_ids(
         tx,
         absorbed_id=absorbed_id,

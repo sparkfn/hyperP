@@ -177,8 +177,6 @@ ingestion/graph/queries/matching.py:FIND_CANDIDATES_BY_ADDRESSES_BATCH
 ingestion/graph/queries/matching.py:FIND_CANDIDATES_BY_IDENTIFIER
 ingestion/graph/queries/matching.py:FIND_CANDIDATES_BY_IDENTIFIERS_BATCH
 ingestion/graph/queries/nric_metrics.py:FETCH_ACTIVE_PERSON_NRIC_ROWS
-ingestion/graph/queries/person_pairs.py:FIND_PERSONS_SHARING_IDENTIFIER
-ingestion/graph/queries/person_pairs.py:FIND_PERSONS_SHARING_IDENTIFIERS_BATCH
 ingestion/graph/queries/identity_links.py:FETCH_PERSON_HOLDER_EVIDENCE
 ingestion/graph/queries/persons.py:FETCH_PERSON_ADDRESSES
 ingestion/graph/queries/persons.py:FETCH_PERSON_FACTS

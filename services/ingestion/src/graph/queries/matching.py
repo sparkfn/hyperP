@@ -84,14 +84,6 @@ WHERE coalesce(rel.is_active, true) = true
 RETURN count(DISTINCT p) AS fanout
 """
 
-CHECK_NO_MATCH_LOCK = """
-MATCH (a:Person {person_id: $left_person_id})
-      -[lock:NO_MATCH_LOCK]-
-      (b:Person {person_id: $right_person_id})
-WHERE lock.expires_at IS NULL OR lock.expires_at > datetime()
-RETURN count(lock) > 0 AS is_locked
-"""
-
 # --- MatchDecision persistence --------------------------------------------
 
 CREATE_MATCH_DECISION = """
