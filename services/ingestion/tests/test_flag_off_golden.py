@@ -57,6 +57,8 @@ class _StreamTx(_RecordingTx):
         queries.CREATE_PERSON: {"person_id": "person-created"},
         queries.CREATE_MATCH_DECISION: {"match_decision_id": "md-1"},
         queries.CREATE_REVIEW_CASE: {"review_case_id": "rc-1"},
+        queries.CREATE_REVIEW_CASE_BY_KEY: {"review_case_id": "rc-1"},
+        queries.SUPPRESS_MATCH_DECISION_REVIEW: {"match_decision_id": "md-1"},
         queries.CREATE_MERGE_EVENT_AUTO_MERGE: {"merge_event_id": "me-1"},
         queries.ACTIVATE_FIRST_SOURCE_RECORD_VERSION: {"source_record_pk": "sr-new"},
         queries.ACTIVATE_SOURCE_RECORD_VERSION: {"source_record_pk": "sr-new"},
@@ -113,7 +115,11 @@ _REVIEW_NO_ENGINE_PICK = _Scenario(
     match_result=MatchResult(
         decision=MatchDecision.REVIEW,
         confidence=0.7,
-        reasons=["ambiguous_candidate"],
+        reasons=["anchored ambiguity"],
+        matched_person_id="person-a",
+        review_candidate_person_ids=["person-a"],
+        review_reason="anchored_ambiguity",
+        policy_version="c4-v1",
     ),
     candidates=(CandidateResult(person_id="person-a", source="identifier"),),
 )
@@ -267,11 +273,32 @@ def test_v2_review_with_candidate_links_provisionally_and_opens_a_review_case(
 
     issued = [query for query, _ in stream]
     assert queries.CREATE_MATCH_DECISION in issued
-    assert queries.CREATE_REVIEW_CASE in issued
+    assert queries.CREATE_REVIEW_CASE_BY_KEY in issued
+    assert queries.CREATE_REVIEW_CASE not in issued
     assert queries.PROMOTE_STAGED_SOURCE_RECORD in issued
     # No evidence rows were answered by the fake, so the provisional record's
     # identifiers cannot reach HAS_IDENTIFIER in this REVIEW outcome.
     assert queries.MERGE_PARTICIPANT_HAS_IDENTIFIER_LINKS not in issued
+
+
+def test_v2_non_exception_review_opens_no_case(monkeypatch: MonkeyPatch) -> None:
+    scenario = _Scenario(
+        name="review_non_exception",
+        envelope=_identity_envelope(),
+        match_result=MatchResult(
+            decision=MatchDecision.REVIEW,
+            confidence=0.7,
+            reasons=["ambiguous_candidate"],
+        ),
+        candidates=(CandidateResult(person_id="person-a", source="identifier"),),
+    )
+    stream, _assertions = _run(scenario, "v2", monkeypatch)
+
+    issued = [query for query, _ in stream]
+    assert queries.CREATE_MATCH_DECISION in issued
+    assert queries.SUPPRESS_MATCH_DECISION_REVIEW in issued
+    assert queries.CREATE_REVIEW_CASE not in issued
+    assert queries.CREATE_REVIEW_CASE_BY_KEY not in issued
 
 
 def test_v2_parked_outcome_persists_match_decision_without_review_case(

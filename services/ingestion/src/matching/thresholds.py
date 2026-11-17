@@ -9,6 +9,19 @@ DEFAULT_REVIEW: float = 0.20
 RELATIONSHIP_AUTO_MERGE: float = 0.20
 RELATIONSHIP_REVIEW: float = 0.10
 
+#: v2 (c4-v1) policy constants — uncalibrated prototype values owned by L3.
+V2_POLICY_VERSION = "c4-v1"
+V2_ATTACH_THRESHOLD: float = 0.70
+V2_UNION_THRESHOLD: float = 0.50
+V2_ATTACH_MARGIN: float = 0.10
+V2_MIN_SIGNAL_FAMILIES: int = 2
+#: Uncorroborated conversation evidence can never attach on additive score alone.
+V2_CONVERSATION_NON_CORROBORATED_CAP: float = 0.69
+
+#: Hysteresis for re-evaluation moves (relocated here unchanged).
+REASSIGNMENT_AUTO_THRESHOLD: float = 0.90
+REASSIGNMENT_MIN_MARGIN: float = 0.10
+
 
 def thresholds_for(record_type: RecordType) -> tuple[float, float]:
     """Return ``(auto_merge, review)`` thresholds for a record type."""

@@ -8,7 +8,8 @@ take ranks 1..3, and every write is conditional so reruns are zero-diff.
 from __future__ import annotations
 
 import json
-from collections.abc import AbstractSet, Mapping, Sequence
+from collections.abc import Mapping, Sequence
+from collections.abc import Set as AbstractSet
 from dataclasses import dataclass
 from typing import TypedDict
 

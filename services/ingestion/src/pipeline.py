@@ -101,6 +101,7 @@ from src.pipeline_writes import (
     link_record_to_graph,
     link_status_for,
     persist_match_decision,
+    persist_nric_contradiction_review,
     persist_source_record,
     record_auto_merge_event,
     retire_identity_projections,
@@ -116,6 +117,7 @@ from src.record_lifecycle import (
     plan_incoming_version,
     reject_replaced_pending,
 )
+from src.review_taxonomy import record_identity_for_envelope
 from src.source_instances import (
     LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
     effective_control_instance_id,
@@ -608,6 +610,7 @@ class IngestPipeline:
                 match_result,
                 candidates,
                 locked_keys,
+                source_record_pk=staged.source_record_pk,
             )
             if person_id is None:
                 # Keep the audit trail even when no Person destination exists.
@@ -649,6 +652,12 @@ class IngestPipeline:
             match_result,
             match_decision_id,
             source_system=envelope.source_system,
+            exception_only=self._identity_model == "v2",
+            record_identity=record_identity_for_envelope(
+                source_system=envelope.source_system,
+                source_instance_id=envelope.source_instance_id,
+                source_record_id=envelope.source_record_id,
+            ),
         )
         if (
             match_result.decision == MatchDecision.REVIEW
@@ -1223,6 +1232,12 @@ class IngestPipeline:
             match_result,
             match_decision_id,
             source_system=envelope.source_system,
+            exception_only=self._identity_model == "v2",
+            record_identity=record_identity_for_envelope(
+                source_system=envelope.source_system,
+                source_instance_id=envelope.source_instance_id,
+                source_record_id=envelope.source_record_id,
+            ),
         )
         if envelope.source_entity_type is not None:
             append_identity_link_revisions(
@@ -1286,6 +1301,8 @@ class IngestPipeline:
         match_result: MatchResult,
         candidates: list[CandidateResult],
         locked_keys: frozenset[tuple[str, str, str]] | None = None,
+        *,
+        source_record_pk: str,
     ) -> tuple[str | None, bool]:
         """Step 6 (v2): anchor by approved NRIC or reuse a matched Person.
 
@@ -1303,7 +1320,7 @@ class IngestPipeline:
                 if created or not self._anchor_is_blocked(
                     tx, envelope, identifiers, attributes, anchored_person_id
                 ):
-                    promote_profiles_for_nric(
+                    promotion = promote_profiles_for_nric(
                         tx,
                         approved,
                         identifier_keys=self._eligible_identifier_keys(identifiers),
@@ -1312,6 +1329,16 @@ class IngestPipeline:
                         incoming=self._incoming_name_dob(attributes),
                         locked_keys=locked_keys,
                     )
+                    for contradiction in promotion.contradictions:
+                        if contradiction.holder_person_id is None:
+                            continue
+                        persist_nric_contradiction_review(
+                            tx,
+                            source_record_pk=source_record_pk,
+                            profile_id=contradiction.profile_id,
+                            holder_person_id=contradiction.holder_person_id,
+                            source_system=envelope.source_system,
+                        )
                     return anchored_person_id, created
                 # A hard NO_MATCH against the anchored Person (NO_MATCH_LOCK or
                 # a conflicting government ID) outranks the NRIC anchor: never

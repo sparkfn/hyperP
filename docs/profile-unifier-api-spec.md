@@ -1584,11 +1584,14 @@ created as usual. Decisions from other engines are never parked.
   `email_near_match`, `weak_signal_combination` — the weak signals above
 - `weak_signal` — telemetry roll-up for a created case whose reasons were all
   weak-signal
+- `anchored_ambiguity`
+- `nric_contradiction`
 - `crm_ambiguity`
 - `continuity_reassignment`
 - `dob_conflict`, `dob_match`
 - `name_mismatch`, `name_similarity`
-- `shared_identifier_bridge` — a person-pair case opened by a shared identifier
+- `shared_identifier_bridge` — legacy: a person-pair case opened by a shared
+  identifier (pair auditing is retired in v2)
 - `other`
 
 `ReviewActionReasonCode` classifies why a reviewer closed or deferred a case:

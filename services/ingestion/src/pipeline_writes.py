@@ -25,6 +25,7 @@ from src.identifier_scopes import (
 from src.identity_assertions import write_assertions
 from src.identity_link_revisions import identity_link_key
 from src.identity_registry import identifier_policy
+from src.matching.thresholds import V2_POLICY_VERSION
 from src.models import (
     CandidateResult,
     ChatDifficulty,
@@ -34,6 +35,7 @@ from src.models import (
     EngineType,
     IdentityCandidate,
     JsonValue,
+    MatchAction,
     MatchDecision,
     MatchResult,
     NormalizedAttribute,
@@ -49,6 +51,7 @@ from src.normalizers.nric import encrypt_nric
 from src.pipeline_normalization import fanout_cap_for, is_usable
 from src.raw_payload import scrub_nric_strings, serialize_raw_payload
 from src.record_lifecycle import SourceLifecycleConflict
+from src.review_taxonomy import ReviewReason, case_key, exception_reason
 from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID, effective_source_instance_id
 from src.source_version_keys import encode_source_version_key
 
@@ -686,7 +689,7 @@ def persist_match_decision(
         blocking_conflicts=[],
         review_candidate_person_ids=match_result.review_candidate_person_ids,
         feature_snapshot=json.dumps(match_result.feature_snapshot, default=str),
-        policy_version="v0.1.0",
+        policy_version=match_result.policy_version,
     )
     md_record = md_result.single()
     assert md_record is not None, "CREATE_MATCH_DECISION must return a row"
@@ -707,47 +710,82 @@ def persist_match_decision(
     return match_decision_id
 
 
+def _case_person_ids(match_result: MatchResult) -> list[str]:
+    """Return the person ids feeding a keyed case, deterministically ordered."""
+    ids = list(match_result.review_candidate_person_ids)
+    for person_id in (match_result.matched_person_id, match_result.proposed_person_id):
+        if person_id is not None and person_id not in ids:
+            ids.append(person_id)
+    return ids
+
+
+def persist_nric_contradiction_review(
+    tx: ManagedTransaction,
+    *,
+    source_record_pk: str,
+    profile_id: str,
+    holder_person_id: str,
+    source_system: str = "unknown",
+) -> str | None:
+    """Persist a REVIEW MatchDecision for a durable NRIC contradiction.
+
+    ABOUT_LEFT is the incoming record, ABOUT_RIGHT the NRIC holder Person;
+    the case opens through the same exception-only gate as engine REVIEWs.
+    """
+    result = MatchResult(
+        decision=MatchDecision.REVIEW,
+        confidence=0.0,
+        reasons=["nric_contradiction"],
+        engine_type=EngineType.DETERMINISTIC,
+        matched_person_id=holder_person_id,
+        review_candidate_person_ids=[profile_id, holder_person_id],
+        review_reason="nric_contradiction",
+        action=MatchAction.REVIEW,
+        policy_version=V2_POLICY_VERSION,
+    )
+    match_decision_id = persist_match_decision(tx, result, source_record_pk)
+    return create_review_case_if_needed(
+        tx,
+        result,
+        match_decision_id,
+        source_system=source_system,
+        exception_only=True,
+    )
+
+
 def create_review_case_if_needed(
     tx: ManagedTransaction,
     match_result: MatchResult,
     match_decision_id: str,
     *,
     source_system: str = "unknown",
+    exception_only: bool = False,
+    record_identity: str | None = None,
 ) -> str | None:
-    """Step 7d: create a ReviewCase when the engine returns REVIEW."""
+    """Step 7d: create a ReviewCase when the engine returns REVIEW.
+
+    With ``exception_only`` (v2), only taxonomy reasons open a keyed case via
+    ``CREATE_REVIEW_CASE_BY_KEY``; anything else suppresses as ``not_exception``.
+    """
     if match_result.decision != MatchDecision.REVIEW:
         return None
+    if exception_only:
+        reason = exception_reason(match_result)
+        if reason is None:
+            _suppress_review(tx, match_decision_id, "not_exception", source_system=source_system)
+            return None
+        return _create_keyed_review_case(
+            tx,
+            match_result,
+            match_decision_id,
+            reason=reason,
+            record_identity=record_identity,
+            source_system=source_system,
+        )
     if get_settings().review_policy == "v2_weak_signal_park":
         suppressed_reason = weak_signal_suppressed_reason(match_result)
         if suppressed_reason is not None:
-            suppressed_record = tx.run(
-                queries.SUPPRESS_MATCH_DECISION_REVIEW,
-                match_decision_id=match_decision_id,
-                suppressed_reason=suppressed_reason,
-            ).single()
-            if suppressed_record is None:
-                raise RuntimeError(
-                    "SUPPRESS_MATCH_DECISION_REVIEW matched no MatchDecision "
-                    f"for {match_decision_id}"
-                )
-            day_utc = datetime.now(UTC).date().isoformat()
-            REVIEW_DECISIONS_SUPPRESSED_COUNTER[(suppressed_reason, source_system, day_utc)] += 1
-            _prune_counter(REVIEW_DECISIONS_SUPPRESSED_COUNTER)
-            logger.info(
-                "review_decision_suppressed event=review_decision_suppressed "
-                "match_decision_id=%s suppressed_reason=%s source_system=%s day_utc=%s",
-                match_decision_id,
-                suppressed_reason,
-                source_system,
-                day_utc,
-                extra={
-                    "event": "review_decision_suppressed",
-                    "match_decision_id": match_decision_id,
-                    "suppressed_reason": suppressed_reason,
-                    "source_system": source_system,
-                    "day_utc": day_utc,
-                },
-            )
+            _suppress_review(tx, match_decision_id, suppressed_reason, source_system=source_system)
             return None
     sla_due_at = (datetime.now(UTC) + timedelta(days=7)).isoformat()
     rc_result = tx.run(
@@ -769,6 +807,81 @@ def create_review_case_if_needed(
         match_decision_id=match_decision_id,
         engine_type=match_result.engine_type.value,
         reason_code=classify_created_case_reason(match_result),
+        source_system=source_system,
+    )
+    return review_case_id
+
+
+def _suppress_review(
+    tx: ManagedTransaction,
+    match_decision_id: str,
+    suppressed_reason: str,
+    *,
+    source_system: str,
+) -> None:
+    """Mark a MatchDecision review-suppressed with telemetry (shared path)."""
+    suppressed_record = tx.run(
+        queries.SUPPRESS_MATCH_DECISION_REVIEW,
+        match_decision_id=match_decision_id,
+        suppressed_reason=suppressed_reason,
+    ).single()
+    if suppressed_record is None:
+        raise RuntimeError(
+            f"SUPPRESS_MATCH_DECISION_REVIEW matched no MatchDecision for {match_decision_id}"
+        )
+    day_utc = datetime.now(UTC).date().isoformat()
+    REVIEW_DECISIONS_SUPPRESSED_COUNTER[(suppressed_reason, source_system, day_utc)] += 1
+    _prune_counter(REVIEW_DECISIONS_SUPPRESSED_COUNTER)
+    logger.info(
+        "review_decision_suppressed event=review_decision_suppressed "
+        "match_decision_id=%s suppressed_reason=%s source_system=%s day_utc=%s",
+        match_decision_id,
+        suppressed_reason,
+        source_system,
+        day_utc,
+        extra={
+            "event": "review_decision_suppressed",
+            "match_decision_id": match_decision_id,
+            "suppressed_reason": suppressed_reason,
+            "source_system": source_system,
+            "day_utc": day_utc,
+        },
+    )
+
+
+def _create_keyed_review_case(
+    tx: ManagedTransaction,
+    match_result: MatchResult,
+    match_decision_id: str,
+    *,
+    reason: ReviewReason,
+    record_identity: str | None,
+    source_system: str,
+) -> str:
+    """Open (or re-find) the exception-only ReviewCase for one ``case_key``."""
+    key = case_key(reason, record_identity, _case_person_ids(match_result))
+    sla_due_at = (datetime.now(UTC) + timedelta(days=7)).isoformat()
+    rc_result = tx.run(
+        queries.CREATE_REVIEW_CASE_BY_KEY,
+        case_key=key,
+        reason_code=reason,
+        priority=100,
+        sla_due_at=sla_due_at,
+        match_decision_id=match_decision_id,
+    )
+    rc_record = rc_result.single()
+    assert rc_record is not None, "CREATE_REVIEW_CASE_BY_KEY must return a row"
+    review_case_id: str = rc_record["review_case_id"]
+    logger.info(
+        "Created ReviewCase %s for MatchDecision %s",
+        review_case_id,
+        match_decision_id,
+    )
+    record_review_case_created(
+        review_case_id=review_case_id,
+        match_decision_id=match_decision_id,
+        engine_type=match_result.engine_type.value,
+        reason_code=reason,
         source_system=source_system,
     )
     return review_case_id

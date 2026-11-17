@@ -205,6 +205,7 @@ def test_identity_foundation_schema_and_backfill_are_idempotent(neo4j_driver: Dr
         "ingest_run_attempt_key_unique",
         "profile_fact_key_unique",
         "identifier_identity_scope_unique",
+        "review_case_case_key_unique",
     } <= _constraint_names(neo4j_driver)
 
     assert backfill_assertions(client) == 1

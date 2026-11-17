@@ -53,6 +53,22 @@ type _KeyTuple = tuple[str, str, str]
 
 
 @dataclass(frozen=True)
+class NricPromotionContradiction:
+    """An NRIC promotion rejected against a durable holder Person."""
+
+    profile_id: str
+    holder_person_id: str | None
+
+
+@dataclass(frozen=True)
+class NricPromotionOutcome:
+    """Promoted profile ids plus durable-holder contradictions."""
+
+    promoted_profile_ids: tuple[str, ...]
+    contradictions: tuple[NricPromotionContradiction, ...]
+
+
+@dataclass(frozen=True)
 class _ProfileState:
     status: str
     evidence_version: int
@@ -212,8 +228,14 @@ def promote_profiles_for_nric(
     record_type: RecordType,
     incoming: NameDob,
     locked_keys: frozenset[_KeyTuple] | None = None,
-) -> tuple[str, ...]:
-    """Promote every open Profile sharing an eligible key with the record."""
+) -> NricPromotionOutcome:
+    """Promote every open Profile sharing an eligible key with the record.
+
+    Returns promoted profile ids plus durable-holder contradictions: profiles
+    rejected with ``reason='nric_contradiction'`` carry the holder Person id
+    when promotion reached the holder check (``None`` for member-only
+    contradictions, which have no durable holder yet).
+    """
     nric_scope = identifier_scope("nric", identifier.source_instance_id)
     key = IdentifierKey(
         identifier_type="nric",
@@ -228,6 +250,7 @@ def promote_profiles_for_nric(
             seen.add(parts)
             discovery.append(candidate_key)
     promoted: list[str] = []
+    contradictions: list[NricPromotionContradiction] = []
     promoted_members: list[MemberEvidence] = []
     for profile in open_profiles_for_keys(tx, discovery):
         outcome = promote_profile(
@@ -243,7 +266,15 @@ def promote_profiles_for_nric(
         if outcome.status == "promoted":
             promoted.append(profile.profile_id)
             promoted_members.extend(outcome.promoted_members)
-    return tuple(promoted)
+        elif outcome.status == "rejected" and outcome.reason == "nric_contradiction":
+            contradictions.append(
+                NricPromotionContradiction(
+                    profile_id=profile.profile_id, holder_person_id=outcome.person_id
+                )
+            )
+    return NricPromotionOutcome(
+        promoted_profile_ids=tuple(promoted), contradictions=tuple(contradictions)
+    )
 
 
 def anchor_person_by_nric(

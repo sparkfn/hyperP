@@ -55,8 +55,9 @@ from src.models import (
 from src.nric_anchor import NameDob
 from src.pipeline import IngestPipeline
 from src.pipeline_person_merge import merge_person_pair
-from src.pipeline_writes import find_identity_candidates
+from src.pipeline_writes import find_identity_candidates, persist_nric_contradiction_review
 from src.record_lifecycle import load_locked_source_state
+from src.review_taxonomy import case_key
 
 _ENV_PREFIX = "HYPERP_NEO4J_CONTROL_MIGRATION_TEST"
 _NRIC_DIGEST = "e3b0c44298fc1c149afbf4c8996fb92427ae41e4649b934ca495991b7852b855"
@@ -618,6 +619,200 @@ def test_golden_top3_decay_anchors_per_identifier_type(neo4j_driver: Driver) -> 
     _execute(neo4j_driver, lambda tx: compute_golden_profile(tx, "person-1", v2_evidence=True))
     assert _link_snapshot(neo4j_driver) == before_links
     assert _person_golden_snapshot(neo4j_driver) == before_persons
+
+
+def test_weighted_snapshot_returns_every_matching_link(neo4j_driver: Driver) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_person(neo4j_driver, "person-1")
+    for index in range(1, 6):
+        _seed_identifier(neo4j_driver, f"ident-phone-{index}", "phone", f"+659000000{index}")
+        _seed_linked_record(neo4j_driver, f"sr-{index}", "person-1", link_status="linked")
+        _seed_assertion(neo4j_driver, f"sr-{index}", f"ident-phone-{index}", f"assert-{index}")
+    _execute(neo4j_driver, lambda tx: recompute_participant_links(tx, "person", "person-1"))
+
+    snapshots = _execute(
+        neo4j_driver,
+        lambda tx: fetch_candidate_snapshots(tx, ["person-1"], include_legacy=False),
+    )
+    phones = snapshots["person-1"].phones_by_value()
+
+    # The snapshot returns all links (no top-3 truncation) with their weights.
+    assert len(phones) == 5
+    for record in phones.values():
+        assert record["link_weight"] == 1.0
+        assert record["participant_count"] == 1
+    assert snapshots["person-1"].anchored is False
+
+
+def _seed_match_decision(driver: Driver) -> str:
+    with driver.session() as session:
+        row = session.run(
+            queries.CREATE_MATCH_DECISION,
+            engine_type="heuristic",
+            engine_version="v0.1.0",
+            decision="no_match",
+            confidence=0.0,
+            reasons=[],
+            blocking_conflicts=[],
+            review_candidate_person_ids=[],
+            feature_snapshot="{}",
+            policy_version="c4-v1",
+        ).single(strict=True)
+    value = row["match_decision_id"]
+    assert isinstance(value, str)
+    return value
+
+
+def _create_keyed_case(driver: Driver, match_decision_id: str, case_key_value: str) -> str:
+    with driver.session() as session:
+        row = session.run(
+            queries.CREATE_REVIEW_CASE_BY_KEY,
+            case_key=case_key_value,
+            reason_code="anchored_ambiguity",
+            priority=100,
+            sla_due_at="2026-06-01T00:00:00Z",
+            match_decision_id=match_decision_id,
+        ).single(strict=True)
+    value = row["review_case_id"]
+    assert isinstance(value, str)
+    return value
+
+
+def _keyed_case_state(driver: Driver, case_key_value: str) -> tuple[str, int, str, int]:
+    with driver.session() as session:
+        row = session.run(
+            "MATCH (rc:ReviewCase {case_key: $case_key}) "
+            "RETURN rc.review_case_id AS review_case_id, "
+            "rc.occurrence_count AS occurrence_count, "
+            "rc.queue_state AS queue_state",
+            case_key=case_key_value,
+        ).single(strict=True)
+        review_case_id = row["review_case_id"]
+        occurrence_count = row["occurrence_count"]
+        queue_state = row["queue_state"]
+        edge_count = session.run(
+            "MATCH (:ReviewCase {case_key: $case_key})-[edge:FOR_DECISION]->() "
+            "RETURN count(edge) AS count",
+            case_key=case_key_value,
+        ).single(strict=True)["count"]
+    assert isinstance(review_case_id, str)
+    assert isinstance(occurrence_count, int)
+    assert isinstance(queue_state, str)
+    assert isinstance(edge_count, int)
+    return review_case_id, occurrence_count, queue_state, edge_count
+
+
+def test_review_case_by_key_recurs_without_reopening(neo4j_driver: Driver) -> None:
+    _apply_schema(neo4j_driver)
+    match_decision_id = _seed_match_decision(neo4j_driver)
+    case_key_value = case_key("anchored_ambiguity", "record-1", ["person-a", "person-b"])
+
+    first = _create_keyed_case(neo4j_driver, match_decision_id, case_key_value)
+    second = _create_keyed_case(neo4j_driver, match_decision_id, case_key_value)
+    assert first == second
+    assert _keyed_case_state(neo4j_driver, case_key_value) == (first, 2, "open", 1)
+
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (rc:ReviewCase {case_key: $case_key}) "
+            "SET rc.queue_state = 'resolved', rc.resolution = 'confirmed_match', "
+            "rc.resolved_at = datetime()",
+            case_key=case_key_value,
+        ).consume()
+    third = _create_keyed_case(neo4j_driver, match_decision_id, case_key_value)
+    assert third == first
+    assert _keyed_case_state(neo4j_driver, case_key_value) == (first, 3, "resolved", 1)
+
+
+def test_nric_contradiction_rejection_persists_one_review_case(
+    neo4j_driver: Driver,
+) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_identifier(neo4j_driver, "ident-nric", "nric", _NRIC_DIGEST)
+    _seed_identifier(neo4j_driver, "ident-holder-phone", "phone", _PHONE)
+    _seed_person(neo4j_driver, "person-legacy-holder")
+    _seed_person_nric(neo4j_driver, "person-legacy-holder", "ident-nric", _NRIC_DIGEST)
+    _seed_linked_record(
+        neo4j_driver, "sr-legacy-holder", "person-legacy-holder", link_status="linked"
+    )
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (person:Person {person_id: 'person-legacy-holder'}) "
+            "MATCH (record:SourceRecord {source_record_pk: 'sr-legacy-holder'}) "
+            "CREATE (person)-[:HAS_FACT {attribute_name: 'dob', "
+            "attribute_value: '1980-02-02', quality_flag: 'valid', is_active: true}]->(record)"
+        ).consume()
+    _seed_linked_record(neo4j_driver, "sr-incoming", "person-legacy-holder", link_status="linked")
+    _seed_parked_record(neo4j_driver, "sr-holder-member", "2026-01-02T00:00:00Z")
+    _seed_assertion(neo4j_driver, "sr-holder-member", "ident-holder-phone", "assert-holder-phone")
+    _seed_asserted_fact(neo4j_driver, "sr-holder-member", "dob", "1990-03-03", "assert-holder-dob")
+    _seed_profile(neo4j_driver, "profile-holder-b", "sr-holder-member")
+    _seed_profile_link(neo4j_driver, "profile-holder-b", "ident-holder-phone")
+
+    outcome = _execute(
+        neo4j_driver,
+        lambda tx: promote_profiles_for_nric(
+            tx,
+            _nric_identifier(),
+            identifier_keys=[
+                IdentifierKey(
+                    identifier_type="phone",
+                    identifier_scope="global",
+                    normalized_value=_PHONE,
+                )
+            ],
+            source_key="onediver",
+            record_type=RecordType.IDENTITY,
+            incoming=NameDob(full_name=None, dob=None),
+        ),
+    )
+
+    assert outcome.promoted_profile_ids == ()
+    assert len(outcome.contradictions) == 1
+    assert outcome.contradictions[0].profile_id == "profile-holder-b"
+    assert outcome.contradictions[0].holder_person_id == "person-legacy-holder"
+
+    review_case_id = _execute(
+        neo4j_driver,
+        lambda tx: persist_nric_contradiction_review(
+            tx,
+            source_record_pk="sr-incoming",
+            profile_id="profile-holder-b",
+            holder_person_id="person-legacy-holder",
+            source_system="onediver",
+        ),
+    )
+    assert isinstance(review_case_id, str)
+    with neo4j_driver.session() as session:
+        reason = session.run(
+            "MATCH (rc:ReviewCase {review_case_id: $review_case_id}) "
+            "RETURN rc.reason_code AS reason_code",
+            review_case_id=review_case_id,
+        ).single(strict=True)["reason_code"]
+        assert reason == "nric_contradiction"
+        left = session.run(
+            "MATCH (:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->"
+            "(md:MatchDecision)-[:ABOUT_LEFT]->(record:SourceRecord) "
+            "RETURN record.source_record_pk AS pk",
+            review_case_id=review_case_id,
+        ).single(strict=True)["pk"]
+        assert left == "sr-incoming"
+        right = session.run(
+            "MATCH (:ReviewCase {review_case_id: $review_case_id})-[:FOR_DECISION]->"
+            "(md:MatchDecision)-[:ABOUT_RIGHT]->(person:Person) "
+            "RETURN person.person_id AS person_id",
+            review_case_id=review_case_id,
+        ).single(strict=True)["person_id"]
+        assert right == "person-legacy-holder"
+    assert (
+        _scalar(
+            neo4j_driver,
+            "MATCH (:ReviewCase {reason_code: 'nric_contradiction'}) RETURN count(*) AS count",
+        )
+        == 1
+    )
 
 
 def test_bridged_profiles_union_to_lowest_id_and_retire_losers(neo4j_driver: Driver) -> None:
@@ -1473,7 +1668,7 @@ def test_promotion_discovers_profile_through_shared_non_nric_key(neo4j_driver: D
         ),
     )
 
-    assert promoted == ("profile-phone",)
+    assert promoted.promoted_profile_ids == ("profile-phone",)
     person_id = _single_person_id(neo4j_driver)
     profiles = {str(row["profile_id"]): row for row in _profile_snapshot(neo4j_driver)}
     assert profiles["profile-phone"]["status"] == "promoted"
@@ -1692,6 +1887,7 @@ def test_v2_anchor_does_not_attach_a_hard_blocked_person(neo4j_driver: Driver) -
             [],
             MatchResult(decision=MatchDecision.NO_MATCH, confidence=1.0, reasons=["hard_blocked"]),
             [],
+            source_record_pk="sr-shadow-staged",
         ),
     )
 
@@ -2504,7 +2700,7 @@ def test_promotion_stops_at_first_profile_whose_members_contradict_prior(
         ),
     )
 
-    assert promoted == ("profile-a",)
+    assert promoted.promoted_profile_ids == ("profile-a",)
     profiles = {str(row["profile_id"]): row for row in _profile_snapshot(neo4j_driver)}
     assert profiles["profile-a"]["status"] == "promoted"
     assert profiles["profile-b"]["status"] == "open"
@@ -2731,7 +2927,7 @@ def test_promotion_rejects_durable_person_contradiction_on_second_call(
             incoming=dob_less,
         ),
     )
-    assert first == ("profile-durable-a",)
+    assert first.promoted_profile_ids == ("profile-durable-a",)
 
     second = _execute(
         neo4j_driver,
@@ -2744,7 +2940,7 @@ def test_promotion_rejects_durable_person_contradiction_on_second_call(
             incoming=dob_less,
         ),
     )
-    assert second == ()
+    assert second.promoted_profile_ids == ()
     profiles = {str(row["profile_id"]): row for row in _profile_snapshot(neo4j_driver)}
     assert profiles["profile-durable-a"]["status"] == "promoted"
     assert profiles["profile-durable-b"]["status"] == "open"
@@ -2808,7 +3004,7 @@ def test_promotion_rejects_legacy_person_fact_contradiction(neo4j_driver: Driver
         ),
     )
 
-    assert promoted == ()
+    assert promoted.promoted_profile_ids == ()
     profiles = {str(row["profile_id"]): row for row in _profile_snapshot(neo4j_driver)}
     assert profiles["profile-holder-b"]["status"] == "open"
     assert (
@@ -3200,6 +3396,7 @@ def test_v2_review_with_anchorable_nric_does_not_anchor_or_promote(
             [],
             MatchResult(decision=MatchDecision.REVIEW, confidence=0.7, reasons=["review"]),
             [],
+            source_record_pk="sr-shadow-staged",
         ),
     )
 
@@ -3241,6 +3438,7 @@ def test_v2_blocked_anchor_is_not_returned_as_engine_match(neo4j_driver: Driver)
                 reasons=["hard_blocked"],
             ),
             [],
+            source_record_pk="sr-shadow-staged",
         ),
     )
 

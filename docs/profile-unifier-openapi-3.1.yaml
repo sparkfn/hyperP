@@ -2728,6 +2728,8 @@ components:
         - phone_near_match
         - email_near_match
         - weak_signal_combination
+        - anchored_ambiguity
+        - nric_contradiction
         - crm_ambiguity
         - continuity_reassignment
         - dob_conflict

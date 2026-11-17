@@ -24,13 +24,20 @@ from src.matching.snapshot import CandidateSnapshot, RecordDict, fetch_candidate
 from src.matching.thresholds import (
     DEFAULT_AUTO_MERGE,
     DEFAULT_REVIEW,
+    V2_ATTACH_THRESHOLD,
+    V2_CONVERSATION_NON_CORROBORATED_CAP,
+    V2_MIN_SIGNAL_FAMILIES,
+    V2_POLICY_VERSION,
+    V2_UNION_THRESHOLD,
     classify_confidence,
     has_hard_conflict,
     thresholds_for,
 )
+from src.matching.weighted_scoring import weighted_signal
 from src.models import (
     EngineType,
     JsonValue,
+    MatchAction,
     MatchDecision,
     MatchResult,
     NormalizedAddress,
@@ -38,6 +45,7 @@ from src.models import (
     NormalizedIdentifier,
     RecordType,
 )
+from src.pipeline_normalization import fanout_cap_for
 
 logger = logging.getLogger(__name__)
 
@@ -127,8 +135,14 @@ def evaluate_heuristic(
     *,
     phone_fanout_cache: dict[str, int] | None = None,
     snapshot: CandidateSnapshot | None = None,
+    weighted: bool = False,
 ) -> MatchResult:
-    """Conditional-weight heuristic scoring across phone/email/DOB/name/address."""
+    """Conditional-weight heuristic scoring across phone/email/DOB/name/address.
+
+    ``weighted`` selects the v2 full-link scorer: every matching link
+    contributes ``signal × link_weight × IDF`` and the fanout recount, cache
+    and cliff are skipped. Legacy mode is byte-unchanged.
+    """
     if snapshot is None:
         snapshot = fetch_candidate_snapshot(tx, candidate_person_id)
 
@@ -143,6 +157,7 @@ def evaluate_heuristic(
         reasons,
         signals,
         phone_fanout_cache=phone_fanout_cache,
+        weighted=weighted,
     )
     signals.identifier_evidence_raw = raw_ident_evidence
     score += _cap_identifier_evidence(raw_ident_evidence, reasons)
@@ -153,7 +168,11 @@ def evaluate_heuristic(
 
     confidence = max(0.0, min(1.0, score))
     features = _build_feature_snapshot(candidate_person_id, signals, raw_score=score)
-    confidence = _promote_by_record_type(record_type, confidence, reasons, features)
+    if weighted:
+        features["anchored"] = snapshot.anchored
+    confidence = _promote_by_record_type(
+        record_type, confidence, reasons, features, weighted=weighted
+    )
 
     logger.info(
         "Heuristic score for candidate %s: %.2f (raw=%.2f, reasons=%s)",
@@ -162,6 +181,8 @@ def evaluate_heuristic(
         score,
         reasons,
     )
+    if weighted:
+        return _band_v2(confidence, reasons, candidate_person_id, features, signals)
     return _band(confidence, reasons, candidate_person_id, features, record_type)
 
 
@@ -187,12 +208,15 @@ def _score_identifiers(
     signals: HeuristicSignals,
     *,
     phone_fanout_cache: dict[str, int] | None = None,
+    weighted: bool = False,
 ) -> float:
     """Phone + email match scoring; returns raw (uncapped) identifier evidence.
 
     The match weight and the high-fanout penalty are *additive* (matching-spec
     weight table): a shared-but-matching phone is weak positive evidence, never
-    a net negative versus no match at all.
+    a net negative versus no match at all. In weighted mode every matching
+    link contributes ``signal × link_weight × IDF`` and the fanout recount,
+    cache and cliff are skipped; high fanout becomes a veto signal instead.
     """
     evidence = 0.0
     fanout_cache = phone_fanout_cache if phone_fanout_cache is not None else {}
@@ -204,6 +228,11 @@ def _score_identifiers(
             cand_rec = cand_phones[ident.normalized_value]
             verified = bool(ident.is_verified and cand_rec.get("is_verified"))
             weight = PHONE_VERIFIED_WEIGHT if verified else PHONE_UNVERIFIED_WEIGHT
+            if weighted:
+                evidence += _weighted_link_evidence(
+                    ident, cand_rec, weight, signals, reasons, kind="Phone"
+                )
+                continue
             evidence += weight
             signals.phone_exact_match = True
             signals.identifier_system_corroborated = (
@@ -234,6 +263,11 @@ def _score_identifiers(
             cand_rec = cand_emails[ident.normalized_value]
             verified = bool(ident.is_verified and cand_rec.get("is_verified"))
             weight = EMAIL_VERIFIED_WEIGHT if verified else EMAIL_UNVERIFIED_WEIGHT
+            if weighted:
+                evidence += _weighted_link_evidence(
+                    ident, cand_rec, weight, signals, reasons, kind="Email"
+                )
+                continue
             evidence += weight
             signals.email_exact_match = True
             signals.identifier_system_corroborated = (
@@ -247,6 +281,66 @@ def _score_identifiers(
         identifiers, snapshot, cand_phones, cand_emails, reasons, signals
     )
     return evidence
+
+
+def _weighted_link_evidence(
+    ident: NormalizedIdentifier,
+    cand_rec: dict[str, object],
+    signal: float,
+    signals: HeuristicSignals,
+    reasons: list[str],
+    *,
+    kind: str,
+) -> float:
+    """Score one matching link as ``signal × link_weight × IDF`` (v2 only)."""
+    link_weight = _link_weight(cand_rec)
+    participant_count = _participant_count(cand_rec)
+    contribution = weighted_signal(signal, link_weight, participant_count)
+    if kind == "Phone":
+        signals.phone_exact_match = True
+        if _exceeds_phone_fanout(participant_count):
+            signals.phone_high_fanout = True
+            reasons.append(
+                f"Phone {ident.normalized_value} exceeds the fanout cap "
+                f"(participant_count={participant_count})"
+            )
+    else:
+        signals.email_exact_match = True
+    signals.identifier_system_corroborated = (
+        signals.identifier_system_corroborated or _is_system_sourced(cand_rec)
+    )
+    reasons.append(f"{kind} match (weighted: +{contribution:.2f})")
+    return contribution
+
+
+def _link_weight(cand_rec: dict[str, object]) -> float | None:
+    """Return the snapshot link weight; ``None`` means a pre-C4 (unweighted) link."""
+    value = cand_rec.get("link_weight")
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, (int, float)):
+        return float(value)
+    return None
+
+
+def _participant_count(cand_rec: dict[str, object]) -> int | None:
+    """Return the snapshot participant count, if well-typed."""
+    value = cand_rec.get("participant_count")
+    if isinstance(value, bool):
+        return None
+    if isinstance(value, int):
+        return value
+    return None
+
+
+def _exceeds_phone_fanout(participant_count: int | None) -> bool:
+    """Return whether a matched phone exceeds its registry fanout cap (v2 veto)."""
+    if participant_count is None:
+        return False
+    cap = fanout_cap_for("phone")
+    return cap is not None and participant_count > cap
 
 
 def _score_approx_identifiers(
@@ -411,6 +505,8 @@ def _promote_by_record_type(
     confidence: float,
     reasons: list[str],
     features: dict[str, JsonValue],
+    *,
+    weighted: bool = False,
 ) -> float:
     """Apply the per-record-type auto-merge promotion (if any) to a pair.
 
@@ -427,6 +523,9 @@ def _promote_by_record_type(
         # Exclusively-conversation-sourced evidence must not auto-merge on additive
         # score alone (matching-spec) — cap below the auto-merge band so a human
         # reviews it. MERGE is reachable only via the promotion branch above.
+        # In weighted mode the cap derives from the v2 attach band instead.
+        if weighted:
+            return min(confidence, V2_CONVERSATION_NON_CORROBORATED_CAP)
         return min(confidence, _CONVERSATION_NON_CORROBORATED_CAP)
     if record_type == RecordType.RELATIONSHIP:
         phone = features["phone_exact_match"] is True
@@ -510,5 +609,69 @@ def _band(
         reasons=reasons,
         engine_type=EngineType.HEURISTIC,
         matched_person_id=matched,
+        feature_snapshot=features,
+    )
+
+
+def _count_signal_families(signals: HeuristicSignals) -> int:
+    """Count distinct v2 signal families: phone, email, name≥0.5, dob, address."""
+    families = 0
+    if signals.phone_exact_match:
+        families += 1
+    if signals.email_exact_match:
+        families += 1
+    if signals.name_similarity is not None and signals.name_similarity >= NAME_MEDIUM_THRESHOLD:
+        families += 1
+    if signals.dob_exact_match:
+        families += 1
+    if signals.address_match:
+        families += 1
+    return families
+
+
+def _band_v2(
+    confidence: float,
+    reasons: list[str],
+    candidate_person_id: str,
+    features: dict[str, JsonValue],
+    signals: HeuristicSignals,
+) -> MatchResult:
+    """Classify confidence with the v2 attach/union/park bands (plan §2.4).
+
+    Heuristic scoring never emits REVIEW in v2; vetoes and family shortfalls
+    park instead of attaching. The disposition label lives on the result and
+    the feature snapshot; nothing downstream branches on it.
+    """
+    veto = has_hard_conflict(features)
+    families = _count_signal_families(signals)
+    features["threshold_policy"] = "v2"
+    features["attach_threshold"] = V2_ATTACH_THRESHOLD
+    features["union_threshold"] = V2_UNION_THRESHOLD
+    if confidence >= V2_ATTACH_THRESHOLD and families >= V2_MIN_SIGNAL_FAMILIES and not veto:
+        action = MatchAction.ATTACH
+        decision = MatchDecision.MERGE
+        matched: str | None = candidate_person_id
+    elif veto:
+        action = MatchAction.PARK
+        decision = MatchDecision.NO_MATCH
+        matched = None
+    elif confidence >= V2_UNION_THRESHOLD:
+        action = MatchAction.UNION
+        decision = MatchDecision.NO_MATCH
+        matched = None
+    else:
+        action = MatchAction.PARK
+        decision = MatchDecision.NO_MATCH
+        matched = None
+    features["action"] = action.value
+    features["signal_families"] = families
+    return MatchResult(
+        decision=decision,
+        confidence=confidence,
+        reasons=reasons,
+        engine_type=EngineType.HEURISTIC,
+        matched_person_id=matched,
+        action=action,
+        policy_version=V2_POLICY_VERSION,
         feature_snapshot=features,
     )

@@ -116,6 +116,8 @@ class ReviewReasonCode(StrEnum):
     PHONE_NEAR_MATCH = "phone_near_match"
     EMAIL_NEAR_MATCH = "email_near_match"
     WEAK_SIGNAL_COMBINATION = "weak_signal_combination"
+    ANCHORED_AMBIGUITY = "anchored_ambiguity"
+    NRIC_CONTRADICTION = "nric_contradiction"
     CRM_AMBIGUITY = "crm_ambiguity"
     CONTINUITY_REASSIGNMENT = "continuity_reassignment"
     DOB_CONFLICT = "dob_conflict"
