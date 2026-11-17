@@ -77,7 +77,7 @@ def derive_golden_profile_from_active_authority(
     identifiers = _authority_identifiers(row["identifiers"])
     addresses = _authority_addresses(row["addresses"])
     desired = _derived_fields(facts, identifiers, addresses)
-    overrides = _overrides(person.get("survivorship_overrides"))
+    overrides = parse_survivorship_overrides(person.get("survivorship_overrides"))
     custom_addresses = _custom_address_ids(tx, overrides)
     conflicts = _apply_canonical_overrides(
         desired, overrides, facts, identifiers, addresses, custom_addresses
@@ -251,7 +251,8 @@ def _best_address(addresses: tuple[AuthorityAddress, ...]) -> str | None:
     ]
 
 
-def _overrides(raw: object) -> tuple[OverrideEntry, ...]:
+def parse_survivorship_overrides(raw: object) -> tuple[OverrideEntry, ...]:
+    """Parse the stored survivorship-overrides JSON into typed entries."""
     if raw is None or raw == "":
         return ()
     value: object = raw
@@ -286,6 +287,10 @@ def _overrides(raw: object) -> tuple[OverrideEntry, ...]:
             )
         )
     return tuple(entries)
+
+
+#: Back-compat alias for the pre-public name.
+_overrides = parse_survivorship_overrides
 
 
 def _custom_address_ids(

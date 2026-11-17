@@ -424,3 +424,84 @@ FETCH_ADDRESS_IDS_BY_NORMALIZED_FULL = """
 MATCH (address:Address {normalized_full: $normalized_full})
 RETURN collect(DISTINCT address.address_id) AS address_ids
 """
+
+#: Value-preserving write lock for the golden stage, so it stays mutually
+#: exclusive with the API-side recompute of the same Person.
+LOCK_PERSON_FOR_GOLDEN = """
+MATCH (person:Person {person_id: $person_id})
+SET person.person_id = person.person_id
+RETURN person.person_id AS person_id
+"""
+
+#: Key-only read of a Person's link identifier keys for the golden lock batch.
+FETCH_PERSON_LINK_KEYS = """
+MATCH (person:Person {person_id: $person_id})-[link:HAS_IDENTIFIER]->(identifier:Identifier)
+RETURN DISTINCT identifier.identifier_type AS identifier_type,
+       identifier.identifier_scope AS identifier_scope,
+       identifier.normalized_value AS normalized_value
+ORDER BY identifier_type, identifier_scope, normalized_value
+"""
+
+#: Golden-stage link read: every HAS_IDENTIFIER link with its evidence
+#: liveness, plus the Person-level override and stored golden state. The
+#: candidate-only flag mirrors the recompute evidence filters: a link with no
+#: active evidencing record is not rankable.
+FETCH_PERSON_TOP_LINKS = """
+MATCH (person:Person {person_id: $person_id})
+OPTIONAL MATCH (person)-[link:HAS_IDENTIFIER]->(identifier:Identifier)
+OPTIONAL MATCH (record:SourceRecord)-[linked:LINKED_TO]->(person)
+WHERE linked IS NULL OR identifier IS NULL OR (
+    coalesce(linked.is_active, true) = true
+    AND coalesce(record.link_status, 'linked') <> 'pending_review'
+    AND coalesce(record.lifecycle_status, 'active') <> 'superseded'
+    AND (record)-[:ASSERTS]->(identifier)
+)
+WITH person, link, identifier, count(record) AS active_evidence_count
+RETURN person.survivorship_overrides AS survivorship_overrides,
+       person.golden_json AS stored_golden_json,
+       person.golden_conflicts AS stored_golden_conflicts,
+       link.link_id AS link_id,
+       identifier.identifier_type AS identifier_type,
+       identifier.identifier_scope AS identifier_scope,
+       identifier.normalized_value AS normalized_value,
+       identifier.nric_masked AS nric_masked,
+       link.score AS score,
+       link.exclusivity AS exclusivity,
+       link.rank_score AS rank_score,
+       link.verified_count AS verified_count,
+       link.last_confirmed_at AS last_confirmed_at,
+       link.source_count AS source_count,
+       active_evidence_count,
+       collect(DISTINCT record.source_record_pk) AS evidence_pks
+ORDER BY identifier_type, identifier_scope, normalized_value
+"""
+
+#: Conditional rank write: rows cover every link read, so demoted links are
+#: nulled in the same pass; an unchanged second run writes nothing.
+SET_LINK_GOLDEN_RANKS = """
+UNWIND $rows AS row
+MATCH (person:Person {person_id: $person_id})-[link:HAS_IDENTIFIER {link_id: row.link_id}]->(
+  :Identifier
+)
+WHERE (link.golden_rank IS NULL AND row.golden_rank IS NOT NULL)
+   OR (link.golden_rank IS NOT NULL AND row.golden_rank IS NULL)
+   OR (link.golden_rank <> row.golden_rank)
+SET link.golden_rank = row.golden_rank
+RETURN count(link) AS updated_count
+"""
+
+#: Additive golden-document write; conditional so reruns are zero-diff. A new
+#: query (not an extension of UPDATE_GOLDEN_PROFILE) because the
+#: active-authority path calls that one with **profile.
+UPDATE_GOLDEN_TOP3 = """
+MATCH (person:Person {person_id: $person_id})
+WHERE (person.golden_json IS NULL AND $golden_json IS NOT NULL)
+   OR (person.golden_json IS NOT NULL AND $golden_json IS NULL)
+   OR (person.golden_json <> $golden_json)
+   OR (person.golden_conflicts IS NULL AND $golden_conflicts IS NOT NULL)
+   OR (person.golden_conflicts IS NOT NULL AND $golden_conflicts IS NULL)
+   OR (person.golden_conflicts <> $golden_conflicts)
+SET person.golden_json = $golden_json,
+    person.golden_conflicts = $golden_conflicts
+RETURN person.person_id AS person_id
+"""

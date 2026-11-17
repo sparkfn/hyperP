@@ -516,6 +516,110 @@ def test_link_weights_read_conversation_confidence_from_evidence(
     assert properties["policy_version"] == "c4-w1"
 
 
+def test_golden_top3_pin_drives_preferred_phone(neo4j_driver: Driver) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_person(neo4j_driver, "person-1")
+    _seed_identifier(neo4j_driver, "ident-old", "phone", "+6591111111")
+    _seed_identifier(neo4j_driver, "ident-new", "phone", "+6592222222")
+    _seed_linked_record(
+        neo4j_driver,
+        "sr-old",
+        "person-1",
+        link_status="linked",
+        observed_at="2026-01-01T00:00:00Z",
+    )
+    _seed_linked_record(
+        neo4j_driver,
+        "sr-new",
+        "person-1",
+        link_status="linked",
+        observed_at="2027-01-01T00:00:00Z",
+    )
+    _seed_assertion(neo4j_driver, "sr-old", "ident-old", "assert-old")
+    _seed_assertion(neo4j_driver, "sr-new", "ident-new", "assert-new")
+    _set_person_overrides(
+        neo4j_driver,
+        "person-1",
+        json.dumps({"preferred_phone": {"source_record_pk": "sr-old"}}),
+    )
+
+    _execute(neo4j_driver, lambda tx: recompute_participant_links(tx, "person", "person-1"))
+    _execute(neo4j_driver, lambda tx: compute_golden_profile(tx, "person-1", v2_evidence=True))
+
+    links = {str(row["identifier_id"]): row["properties"] for row in _link_snapshot(neo4j_driver)}
+    # The pin outranks the higher rank_score: rank 1 equals preferred_*.
+    assert links["ident-old"]["golden_rank"] == 1
+    assert links["ident-new"]["golden_rank"] == 2
+    persons = _person_golden_snapshot(neo4j_driver)
+    assert len(persons) == 1
+    assert persons[0]["preferred_phone"] == "+6591111111"
+    assert persons[0]["golden_json"] is not None
+    assert json.loads(str(persons[0]["golden_json"]))["phone"]["value"] == "+6591111111"
+
+    before_links = _link_snapshot(neo4j_driver)
+    before_persons = _person_golden_snapshot(neo4j_driver)
+    _execute(neo4j_driver, lambda tx: recompute_participant_links(tx, "person", "person-1"))
+    _execute(neo4j_driver, lambda tx: compute_golden_profile(tx, "person-1", v2_evidence=True))
+    assert _link_snapshot(neo4j_driver) == before_links
+    assert _person_golden_snapshot(neo4j_driver) == before_persons
+
+
+def test_golden_top3_decay_anchors_per_identifier_type(neo4j_driver: Driver) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_person(neo4j_driver, "person-1")
+    _seed_identifier(neo4j_driver, "ident-old", "phone", "+6591111111")
+    _seed_identifier(neo4j_driver, "ident-new", "phone", "+6592222222")
+    _seed_identifier(neo4j_driver, "ident-email", "email", "shared@example.com")
+    _seed_linked_record(
+        neo4j_driver,
+        "sr-old",
+        "person-1",
+        link_status="linked",
+        observed_at="2026-01-01T00:00:00Z",
+    )
+    _seed_linked_record(
+        neo4j_driver,
+        "sr-new",
+        "person-1",
+        link_status="linked",
+        observed_at="2027-01-01T00:00:00Z",
+    )
+    _seed_assertion(neo4j_driver, "sr-old", "ident-old", "assert-old")
+    _seed_assertion(neo4j_driver, "sr-new", "ident-new", "assert-new")
+    _seed_assertion(neo4j_driver, "sr-old", "ident-email", "assert-email")
+
+    _execute(neo4j_driver, lambda tx: recompute_participant_links(tx, "person", "person-1"))
+    _execute(neo4j_driver, lambda tx: compute_golden_profile(tx, "person-1", v2_evidence=True))
+
+    links = {str(row["identifier_id"]): row["properties"] for row in _link_snapshot(neo4j_driver)}
+    assert links["ident-new"]["golden_rank"] == 1
+    assert links["ident-old"]["golden_rank"] == 2
+    assert links["ident-old"]["rank_score"] == 0.5
+    # The email's own-type reference is its own last observation, so it does
+    # not decay against the newer phone reference.
+    assert links["ident-email"]["golden_rank"] == 1
+    assert links["ident-email"]["rank_score"] == 0.69
+    persons = _person_golden_snapshot(neo4j_driver)
+    assert len(persons) == 1
+    assert persons[0]["preferred_phone"] == "+6592222222"
+    assert persons[0]["preferred_email"] == "shared@example.com"
+    assert persons[0]["golden_conflicts"] == "[]"
+    assert persons[0]["golden_json"] is not None
+    golden = json.loads(str(persons[0]["golden_json"]))
+    assert set(golden) == {"email", "phone"}
+    assert golden["phone"]["value"] == "+6592222222"
+    assert golden["email"]["value"] == "shared@example.com"
+
+    before_links = _link_snapshot(neo4j_driver)
+    before_persons = _person_golden_snapshot(neo4j_driver)
+    _execute(neo4j_driver, lambda tx: recompute_participant_links(tx, "person", "person-1"))
+    _execute(neo4j_driver, lambda tx: compute_golden_profile(tx, "person-1", v2_evidence=True))
+    assert _link_snapshot(neo4j_driver) == before_links
+    assert _person_golden_snapshot(neo4j_driver) == before_persons
+
+
 def test_bridged_profiles_union_to_lowest_id_and_retire_losers(neo4j_driver: Driver) -> None:
     _apply_schema(neo4j_driver)
     _seed_source_system(neo4j_driver)
@@ -957,6 +1061,7 @@ def _seed_linked_record(
     *,
     link_status: str,
     record_type: str = "identity",
+    observed_at: str = "2026-01-01T00:00:00Z",
 ) -> None:
     with driver.session() as session:
         session.run(
@@ -965,13 +1070,40 @@ def _seed_linked_record(
             "lifecycle_status: 'parked', link_status: $link_status, "
             "attribution_status: 'person', reeval_pending: false, "
             "record_type: $record_type, "
-            "observed_at: datetime('2026-01-01T00:00:00Z')})"
+            "observed_at: datetime($observed_at)})"
             "-[:LINKED_TO {linked_at: datetime()}]->(person)",
             source_record_pk=source_record_pk,
             person_id=person_id,
             link_status=link_status,
             record_type=record_type,
+            observed_at=observed_at,
         ).consume()
+
+
+def _set_person_overrides(driver: Driver, person_id: str, overrides: str) -> None:
+    with driver.session() as session:
+        session.run(
+            "MATCH (person:Person {person_id: $person_id}) "
+            "SET person.survivorship_overrides = $overrides",
+            person_id=person_id,
+            overrides=overrides,
+        ).consume()
+
+
+def _person_golden_snapshot(driver: Driver) -> list[dict[str, object]]:
+    with driver.session() as session:
+        rows = [
+            dict(row)
+            for row in session.run(
+                "MATCH (person:Person) "
+                "RETURN person.person_id AS person_id, "
+                "person.preferred_phone AS preferred_phone, "
+                "person.preferred_email AS preferred_email, "
+                "person.golden_json AS golden_json, "
+                "person.golden_conflicts AS golden_conflicts"
+            )
+        ]
+    return sorted(rows, key=lambda row: str(row["person_id"]))
 
 
 def test_provisional_review_records_do_not_feed_person_links(neo4j_driver: Driver) -> None:
@@ -1675,8 +1807,16 @@ def test_golden_profile_reads_has_identifier_evidence(neo4j_driver: Driver) -> N
     _seed_person(neo4j_driver, "person-has-only")
     _seed_identifier(neo4j_driver, "ident-phone", "phone", _PHONE)
     _seed_identifier(neo4j_driver, "ident-email", "email", "has-only@example.com")
-    _seed_person_has_link(neo4j_driver, "person-has-only", "ident-phone")
-    _seed_person_has_link(neo4j_driver, "person-has-only", "ident-email")
+    # Rankable links need active evidencing records: seed them and recompute
+    # so the v2 golden stage derives rank-1 picks from real C4 link weights.
+    _seed_linked_record(neo4j_driver, "sr-phone", "person-has-only", link_status="linked")
+    _seed_linked_record(neo4j_driver, "sr-email", "person-has-only", link_status="linked")
+    _seed_assertion(neo4j_driver, "sr-phone", "ident-phone", "assert-phone")
+    _seed_assertion(neo4j_driver, "sr-email", "ident-email", "assert-email")
+    _execute(
+        neo4j_driver,
+        lambda tx: recompute_participant_links(tx, "person", "person-has-only"),
+    )
 
     profile = _execute(
         neo4j_driver,

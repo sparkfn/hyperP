@@ -28,6 +28,7 @@ from src.bitrix_ingestion_models import ExecutionContext, FenceContext
 from src.config import IdentityModel, get_settings
 from src.exclusions import ExclusionContext, is_excluded_vehicle_observation
 from src.golden_profile import compute_golden_profile
+from src.golden_top3 import materialize_golden_top3
 from src.graph import queries
 from src.graph.bitrix_deal_scope import DealScopeObservation, record_scope_batch_in_transaction
 from src.graph.bootstrap import MATCH_ONLY_SOURCE_KEYS
@@ -828,6 +829,11 @@ class IngestPipeline:
                 v2_evidence = self._identity_model == "v2"
                 for affected_person_id in sorted(affected_person_ids):
                     compute_golden_profile(tx, affected_person_id, v2_evidence=v2_evidence)
+                if self._identity_model == "v2_shadow":
+                    # Shadow writes the weighted top-3 projection for L3
+                    # rank-1-vs-legacy parity; legacy preferred_* stay authoritative.
+                    for affected_person_id in sorted(affected_person_ids):
+                        materialize_golden_top3(tx, affected_person_id, locked_keys=locked_keys)
                 audit_person_pairs(
                     tx,
                     person_identifiers,

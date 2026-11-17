@@ -223,16 +223,29 @@ def test_shadow_flag_only_adds_assertion_writes(
     v1_queries = [query for query, _ in v1_stream]
     assert queries.CREATE_SOURCE_RECORD in v1_queries
     assert queries.PROMOTE_STAGED_SOURCE_RECORD in v1_queries
-    # Shadow mode may add only the C3 projection reads; the legacy stream is
-    # otherwise identical and the legacy outcome is preserved.
+    # Shadow mode may add only the C3 projection reads and the C4 golden-stage
+    # queries; the legacy stream is otherwise identical and the legacy outcome
+    # is preserved.
+    golden_queries = {
+        queries.LOCK_PERSON_FOR_GOLDEN,
+        queries.FETCH_PERSON_LINK_KEYS,
+        queries.FETCH_PERSON_TOP_LINKS,
+        queries.SET_LINK_GOLDEN_RANKS,
+        queries.UPDATE_GOLDEN_TOP3,
+    }
     projection_queries = {
         queries.SOURCE_RECORD_LINKED_TO_PERSON,
         queries.FETCH_RECORD_IDENTIFIER_KEYS,
         # Shadow also re-derives the Person's HAS projection after activation.
         queries.FETCH_PARTICIPANT_EVIDENCE,
         queries.DELETE_STALE_PARTICIPANT_HAS_IDENTIFIER_LINKS,
+        *golden_queries,
     }
     assert [call for call in shadow_stream if call[0] not in projection_queries] == v1_stream
+    # The golden stage never writes legacy preferred_* fields in shadow mode.
+    for query, params in shadow_stream:
+        if query in golden_queries:
+            assert not any(key.startswith("preferred_") for key in params)
 
 
 @pytest.mark.parametrize("scenario", _SCENARIOS, ids=[scenario.name for scenario in _SCENARIOS])
