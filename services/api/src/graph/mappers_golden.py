@@ -28,6 +28,8 @@ def parse_golden_top(
     values: dict[str, list[GoldenTopValue]] = {"phone": [], "email": [], "nric": []}
     for identifier_type in _DISPLAY_TYPES:
         entries = raw.get(identifier_type)
+        if isinstance(entries, dict):
+            entries = [entries]
         if not isinstance(entries, list):
             continue
         for item in entries[:_MAX_VALUES_PER_TYPE]:
