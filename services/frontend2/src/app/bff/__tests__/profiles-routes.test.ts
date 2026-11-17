@@ -15,6 +15,7 @@ vi.mock("@/lib/proxy", () => ({ proxyToApi, searchParamsToQuery }));
 
 import { dynamic, GET as listProfiles } from "../profiles/route";
 import { GET as getProfile } from "../profiles/[profileId]/route";
+import { dynamic as unlinkedDynamic, GET as listUnlinked } from "../profiles/unlinked/route";
 
 beforeEach(() => {
   proxyToApi.mockReset();
@@ -48,6 +49,21 @@ describe("profile detail BFF route", () => {
       await getProfile(request, { params: Promise.resolve({ profileId: "profile/1" }) }),
     ).toBe(response);
     expect(proxyToApi).toHaveBeenCalledWith("/profiles/profile%2F1", {
+      signal: request.signal,
+    });
+  });
+});
+
+describe("unlinked profiles BFF route", () => {
+  it("forwards cursor and limit pagination to the upstream worklist", async () => {
+    const response = new Response("unlinked", { status: 200 });
+    proxyToApi.mockResolvedValue(response);
+    const request = new Request("http://localhost/bff/profiles/unlinked?cursor=MjA%3D&limit=5");
+
+    expect(await listUnlinked(request)).toBe(response);
+    expect(unlinkedDynamic).toBe("force-dynamic");
+    expect(proxyToApi).toHaveBeenCalledWith("/profiles/unlinked", {
+      query: { cursor: "MjA=", limit: "5" },
       signal: request.signal,
     });
   });

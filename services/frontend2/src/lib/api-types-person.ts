@@ -153,8 +153,9 @@ export interface PersonIdentifier {
   source_record_ids: string[] | null;
   entities: PersonEntitySummary[];
   source_records: PersonSourceRecord[];
-  // Derived C3 weights; present only on HAS_IDENTIFIER-backed rows. `score` is
-  // a provisional placeholder until C4 and must never be shown as confidence.
+  // Derived C4 weights; present only on HAS_IDENTIFIER-backed rows. `score` is
+  // a link weight, never shown as confidence. `golden_rank` is assigned by the
+  // golden stage and stays null on changed links until the next golden stage.
   score?: number | null;
   golden_rank?: number | null;
 }
@@ -180,6 +181,12 @@ export type ProfileSourceRecord = SourceRecord & {
 export interface ProfileDetail extends Profile {
   source_records: ProfileSourceRecord[];
   identifiers: PersonIdentifier[];
+}
+
+// v2 presentation row for the read-only unlinked worklist. `value_score` is
+// the number of member SourceRecords of type `crm_deal`.
+export interface UnlinkedProfile extends Profile {
+  value_score: number;
 }
 
 // --- Request bodies ---

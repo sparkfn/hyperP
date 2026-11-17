@@ -703,6 +703,8 @@ def test_blocked_canonical_owner_persists_durable_pending_review() -> None:
         quarantine,
         "decision-1",
         source_system="bitrix_chat",
+        exception_only=False,
+        record_identity="bitrix_chat||bitrix-crm-deal-5",
     )
 
 

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Iterator
 from typing import cast
 from unittest.mock import MagicMock
 
@@ -353,11 +354,19 @@ class _PipeTx:
 
 
 class _Single:
-    def __init__(self, row: dict[str, object] | None) -> None:
+    """Fake result supporting the driver's read shapes (single/iterate/consume)."""
+
+    def __init__(self, row: dict[str, object] | None = None) -> None:
         self._row = row
 
     def single(self) -> dict[str, object] | None:
         return self._row
+
+    def __iter__(self) -> Iterator[dict[str, object]]:
+        return iter(())
+
+    def consume(self) -> None:
+        return None
 
 
 def _envelope() -> SourceRecordEnvelope:

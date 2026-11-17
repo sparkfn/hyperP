@@ -99,7 +99,10 @@ export default function ProfilesPage(): ReactElement {
 
   return (
     <Stack spacing={2} sx={{ p: 3 }}>
-      <Typography variant="h5">Profiles</Typography>
+      <Stack direction="row" spacing={2} alignItems="baseline">
+        <Typography variant="h5">Profiles</Typography>
+        <Link href="/profiles/unlinked">Unlinked worklist</Link>
+      </Stack>
       <form onSubmit={submitSearch}>
         <Stack direction="row" spacing={2}>
           <TextField

@@ -958,10 +958,10 @@ async def test_manual_merge_rebuilds_survivor_has_identifiers_without_ingest(
     assert survivor_values == {phone_value, email_value}
     assert absorbed_links == 0
     assert phone_participants == 1
-    # API golden recompute stays on legacy identifier semantics (the API has no
-    # v2 identity mode), so HAS/ASSERTS-only evidence does not feed it yet.
-    assert survivor_golden["preferred_phone"] is None
-    assert survivor_golden["preferred_email"] is None
+    # API golden recompute prefers active HAS_IDENTIFIER links (§2.2), so the
+    # merge-rebuilt projection feeds preferred_* without an ingest.
+    assert survivor_golden["preferred_phone"] == phone_value
+    assert survivor_golden["preferred_email"] == email_value
 
 
 def _seed_review_activation_owner_handoff(
@@ -1216,9 +1216,9 @@ async def test_golden_identifier_evidence_uses_legacy_projection_only(
         ).single(strict=True)
 
     assert completeness is not None
-    # The API has no v2 identity mode: HAS/ASSERTS-only evidence is not a golden
-    # identifier source, while the legacy projection still is.
+    # Override-by-record still resolves from legacy evidence, but the golden
+    # recompute prefers active HAS_IDENTIFIER links (§2.2) with legacy fallback.
     assert phone_derived is None
     assert email_derived is not None and email_derived.value == legacy_email
-    assert golden["preferred_phone"] is None
+    assert golden["preferred_phone"] == phone_value
     assert golden["preferred_email"] == legacy_email

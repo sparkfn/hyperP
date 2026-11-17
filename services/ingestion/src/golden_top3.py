@@ -166,6 +166,8 @@ def rank_links(links: Sequence[TopLink], pinned_ids: AbstractSet[str]) -> list[R
             continue
         for position, peer in enumerate(_order_group(peers, pinned_ids)):
             ranks[peer.link_id] = position + 1 if position < TOP_N_PER_TYPE else None
+        for peer in peers:
+            ranks.setdefault(peer.link_id, None)
     return [RankedLink(link=link, rank=ranks[link.link_id]) for link in links]
 
 

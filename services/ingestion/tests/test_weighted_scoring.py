@@ -31,13 +31,23 @@ class _StrictTx:
         raise AssertionError(f"unexpected query: {query}")
 
 
+class _FanoutRow:
+    """Single-row result shape mirroring the driver's ``.single()`` contract."""
+
+    def __init__(self, row: dict[str, object]) -> None:
+        self._row = row
+
+    def single(self) -> dict[str, object]:
+        return self._row
+
+
 class _FanoutTx(_StrictTx):
     """Answers the legacy fanout recount with zero fanout."""
 
-    def run(self, query: str, **params: object) -> list[dict[str, object]]:
+    def run(self, query: str, **params: object) -> _FanoutRow:
         self.queries.append(query)
         if query == queries.CHECK_IDENTIFIER_FANOUT:
-            return [{"fanout": 0}]
+            return _FanoutRow({"fanout": 0})
         raise AssertionError(f"unexpected query: {query}")
 
 

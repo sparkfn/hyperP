@@ -42,6 +42,28 @@ export interface AddressSummary {
   normalized_full: string | null;
 }
 
+export interface GoldenTopValue {
+  value: string;
+  rank: number;
+  score: number;
+  verified: boolean;
+  last_confirmed_at: string | null;
+  source_count: number;
+}
+
+export interface GoldenTopConflict {
+  type: string;
+  reason: string;
+  values: (string | null)[];
+}
+
+export interface GoldenTopBlock {
+  phone: GoldenTopValue[];
+  email: GoldenTopValue[];
+  nric: GoldenTopValue[];
+  conflicts: (GoldenTopConflict | string)[];
+}
+
 export interface Person {
   person_id: string;
   status: PersonStatus;
@@ -57,6 +79,11 @@ export interface Person {
   profile_completeness_score: number;
   golden_profile_computed_at: string | null;
   golden_profile_version: string | null;
+  // Top-3 golden identifier snapshot; null when the person has no golden
+  // state, the stored JSON is malformed, or the surface is public.
+  // Optional (like loyalty/vehicles) so existing stationary fixtures keep
+  // compiling; the API always returns the key.
+  golden_top?: GoldenTopBlock | null;
   source_record_count: number;
   connection_count: number;
   // Sum of all orders; only returned by the person-detail endpoint (absent on
