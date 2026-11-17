@@ -2,8 +2,9 @@
 
 Pure helpers: deterministic link IDs, assertion-evidence aggregation, the
 Profile materialization threshold, canonical Identifier lock ordering, and the
-behaviour-free writer contract types. There is no scoring formula and no Cypher
-here; the transaction writer lives in :mod:`src.identity_link_writes`.
+behaviour-free writer contract types. The C4 weight formula lives in
+:mod:`src.identity_link_weights`; there is no Cypher here — the transaction
+writer lives in :mod:`src.identity_link_writes`.
 """
 
 from __future__ import annotations
@@ -12,9 +13,21 @@ import hashlib
 import json
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from typing import TYPE_CHECKING, Literal, TypedDict
+from typing import TYPE_CHECKING, Literal, NotRequired, TypedDict
 
 from src.golden_profile_active_authority import _TRUST_TIER_RANK
+from src.identity_link_weights import (
+    CANDIDATE_LINK_STATUS,
+    LINK_POLICY_VERSION,
+    age_days_between,
+    assertion_score,
+    combine_weights,
+    exclusivity_for_count,
+    half_life_for,
+    max_evidence_time,
+    rank_score,
+    round6,
+)
 from src.identity_registry import identifier_policy
 from src.models import JsonValue, QualityFlag
 from src.pipeline_normalization import is_usable
@@ -62,6 +75,12 @@ class AssertionEvidence(TypedDict):
     is_verified: bool | None
     trust_tier: str | None
     observed_at: str | None
+    # Additive C4 weight inputs. Absent from legacy query shapes
+    # (``FETCH_CLUSTER_EVIDENCE``), where readers fall back to defaults.
+    extraction_confidence: NotRequired[float | None]
+    record_type: NotRequired[str | None]
+    link_status: NotRequired[str | None]
+    participant_count: NotRequired[int | None]
 
 
 class ParticipantEvidence(AssertionEvidence):
@@ -139,17 +158,46 @@ def link_id(participant_id: str, identifier_id: str) -> str:
     return hashlib.sha1(identity.encode("utf-8")).hexdigest()
 
 
-def aggregate_link(evidence: Sequence[AssertionEvidence]) -> LinkAggregate:
+def aggregate_link(
+    evidence: Sequence[AssertionEvidence],
+    *,
+    participant_count: int | None = None,
+    reference_at: str | None = None,
+) -> LinkAggregate:
     """Aggregate the assertion evidence of one participant/Identifier pair.
 
     Observation boundaries are taken from the evidenced SourceRecords. An
     assertion missing ``quality_flag`` or ``is_verified`` contributes nothing to
     ``verified_count`` and only the lowest trust tier; ``last_confirmed_at`` is
     the most recent observation that still evidences the link.
+
+    C4 weights are computed from the evidence: per-record max strengths feed a
+    noisy-OR (candidate-only evidence capped and dormant), exclusivity comes
+    from ``participant_count`` (explicit argument, else the first well-typed
+    evidence value), and decay is anchored at ``reference_at`` (defaulting to
+    the link's own ``last_confirmed_at``).
     """
     observations = sorted(row["observed_at"] for row in evidence if row["observed_at"])
     first_seen_at = observations[0] if observations else None
     last_seen_at = observations[-1] if observations else None
+    last_confirmed_at = last_seen_at
+    resolved_count = participant_count
+    if resolved_count is None:
+        resolved_count = _evidence_participant_count(evidence)
+    confirmed, candidate = _link_scores(evidence)
+    weight = round6(combine_weights(confirmed, candidate))
+    exclusivity = round6(exclusivity_for_count(resolved_count))
+    anchor = reference_at if reference_at is not None else last_confirmed_at
+    identifier_type = evidence[0]["identifier_type"] if evidence else ""
+    half_life = half_life_for(identifier_type) if evidence else None
+    rank = round6(
+        rank_score(
+            weight=weight,
+            exclusivity=exclusivity,
+            age_days=age_days_between(last_confirmed_at, anchor),
+            half_life_days=half_life,
+        )
+    )
     return LinkAggregate(
         assertion_count=len(evidence),
         source_count=len({row["source_record_pk"] for row in evidence}),
@@ -163,23 +211,80 @@ def aggregate_link(evidence: Sequence[AssertionEvidence]) -> LinkAggregate:
         ),
         first_seen_at=first_seen_at,
         last_seen_at=last_seen_at,
-        last_confirmed_at=last_seen_at,
+        last_confirmed_at=last_confirmed_at,
+        score=weight,
+        exclusivity=exclusivity,
+        rank_score=rank,
+        policy_version=LINK_POLICY_VERSION,
     )
+
+
+def _link_scores(evidence: Sequence[AssertionEvidence]) -> tuple[list[float], list[float]]:
+    """Split deduped assertion strengths into confirmed/candidate buckets.
+
+    Rows sharing a ``source_record_pk`` collapse to their max strength; the
+    bucket follows the surviving row's ``link_status``.
+    """
+    best: dict[str, tuple[float, bool]] = {}
+    for row in evidence:
+        complete = _has_complete_metadata(row)
+        strength = assertion_score(
+            trust_tier=row["trust_tier"],
+            quality_flag=row["quality_flag"],
+            is_verified=row["is_verified"],
+            complete=complete,
+            extraction_confidence=row.get("extraction_confidence"),
+            record_type=row.get("record_type"),
+        )
+        candidate_only = (row.get("link_status") or "") == CANDIDATE_LINK_STATUS
+        previous = best.get(row["source_record_pk"])
+        if previous is None or strength > previous[0]:
+            best[row["source_record_pk"]] = (strength, candidate_only)
+    confirmed = [strength for strength, candidate in best.values() if not candidate]
+    candidate = [strength for strength, candidate in best.values() if candidate]
+    return confirmed, candidate
+
+
+def _evidence_participant_count(evidence: Sequence[AssertionEvidence]) -> int | None:
+    """Return the first well-typed ``participant_count`` in the evidence."""
+    for row in evidence:
+        count = row.get("participant_count")
+        if isinstance(count, int) and not isinstance(count, bool):
+            return count
+    return None
+
+
+def _group_last_confirmed(rows: Sequence[AssertionEvidence]) -> str | None:
+    """Return the latest observation time of one link's evidence."""
+    latest = sorted(row["observed_at"] for row in rows if row["observed_at"])
+    return latest[-1] if latest else None
 
 
 def build_link_rows(
     participant_id: str,
     evidence: Sequence[ParticipantEvidence],
 ) -> list[dict[str, JsonValue]]:
-    """Build one deterministic ``HAS_IDENTIFIER`` row per evidenced Identifier."""
+    """Build one deterministic ``HAS_IDENTIFIER`` row per evidenced Identifier.
+
+    Decay is anchored per D2: the reference time is the max
+    ``last_confirmed_at`` among this participant's links of the same
+    identifier type, never wall-clock.
+    """
     grouped: dict[tuple[str, str, str], list[ParticipantEvidence]] = {}
     for row in evidence:
         key = (row["identifier_type"], row["identifier_scope"], row["normalized_value"])
         grouped.setdefault(key, []).append(row)
+    reference_by_type: dict[str, str | None] = {}
+    for key in sorted(grouped):
+        pair = grouped[key]
+        identifier_type = pair[0]["identifier_type"]
+        reference_by_type[identifier_type] = max_evidence_time(
+            [reference_by_type.get(identifier_type), _group_last_confirmed(pair)]
+        )
     links: list[dict[str, JsonValue]] = []
     for key in sorted(grouped):
         pair = grouped[key]
-        aggregate = aggregate_link(pair)
+        aggregate = aggregate_link(pair, reference_at=reference_by_type[pair[0]["identifier_type"]])
         link: dict[str, JsonValue] = {
             "link_id": link_id(participant_id, pair[0]["identifier_id"]),
             "identifier_id": pair[0]["identifier_id"],

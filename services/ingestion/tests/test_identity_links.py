@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 
 from src.identity_link_member_evidence import MemberEvidence, cross_member_contradiction
+from src.identity_link_weights import LINK_POLICY_VERSION
 from src.identity_links import (
     LOWEST_TRUST_TIER,
     AssertionEvidence,
@@ -64,7 +65,7 @@ def test_link_id_matches_known_sha1_vectors() -> None:
     assert link_id("person-1", "identifier-1") == hashlib.sha1(b"person-1|identifier-1").hexdigest()
 
 
-def test_aggregate_collects_counts_tiers_timestamps_and_provisionals() -> None:
+def test_aggregate_collects_counts_tiers_timestamps_and_weights() -> None:
     aggregate = aggregate_link(
         [
             _row(trust_tier="tier_1", observed_at="2026-01-01T00:00:00Z"),
@@ -84,13 +85,16 @@ def test_aggregate_collects_counts_tiers_timestamps_and_provisionals() -> None:
     assert aggregate.first_seen_at == "2026-01-01T00:00:00Z"
     assert aggregate.last_seen_at == "2026-03-01T00:00:00Z"
     assert aggregate.last_confirmed_at == "2026-03-01T00:00:00Z"
-    assert aggregate.score == 0.0
-    assert aggregate.exclusivity == 0.0
-    assert aggregate.rank_score == 0.0
+    # source-1 dedupes to max(1.0, 0.6) = 1.0, source-2 is 0.9775:
+    # noisy-OR is 1.0, exclusivity defaults to 1.0, decay anchors at the
+    # link's own last observation.
+    assert aggregate.score == 1.0
+    assert aggregate.exclusivity == 1.0
+    assert aggregate.rank_score == 1.0
     assert aggregate.golden_rank is None
     assert aggregate.basis == "ASSERTS"
     assert aggregate.status == "active"
-    assert aggregate.policy_version == "c3-provisional"
+    assert aggregate.policy_version == LINK_POLICY_VERSION
 
 
 def test_aggregate_without_observations_keeps_null_boundaries() -> None:
@@ -239,9 +243,18 @@ def test_build_link_rows_groups_evidence_per_identifier() -> None:
     assert rows[0]["identifier_id"] == "identifier-2"
     assert rows[0]["assertion_count"] == 1
     assert rows[0]["max_tier"] == "tier_2"
+    assert rows[0]["score"] == 0.9775
+    assert rows[0]["exclusivity"] == 1.0
+    assert rows[0]["rank_score"] == 0.9775
+    assert rows[0]["golden_rank"] is None
+    assert rows[0]["policy_version"] == LINK_POLICY_VERSION
     assert rows[1]["identifier_id"] == "identifier-1"
     assert rows[1]["assertion_count"] == 2
     assert rows[1]["source_count"] == 2
+    assert rows[1]["score"] == 0.999494
+    assert rows[1]["exclusivity"] == 1.0
+    assert rows[1]["rank_score"] == 0.999494
+    assert rows[1]["policy_version"] == LINK_POLICY_VERSION
 
 
 def test_parse_field_trust_handles_json_maps_and_malformed_values() -> None:

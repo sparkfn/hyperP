@@ -181,6 +181,8 @@ def _seed_parked_record(
     source_record_version: int = 1,
     normalized_payload: str | None = None,
     record_hash: str | None = None,
+    record_type: str | None = None,
+    extraction_confidence: float | None = None,
 ) -> None:
     with driver.session() as session:
         session.run(
@@ -193,12 +195,16 @@ def _seed_parked_record(
             "lifecycle_status: 'parked', link_status: 'unlinked', "
             "attribution_status: 'parked', reeval_pending: true, "
             "observed_at: datetime($observed_at), "
+            "record_type: $record_type, "
+            "extraction_confidence: $extraction_confidence, "
             "normalized_payload: $normalized_payload})-[:FROM_SOURCE]->(system)",
             source_record_pk=source_record_pk,
             source_record_id=source_record_id or source_record_pk,
             source_record_version=source_record_version,
             record_hash=record_hash,
             normalized_payload=normalized_payload,
+            record_type=record_type,
+            extraction_confidence=extraction_confidence,
             observed_at=observed_at,
         ).consume()
 
@@ -391,14 +397,17 @@ def test_materialization_and_link_recompute_are_zero_diff(neo4j_driver: Driver) 
     assert properties["first_seen_at"] == "2026-01-01T00:00:00Z"
     assert properties["last_seen_at"] == "2026-02-01T00:00:00Z"
     assert properties["last_confirmed_at"] == "2026-02-01T00:00:00Z"
-    assert properties["score"] == 0.0
-    assert properties["exclusivity"] == 0.0
-    assert properties["rank_score"] == 0.0
+    # Two tier_1 verified assertions: noisy-OR is 1.0; the recount sees two
+    # profile members asserting the phone, so exclusivity is 1/2 and the rank
+    # (anchored at the link's own last observation) is 0.5.
+    assert properties["score"] == 1.0
+    assert properties["exclusivity"] == 0.5
+    assert properties["rank_score"] == 0.5
     # Neo4j removes null-valued properties, so an unset golden_rank is absent.
     assert properties.get("golden_rank") is None
     assert properties["basis"] == "ASSERTS"
     assert properties["status"] == "active"
-    assert properties["policy_version"] == "c3-provisional"
+    assert properties["policy_version"] == "c4-w1"
 
     before_links = _link_snapshot(neo4j_driver)
     before_profiles = _profile_snapshot(neo4j_driver)
@@ -417,6 +426,94 @@ def test_materialization_and_link_recompute_are_zero_diff(neo4j_driver: Driver) 
         )
         == 2
     )
+
+
+def test_link_weight_decay_anchors_at_per_type_reference(neo4j_driver: Driver) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_identifier(neo4j_driver, "ident-email", "email", "shared@example.com")
+    _seed_identifier(neo4j_driver, "ident-phone-old", "phone", "+6591111111")
+    _seed_identifier(neo4j_driver, "ident-phone-new", "phone", "+6592222222")
+    _seed_parked_record(neo4j_driver, "sr-old", "2026-01-01T00:00:00Z")
+    _seed_parked_record(neo4j_driver, "sr-new", "2027-01-01T00:00:00Z")
+    _seed_assertion(neo4j_driver, "sr-old", "ident-email", "assert-old-email")
+    _seed_assertion(neo4j_driver, "sr-new", "ident-email", "assert-new-email")
+    _seed_assertion(neo4j_driver, "sr-old", "ident-phone-old", "assert-old-phone")
+    _seed_assertion(neo4j_driver, "sr-new", "ident-phone-new", "assert-new-phone")
+
+    created = _materialize(neo4j_driver, "sr-new")
+    assert created.status == "created"
+    profile_id = created.profile_id
+    assert profile_id is not None
+
+    snapshots = {
+        str(row["identifier_id"]): row["properties"] for row in _link_snapshot(neo4j_driver)
+    }
+    assert set(snapshots) == {"ident-email", "ident-phone-new", "ident-phone-old"}
+    old_phone = snapshots["ident-phone-old"]
+    new_phone = snapshots["ident-phone-new"]
+    email = snapshots["ident-email"]
+    assert isinstance(old_phone, dict)
+    assert isinstance(new_phone, dict)
+    assert isinstance(email, dict)
+    # The phone reference time is the newest phone observation (2027-01-01),
+    # so the older phone link decays over exactly one 365-day half-life.
+    assert old_phone["score"] == 1.0
+    assert old_phone["exclusivity"] == 1.0
+    assert old_phone["rank_score"] == 0.5
+    assert new_phone["score"] == 1.0
+    assert new_phone["exclusivity"] == 1.0
+    assert new_phone["rank_score"] == 1.0
+    assert email["score"] == 0.9039
+    assert email["exclusivity"] == 0.5
+    assert email["rank_score"] == 0.45195
+    for properties in (old_phone, new_phone, email):
+        assert properties["policy_version"] == "c4-w1"
+
+    before = _link_snapshot(neo4j_driver)
+    _execute(
+        neo4j_driver,
+        lambda tx: recompute_participant_links(tx, "profile", profile_id),
+    )
+    assert _link_snapshot(neo4j_driver) == before
+
+
+def test_link_weights_read_conversation_confidence_from_evidence(
+    neo4j_driver: Driver,
+) -> None:
+    _apply_schema(neo4j_driver)
+    _seed_source_system(neo4j_driver)
+    _seed_identifier(neo4j_driver, "ident-phone", "phone", _PHONE)
+    _seed_parked_record(
+        neo4j_driver,
+        "sr-c1",
+        "2026-01-01T00:00:00Z",
+        record_type="conversation",
+        extraction_confidence=0.8,
+    )
+    _seed_parked_record(
+        neo4j_driver,
+        "sr-c2",
+        "2026-02-01T00:00:00Z",
+        record_type="conversation",
+        extraction_confidence=0.8,
+    )
+    _seed_assertion(neo4j_driver, "sr-c1", "ident-phone", "assert-c1")
+    _seed_assertion(neo4j_driver, "sr-c2", "ident-phone", "assert-c2")
+
+    created = _materialize(neo4j_driver, "sr-c2")
+    assert created.status == "created"
+
+    links = _link_snapshot(neo4j_driver)
+    assert len(links) == 1
+    properties = links[0]["properties"]
+    assert isinstance(properties, dict)
+    # tier_1 drops to tier_2 (0.85) for conversation records:
+    # s = 0.85 * 0.8 * 1.15 = 0.782 each, noisy-OR over two records.
+    assert properties["score"] == 0.952476
+    assert properties["exclusivity"] == 0.5
+    assert properties["rank_score"] == 0.476238
+    assert properties["policy_version"] == "c4-w1"
 
 
 def test_bridged_profiles_union_to_lowest_id_and_retire_losers(neo4j_driver: Driver) -> None:

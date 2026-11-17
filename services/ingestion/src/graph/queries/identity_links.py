@@ -163,7 +163,11 @@ RETURN DISTINCT record.source_record_pk AS source_record_pk,
        assertion.quality_flag AS quality_flag,
        assertion.is_verified AS is_verified,
        source.field_trust AS field_trust,
-       toString(record.observed_at) AS observed_at
+       toString(record.observed_at) AS observed_at,
+       asserted.participant_count AS participant_count,
+       record.extraction_confidence AS extraction_confidence,
+       record.record_type AS record_type,
+       record.link_status AS link_status
 ORDER BY source_record_pk, identifier_type, identifier_scope, normalized_value
 """
 
@@ -185,7 +189,6 @@ WITH link, row,
       AND link.score = row.score
       AND link.exclusivity = row.exclusivity
       AND link.rank_score = row.rank_score
-      AND link.golden_rank IS NULL
       AND link.basis = row.basis
       AND link.status = row.status
       AND link.policy_version = row.policy_version
