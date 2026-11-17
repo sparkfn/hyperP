@@ -629,6 +629,20 @@ def test_weighted_snapshot_returns_every_matching_link(neo4j_driver: Driver) -> 
         _seed_identifier(neo4j_driver, f"ident-phone-{index}", "phone", f"+659000000{index}")
         _seed_linked_record(neo4j_driver, f"sr-{index}", "person-1", link_status="linked")
         _seed_assertion(neo4j_driver, f"sr-{index}", f"ident-phone-{index}", f"assert-{index}")
+    # Trust tiers resolve through the record's source system: without the
+    # FROM_SOURCE edge the tier falls back to tier_4 (C3 rule) instead of
+    # the seeded tier_1.
+    with neo4j_driver.session() as session:
+        session.run(
+            "MATCH (system:SourceSystem {source_key: 'onediver'}) "
+            "UNWIND range(1, 5) AS index "
+            "MATCH (record:SourceRecord {source_record_pk: 'sr-' + toString(index)}) "
+            "MERGE (record)-[:FROM_SOURCE]->(system)"
+        ).consume()
+    _execute(neo4j_driver, lambda tx: recompute_participant_links(tx, "person", "person-1"))
+    # A second recompute refreshes the participant counters over the links the
+    # first pass created (the recount runs before the merge); link values are
+    # unchanged by it.
     _execute(neo4j_driver, lambda tx: recompute_participant_links(tx, "person", "person-1"))
 
     snapshots = _execute(

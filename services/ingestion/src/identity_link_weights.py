@@ -168,7 +168,9 @@ def decay_factor(age_days: float | None, half_life_days: int | None) -> float:
     """Return the ``0.5 ** (age / half_life)`` factor, or 1.0 when undecayed."""
     if age_days is None or half_life_days is None or half_life_days <= 0:
         return 1.0
-    return 0.5 ** (age_days / half_life_days)
+    exponent: float = age_days / half_life_days
+    factor: float = 0.5**exponent
+    return factor
 
 
 def rank_score(

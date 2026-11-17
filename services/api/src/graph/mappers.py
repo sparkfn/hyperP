@@ -25,6 +25,7 @@ from src.graph.converters import (
     to_str_dict,
     to_str_list,
 )
+from src.graph.mappers_golden import parse_golden_top
 from src.nric import format_masked_nric, mask_identifier_value
 from src.types import (
     AddressSummary,
@@ -233,6 +234,9 @@ def map_person(record: GraphRecord, address_key: str = "preferred_address") -> P
         profile_completeness_score=to_float(p.get("profile_completeness_score")),
         golden_profile_computed_at=to_iso_or_none(p.get("golden_profile_computed_at")),
         golden_profile_version=to_optional_str(p.get("golden_profile_version")),
+        golden_top=parse_golden_top(
+            to_optional_str(p.get("golden_json")), to_optional_str(p.get("golden_conflicts"))
+        ),
         source_record_count=to_int(record.get("source_record_count")),
         connection_count=to_int(record.get("connection_count")),
         lifetime_value=to_optional_float(record.get("lifetime_value")),

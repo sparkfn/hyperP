@@ -456,7 +456,9 @@ WHERE linked IS NULL OR identifier IS NULL OR (
     AND coalesce(record.lifecycle_status, 'active') <> 'superseded'
     AND (record)-[:ASSERTS]->(identifier)
 )
-WITH person, link, identifier, count(record) AS active_evidence_count
+WITH person, link, identifier,
+     count(record) AS active_evidence_count,
+     collect(DISTINCT record.source_record_pk) AS evidence_pks
 RETURN person.survivorship_overrides AS survivorship_overrides,
        person.golden_json AS stored_golden_json,
        person.golden_conflicts AS stored_golden_conflicts,
@@ -472,7 +474,7 @@ RETURN person.survivorship_overrides AS survivorship_overrides,
        link.last_confirmed_at AS last_confirmed_at,
        link.source_count AS source_count,
        active_evidence_count,
-       collect(DISTINCT record.source_record_pk) AS evidence_pks
+       evidence_pks
 ORDER BY identifier_type, identifier_scope, normalized_value
 """
 

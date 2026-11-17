@@ -8,7 +8,7 @@ from src.auth.deps import require_scope
 from src.http_utils import envelope, http_error, next_cursor, page_window
 from src.repositories.deps import get_profile_repo
 from src.repositories.protocols.profile import ProfileListFilters, ProfileRepository
-from src.types import ApiResponse, Profile, ProfileDetail
+from src.types import ApiResponse, Profile, ProfileDetail, UnlinkedProfile
 
 router = APIRouter(
     prefix="/v1/profiles",
@@ -40,6 +40,29 @@ async def list_profiles(
     # stays ``open`` for callers that omit the parameter.
     filters = ProfileListFilters(q=q_clean, status=None if status == "all" else status)
     profiles, total = await repo.get_page(filters, skip, page_limit)
+    has_more = skip + page_limit < total
+    return envelope(
+        profiles,
+        request,
+        next_cursor(skip, page_limit, has_more),
+        total_count=total,
+    )
+
+
+@router.get(
+    "/unlinked",
+    response_model=ApiResponse[list[UnlinkedProfile]],
+    operation_id="list_unlinked_profiles",
+)
+async def list_unlinked_profiles(
+    request: Request,
+    cursor: str | None = Query(default=None),
+    limit: int | None = Query(default=None),
+    repo: ProfileRepository = Depends(get_profile_repo),
+) -> ApiResponse[list[UnlinkedProfile]]:
+    """List open Profiles without an NRIC anchor, most CRM evidence first."""
+    skip, page_limit = page_window(cursor, limit)
+    profiles, total = await repo.get_unlinked(skip, page_limit)
     has_more = skip + page_limit < total
     return envelope(
         profiles,

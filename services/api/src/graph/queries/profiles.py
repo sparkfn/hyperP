@@ -46,6 +46,26 @@ WHERE ($status IS NULL OR profile.status = $status)
 RETURN count(profile) AS total
 """
 
+LIST_UNLINKED_PROFILES = """
+MATCH (profile:Profile {status: 'open'})
+OPTIONAL MATCH (member:SourceRecord)-[:IN_PROFILE]->(profile)
+WITH profile,
+     count(DISTINCT member) AS record_count,
+     count(DISTINCT CASE WHEN member.record_type = 'crm_deal' THEN member END) AS value_score
+RETURN profile {
+         .profile_id, .status, .evidence_version, .materialized_at, .promoted_person_id
+       } AS profile,
+       record_count,
+       value_score
+ORDER BY value_score DESC, record_count DESC, profile.profile_id
+SKIP $skip LIMIT $limit
+"""
+
+COUNT_UNLINKED_PROFILES = """
+MATCH (profile:Profile {status: 'open'})
+RETURN count(profile) AS total
+"""
+
 GET_PROFILE = """
 MATCH (profile:Profile {profile_id: $profile_id})
 OPTIONAL MATCH (member:SourceRecord)-[:IN_PROFILE]->(profile)

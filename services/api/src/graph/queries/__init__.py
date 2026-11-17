@@ -142,8 +142,10 @@ from src.graph.queries.profile_analysis import (
 )
 from src.graph.queries.profiles import (
     COUNT_PROFILES,
+    COUNT_UNLINKED_PROFILES,
     GET_PROFILE,
     LIST_PROFILES,
+    LIST_UNLINKED_PROFILES,
 )
 from src.graph.queries.reports import (
     CREATE_REPORT,
@@ -374,8 +376,10 @@ __all__ = [
     "get_node_graph_query",
     "RECOMPUTE_PERSON_CRM_DEAL_COUNTS",
     "COUNT_PROFILES",
+    "COUNT_UNLINKED_PROFILES",
     "GET_PROFILE",
     "LIST_PROFILES",
+    "LIST_UNLINKED_PROFILES",
 ]
 
 # Identity-link stream schema is created by both services because API lifecycle

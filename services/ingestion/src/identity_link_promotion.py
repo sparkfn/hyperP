@@ -169,7 +169,10 @@ def promote_profile(
         durable_holders=holder_evidence,
     ):
         return PromotionOutcome(
-            status="rejected", profile_id=profile_id, reason="nric_contradiction"
+            status="rejected",
+            profile_id=profile_id,
+            person_id=person_id,
+            reason="nric_contradiction",
         )
     promoted = tx.run(
         queries.PROMOTE_PROFILE,

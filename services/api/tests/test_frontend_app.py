@@ -111,6 +111,7 @@ def test_frontend_app_openapi_uses_unversioned_contract_paths() -> None:
 
     assert "/persons" in paths
     assert paths["/profiles"]["get"]["operationId"] == "list_profiles"
+    assert paths["/profiles/unlinked"]["get"]["operationId"] == "list_unlinked_profiles"
     assert paths["/profiles/{profile_id}"]["get"]["operationId"] == "get_profile"
     assert "/review-cases" in paths
     assert "/admin/oauth-clients" in paths

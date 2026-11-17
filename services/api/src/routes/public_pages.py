@@ -34,7 +34,7 @@ _PUBLIC_PAGE_LIMIT = 50
 
 def _strip_public_person(person: Person) -> Person:
     """Omit customer-specific loyalty + vehicle data from public share responses."""
-    return person.model_copy(update={"loyalty": None, "vehicles": None})
+    return person.model_copy(update={"loyalty": None, "vehicles": None, "golden_top": None})
 
 
 def _strip_public_sales_order(order: SalesOrder) -> SalesOrder:
