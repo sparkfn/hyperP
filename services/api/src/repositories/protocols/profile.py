@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Protocol, TypedDict
 
-from src.types import Profile, ProfileDetail
+from src.types import Profile, ProfileDetail, UnlinkedProfile
 
 
 class ProfileListFilters(TypedDict, total=False):
@@ -21,3 +21,5 @@ class ProfileRepository(Protocol):
     ) -> tuple[list[Profile], int]: ...
 
     async def get_by_id(self, profile_id: str) -> ProfileDetail | None: ...
+
+    async def get_unlinked(self, skip: int, limit: int) -> tuple[list[UnlinkedProfile], int]: ...

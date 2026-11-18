@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 from src.graph.client import get_session
-from src.graph.mappers_profiles import map_profile, map_profile_detail
-from src.graph.queries import COUNT_PROFILES, GET_PROFILE, LIST_PROFILES
+from src.graph.mappers_profiles import map_profile, map_profile_detail, map_unlinked_profile
+from src.graph.queries import (
+    COUNT_PROFILES,
+    COUNT_UNLINKED_PROFILES,
+    GET_PROFILE,
+    LIST_PROFILES,
+    LIST_UNLINKED_PROFILES,
+)
 from src.repositories.protocols.profile import ProfileListFilters
-from src.types import Profile, ProfileDetail
+from src.types import Profile, ProfileDetail, UnlinkedProfile
 
 from ._utils import record_to_dict, to_total
 
@@ -48,3 +54,10 @@ class Neo4jProfileRepository:
         if record is None:
             return None
         return map_profile_detail(record_to_dict(record.keys(), list(record.values())))
+
+    async def get_unlinked(self, skip: int, limit: int) -> tuple[list[UnlinkedProfile], int]:
+        async with get_session() as session:
+            total_record = await (await session.run(COUNT_UNLINKED_PROFILES)).single()
+            result = await session.run(LIST_UNLINKED_PROFILES, skip=skip, limit=limit)
+            records = [record_to_dict(r.keys(), list(r.values())) async for r in result]
+        return [map_unlinked_profile(record) for record in records], to_total(total_record)

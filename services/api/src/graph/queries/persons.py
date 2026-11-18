@@ -147,6 +147,7 @@ RETURN person {
   .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob, .preferred_nric,
   .preferred_race_ethnicity,
   .profile_completeness_score, .golden_profile_computed_at, .golden_profile_version,
+  .golden_json, .golden_conflicts,
   .created_at, .updated_at
 } AS person,
 addr {

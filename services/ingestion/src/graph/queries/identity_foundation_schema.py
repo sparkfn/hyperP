@@ -21,6 +21,8 @@ FOR (sr:SourceRecord) ON (sr.attribution_status)""",
 FOR (sr:SourceRecord) ON (sr.reeval_pending)""",
     """CREATE CONSTRAINT profile_id_unique IF NOT EXISTS
 FOR (profile:Profile) REQUIRE profile.profile_id IS UNIQUE""",
+    """CREATE CONSTRAINT review_case_case_key_unique IF NOT EXISTS
+FOR (rc:ReviewCase) REQUIRE rc.case_key IS UNIQUE""",
     """CREATE CONSTRAINT person_nric_key_unique IF NOT EXISTS
 FOR (person:Person) REQUIRE person.nric_key IS UNIQUE""",
     """CREATE CONSTRAINT has_identifier_link_id_unique IF NOT EXISTS

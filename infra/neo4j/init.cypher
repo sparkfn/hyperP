@@ -44,6 +44,9 @@ CREATE CONSTRAINT match_decision_id_unique IF NOT EXISTS
 CREATE CONSTRAINT review_case_id_unique IF NOT EXISTS
   FOR (rc:ReviewCase) REQUIRE rc.review_case_id IS UNIQUE;
 
+CREATE CONSTRAINT review_case_case_key_unique IF NOT EXISTS
+  FOR (rc:ReviewCase) REQUIRE rc.case_key IS UNIQUE;
+
 CREATE CONSTRAINT merge_event_id_unique IF NOT EXISTS
   FOR (me:MergeEvent) REQUIRE me.merge_event_id IS UNIQUE;
 

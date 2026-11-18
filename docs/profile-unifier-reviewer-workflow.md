@@ -79,10 +79,13 @@ A review case should be created when any of the following occurs:
 3. sensitive conflicts exist without meeting a hard block
 4. manual policy requires review for a source combination or customer segment
 5. the profile is high-value or high-risk and policy forbids auto-merge
-6. an ingested identifier bridges two or more distinct active persons — a
-   **person↔person** audit case is opened per pair (see the matching spec,
-   "Person-Pair Auditing"). These compare two `Person` entities rather than a
-   record against a person; resolving one with `merge` collapses the pair.
+6. ~~an ingested identifier bridges two or more distinct active persons — a
+   **person↔person** audit case is opened per pair~~ — **retired in v2
+   (#492)**: the person-pair auditor was deleted and no new person↔person
+   audit cases are created (legacy cases are re-scored only). Ambiguous
+   multi-person evidence now routes through the exception-only taxonomy
+   (`anchored_ambiguity` review cases compare a record against anchored
+   persons, not persons against each other).
 
 ## Review Case Data Requirements
 

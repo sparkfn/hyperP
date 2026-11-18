@@ -538,6 +538,15 @@ class IdentityCandidate(BaseModel):
     shared_key_count: int = 0
 
 
+class MatchAction(StrEnum):
+    """v2 match disposition label (plan §2.4)."""
+
+    ATTACH = "attach"
+    UNION = "union"
+    PARK = "park"
+    REVIEW = "review"
+
+
 class MatchResult(BaseModel):
     """Output of the match engine chain."""
 
@@ -547,6 +556,9 @@ class MatchResult(BaseModel):
     engine_type: EngineType = EngineType.DETERMINISTIC
     engine_version: str = "v0.1.0"
     matched_person_id: str | None = None
+    action: MatchAction | None = None
+    review_reason: str | None = None
+    policy_version: str = "v0.1.0"
     proposed_person_id: str | None = None
     # When an incoming non-CRM-deal record independently matches (MERGE band) more than one
     # distinct active person, the record and its extracted evidence are linked to

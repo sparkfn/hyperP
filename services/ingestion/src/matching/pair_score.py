@@ -1,9 +1,10 @@
 """Score an existing person↔person pair by reusing the Layer-2 heuristic engine.
 
-The shared-identifier pair auditor (:mod:`src.pipeline_person_pairs`) opens a
-review case whenever one identifier bridges two active persons. On its own that
-case carried no confidence, so reviewers could not tell a same-name/same-phone
-duplicate apart from two distinct people who merely share a phone.
+The retired shared-identifier pair auditor (removed in #492) opened a review
+case whenever one identifier bridged two active persons. On its own that case
+carried no confidence, so reviewers could not tell a same-name/same-phone
+duplicate apart from two distinct people who merely share a phone. This scorer
+remains for re-scoring legacy pair-audit cases.
 
 This adapter reuses the *exact* scoring criteria of the record match engine
 (:func:`src.matching.heuristic.evaluate_heuristic`). One person is represented

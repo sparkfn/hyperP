@@ -57,6 +57,8 @@ class _StreamTx(_RecordingTx):
         queries.CREATE_PERSON: {"person_id": "person-created"},
         queries.CREATE_MATCH_DECISION: {"match_decision_id": "md-1"},
         queries.CREATE_REVIEW_CASE: {"review_case_id": "rc-1"},
+        queries.CREATE_REVIEW_CASE_BY_KEY: {"review_case_id": "rc-1"},
+        queries.SUPPRESS_MATCH_DECISION_REVIEW: {"match_decision_id": "md-1"},
         queries.CREATE_MERGE_EVENT_AUTO_MERGE: {"merge_event_id": "me-1"},
         queries.ACTIVATE_FIRST_SOURCE_RECORD_VERSION: {"source_record_pk": "sr-new"},
         queries.ACTIVATE_SOURCE_RECORD_VERSION: {"source_record_pk": "sr-new"},
@@ -113,7 +115,11 @@ _REVIEW_NO_ENGINE_PICK = _Scenario(
     match_result=MatchResult(
         decision=MatchDecision.REVIEW,
         confidence=0.7,
-        reasons=["ambiguous_candidate"],
+        reasons=["anchored ambiguity"],
+        matched_person_id="person-a",
+        review_candidate_person_ids=["person-a"],
+        review_reason="anchored_ambiguity",
+        policy_version="c4-v1",
     ),
     candidates=(CandidateResult(person_id="person-a", source="identifier"),),
 )
@@ -223,16 +229,29 @@ def test_shadow_flag_only_adds_assertion_writes(
     v1_queries = [query for query, _ in v1_stream]
     assert queries.CREATE_SOURCE_RECORD in v1_queries
     assert queries.PROMOTE_STAGED_SOURCE_RECORD in v1_queries
-    # Shadow mode may add only the C3 projection reads; the legacy stream is
-    # otherwise identical and the legacy outcome is preserved.
+    # Shadow mode may add only the C3 projection reads and the C4 golden-stage
+    # queries; the legacy stream is otherwise identical and the legacy outcome
+    # is preserved.
+    golden_queries = {
+        queries.LOCK_PERSON_FOR_GOLDEN,
+        queries.FETCH_PERSON_LINK_KEYS,
+        queries.FETCH_PERSON_TOP_LINKS,
+        queries.SET_LINK_GOLDEN_RANKS,
+        queries.UPDATE_GOLDEN_TOP3,
+    }
     projection_queries = {
         queries.SOURCE_RECORD_LINKED_TO_PERSON,
         queries.FETCH_RECORD_IDENTIFIER_KEYS,
         # Shadow also re-derives the Person's HAS projection after activation.
         queries.FETCH_PARTICIPANT_EVIDENCE,
         queries.DELETE_STALE_PARTICIPANT_HAS_IDENTIFIER_LINKS,
+        *golden_queries,
     }
     assert [call for call in shadow_stream if call[0] not in projection_queries] == v1_stream
+    # The golden stage never writes legacy preferred_* fields in shadow mode.
+    for query, params in shadow_stream:
+        if query in golden_queries:
+            assert not any(key.startswith("preferred_") for key in params)
 
 
 @pytest.mark.parametrize("scenario", _SCENARIOS, ids=[scenario.name for scenario in _SCENARIOS])
@@ -254,11 +273,32 @@ def test_v2_review_with_candidate_links_provisionally_and_opens_a_review_case(
 
     issued = [query for query, _ in stream]
     assert queries.CREATE_MATCH_DECISION in issued
-    assert queries.CREATE_REVIEW_CASE in issued
+    assert queries.CREATE_REVIEW_CASE_BY_KEY in issued
+    assert queries.CREATE_REVIEW_CASE not in issued
     assert queries.PROMOTE_STAGED_SOURCE_RECORD in issued
     # No evidence rows were answered by the fake, so the provisional record's
     # identifiers cannot reach HAS_IDENTIFIER in this REVIEW outcome.
     assert queries.MERGE_PARTICIPANT_HAS_IDENTIFIER_LINKS not in issued
+
+
+def test_v2_non_exception_review_opens_no_case(monkeypatch: MonkeyPatch) -> None:
+    scenario = _Scenario(
+        name="review_non_exception",
+        envelope=_identity_envelope(),
+        match_result=MatchResult(
+            decision=MatchDecision.REVIEW,
+            confidence=0.7,
+            reasons=["ambiguous_candidate"],
+        ),
+        candidates=(CandidateResult(person_id="person-a", source="identifier"),),
+    )
+    stream, _assertions = _run(scenario, "v2", monkeypatch)
+
+    issued = [query for query, _ in stream]
+    assert queries.CREATE_MATCH_DECISION in issued
+    assert queries.SUPPRESS_MATCH_DECISION_REVIEW in issued
+    assert queries.CREATE_REVIEW_CASE not in issued
+    assert queries.CREATE_REVIEW_CASE_BY_KEY not in issued
 
 
 def test_v2_parked_outcome_persists_match_decision_without_review_case(

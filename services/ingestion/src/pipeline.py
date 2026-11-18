@@ -28,6 +28,7 @@ from src.bitrix_ingestion_models import ExecutionContext, FenceContext
 from src.config import IdentityModel, get_settings
 from src.exclusions import ExclusionContext, is_excluded_vehicle_observation
 from src.golden_profile import compute_golden_profile
+from src.golden_top3 import materialize_golden_top3
 from src.graph import queries
 from src.graph.bitrix_deal_scope import DealScopeObservation, record_scope_batch_in_transaction
 from src.graph.bootstrap import MATCH_ONLY_SOURCE_KEYS
@@ -89,7 +90,6 @@ from src.pipeline_normalization import (
     normalize_envelope_attributes,
     normalize_envelope_identifiers,
 )
-from src.pipeline_person_pairs import audit_person_pairs
 from src.pipeline_writes import (
     build_normalized_source_payload,
     create_person_legacy,
@@ -100,6 +100,7 @@ from src.pipeline_writes import (
     link_record_to_graph,
     link_status_for,
     persist_match_decision,
+    persist_nric_contradiction_review,
     persist_source_record,
     record_auto_merge_event,
     retire_identity_projections,
@@ -115,6 +116,7 @@ from src.record_lifecycle import (
     plan_incoming_version,
     reject_replaced_pending,
 )
+from src.review_taxonomy import record_identity_for_envelope
 from src.source_instances import (
     LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
     effective_control_instance_id,
@@ -607,6 +609,7 @@ class IngestPipeline:
                 match_result,
                 candidates,
                 locked_keys,
+                source_record_pk=staged.source_record_pk,
             )
             if person_id is None:
                 # Keep the audit trail even when no Person destination exists.
@@ -648,6 +651,12 @@ class IngestPipeline:
             match_result,
             match_decision_id,
             source_system=envelope.source_system,
+            exception_only=self._identity_model == "v2",
+            record_identity=record_identity_for_envelope(
+                source_system=envelope.source_system,
+                source_instance_id=envelope.source_instance_id,
+                source_record_id=envelope.source_record_id,
+            ),
         )
         if (
             match_result.decision == MatchDecision.REVIEW
@@ -771,9 +780,6 @@ class IngestPipeline:
             if self._identity_model == "v2":
                 recompute_participant_links(tx, "person", other_person_id)
             affected_person_ids.add(other_person_id)
-        # Personâ†”person audit: any usable identifier this record carries that now
-        # links 2+ active persons opens a pairwise review case (deduped, fanout-
-        # capped). Audit-only â€” never merges or links persons.
         if accepted:
             activate_staged_version(
                 tx,
@@ -828,13 +834,11 @@ class IngestPipeline:
                 v2_evidence = self._identity_model == "v2"
                 for affected_person_id in sorted(affected_person_ids):
                     compute_golden_profile(tx, affected_person_id, v2_evidence=v2_evidence)
-                audit_person_pairs(
-                    tx,
-                    person_identifiers,
-                    envelope.record_type,
-                    collector=collector,
-                    v2_evidence=v2_evidence,
-                )
+                if self._identity_model == "v2_shadow":
+                    # Shadow writes the weighted top-3 projection for L3
+                    # rank-1-vs-legacy parity; legacy preferred_* stay authoritative.
+                    for affected_person_id in sorted(affected_person_ids):
+                        materialize_golden_top3(tx, affected_person_id, locked_keys=locked_keys)
             mark_profile_analysis_dirty(
                 tx,
                 source_record_pks=(
@@ -1217,6 +1221,12 @@ class IngestPipeline:
             match_result,
             match_decision_id,
             source_system=envelope.source_system,
+            exception_only=self._identity_model == "v2",
+            record_identity=record_identity_for_envelope(
+                source_system=envelope.source_system,
+                source_instance_id=envelope.source_instance_id,
+                source_record_id=envelope.source_record_id,
+            ),
         )
         if envelope.source_entity_type is not None:
             append_identity_link_revisions(
@@ -1280,6 +1290,8 @@ class IngestPipeline:
         match_result: MatchResult,
         candidates: list[CandidateResult],
         locked_keys: frozenset[tuple[str, str, str]] | None = None,
+        *,
+        source_record_pk: str,
     ) -> tuple[str | None, bool]:
         """Step 6 (v2): anchor by approved NRIC or reuse a matched Person.
 
@@ -1297,7 +1309,7 @@ class IngestPipeline:
                 if created or not self._anchor_is_blocked(
                     tx, envelope, identifiers, attributes, anchored_person_id
                 ):
-                    promote_profiles_for_nric(
+                    promotion = promote_profiles_for_nric(
                         tx,
                         approved,
                         identifier_keys=self._eligible_identifier_keys(identifiers),
@@ -1306,6 +1318,16 @@ class IngestPipeline:
                         incoming=self._incoming_name_dob(attributes),
                         locked_keys=locked_keys,
                     )
+                    for contradiction in promotion.contradictions:
+                        if contradiction.holder_person_id is None:
+                            continue
+                        persist_nric_contradiction_review(
+                            tx,
+                            source_record_pk=source_record_pk,
+                            profile_id=contradiction.profile_id,
+                            holder_person_id=contradiction.holder_person_id,
+                            source_system=envelope.source_system,
+                        )
                     return anchored_person_id, created
                 # A hard NO_MATCH against the anchored Person (NO_MATCH_LOCK or
                 # a conflicting government ID) outranks the NRIC anchor: never

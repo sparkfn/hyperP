@@ -28,6 +28,7 @@ from src.identity_links import (
     build_link_rows,
     identifier_key_row,
     identifier_key_tuple,
+    link_id,
     materializes,
     parse_field_trust,
     sorted_lock_rows,
@@ -54,7 +55,13 @@ def recompute_participant_links(
     participant_kind: ParticipantKind,
     participant_id: str,
 ) -> LinkRecomputeOutcome:
-    """Recompute one participant's derived ``HAS_IDENTIFIER`` links from its evidence."""
+    """Recompute one participant's derived ``HAS_IDENTIFIER`` links from its evidence.
+
+    Stale links are deleted and identifier counters refreshed before the link
+    rows are built, so the freshly recomputed ``participant_count`` feeds the
+    weights in the same pass; a recompute over unchanged evidence therefore
+    performs no link write (zero-diff).
+    """
     evidence = [
         participant_evidence(row)
         for row in tx.run(
@@ -64,9 +71,22 @@ def recompute_participant_links(
         )
     ]
     evidence_keys = {identifier_key_tuple(row) for row in evidence}
-    links = build_link_rows(participant_id, evidence)
-    link_ids = [str(row["link_id"]) for row in links]
+    link_ids = _ordered_link_ids(participant_id, evidence)
     stale_keys = _delete_stale_links(tx, participant_kind, participant_id, link_ids)
+    recompute_participant_counts(
+        tx, evidence_keys | {identifier_key_tuple(row) for row in stale_keys}
+    )
+    # Re-read after the counter refresh: the first read predates it, and the
+    # weights must observe this participant's own recount in the same pass.
+    evidence = [
+        participant_evidence(row)
+        for row in tx.run(
+            queries.FETCH_PARTICIPANT_EVIDENCE,
+            participant_kind=participant_kind,
+            participant_id=participant_id,
+        )
+    ]
+    links = build_link_rows(participant_id, evidence)
     if links:
         tx.run(
             queries.MERGE_PARTICIPANT_HAS_IDENTIFIER_LINKS,
@@ -74,9 +94,6 @@ def recompute_participant_links(
             participant_id=participant_id,
             links=links,
         )
-    recompute_participant_counts(
-        tx, evidence_keys | {identifier_key_tuple(row) for row in stale_keys}
-    )
     return LinkRecomputeOutcome(
         participant_kind=participant_kind,
         participant_id=participant_id,
@@ -317,7 +334,50 @@ def participant_evidence(row: Record) -> ParticipantEvidence:
         is_verified=optional_bool(row, "is_verified"),
         trust_tier=field_trust.get(identifier_type) if field_trust is not None else None,
         observed_at=optional_str(row, "observed_at"),
+        participant_count=_additive_count(row, "participant_count"),
+        extraction_confidence=_additive_confidence(row, "extraction_confidence"),
+        record_type=_additive_str(row, "record_type"),
+        link_status=_additive_str(row, "link_status"),
     )
+
+
+def _ordered_link_ids(participant_id: str, evidence: Sequence[ParticipantEvidence]) -> list[str]:
+    """Return deterministic link ids, one per evidenced Identifier."""
+    seen: set[str] = set()
+    ordered: list[str] = []
+    for row in evidence:
+        if row["identifier_id"] not in seen:
+            seen.add(row["identifier_id"])
+            ordered.append(link_id(participant_id, row["identifier_id"]))
+    return ordered
+
+
+def _additive_str(row: Record, key: str) -> str | None:
+    """Read an additive evidence column absent from legacy query shapes."""
+    value: object = row.get(key, None)
+    return value if value is None or isinstance(value, str) else malformed(key)
+
+
+def _additive_count(row: Record, key: str) -> int | None:
+    """Read an additive evidence counter absent from legacy query shapes."""
+    value: object = row.get(key, None)
+    if value is None:
+        return None
+    if isinstance(value, int) and not isinstance(value, bool):
+        return value
+    return malformed(key)
+
+
+def _additive_confidence(row: Record, key: str) -> float | None:
+    """Read an additive evidence confidence absent from legacy query shapes."""
+    value: object = row.get(key, None)
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return malformed(key)
+    if isinstance(value, (int, float)):
+        return float(value)
+    return malformed(key)
 
 
 def key_row_from_record(row: Record) -> IdentifierKey:

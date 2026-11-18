@@ -84,6 +84,8 @@ CREATE (p:Person {
   profile_completeness_score: 0.0,
   golden_profile_computed_at: null,
   golden_profile_version: null,
+  golden_json: null,              // top-3 golden snapshot (phone/email/nric ranks 1..3 + conflicts)
+  golden_conflicts: null,         // JSON array of GoldenTopConflict / pin_unresolved entries
 
   created_at: datetime(),
   updated_at: datetime()
@@ -400,10 +402,17 @@ the version increments only on an actual evidence change. The derived-write
 zero-diff invariant holds: an unchanged recompute performs no edge/property
 writes, and `materialized_at`/`first_seen_at` are preserved when evidence changes.
 
-Provisional `HAS_IDENTIFIER` values are fixed placeholders until C4:
-`score=0.0`, `exclusivity=0.0`, `rank_score=0.0`, `golden_rank` unset,
-`basis='ASSERTS'`, `status='active'`, `policy_version='c3-provisional'`. They are
-never consumed by matching, ranking, or golden-profile selection.
+C4 `HAS_IDENTIFIER` values carry real link weights (`policy_version='c4-w1'`):
+per-assertion strength `s(a) = min(1, tier · q · c · (1.15 if verified))` with
+tier weights keyed by tier NAME, noisy-OR link `score` with a dormant `0.24`
+candidate-only cap, `exclusivity = 1 / max(1, participant_count)`, and
+evidence-time-anchored `rank_score` decay (half-lives phone 365 / email 730 /
+`device_id` 180 / `social:*` 365; nric and CRM ids never decay), all rounded to
+6 dp. Ranking (`golden_rank`) is owned by the golden stage, not the link
+recompute: the link MERGE resets `golden_rank` to null when the row changes and
+omits it from the unchanged-check. Pre-C4 links still at `c3-provisional` are
+treated as unweighted (`link_weight` null → 1.0) by matching and never zero it
+out.
 
 `Identifier.participant_count` is derived from direct eligible participants — an
 active Person, an open Profile, or a current parked/unlinked/parked/reeval_pending
@@ -516,6 +525,12 @@ property is written.
 ```cypher
 CREATE (rc:ReviewCase {
   review_case_id: randomUUID(),
+  reason_code: null,              // exception-only taxonomy (v2): anchored_ambiguity |
+                                 // nric_contradiction | crm_ambiguity | continuity_reassignment
+  case_key: null,                 // sha1 deduplication key (unique); recurrence bumps
+                                 // occurrence_count/last_seen_at without reopening
+  occurrence_count: 1,
+  last_seen_at: datetime(),
   priority: 100,
   queue_state: 'open',            // open | assigned | deferred | resolved | cancelled |
                                  // expired | dismissed | superseded_by_policy
@@ -629,7 +644,7 @@ this as a closed enum.
 | `IDENTIFIED_BY` | Person | Identifier | `is_verified`, `verification_method`, `is_active`, `quality_flag`, `first_seen_at`, `last_seen_at`, `last_confirmed_at`, `source_system_key`, `source_record_pk` | Links a person to an identity signal. Rich properties track verification, aging, and provenance. |
 | `LIVES_AT` | Person | Address | `is_active`, `is_verified`, `source_system_key`, `source_record_pk`, `first_seen_at`, `last_seen_at`, `last_confirmed_at`, `quality_flag` | Links a person to a normalized address. Same aging and verification model as `IDENTIFIED_BY`. |
 | `LINKED_TO` | SourceRecord | Person | `linked_at`, `is_active` (legacy rows default active) | Associates an ingested record with its resolved person. Re-attribution reactivates an inactive link. |
-| `HAS_IDENTIFIER` | Person / Profile | Identifier | `link_id`, `assertion_count`, `source_count`, `verified_count`, `max_tier`, `first_seen_at`, `last_seen_at`, `last_confirmed_at`, `score`, `exclusivity`, `rank_score`, `golden_rank`, `basis`, `status`, `policy_version`, `computed_at` | Derived C3 evidence link. `link_id` is the deterministic SHA1 of `participant_id|identifier_id`; weights are fixed provisional placeholders until C4. |
+| `HAS_IDENTIFIER` | Person / Profile | Identifier | `link_id`, `assertion_count`, `source_count`, `verified_count`, `max_tier`, `first_seen_at`, `last_seen_at`, `last_confirmed_at`, `score`, `exclusivity`, `rank_score`, `golden_rank`, `basis`, `status`, `policy_version`, `computed_at` | Derived C3 evidence link. `link_id` is the deterministic SHA1 of `participant_id|identifier_id`; C4 writes real weights (`policy_version='c4-w1'`, 6-dp `score`/`exclusivity`/`rank_score`, rank owned by the golden stage). |
 | `IN_PROFILE` | SourceRecord | Profile | — | Profile membership, retained as lineage after promotion. |
 | `ANCHORED_BY` | Person | Identifier | — | Person is anchored by a gate-approved NRIC digest (`Person.nric_key`). |
 | `PROMOTED_TO` | Profile | Person | — | One-way result of NRIC promotion. |
@@ -908,6 +923,9 @@ CREATE CONSTRAINT match_decision_id_unique IF NOT EXISTS
 
 CREATE CONSTRAINT review_case_id_unique IF NOT EXISTS
   FOR (rc:ReviewCase) REQUIRE rc.review_case_id IS UNIQUE;
+
+CREATE CONSTRAINT review_case_case_key_unique IF NOT EXISTS
+  FOR (rc:ReviewCase) REQUIRE rc.case_key IS UNIQUE;
 
 CREATE CONSTRAINT merge_event_id_unique IF NOT EXISTS
   FOR (me:MergeEvent) REQUIRE me.merge_event_id IS UNIQUE;

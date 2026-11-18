@@ -35,6 +35,7 @@ import { useSetLoading } from "@/lib/LoadingContext";
 import { personDisplayName, sourceRecordReference } from "@/lib/ui-display";
 import ActionToast from "@/components/ActionToast";
 import CrmMetricsPanel from "@/components/CrmMetricsPanel";
+import { GoldenTopList } from "@/components/GoldenTopList";
 import MergeOverlay from "@/components/MergeOverlay";
 import PersonGraphDialog from "@/components/PersonGraphDialog";
 import ProfileAnalysisPanel from "@/components/ProfileAnalysisPanel";
@@ -406,6 +407,8 @@ function PersonSidebar({ person, detailData, personId, onOverride, onGraphOpen }
               </div>
             ))}
           </div>
+          <GoldenTopList label="Phone" entries={(person.golden_top?.phone ?? []).filter((entry) => entry.rank > 1)} />
+          <GoldenTopList label="Email" entries={(person.golden_top?.email ?? []).filter((entry) => entry.rank > 1)} />
         </div>
 
         <div className={styles.profileHeroCompleteness} aria-label={`Profile completeness ${completeness}%`}>

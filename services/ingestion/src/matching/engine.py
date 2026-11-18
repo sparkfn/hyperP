@@ -18,10 +18,17 @@ from neo4j import ManagedTransaction
 from src.matching.deterministic import evaluate_deterministic, prefetch_no_match_lock_owners
 from src.matching.heuristic import evaluate_heuristic
 from src.matching.snapshot import CandidateSnapshot
+from src.matching.thresholds import (
+    REASSIGNMENT_AUTO_THRESHOLD,
+    REASSIGNMENT_MIN_MARGIN,
+    V2_ATTACH_MARGIN,
+    V2_POLICY_VERSION,
+)
 from src.models import (
     CandidateResult,
     EngineType,
     JsonValue,
+    MatchAction,
     MatchDecision,
     MatchResult,
     NormalizedAddress,
@@ -31,9 +38,6 @@ from src.models import (
 )
 
 logger = logging.getLogger(__name__)
-
-REASSIGNMENT_AUTO_THRESHOLD: float = 0.90
-REASSIGNMENT_MIN_MARGIN: float = 0.10
 
 
 def ambiguous_prior_owners_result(prior_person_ids: tuple[str, ...]) -> MatchResult:
@@ -128,7 +132,10 @@ class MatchEngine:
             if person_id == continuity_person_id:
                 continuity_result = per_candidate
 
-        result = self._pick_best(collected)
+        if v2_evidence:
+            result = self._pick_best_v2(collected)
+        else:
+            result = self._pick_best(collected)
         if continuity_person_id is None:
             return result
         if result.additional_linked_person_ids:
@@ -269,6 +276,7 @@ class MatchEngine:
             record_type,
             phone_fanout_cache=phone_fanout_cache,
             snapshot=snapshots.get(candidate_person_id) if snapshots is not None else None,
+            weighted=v2_evidence,
         )
         if heur.decision != MatchDecision.NO_MATCH:
             return heur
@@ -315,6 +323,76 @@ class MatchEngine:
             reasons=["No candidate scored above the review threshold"],
             engine_type=EngineType.HEURISTIC,
         )
+
+    @staticmethod
+    def _pick_best_v2(collected: list[MatchResult]) -> MatchResult:
+        """Margin gate before merge resolution (v2 only).
+
+        Ambiguous top-two heuristic attaches emit no MERGE: anchored ambiguity
+        opens one REVIEW, otherwise the record parks. A deterministic MERGE
+        anywhere in the collected results exempts the gate; otherwise
+        ``_resolve_merges`` runs unchanged (link-to-all preserved).
+        """
+        if not collected:
+            return MatchResult(
+                decision=MatchDecision.NO_MATCH,
+                confidence=0.0,
+                reasons=["Candidates exist but no engine produced a confident match"],
+                engine_type=EngineType.HEURISTIC,
+            )
+        merges = [r for r in collected if r.decision is MatchDecision.MERGE]
+        deterministic_merge = any(r.engine_type is not EngineType.HEURISTIC for r in merges)
+        attaches = sorted(
+            (
+                r
+                for r in merges
+                if r.engine_type is EngineType.HEURISTIC and r.action is MatchAction.ATTACH
+            ),
+            key=lambda r: (-r.confidence, r.matched_person_id or ""),
+        )
+        if (
+            not deterministic_merge
+            and len(attaches) >= 2
+            and attaches[0].confidence - attaches[1].confidence < V2_ATTACH_MARGIN
+        ):
+            within = [
+                r for r in attaches if attaches[0].confidence - r.confidence < V2_ATTACH_MARGIN
+            ]
+            anchored = sorted(
+                r.matched_person_id
+                for r in within
+                if r.feature_snapshot.get("anchored") is True and r.matched_person_id is not None
+            )
+            if len(anchored) >= 2:
+                primary = within[0]
+                return MatchResult(
+                    decision=MatchDecision.REVIEW,
+                    confidence=primary.confidence,
+                    reasons=[
+                        f"Anchored ambiguity among {len(anchored)} persons "
+                        f"within the attach margin: {', '.join(anchored)}"
+                    ],
+                    engine_type=EngineType.HEURISTIC,
+                    matched_person_id=primary.matched_person_id,
+                    review_candidate_person_ids=anchored,
+                    review_reason="anchored_ambiguity",
+                    action=MatchAction.REVIEW,
+                    policy_version=V2_POLICY_VERSION,
+                )
+            return MatchResult(
+                decision=MatchDecision.NO_MATCH,
+                confidence=within[0].confidence,
+                reasons=[
+                    "Top attach candidates within the attach margin "
+                    "without anchored ambiguity; parking"
+                ],
+                engine_type=EngineType.HEURISTIC,
+                action=MatchAction.PARK,
+                policy_version=V2_POLICY_VERSION,
+            )
+        if merges:
+            return MatchEngine._resolve_merges(merges)
+        return max(collected, key=lambda r: (r.confidence, r.matched_person_id or ""))
 
     @staticmethod
     def _resolve_merges(merges: list[MatchResult]) -> MatchResult:

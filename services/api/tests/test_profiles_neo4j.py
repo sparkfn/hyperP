@@ -8,6 +8,7 @@ removes this test run's data.
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 from collections.abc import Iterator
 from dataclasses import dataclass
@@ -18,9 +19,15 @@ from uuid import uuid4
 import pytest
 from neo4j import Driver, GraphDatabase
 from neo4j.exceptions import ServiceUnavailable
-from src.graph.mappers import map_person_identifier
-from src.graph.mappers_profiles import map_profile, map_profile_detail
-from src.graph.queries import COUNT_PROFILES, GET_PROFILE, LIST_PROFILES
+from src.graph.mappers import map_person, map_person_identifier
+from src.graph.mappers_profiles import map_profile, map_profile_detail, map_unlinked_profile
+from src.graph.queries import (
+    COUNT_PROFILES,
+    COUNT_UNLINKED_PROFILES,
+    GET_PROFILE,
+    LIST_PROFILES,
+    LIST_UNLINKED_PROFILES,
+)
 from src.graph.queries.persons import (
     COUNT_PERSON_IDENTIFIERS,
     FIND_PERSON_BY_IDENTIFIER,
@@ -367,3 +374,152 @@ def test_find_person_by_identifier_counts_has_only_connections(
 
     connection_counts = {row["person"]["person_id"]: row["connection_count"] for row in rows}
     assert connection_counts == {left_id: 1, right_id: 1}
+
+
+def _seed_unlinked_worklist(graph: _TestGraph) -> None:
+    run_id = graph.run_id
+    with graph.driver.session() as session:
+        session.run(
+            """
+            CREATE (rich:Profile {
+              profile_id: 'profile-rich-' + $run_id, status: 'open', evidence_version: 1,
+              materialized_at: datetime('2026-01-01T00:00:00Z'),
+              _person_identifiers_test_run: $run_id
+            })
+            CREATE (plain:Profile {
+              profile_id: 'profile-plain-' + $run_id, status: 'open', evidence_version: 1,
+              materialized_at: datetime('2026-01-02T00:00:00Z'),
+              _person_identifiers_test_run: $run_id
+            })
+            CREATE (closed:Profile {
+              profile_id: 'profile-closed-' + $run_id, status: 'promoted', evidence_version: 1,
+              materialized_at: datetime('2026-01-03T00:00:00Z'),
+              _person_identifiers_test_run: $run_id
+            })
+            CREATE (deal:SourceRecord {
+              source_record_pk: 'sr-deal-' + $run_id, record_type: 'crm_deal',
+              link_status: 'profile', lifecycle_status: 'parked',
+              _person_identifiers_test_run: $run_id
+            })-[:IN_PROFILE]->(rich)
+            CREATE (identity:SourceRecord {
+              source_record_pk: 'sr-identity-' + $run_id, record_type: 'identity',
+              link_status: 'profile', lifecycle_status: 'parked',
+              _person_identifiers_test_run: $run_id
+            })-[:IN_PROFILE]->(rich)
+            CREATE (solo:SourceRecord {
+              source_record_pk: 'sr-solo-' + $run_id, record_type: 'identity',
+              link_status: 'profile', lifecycle_status: 'parked',
+              _person_identifiers_test_run: $run_id
+            })-[:IN_PROFILE]->(plain)
+            CREATE (old_deal:SourceRecord {
+              source_record_pk: 'sr-old-deal-' + $run_id, record_type: 'crm_deal',
+              link_status: 'profile', lifecycle_status: 'parked',
+              _person_identifiers_test_run: $run_id
+            })-[:IN_PROFILE]->(closed)
+            """,
+            run_id=run_id,
+        ).consume()
+
+
+def test_list_unlinked_profiles_orders_by_value_score(neo4j_driver: _TestGraph) -> None:
+    _seed_unlinked_worklist(neo4j_driver)
+    run_id = neo4j_driver.run_id
+
+    rows = _rows(neo4j_driver, LIST_UNLINKED_PROFILES, skip=0, limit=20)
+    profiles = [map_unlinked_profile(row) for row in rows]
+
+    assert [profile.profile_id for profile in profiles] == [
+        f"profile-rich-{run_id}",
+        f"profile-plain-{run_id}",
+    ]
+    assert [profile.value_score for profile in profiles] == [1, 0]
+    assert [profile.record_count for profile in profiles] == [2, 1]
+    total = _rows(neo4j_driver, COUNT_UNLINKED_PROFILES)[0]["total"]
+    assert total == 2
+
+    first_page = _rows(neo4j_driver, LIST_UNLINKED_PROFILES, skip=0, limit=1)
+    assert [row["profile"]["profile_id"] for row in first_page] == [f"profile-rich-{run_id}"]
+
+
+def _seed_golden_person(graph: _TestGraph, golden_json: str, golden_conflicts: str) -> str:
+    run_id = graph.run_id
+    person_id = f"person-golden-{run_id}"
+    with graph.driver.session() as session:
+        session.run(
+            """
+            CREATE (person:Person {
+              person_id: $person_id, status: 'active',
+              preferred_phone: '+6590000001', preferred_email: 'user@example.com',
+              golden_json: $golden_json, golden_conflicts: $golden_conflicts,
+              _person_identifiers_test_run: $run_id
+            })
+            """,
+            person_id=person_id,
+            golden_json=golden_json,
+            golden_conflicts=golden_conflicts,
+            run_id=run_id,
+        ).consume()
+    return person_id
+
+
+def _golden_json() -> str:
+    return json.dumps(
+        {
+            "email": [
+                {
+                    "value": "user@example.com",
+                    "rank": 1,
+                    "score": 0.9,
+                    "verified": True,
+                    "last_confirmed_at": "2026-02-01T00:00:00Z",
+                    "source_count": 2,
+                }
+            ],
+            "phone": [
+                {
+                    "value": "+6590000001",
+                    "rank": 1,
+                    "score": 0.95,
+                    "verified": False,
+                    "last_confirmed_at": None,
+                    "source_count": 3,
+                },
+                {
+                    "value": "+6590000002",
+                    "rank": 2,
+                    "score": 0.6,
+                    "verified": True,
+                    "last_confirmed_at": "2026-03-01T00:00:00Z",
+                    "source_count": 1,
+                },
+            ],
+        },
+        sort_keys=True,
+    )
+
+
+def test_person_detail_golden_top_matches_rank_one_preferred_values(
+    neo4j_driver: _TestGraph,
+) -> None:
+    person_id = _seed_golden_person(neo4j_driver, _golden_json(), "[]")
+
+    rows = _rows(neo4j_driver, GET_PERSON_BY_ID, person_id=person_id)
+    person = map_person(rows[0])
+
+    assert person.golden_top is not None
+    assert person.golden_top.phone[0].value == person.preferred_phone == "+6590000001"
+    assert person.golden_top.phone[1].value == "+6590000002"
+    assert person.golden_top.phone[1].rank == 2
+    assert person.golden_top.email[0].value == person.preferred_email == "user@example.com"
+    assert person.golden_top.conflicts == []
+
+
+def test_person_detail_golden_top_is_none_when_json_is_malformed(
+    neo4j_driver: _TestGraph,
+) -> None:
+    person_id = _seed_golden_person(neo4j_driver, "{not-json", "[]")
+
+    rows = _rows(neo4j_driver, GET_PERSON_BY_ID, person_id=person_id)
+    person = map_person(rows[0])
+
+    assert person.golden_top is None

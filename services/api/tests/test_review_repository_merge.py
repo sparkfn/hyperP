@@ -296,8 +296,11 @@ async def test_review_merge_uses_requested_survivor_person() -> None:
         APPLY_PERSON_LIST_SUMMARY_DELTAS,
     ]
     # The review merge re-derives the survivor's HAS projection and releases the
-    # absorbed Person's before the golden recompute.
+    # absorbed Person's before the golden recompute. The survivor recompute
+    # re-reads its evidence after the participant-count refresh (same pass),
+    # so its FETCH fires twice.
     assert tx.events == [
+        "has_recompute:person-b",
         "has_recompute:person-b",
         "has_recompute:person-b",
         "has_recompute:person-a",

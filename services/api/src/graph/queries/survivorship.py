@@ -39,14 +39,29 @@ LIMIT 1
 """
 
 GET_BEST_IDENTIFIER = """
-MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY]->(id:Identifier {identifier_type: $identifier_type})
-WHERE coalesce(rel.is_active, true) = true
-RETURN id.normalized_value AS normalized_value,
-       id.nric_masked AS nric_masked,
-       rel.is_verified AS is_verified,
-       rel.last_confirmed_at AS last_confirmed_at
-ORDER BY rel.is_verified DESC, rel.last_confirmed_at DESC
-LIMIT 1
+MATCH (p:Person {person_id: $person_id})
+CALL {
+  WITH p
+  OPTIONAL MATCH (p)-[has:HAS_IDENTIFIER {status: 'active'}]->(id:Identifier {identifier_type: $identifier_type})
+  WITH id, has
+  ORDER BY coalesce(has.golden_rank, 999), has.rank_score DESC, has.last_confirmed_at DESC
+  LIMIT 1
+  RETURN id AS best_id
+}
+CALL {
+  WITH p, best_id
+  OPTIONAL MATCH (p)-[rel:IDENTIFIED_BY]->(id:Identifier {identifier_type: $identifier_type})
+  WHERE coalesce(rel.is_active, true) = true
+    AND (best_id IS NULL OR NOT EXISTS { MATCH (p)-[:HAS_IDENTIFIER {status: 'active'}]->(id) })
+  WITH id, rel
+  ORDER BY rel.is_verified DESC, rel.last_confirmed_at DESC
+  LIMIT 1
+  RETURN id AS legacy_id
+}
+WITH coalesce(best_id, legacy_id) AS best
+WHERE best IS NOT NULL
+RETURN best.normalized_value AS normalized_value,
+       best.nric_masked AS nric_masked
 """
 
 UPDATE_GOLDEN_PROFILE = """

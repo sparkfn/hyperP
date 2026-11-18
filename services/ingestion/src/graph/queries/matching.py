@@ -84,14 +84,6 @@ WHERE coalesce(rel.is_active, true) = true
 RETURN count(DISTINCT p) AS fanout
 """
 
-CHECK_NO_MATCH_LOCK = """
-MATCH (a:Person {person_id: $left_person_id})
-      -[lock:NO_MATCH_LOCK]-
-      (b:Person {person_id: $right_person_id})
-WHERE lock.expires_at IS NULL OR lock.expires_at > datetime()
-RETURN count(lock) > 0 AS is_locked
-"""
-
 # --- MatchDecision persistence --------------------------------------------
 
 CREATE_MATCH_DECISION = """
@@ -161,6 +153,40 @@ MATCH (md:MatchDecision {match_decision_id: $match_decision_id})
 SET md.review_suppressed = true,
     md.suppressed_reason = $suppressed_reason
 RETURN md.match_decision_id AS match_decision_id
+"""
+
+#: Keyed ReviewCase creation for the v2 exception-only taxonomy (Q6): one case
+#: per ``case_key`` across records. On create it sets the usual case fields;
+#: on match it bumps ``occurrence_count``/``last_seen_at`` even when resolved,
+#: leaves ``queue_state`` untouched, returns the existing id, and adds no
+#: second ``FOR_DECISION`` edge.
+CREATE_REVIEW_CASE_BY_KEY = """
+MERGE (rc:ReviewCase {case_key: $case_key})
+ON CREATE SET
+    rc.review_case_id = randomUUID(),
+    rc.reason_code = $reason_code,
+    rc.priority = $priority,
+    rc.queue_state = 'open',
+    rc.assigned_to = null,
+    rc.follow_up_at = null,
+    rc.sla_due_at = datetime($sla_due_at),
+    rc.resolution = null,
+    rc.resolved_at = null,
+    rc.actions = [],
+    rc.occurrence_count = 1,
+    rc.last_seen_at = datetime(),
+    rc.created_at = datetime(),
+    rc.updated_at = datetime()
+ON MATCH SET
+    rc.occurrence_count = coalesce(rc.occurrence_count, 0) + 1,
+    rc.last_seen_at = datetime(),
+    rc.updated_at = datetime()
+WITH rc
+MATCH (md:MatchDecision {match_decision_id: $match_decision_id})
+FOREACH (_ IN CASE WHEN NOT EXISTS { (rc)-[:FOR_DECISION]->() } THEN [1] ELSE [] END |
+    CREATE (rc)-[:FOR_DECISION]->(md)
+)
+RETURN rc.review_case_id AS review_case_id
 """
 
 
@@ -234,7 +260,11 @@ CALL {
         normalized_value: identifier.normalized_value,
         is_verified: coalesce(link.verified_count, 0) > 0,
         last_confirmed_at: link.last_confirmed_at,
-        is_system_sourced: is_system_sourced
+        is_system_sourced: is_system_sourced,
+        link_weight: CASE
+            WHEN link.policy_version STARTS WITH 'c4-' THEN link.score
+            ELSE null END,
+        participant_count: identifier.participant_count
     } END) AS has_identifiers
 }
 CALL {
@@ -255,7 +285,9 @@ CALL {
         normalized_value: identifier.normalized_value,
         is_verified: is_verified,
         last_confirmed_at: last_confirmed_at,
-        is_system_sourced: is_system_sourced
+        is_system_sourced: is_system_sourced,
+        link_weight: null,
+        participant_count: null
     } END) AS legacy_identifiers
 }
 CALL {
@@ -278,6 +310,7 @@ CALL {
 }
 RETURN candidate.input_index AS input_index,
        candidate.person_id AS candidate_person_id,
+       person.nric_key IS NOT NULL AS anchored,
        has_identifiers,
        legacy_identifiers,
        facts,

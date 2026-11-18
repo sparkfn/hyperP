@@ -784,6 +784,16 @@ Supported expansions:
 }
 ```
 
+`Person` views also return `golden_top`: the top-3 golden identifier snapshot
+parsed from `golden_json`/`golden_conflicts` — at most 3 values per type for
+`phone`, `email`, `nric`, each with `value`, `rank`, `score`, `verified`,
+`last_confirmed_at`, and `source_count`, plus a `conflicts` array of
+single-valued-type conflicts and unresolved-pin entries. Rank 1 equals the
+person's `preferred_*`; NRIC values arrive masked and stay masked. The block
+is null when the person has no golden state or the stored JSON is malformed,
+and it is always nulled on the public share-link surface so runner-up phones
+and emails never leak unauthenticated.
+
 ## Profiles (derived, unverified)
 
 C3 Profiles are derived, unverified evidence clusters built from immutable
@@ -816,9 +826,24 @@ profile-attributed evidence normally has `lifecycle_status: "parked"`) and
 `404 profile_not_found`.
 
 Identifier rows reuse the person identifier shape and add optional `score` and
-`golden_rank`. `score` is a provisional C3 placeholder and must not be presented
-as confidence; C4 owns the scoring formula. `golden_rank` stays null until C4.
+`golden_rank`. `score` is the C4 link weight (noisy-OR of assertion strengths,
+dormant 0.24 candidate-only cap) and must not be presented as confidence;
+`golden_rank` is assigned by the golden stage (1..n for display types, null
+otherwise) and stays null on changed links until the next golden stage.
 Legacy `IDENTIFIED_BY`-only projections keep both fields null.
+
+### GET /v1/profiles/unlinked
+
+Read-only worklist of open Profiles without an NRIC anchor, for reviewers
+looking for the next `crm_contact_id` to verify. Rows are `Profile` plus
+`value_score` (the number of member SourceRecords of type `crm_deal`; `sales`
+is not counted because sales records resolve straight to Persons and never
+become Profile members). Ordering is `value_score` DESC, `record_count` DESC,
+`profile_id`. Standard cursor/limit pagination with `meta.total_count`.
+Declared before `/{profile_id}` so the literal path is never captured as an
+id. Requires `persons:read`; absent from the OAuth2 machine mount and the
+public surface. There is no write path — "attach NRIC" deep-links to the
+existing Profile detail page.
 
 ### Authorization
 
@@ -1584,11 +1609,14 @@ created as usual. Decisions from other engines are never parked.
   `email_near_match`, `weak_signal_combination` — the weak signals above
 - `weak_signal` — telemetry roll-up for a created case whose reasons were all
   weak-signal
+- `anchored_ambiguity`
+- `nric_contradiction`
 - `crm_ambiguity`
 - `continuity_reassignment`
 - `dob_conflict`, `dob_match`
 - `name_mismatch`, `name_similarity`
-- `shared_identifier_bridge` — a person-pair case opened by a shared identifier
+- `shared_identifier_bridge` — legacy: a person-pair case opened by a shared
+  identifier (pair auditing is retired in v2)
 - `other`
 
 `ReviewActionReasonCode` classifies why a reviewer closed or deferred a case:

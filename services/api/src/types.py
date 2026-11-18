@@ -116,6 +116,8 @@ class ReviewReasonCode(StrEnum):
     PHONE_NEAR_MATCH = "phone_near_match"
     EMAIL_NEAR_MATCH = "email_near_match"
     WEAK_SIGNAL_COMBINATION = "weak_signal_combination"
+    ANCHORED_AMBIGUITY = "anchored_ambiguity"
+    NRIC_CONTRADICTION = "nric_contradiction"
     CRM_AMBIGUITY = "crm_ambiguity"
     CONTINUITY_REASSIGNMENT = "continuity_reassignment"
     DOB_CONFLICT = "dob_conflict"
@@ -224,6 +226,34 @@ class VehicleSummary(BaseModel):
     observed_at: str | None = None
 
 
+class GoldenTopValue(BaseModel):
+    """One ranked golden identifier value (at most 3 per type in a block)."""
+
+    value: str
+    rank: int = 1
+    score: float = 0.0
+    verified: bool = False
+    last_confirmed_at: str | None = None
+    source_count: int = 0
+
+
+class GoldenTopConflict(BaseModel):
+    """A single-valued type with more than one distinct rankable value."""
+
+    type: str
+    reason: str
+    values: list[str | None] = Field(default_factory=list)
+
+
+class GoldenTopBlock(BaseModel):
+    """Top-3 golden identifier snapshot parsed from golden_json/conflicts."""
+
+    phone: list[GoldenTopValue] = Field(default_factory=list)
+    email: list[GoldenTopValue] = Field(default_factory=list)
+    nric: list[GoldenTopValue] = Field(default_factory=list)
+    conflicts: list[GoldenTopConflict | str] = Field(default_factory=list)
+
+
 class Person(BaseModel):
     person_id: str
     status: PersonStatus
@@ -239,6 +269,7 @@ class Person(BaseModel):
     profile_completeness_score: float = 0.0
     golden_profile_computed_at: str | None = None
     golden_profile_version: str | None = None
+    golden_top: GoldenTopBlock | None = None
     source_record_count: int = 0
     connection_count: int = 0
     lifetime_value: float | None = None
@@ -787,3 +818,9 @@ class ProfileDetail(Profile):
 
     source_records: list[SourceRecord] = Field(default_factory=list)
     identifiers: list[PersonIdentifier] = Field(default_factory=list)
+
+
+class UnlinkedProfile(Profile):
+    """v2 presentation row for the unlinked worklist, ordered by value_score."""
+
+    value_score: int = 0

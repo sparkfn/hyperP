@@ -22,6 +22,7 @@ class CandidateSnapshot:
         "idents",
         "facts",
         "addrs",
+        "anchored",
         "_phones_by_value",
         "_emails_by_value",
         "_phones",
@@ -36,10 +37,12 @@ class CandidateSnapshot:
         idents: list[RecordDict],
         facts: list[RecordDict],
         addrs: list[RecordDict],
+        anchored: bool = False,
     ) -> None:
         self.idents = idents
         self.facts = facts
         self.addrs = addrs
+        self.anchored = anchored
         self._phones_by_value: dict[str, RecordDict] | None = None
         self._emails_by_value: dict[str, RecordDict] | None = None
         self._phones: list[RecordDict] | None = None
@@ -154,6 +157,7 @@ def fetch_candidate_snapshots(
             idents=_dedupe_identifiers(has_identifiers, legacy_identifiers),
             facts=_record_dicts(row["facts"]),
             addrs=_record_dicts(row["addresses"]),
+            anchored=row.get("anchored") is True,
         )
     return snapshots
 

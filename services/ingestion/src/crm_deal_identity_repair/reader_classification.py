@@ -177,8 +177,6 @@ ingestion/graph/queries/matching.py:FIND_CANDIDATES_BY_ADDRESSES_BATCH
 ingestion/graph/queries/matching.py:FIND_CANDIDATES_BY_IDENTIFIER
 ingestion/graph/queries/matching.py:FIND_CANDIDATES_BY_IDENTIFIERS_BATCH
 ingestion/graph/queries/nric_metrics.py:FETCH_ACTIVE_PERSON_NRIC_ROWS
-ingestion/graph/queries/person_pairs.py:FIND_PERSONS_SHARING_IDENTIFIER
-ingestion/graph/queries/person_pairs.py:FIND_PERSONS_SHARING_IDENTIFIERS_BATCH
 ingestion/graph/queries/identity_links.py:FETCH_PERSON_HOLDER_EVIDENCE
 ingestion/graph/queries/persons.py:FETCH_PERSON_ADDRESSES
 ingestion/graph/queries/persons.py:FETCH_PERSON_FACTS
@@ -187,6 +185,7 @@ ingestion/graph/queries/persons.py:FETCH_PERSON_IDENTIFIERS_V2
 ingestion/graph/queries/persons.py:FETCH_PERSON_MATCH_ADDRESSES
 ingestion/graph/queries/persons.py:FETCH_PERSON_MATCH_FACTS
 ingestion/graph/queries/persons.py:FETCH_PERSON_MATCH_IDENTIFIERS
+ingestion/graph/queries/persons.py:FETCH_PERSON_TOP_LINKS
 ingestion/graph/queries/pair_audit_recalc.py:READ_PAIR_AUDIT_BRIDGE
 ingestion/graph/queries/persons.py:FETCH_ACTIVE_PERSON_AUTHORITY_WITH_OVERRIDES
 ingestion/graph/queries/profile_analysis_dirty.py:FIND_PROFILE_ANALYSIS_MERGE_AFFECTED_PERSON_IDS

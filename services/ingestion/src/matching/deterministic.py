@@ -14,6 +14,7 @@ import logging
 from neo4j import ManagedTransaction
 
 from src.graph import queries
+from src.matching.thresholds import V2_POLICY_VERSION
 from src.models import (
     SYSTEM_FAMILY,
     EngineType,
@@ -200,10 +201,12 @@ def _check_no_match_lock(
     owner_person_id = owners.get(candidate_person_id)
     if owner_person_id is None:
         return None
-    return _no_match_lock_result(owner_person_id, candidate_person_id)
+    return _no_match_lock_result(owner_person_id, candidate_person_id, v2_evidence=v2_evidence)
 
 
-def _no_match_lock_result(owner_person_id: str, candidate_person_id: str) -> MatchResult:
+def _no_match_lock_result(
+    owner_person_id: str, candidate_person_id: str, *, v2_evidence: bool = False
+) -> MatchResult:
     logger.info(
         "NO_MATCH_LOCK between %s and candidate %s - hard no-match",
         owner_person_id,
@@ -218,6 +221,7 @@ def _no_match_lock_result(owner_person_id: str, candidate_person_id: str) -> Mat
         ],
         engine_type=EngineType.DETERMINISTIC,
         matched_person_id=None,
+        policy_version=V2_POLICY_VERSION if v2_evidence else "v0.1.0",
     )
 
 
@@ -274,6 +278,7 @@ def _check_government_id(
                 reasons=["Exact government ID hash match"],
                 engine_type=EngineType.DETERMINISTIC,
                 matched_person_id=candidate_person_id,
+                policy_version=V2_POLICY_VERSION if v2_evidence else "v0.1.0",
             )
 
         if tx.run(
@@ -291,6 +296,7 @@ def _check_government_id(
                 reasons=["Conflicting government ID hash — hard no-match"],
                 engine_type=EngineType.DETERMINISTIC,
                 matched_person_id=None,
+                policy_version=V2_POLICY_VERSION if v2_evidence else "v0.1.0",
             )
     return None
 
@@ -330,5 +336,6 @@ def _check_trusted_id(
                 reasons=[f"Exact trusted {tid.identifier_type} match: {tid.normalized_value}"],
                 engine_type=EngineType.DETERMINISTIC,
                 matched_person_id=candidate_person_id,
+                policy_version=V2_POLICY_VERSION if v2_evidence else "v0.1.0",
             )
     return None

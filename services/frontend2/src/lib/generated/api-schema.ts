@@ -144,6 +144,30 @@ export interface paths {
         patch?: never;
         trace?: never;
     };
+    "/v1/profiles/unlinked": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List open profiles without an NRIC anchor
+         * @description Read-only worklist of open Profiles ordered by `value_score` (the
+         *     number of member SourceRecords of type `crm_deal`) DESC, `record_count`
+         *     DESC, `profile_id`. Paginated with the standard cursor/limit convention;
+         *     `meta.total_count` carries the exact open total. Requires `persons:read`;
+         *     absent from the OAuth2 machine mount.
+         */
+        get: operations["list_unlinked_profiles"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/v1/profiles/{profile_id}": {
         parameters: {
             query?: never;
@@ -154,7 +178,7 @@ export interface paths {
         /**
          * Get one derived profile
          * @description Read-only detail for one Profile: member source records, derived weighted
-         *     identifiers (`score` is a provisional C3 placeholder; C4 owns weights),
+         *     identifiers (C4 link weights; null for legacy-only projections),
          *     and the promoted Person id when the cluster has been anchored.
          */
         get: operations["get_profile"];
@@ -2106,6 +2130,8 @@ export interface components {
             profile_completeness_score: number;
             golden_profile_computed_at?: string | null;
             golden_profile_version?: string | null;
+            /** @description Top-3 golden identifier snapshot (phone/email/nric rank 1 equals the person's preferred_*; NRIC values stay masked). Null when the person has no golden state or the stored JSON is malformed; never present on the public share-link surface. */
+            golden_top?: components["schemas"]["GoldenTopBlock"] | null;
             /** @default 0 */
             source_record_count: number;
             /** @default 0 */
@@ -2207,7 +2233,7 @@ export interface components {
                 [key: string]: unknown;
             }[];
             source_records?: components["schemas"]["SourceRecord"][];
-            /** @description Provisional C3 placeholder weight. Not confidence; C4 owns the final scoring formula. Null for legacy-only identifier projections. */
+            /** @description C4 link weight (noisy-OR of assertion strengths with the dormant 0.24 candidate-only cap). Not confidence; null for legacy-only identifier projections. */
             score?: number | null;
             golden_rank?: number | null;
         };
@@ -2234,6 +2260,41 @@ export interface components {
         };
         ProfileDetailResponseEnvelope: {
             data: components["schemas"]["ProfileDetail"];
+            meta: components["schemas"]["Meta"];
+        };
+        GoldenTopValue: {
+            value: string;
+            /** @default 1 */
+            rank?: number;
+            /** @default 0 */
+            score?: number;
+            /** @default false */
+            verified?: boolean;
+            last_confirmed_at?: string | null;
+            /** @default 0 */
+            source_count?: number;
+        };
+        GoldenTopConflict: {
+            type: string;
+            reason: string;
+            /** @default [] */
+            values?: (string | null)[];
+        };
+        GoldenTopBlock: {
+            phone?: components["schemas"]["GoldenTopValue"][];
+            email?: components["schemas"]["GoldenTopValue"][];
+            nric?: components["schemas"]["GoldenTopValue"][];
+            conflicts?: (components["schemas"]["GoldenTopConflict"] | string)[];
+        };
+        UnlinkedProfile: components["schemas"]["Profile"] & {
+            /**
+             * @description Number of member SourceRecords of type `crm_deal`; the read-only worklist orders by value_score DESC, record_count DESC, profile_id.
+             * @default 0
+             */
+            value_score?: number;
+        };
+        UnlinkedProfileListResponseEnvelope: {
+            data: components["schemas"]["UnlinkedProfile"][];
             meta: components["schemas"]["Meta"];
         };
         PersonDetail: components["schemas"]["PersonSummary"] & {
@@ -3081,6 +3142,34 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ProfileListResponseEnvelope"];
+                };
+            };
+            400: components["responses"]["BadRequest"];
+            401: components["responses"]["Unauthorized"];
+            403: components["responses"]["Forbidden"];
+        };
+    };
+    list_unlinked_profiles: {
+        parameters: {
+            query?: {
+                cursor?: string;
+                limit?: number;
+            };
+            header?: {
+                "X-Request-Id"?: components["parameters"]["RequestId"];
+            };
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Unlinked profile page */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnlinkedProfileListResponseEnvelope"];
                 };
             };
             400: components["responses"]["BadRequest"];

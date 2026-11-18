@@ -11,7 +11,7 @@ from src.graph.converters import (
     to_str,
 )
 from src.graph.mappers import map_person_identifier, map_source_record_list
-from src.types import Profile, ProfileDetail
+from src.types import Profile, ProfileDetail, UnlinkedProfile
 
 
 def _as_dict(value: GraphValue) -> GraphRecord:
@@ -34,6 +34,12 @@ def _profile_fields(record: GraphRecord) -> Profile:
 def map_profile(record: GraphRecord) -> Profile:
     """Map one Profile list row."""
     return _profile_fields(record)
+
+
+def map_unlinked_profile(record: GraphRecord) -> UnlinkedProfile:
+    """Map one unlinked-worklist row with its CRM-deal value score."""
+    base = _profile_fields(record)
+    return UnlinkedProfile(**base.model_dump(), value_score=to_int(record.get("value_score")))
 
 
 def map_profile_detail(record: GraphRecord) -> ProfileDetail:

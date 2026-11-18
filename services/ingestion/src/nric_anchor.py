@@ -32,7 +32,7 @@ NricGateReason = Literal[
     "nric_contradiction",
 ]
 
-LinkDecisionKind = Literal["alias", "split"]
+LinkDecisionKind = Literal["alias", "split", "pin"]
 
 
 @dataclass(frozen=True)

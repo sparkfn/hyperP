@@ -12,7 +12,7 @@ from src.frontend_app import build_frontend_app
 from src.oauth2_app import build_oauth2_app
 from src.repositories.deps import get_profile_repo
 from src.repositories.protocols.profile import ProfileListFilters
-from src.types import PersonIdentifier, Profile, ProfileDetail, SourceRecord
+from src.types import PersonIdentifier, Profile, ProfileDetail, SourceRecord, UnlinkedProfile
 
 
 async def _active_user() -> AuthUser:
@@ -75,6 +75,7 @@ class _ProfileRepo:
         )
     )
     detail: ProfileDetail | None = field(default_factory=_profile_detail)
+    unlinked: list[UnlinkedProfile] = field(default_factory=list)
     calls: list[tuple[ProfileListFilters, int, int]] = field(default_factory=list)
 
     async def get_page(
@@ -90,6 +91,10 @@ class _ProfileRepo:
         if self.detail is None or self.detail.profile_id != profile_id:
             return None
         return self.detail
+
+    async def get_unlinked(self, skip: int, limit: int) -> tuple[list[UnlinkedProfile], int]:
+        self.calls.append((ProfileListFilters(q=None, status="unlinked"), skip, limit))
+        return self.unlinked, len(self.unlinked)
 
 
 def _client(repo: _ProfileRepo | None = None) -> tuple[TestClient, _ProfileRepo]:
@@ -160,6 +165,37 @@ def test_get_profile_returns_detail_and_404s_when_missing() -> None:
     assert missing.json()["error"]["code"] == "profile_not_found"
 
 
+def test_list_unlinked_profiles_returns_value_scored_rows() -> None:
+    repo = _ProfileRepo()
+    repo.unlinked = [
+        UnlinkedProfile(
+            profile_id="profile-high",
+            status="open",
+            evidence_version=1,
+            record_count=4,
+            identifier_count=1,
+            value_score=2,
+        ),
+        UnlinkedProfile(
+            profile_id="profile-low",
+            status="open",
+            evidence_version=1,
+            record_count=1,
+            identifier_count=1,
+            value_score=0,
+        ),
+    ]
+    client, _ = _client(repo)
+
+    response = client.get("/profiles/unlinked")
+
+    assert response.status_code == 200
+    body = response.json()
+    assert [row["profile_id"] for row in body["data"]] == ["profile-high", "profile-low"]
+    assert [row["value_score"] for row in body["data"]] == [2, 0]
+    assert body["meta"]["total_count"] == 2
+
+
 def test_profiles_surface_requires_authentication() -> None:
     response = TestClient(build_frontend_app()).get("/profiles")
 
@@ -169,6 +205,7 @@ def test_profiles_surface_requires_authentication() -> None:
 def test_profiles_operations_are_mounted_on_the_frontend_contract_only() -> None:
     frontend_paths = TestClient(build_app()).get("/app/v2/openapi.json").json()["paths"]
     assert frontend_paths["/profiles"]["get"]["operationId"] == "list_profiles"
+    assert frontend_paths["/profiles/unlinked"]["get"]["operationId"] == "list_unlinked_profiles"
     assert frontend_paths["/profiles/{profile_id}"]["get"]["operationId"] == "get_profile"
 
     oauth2_schema = TestClient(build_oauth2_app()).get("/openapi.json").json()
@@ -179,4 +216,5 @@ def test_profiles_operations_are_mounted_on_the_frontend_contract_only() -> None
         if isinstance(operation, dict) and "operationId" in operation
     }
     assert "list_profiles" not in oauth2_ids
+    assert "list_unlinked_profiles" not in oauth2_ids
     assert "get_profile" not in oauth2_ids
