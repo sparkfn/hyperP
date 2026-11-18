@@ -13,7 +13,12 @@ from src.exclusions import ExclusionContext
 from src.graph import queries as _queries
 from src.graph.queries.loyalty_points_migration import TARGET_LOYALTY_ORDER_SOURCES
 from src.matching.vehicle_heuristic import VEHICLE_MATCH_AUTO, VEHICLE_MATCH_REVIEW
-from src.models import JsonValue
+from src.models import (
+    JsonValue,
+    SourceLifecycleState,
+    SourceRecordLifecycleStatus,
+    SourceVersionState,
+)
 from src.pipeline_sales import (
     _build_non_vehicle_lines,
     _drain_one_pending_sale,
@@ -416,6 +421,87 @@ def test_propose_orchestration_skips_sale_missing_order() -> None:
     ):
         count = propose_vehicle_matches_for_pending_sales(client)
     assert count == 0
+
+
+# ---------------------------------------------------------------------------
+# GATE 1: stored sale NRICs are masked by serialize_raw_payload (default
+# IDENTITY_MODEL=v1). A masked value cannot be compared like-for-like with a
+# candidate Identifier, so it must not drive the Vehicle NRIC anti-match;
+# plaintext payloads stored before masking keep the legacy conflict check.
+# ---------------------------------------------------------------------------
+
+
+def _pending_state() -> SourceLifecycleState:
+    return SourceLifecycleState(
+        active=None,
+        pending=SourceVersionState(
+            source_record_pk="sr-1",
+            source_record_version=1,
+            record_hash="hash-1",
+            lifecycle_status=SourceRecordLifecycleStatus.PENDING_REVIEW,
+            linked_person_ids=(),
+        ),
+        next_version=2,
+    )
+
+
+def _pending_sale_row(customer_nric: str) -> dict[str, object]:
+    return {
+        "source_record_pk": "sr-1",
+        "source_system_key": "eko_phppos:sales",
+        "source_record_id": "sale-1",
+        "raw_payload": {
+            "order": {"source_order_id": "o-1"},
+            "customer_nric": customer_nric,
+            "customer_emails": ["a@b.com"],
+            "customer_phones": [],
+        },
+    }
+
+
+def test_propose_orchestration_plaintext_nric_still_blocks() -> None:
+    """A genuine plaintext conflict still records NO_MATCH and does not link."""
+    stored_nric = "S9999999Z"
+    tx = _Tx(
+        candidates=[_candidate(nric_blocked=True)],
+        pending_rows=[_pending_sale_row(stored_nric)],
+    )
+    client = _Client(tx, tx, tx)
+    with (
+        patch("src.pipeline_sales.load_locked_source_state", return_value=_pending_state()),
+        patch("src.pipeline_sales.persist_match_decision", return_value="md-x") as mock_persist,
+        patch("src.pipeline_sales.create_review_case_if_needed"),
+    ):
+        count = propose_vehicle_matches_for_pending_sales(client)
+
+    assert count == 1
+    candidate_calls = [k for q, k in tx.calls if q == _FIND_CANDIDATES_QUERY]
+    assert candidate_calls[0]["customer_nric"] == stored_nric
+    assert mock_persist.call_count == 1
+    assert mock_persist.call_args[0][1].decision.value == "no_match"
+    assert not any(q == _MARK_LINKED_QUERY for q, _ in tx.calls)
+
+
+def test_propose_orchestration_masked_stored_nric_skips_only_anti_match() -> None:
+    """A masked stored NRIC is not compared, so it cannot spuriously block/link-fail."""
+    tx = _Tx(
+        candidates=[_candidate(nric_blocked=False)],
+        pending_rows=[_pending_sale_row("S••••567D")],
+    )
+    client = _Client(tx, tx, tx)
+    with (
+        patch("src.pipeline_sales.load_locked_source_state", return_value=_pending_state()),
+        patch("src.pipeline_sales.persist_match_decision", return_value="md-1") as mock_persist,
+        patch("src.pipeline_sales.create_review_case_if_needed"),
+    ):
+        count = propose_vehicle_matches_for_pending_sales(client)
+
+    assert count == 1
+    candidate_calls = [k for q, k in tx.calls if q == _FIND_CANDIDATES_QUERY]
+    assert candidate_calls[0]["customer_nric"] is None
+    assert mock_persist.call_count == 1
+    assert mock_persist.call_args[0][1].decision.value == "merge"
+    assert any(q == _MARK_LINKED_QUERY for q, _ in tx.calls)
 
 
 # ---------------------------------------------------------------------------

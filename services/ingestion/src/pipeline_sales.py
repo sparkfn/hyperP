@@ -34,6 +34,7 @@ from src.models import (
     SourceRecordEnvelope,
 )
 from src.normalizers.clean import str_or_none
+from src.normalizers.nric import is_masked_nric
 from src.pipeline_writes import create_review_case_if_needed, persist_match_decision
 from src.profile_analysis_dirty import mark_profile_analysis_dirty
 from src.raw_payload import decode_raw_payload, scrub_nric_strings, serialize_raw_payload
@@ -1260,6 +1261,23 @@ def _propose_one_pending_sale(
     return True
 
 
+def _anti_match_nric(raw: object) -> str | None:
+    """Return the stored sale NRIC only when it is safe to compare.
+
+    ``serialize_raw_payload`` masks every persisted ``customer_nric``, so a
+    stored value is a display mask such as ``S••••567D`` rather than a value
+    that can equal an active candidate Identifier (a digest, or legacy
+    plaintext). Feeding the mask into the Vehicle candidate query flags every
+    NRIC-bearing candidate as conflicting and can persist a durable NRIC
+    NO_MATCH, so a masked value disables only this anti-match. Plaintext values
+    from payloads stored before masking keep the legacy comparison unchanged.
+    """
+    value = str_or_none(raw)
+    if value is None or is_masked_nric(value):
+        return None
+    return value
+
+
 def propose_vehicle_matches_for_pending_sales(
     client: Neo4jClient,
     *,
@@ -1349,7 +1367,7 @@ def propose_vehicle_matches_for_pending_sales(
         if not source_order_id:
             logger.warning("Skipping pending sale %s: source_order_id missing", pk)
             continue
-        customer_nric = str_or_none(raw_payload.get("customer_nric"))
+        customer_nric = _anti_match_nric(raw_payload.get("customer_nric"))
         customer_emails = _str_list(raw_payload.get("customer_emails"))
         customer_phones = _str_list(raw_payload.get("customer_phones"))
 

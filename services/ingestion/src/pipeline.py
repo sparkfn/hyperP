@@ -48,7 +48,12 @@ from src.identity_link_writes import (
     materialize_profile_for_record,
     recompute_participant_links,
 )
-from src.identity_links import IdentifierKey, identifier_key_row, identifier_key_tuple
+from src.identity_links import (
+    IdentifierKey,
+    IdentityLinkConflictError,
+    identifier_key_row,
+    identifier_key_tuple,
+)
 from src.identity_registry import identifier_policy
 from src.matching.deterministic import evaluate_deterministic, prefetch_no_match_lock_owners
 from src.matching.engine import MatchEngine, ambiguous_prior_owners_result
@@ -198,6 +203,12 @@ class _Staged:
     created: bool
 
 
+#: Bounded retries for the expected identity-link compare-and-swap conflict.
+#: The conflicting transaction is rolled back intact, so a fresh attempt reads
+#: the committed state; exhaustion re-raises instead of dropping the record.
+IDENTITY_LINK_CONFLICT_ATTEMPTS = 3
+
+
 class IngestPipeline:
     """Processes a single source record through the full ingestion flow.
 
@@ -280,7 +291,24 @@ class IngestPipeline:
             return result
 
         with self._client.session() as session:
-            return session.execute_write(_work)
+            for attempt in range(1, IDENTITY_LINK_CONFLICT_ATTEMPTS + 1):
+                try:
+                    return session.execute_write(_work)
+                except IdentityLinkConflictError:
+                    if attempt == IDENTITY_LINK_CONFLICT_ATTEMPTS:
+                        logger.exception(
+                            "Identity link conflict for record %s persisted after %d attempts",
+                            envelope.source_record_id,
+                            attempt,
+                        )
+                        raise
+                    logger.warning(
+                        "Identity link conflict for record %s; retrying (attempt %d/%d)",
+                        envelope.source_record_id,
+                        attempt,
+                        IDENTITY_LINK_CONFLICT_ATTEMPTS,
+                    )
+            raise AssertionError("identity-link conflict retry loop must return or raise")
 
     def _finalize_bitrix_unit(
         self,

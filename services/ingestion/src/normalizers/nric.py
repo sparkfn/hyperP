@@ -20,6 +20,7 @@ from src.normalizers.clean import strip_leading_x_markers
 
 _DIGEST_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 _NRIC_PATTERN = re.compile(r"^[STFG]\d{7}[A-Z]$")
+_MASK_CHARACTER = "•"
 
 _ST_LETTERS = "JZIHGFEDCBA"
 _FG_LETTERS = "XWUTRQPNMLK"
@@ -81,8 +82,17 @@ def mask_nric(canonical: str) -> str:
     (e.g. ``S••••567D``). Any other length is masked as 9 bullets (``•••••••••``).
     """
     if len(canonical) == 9:
-        return f"{canonical[0]}••••{canonical[5:]}"
-    return "•••••••••"
+        return f"{canonical[0]}{_MASK_CHARACTER * 4}{canonical[5:]}"
+    return _MASK_CHARACTER * 9
+
+
+def is_masked_nric(value: str) -> bool:
+    """Return True if ``value`` is a masked NRIC rather than a comparable value.
+
+    Masked values (``S••••567D`` or the all-bullet placeholder) are display-only
+    and cannot be compared against a canonical, hashed, or plaintext NRIC.
+    """
+    return _MASK_CHARACTER in value
 
 
 def masked_for(value: str | None, nric_masked: str | None) -> str | None:
