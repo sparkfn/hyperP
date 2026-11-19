@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from src.normalizers.nric import nric_checksum_valid
+from src.normalizers.nric import is_nric_shape, nric_checksum_valid
 
 
 def test_nric_checksum_valid_authoritative_fixtures() -> None:
@@ -39,3 +39,10 @@ def test_nric_checksum_placeholder_seven_identical_digits_fails() -> None:
     # S0000000J passes pure math (0 % 11 -> J), but fails placeholder check
     assert nric_checksum_valid("S0000000J") is False
     assert nric_checksum_valid("S1111111A") is False
+
+
+def test_is_nric_shape_matches_canonical_pattern() -> None:
+    digits = "1234567"
+    assert is_nric_shape(f"S{digits}A") is True
+    assert is_nric_shape(f"M{digits}A") is False
+    assert is_nric_shape(f"S{digits}") is False
