@@ -89,6 +89,11 @@ class SGGovernmentBankruptcyConnector(SourceConnector):
         for case in cases:
             case_id = _str_value(case, "id")
             if case_id is None:
+                self.record_skip(
+                    "missing_id",
+                    source_record_id=None,
+                    locator="cases#missing_id",
+                )
                 continue
             latest_event = events.get(case_id)
             document = documents.get(_str_value(latest_event, "source_document_id") or "")

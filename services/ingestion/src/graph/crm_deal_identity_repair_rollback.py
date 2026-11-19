@@ -36,6 +36,7 @@ from src.graph.crm_deal_identity_repair_rollback_state import (
     normalize_post_rollback_state,
     postcondition_history_matches,
 )
+from src.graph.person_list_summary import invalidate_person_list_summary
 from src.graph.queries.crm_deal_identity_repair_rollback import (
     LOCK_AND_ASSERT_ROLLBACK_DOMAIN_GUARD,
     LOCK_AND_READ_ROLLBACK_BUNDLE,
@@ -61,7 +62,16 @@ class CrmDealIdentityRepairRollbackRepository(RollbackLedgerMixin):
         self._failpoint = failpoint
 
     def commit_atomic_rollback(self, command: RepairRollbackCommand) -> RepairRollbackResult:
-        """Use one managed write callback for replay, guards, comparison, and mutation."""
+        """Use one managed write callback for replay, guards, comparison, and mutation.
+
+        The maintained Person-list summary is invalidated first, in its own
+        committed transaction: the rollback rewrites deal and Person state
+        without maintaining the counter, so the counter must not stay ready.
+        The invalidation happens before any replay or failure path and is
+        never followed by an automatic activation; an explicit backfill
+        republishes it.
+        """
+        invalidate_person_list_summary(self._client)
         return self._client.execute_write(lambda tx: self._commit(tx, command))
 
     def get_rollback_status(self, command: RepairRollbackCommand) -> RepairRollbackStatus:

@@ -74,6 +74,7 @@ MATCH (record:SourceRecord)-[:FROM_SOURCE]->(:SourceSystem {source_key: 'bitrix_
 WHERE record.identity_link_key IS NOT NULL
   AND record.source_entity_type IN ['deal', 'contact', 'lead', 'company']
   AND record.identity_link_key > $after_link_key
+  AND coalesce(record.lifecycle_status, '') <> 'parked'
 WITH record
 ORDER BY record.identity_link_key, toInteger(coalesce(record.source_record_version, '0')) DESC,
          record.source_record_pk DESC

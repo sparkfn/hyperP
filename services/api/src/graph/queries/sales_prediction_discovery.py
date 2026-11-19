@@ -5,7 +5,8 @@ from __future__ import annotations
 DISCOVERY_SOURCE_COVERAGE = """
 MATCH (source:SourceSystem)
 OPTIONAL MATCH (record:SourceRecord)-[:FROM_SOURCE]->(source)
-WHERE record.ingested_at IS NULL OR record.ingested_at <= datetime($report_cutoff_at)
+WHERE (record.ingested_at IS NULL OR record.ingested_at <= datetime($report_cutoff_at))
+  AND coalesce(record.lifecycle_status, 'active') <> 'parked'
 WITH source, record
 WHERE $entity_keys = [] OR record.entity_key IN $entity_keys
 RETURN source.source_key AS source_key,
@@ -39,6 +40,7 @@ MATCH (record:SourceRecord {
 })-[:FROM_SOURCE]->(source)
 WHERE record.ingested_at IS NOT NULL
   AND record.ingested_at <= datetime($report_cutoff_at)
+  AND coalesce(record.lifecycle_status, 'active') <> 'parked'
 OPTIONAL MATCH (record)-[link:LINKED_TO]->(person:Person)
 WHERE coalesce(link.is_active, true) = true
 OPTIONAL MATCH (history:SourceRecord {record_type: 'crm_history'})-[:CHILD_OF]->(record)
@@ -69,6 +71,7 @@ WHERE record.record_type IN ['conversation', 'call', 'crm_history']
   AND record.ingested_at IS NOT NULL
   AND record.ingested_at <= datetime($report_cutoff_at)
   AND ($entity_keys = [] OR record.entity_key IN $entity_keys)
+  AND coalesce(record.lifecycle_status, 'active') <> 'parked'
 RETURN coalesce(record.entity_key, '') AS entity_key,
        source.source_key AS source_key,
        record.record_type AS record_type,
@@ -92,6 +95,7 @@ WHERE record.observed_at IS NOT NULL
   AND record.ingested_at IS NOT NULL
   AND record.ingested_at <= datetime($report_cutoff_at)
   AND ($entity_keys = [] OR record.entity_key IN $entity_keys)
+  AND coalesce(record.lifecycle_status, 'active') <> 'parked'
 WITH record,
      duration.inSeconds(record.observed_at, record.ingested_at).seconds AS delay_seconds
 RETURN coalesce(record.entity_key, '') AS entity_key,

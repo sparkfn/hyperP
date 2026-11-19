@@ -23,6 +23,16 @@ platform-owned identity entity rather than a source-system record.
 The internal stable identifier for a canonical person. This should be the main
 identity key exposed to downstream systems.
 
+### Profile
+
+A derived, unverified evidence cluster: source records that share eligible
+identifiers but are not anchored by a gate-approved government ID. A Profile is
+not a Person — it has no golden profile, never participates in matching or
+merging, and is rebuildable from identity assertions. It is promoted one-way into
+a Person only when a gate-approved NRIC digest anchors it. `open` means unverified
+and awaiting promotion; `promoted` records the anchored Person; `retired` marks a
+duplicate cluster absorbed by a deterministic union.
+
 ### Source Record
 
 A raw or normalized record originating from one upstream system such as POS,

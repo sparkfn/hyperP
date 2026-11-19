@@ -10,6 +10,7 @@ import pytest
 from src.connectors.sggov.rental_flats_incremental import (
     SGGovernmentRentalFlatsIncrementalConnector,
 )
+from src.graph.queries.ingest_skips import RECONCILE_INGEST_RUN_ACCOUNTING
 from src.incremental_connector import IncrementalConnector
 from src.watermark_store import load_watermark
 
@@ -56,7 +57,8 @@ def _connector(
 def test_incremental_connector_satisfies_protocol() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            200, json={"items": [], "next_cursor": None},
+            200,
+            json={"items": [], "next_cursor": None},
         )
 
     connector = _connector(handler)
@@ -125,7 +127,13 @@ def test_incremental_fetch_all_pages_bootstrap() -> None:
     assert len(page3.records) == 1
 
     assert page2.max_updated_at == datetime(
-        2026, 7, 3, 12, 0, 0, tzinfo=UTC,
+        2026,
+        7,
+        3,
+        12,
+        0,
+        0,
+        tzinfo=UTC,
     )
     assert call_count == 3
 
@@ -177,14 +185,21 @@ def test_incremental_updated_at_fallback_to_last_seen_at() -> None:
     connector.open_query(updated_since=None)
     page = connector.fetch_next_page()
     assert page.max_updated_at == datetime(
-        2026, 7, 5, 12, 0, 0, tzinfo=UTC,
+        2026,
+        7,
+        5,
+        12,
+        0,
+        0,
+        tzinfo=UTC,
     )
 
 
 def test_incremental_empty_page_returns_no_records() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            200, json={"items": [], "next_cursor": None},
+            200,
+            json={"items": [], "next_cursor": None},
         )
 
     connector = _connector(handler)
@@ -197,7 +212,8 @@ def test_incremental_empty_page_returns_no_records() -> None:
 def test_incremental_cursor_stall_raises() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            200, json={"items": [], "next_cursor": "stuck"},
+            200,
+            json={"items": [], "next_cursor": "stuck"},
         )
 
     connector = _connector(handler)
@@ -215,10 +231,12 @@ def test_incremental_retries_server_errors() -> None:
         attempts += 1
         if attempts < 2:
             return httpx.Response(
-                503, json={"error": "unavailable"},
+                503,
+                json={"error": "unavailable"},
             )
         return httpx.Response(
-            200, json={"items": [], "next_cursor": None},
+            200,
+            json={"items": [], "next_cursor": None},
         )
 
     connector = _connector(handler, sleeper=lambda _: None)
@@ -236,10 +254,12 @@ def test_incremental_retries_transport_errors() -> None:
         attempts += 1
         if attempts == 1:
             raise httpx.ConnectError(
-                "offline", request=request,
+                "offline",
+                request=request,
             )
         return httpx.Response(
-            200, json={"items": [], "next_cursor": None},
+            200,
+            json={"items": [], "next_cursor": None},
         )
 
     connector = _connector(handler, sleeper=lambda _: None)
@@ -256,7 +276,8 @@ def test_incremental_propagates_auth_failure() -> None:
         nonlocal attempts
         attempts += 1
         return httpx.Response(
-            401, json={"error": "unauthorized"},
+            401,
+            json={"error": "unauthorized"},
         )
 
     connector = _connector(handler)
@@ -269,7 +290,8 @@ def test_incremental_propagates_auth_failure() -> None:
 def test_incremental_fetch_before_open_raises() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            200, json={"items": [], "next_cursor": None},
+            200,
+            json={"items": [], "next_cursor": None},
         )
 
     connector = _connector(handler)
@@ -280,7 +302,8 @@ def test_incremental_fetch_before_open_raises() -> None:
 def test_incremental_get_source_key() -> None:
     def handler(_request: httpx.Request) -> httpx.Response:
         return httpx.Response(
-            200, json={"items": [], "next_cursor": None},
+            200,
+            json={"items": [], "next_cursor": None},
         )
 
     connector = _connector(handler)
@@ -301,11 +324,12 @@ def test_incremental_connector_registered_in_task_registry() -> None:
 
 class _Result:
     def __init__(
-        self, data: dict[str, str] | None = None,
+        self,
+        data: dict[str, object] | None = None,
     ) -> None:
         self._data = data
 
-    def single(self) -> dict[str, str] | None:
+    def single(self) -> dict[str, object] | None:
         return self._data
 
 
@@ -314,9 +338,25 @@ class _Transaction:
         self.calls: list[tuple[str, dict[str, object]]] = []
 
     def run(
-        self, query: str, **params: object,
+        self,
+        query: str,
+        **params: object,
     ) -> _Result:
         self.calls.append((query, params))
+        if query == RECONCILE_INGEST_RUN_ACCOUNTING:
+            return _Result(
+                {
+                    "emitted_count": 0,
+                    "persisted_count": 0,
+                    "duplicate_count": 0,
+                    "pipeline_skip_count": 0,
+                    "connector_skip_count": 0,
+                    "record_error_count": 0,
+                    "stored_skips": 0,
+                    "expected_skips": 0,
+                    "reconciled": True,
+                }
+            )
         if "CREATE_INGEST_RUN" in query or "CREATE" in query:
             return _Result({"ingest_run_id": "test-run-1"})
         return _Result(None)
@@ -333,7 +373,9 @@ class _Session:
         pass
 
     def execute_write(
-        self, work: Any, **_kwargs: object,
+        self,
+        work: Any,
+        **_kwargs: object,
     ) -> Any:
         return work(cast(Any, self._tx))
 
@@ -398,7 +440,13 @@ def test_incremental_rental_flats_run_advances_watermark_on_drain() -> None:
     assert summary["status"] == "caught_up"
     watermark = load_watermark(redis_client, "sgrentalflats")
     assert watermark.updated_at == datetime(
-        2026, 8, 1, 10, 0, 0, tzinfo=UTC,
+        2026,
+        8,
+        1,
+        10,
+        0,
+        0,
+        tzinfo=UTC,
     )
 
     # Scenario B: yielded — watermark not advanced
@@ -452,7 +500,8 @@ def test_incremental_rental_flats_run_advances_watermark_on_drain() -> None:
 
     assert summary_b["status"] == "yielded"
     watermark_b = load_watermark(
-        redis_client_b, "sgrentalflats",
+        redis_client_b,
+        "sgrentalflats",
     )
     assert watermark_b.updated_at is None
 
@@ -482,5 +531,11 @@ def test_incremental_timestamps_normalized_to_utc() -> None:
     page = connector.fetch_next_page()
     assert page.max_updated_at.tzinfo is not None
     assert page.max_updated_at == datetime(
-        2026, 7, 3, 12, 0, 0, tzinfo=UTC,
+        2026,
+        7,
+        3,
+        12,
+        0,
+        0,
+        tzinfo=UTC,
     )

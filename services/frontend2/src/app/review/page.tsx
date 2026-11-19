@@ -1,28 +1,64 @@
 "use client";
 
-import { useCallback, useEffect, useId, useMemo, useRef, useState, type ReactElement, type ReactNode } from "react";
+import {
+  useCallback,
+  useEffect,
+  useId,
+  useLayoutEffect,
+  useMemo,
+  useRef,
+  useState,
+  type CSSProperties,
+  type ReactElement,
+  type ReactNode,
+} from "react";
 import Link from "next/link";
 
 import { BffError, bffFetchEnvelope } from "@/lib/api-client";
 import type { ApiResponse } from "@/lib/api-types";
-import type { ReviewCaseSummary } from "@/lib/api-types-ops";
+import {
+  MAX_BULK_REVIEW_CASE_IDS,
+  isTerminalQueueState,
+  type ReviewCaseSummary,
+} from "@/lib/api-types-ops";
 import { isOverdue, relativeTime } from "@/lib/display";
 import { useSetLoading } from "@/lib/LoadingContext";
+import { BulkReviewActionsPanel } from "@/components/ReviewActionsPanel";
 import styles from "./review.module.css";
 
-type QueueState = "unresolved" | "open" | "assigned" | "deferred" | "resolved" | "all";
+type QueueState =
+  | "unresolved"
+  | "open"
+  | "assigned"
+  | "deferred"
+  | "resolved"
+  | "expired"
+  | "dismissed"
+  | "superseded_by_policy"
+  | "all";
+
+// One page of the review queue, as returned by the BFF.
+interface QueuePage {
+  rows: ReviewCaseSummary[];
+  total: number | null;
+  nextCursor: string | null;
+}
+
 type Priority = "all" | "high" | "medium" | "low";
 type SortKey = "priority" | "confidence" | "queue_state" | "sla_due_at";
 type SortDir = "asc" | "desc";
 
 // "unresolved"/"resolved" map to the server-side `resolved` boolean (resolved
-// includes cancelled cases); the named states map to exact `queue_state`.
+// includes closed cases); the named states map to exact `queue_state`.
 const QUEUE_FILTERS: { value: QueueState; label: string }[] = [
   { value: "unresolved", label: "Unresolved" },
   { value: "open", label: "Open" },
   { value: "assigned", label: "Assigned" },
   { value: "deferred", label: "Deferred" },
   { value: "resolved", label: "Resolved" },
+  { value: "expired", label: "Expired" },
+  { value: "dismissed", label: "Dismissed" },
+  { value: "superseded_by_policy", label: "Superseded by policy" },
   { value: "all", label: "All" },
 ];
 
@@ -96,7 +132,21 @@ function queueStateClass(s: string): string {
   if (s === "assigned") return styles.badgeAssigned ?? "";
   if (s === "deferred") return styles.badgeDeferred ?? "";
   if (s === "resolved") return styles.badgeResolved ?? "";
+  // Terminal dispositions (expired / dismissed / superseded_by_policy) and any
+  // other closed state render with the neutral badge.
   return styles.badgeNeutral ?? "";
+}
+
+// Native checkbox styling — the review table uses CSS modules, which this
+// file may not extend, so the accent colour is applied inline.
+function checkboxStyle(disabled: boolean): CSSProperties {
+  return {
+    accentColor: "var(--accent, #6366f1)",
+    cursor: disabled ? "default" : "pointer",
+    width: 14,
+    height: 14,
+    margin: 0,
+  };
 }
 
 function priorityLabel(p: number): string {
@@ -271,8 +321,21 @@ export default function ReviewPage(): ReactElement {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
+  // Multi-select state for bulk review actions. Ids are kept at page level so
+  // a selection survives pagination, and failed/unknown ids stay selected.
+  const [selectedCaseIds, setSelectedCaseIds] = useState<string[]>([]);
+  // True while a bulk action (or its queue reload) is in flight: selection
+  // controls are locked so a newer selection cannot be discarded when the
+  // outcome is applied.
+  const [bulkBusy, setBulkBusy] = useState<boolean>(false);
+
   const loadId = useId();
   const setGlobalLoading = useSetLoading();
+
+  // The newest queue request wins: a superseded response must neither
+  // overwrite a newer page nor claim a successful refresh.
+  const loadSeqRef = useRef(0);
+  const activeControllerRef = useRef<AbortController | null>(null);
 
   // Debounce the free-text search before it reaches the server query.
   useEffect(() => {
@@ -318,6 +381,16 @@ export default function ReviewPage(): ReactElement {
     [queueFilter, priorityFilter, assignedFilter, personIdFilter, decision, engine, confMin, confMax, createdAfter, createdBefore, slaAfter, slaBefore, overdue, debouncedSearch, sortKey, sortDir],
   );
 
+  // A bulk action can finish after the view changes; reload the latest committed view.
+  const currentViewRef = useRef<{ query: string; cursor: string | null; size: number } | null>(null);
+  useLayoutEffect(() => {
+    currentViewRef.current = { query: apiQuery, cursor: currentCursor, size: pageSize };
+    return () => {
+      currentViewRef.current = null;
+      activeControllerRef.current?.abort();
+    };
+  }, [apiQuery, currentCursor, pageSize]);
+
   // Reset to page 1 when filters/sort change
   const prevQuery = useRef(apiQuery);
   useEffect(() => {
@@ -328,37 +401,102 @@ export default function ReviewPage(): ReactElement {
     }
   }, [apiQuery]);
 
+  // Fetch one page of the review queue.
+  const fetchQueuePage = useCallback(
+    async (
+      query: string,
+      cursor: string | null,
+      size: number,
+      signal: AbortSignal,
+    ): Promise<QueuePage> => {
+      const params = new URLSearchParams(query);
+      params.set("limit", String(size));
+      if (cursor) params.set("cursor", cursor);
+      const res: ApiResponse<ReviewCaseSummary[]> = await bffFetchEnvelope<ReviewCaseSummary[]>(
+        `/bff/review-cases?${params.toString()}`,
+        { signal },
+      );
+      return {
+        rows: res.data ?? [],
+        total: res.meta.total_count ?? null,
+        nextCursor: res.meta.next_cursor ?? null,
+      };
+    },
+    [],
+  );
+
   // Fetch
   useEffect(() => {
+    activeControllerRef.current?.abort();
     const controller = new AbortController();
+    activeControllerRef.current = controller;
+    const seq = loadSeqRef.current + 1;
+    loadSeqRef.current = seq;
     const { signal } = controller;
     setLoading(true);
     setGlobalLoading(loadId, true);
     setError(null);
 
-    const params = new URLSearchParams(apiQuery);
-    params.set("limit", String(pageSize));
-    if (currentCursor) params.set("cursor", currentCursor);
-
-    void bffFetchEnvelope<ReviewCaseSummary[]>(`/bff/review-cases?${params.toString()}`, { signal })
-      .then((res: ApiResponse<ReviewCaseSummary[]>) => {
-        if (!signal.aborted) {
-          setRows(res.data ?? []);
-          setTotal(res.meta.total_count ?? null);
-          setNextCursor(res.meta.next_cursor ?? null);
-        }
+    void fetchQueuePage(apiQuery, currentCursor, pageSize, signal)
+      .then((page: QueuePage) => {
+        if (signal.aborted || seq !== loadSeqRef.current) return;
+        setRows(page.rows);
+        setTotal(page.total);
+        setNextCursor(page.nextCursor);
       })
       .catch((err: unknown) => {
-        if (!signal.aborted) {
-          setError(err instanceof BffError ? err.message : "Failed to load review queue.");
-        }
+        if (signal.aborted || seq !== loadSeqRef.current) return;
+        setError(err instanceof BffError ? err.message : "Failed to load review queue.");
       })
       .finally(() => {
-        if (!signal.aborted) { setLoading(false); setGlobalLoading(loadId, false); }
+        if (!signal.aborted && seq === loadSeqRef.current) {
+          setLoading(false);
+          setGlobalLoading(loadId, false);
+        }
       });
 
     return () => { controller.abort(); setGlobalLoading(loadId, false); };
-  }, [apiQuery, currentCursor, pageSize, loadId, setGlobalLoading]);
+  }, [apiQuery, currentCursor, pageSize, loadId, setGlobalLoading, fetchQueuePage]);
+
+  /**
+   * Reload the current queue page. Resolves only after the request actually
+   * succeeded and its response was applied; rejects when the request failed,
+   * was aborted, or was superseded by a newer query/page — a stale response
+   * must never claim a successful refresh.
+   */
+  const reloadQueue = useCallback(async (): Promise<void> => {
+    const view = currentViewRef.current;
+    if (view === null) throw new Error("The review queue is no longer available.");
+    activeControllerRef.current?.abort();
+    const controller = new AbortController();
+    activeControllerRef.current = controller;
+    const seq = loadSeqRef.current + 1;
+    loadSeqRef.current = seq;
+    const { signal } = controller;
+    setLoading(true);
+    setGlobalLoading(loadId, true);
+    setError(null);
+    try {
+      const page = await fetchQueuePage(view.query, view.cursor, view.size, signal);
+      if (signal.aborted || seq !== loadSeqRef.current) {
+        throw new Error("The review queue reload was superseded by a newer request.");
+      }
+      setRows(page.rows);
+      setTotal(page.total);
+      setNextCursor(page.nextCursor);
+    } catch (err: unknown) {
+      if (!signal.aborted && seq === loadSeqRef.current) {
+        setError(err instanceof BffError ? err.message : "Failed to reload the review queue.");
+      }
+      throw err;
+    } finally {
+      if (!signal.aborted && seq === loadSeqRef.current) {
+        setLoading(false);
+        setGlobalLoading(loadId, false);
+        activeControllerRef.current = null;
+      }
+    }
+  }, [loadId, setGlobalLoading, fetchQueuePage]);
 
   const goNext = useCallback(() => {
     if (!nextCursor) return;
@@ -376,6 +514,42 @@ export default function ReviewPage(): ReactElement {
   const hasNext = nextCursor !== null;
   const pageStart = cursorStack.length * pageSize + 1;
   const pageEnd = cursorStack.length * pageSize + rows.length;
+
+  // Only non-terminal cases can be actioned in bulk.
+  const selectableIds = useMemo(
+    () => rows.filter((row) => !isTerminalQueueState(row.queue_state)).map((row) => row.review_case_id),
+    [rows],
+  );
+  const selectedIdSet = useMemo(() => new Set(selectedCaseIds), [selectedCaseIds]);
+  const allSelectableSelected =
+    selectableIds.length > 0 && selectableIds.every((id) => selectedIdSet.has(id));
+  const selectionAtLimit = selectedCaseIds.length >= MAX_BULK_REVIEW_CASE_IDS;
+  const selectAllDisabled =
+    loading || bulkBusy || selectableIds.length === 0 || (selectionAtLimit && !allSelectableSelected);
+
+  function toggleRowSelection(reviewCaseId: string, checked: boolean): void {
+    setSelectedCaseIds((current) => {
+      if (!checked) return current.filter((id) => id !== reviewCaseId);
+      if (current.includes(reviewCaseId)) return current;
+      if (current.length >= MAX_BULK_REVIEW_CASE_IDS) return current;
+      return [...current, reviewCaseId];
+    });
+  }
+
+  function toggleSelectAll(checked: boolean): void {
+    setSelectedCaseIds((current) => {
+      if (!checked) {
+        const pageIds = new Set(selectableIds);
+        return current.filter((id) => !pageIds.has(id));
+      }
+      const merged = [...current];
+      for (const id of selectableIds) {
+        if (merged.length >= MAX_BULK_REVIEW_CASE_IDS) break;
+        if (!merged.includes(id)) merged.push(id);
+      }
+      return merged;
+    });
+  }
 
   const matchFilterCount = [personIdFilter, decision, engine].filter((value) => value !== "").length;
   const confidenceFilterCount = [confMin, confMax].filter((value) => value !== "").length;
@@ -615,10 +789,29 @@ export default function ReviewPage(): ReactElement {
 
           {error && <p className={styles.errorBanner}>{error}</p>}
 
+          {/* Always mounted: the panel keeps its outcome banner visible after
+              the selection is cleared by a successful bulk action. */}
+          <BulkReviewActionsPanel
+            selectedReviewCaseIds={selectedCaseIds}
+            onSelectionChange={setSelectedCaseIds}
+            onCompleted={reloadQueue}
+            onBusyChange={setBulkBusy}
+          />
+
           <div className={styles.tableScroll}>
             <table className={styles.table}>
             <thead>
               <tr>
+                <th className={styles.th} style={{ width: 36 }}>
+                  <input
+                    type="checkbox"
+                    checked={allSelectableSelected}
+                    disabled={selectAllDisabled}
+                    onChange={(event) => toggleSelectAll(event.target.checked)}
+                    aria-label="Select all review cases on this page"
+                    style={checkboxStyle(selectAllDisabled)}
+                  />
+                </th>
                 {HEADERS.map((h) => (
                   <th key={h.label} className={styles.th}
                     style={h.sortKey ? { cursor: "pointer" } : undefined}
@@ -633,6 +826,7 @@ export default function ReviewPage(): ReactElement {
               {loading ? (
                 Array.from({ length: 8 }, (_, i) => (
                   <tr key={i} className={styles.skeletonRow}>
+                    <td className={styles.td} />
                     {[80, 55, 45, 65, 40, 60, 50].map((w, j) => (
                       <td key={j} className={styles.td}>
                         <span className={styles.skeletonLine} style={{ width: `${w}%` }} />
@@ -641,7 +835,7 @@ export default function ReviewPage(): ReactElement {
                   </tr>
                 ))
               ) : rows.length === 0 ? (
-                <tr><td colSpan={HEADERS.length} className={styles.empty}>
+                <tr><td colSpan={HEADERS.length + 1} className={styles.empty}>
                   {debouncedSearch ? `No results for "${debouncedSearch}"` : "No review cases found."}
                 </td></tr>
               ) : (
@@ -649,8 +843,21 @@ export default function ReviewPage(): ReactElement {
                   const confidencePct = Math.round(c.match_decision.confidence * 100);
                   const overdue = isOverdue(c.sla_due_at);
                   const subjectTitle = reviewSubjectTitle(c);
+                  const selectable = !isTerminalQueueState(c.queue_state);
+                  const checked = selectedIdSet.has(c.review_case_id);
+                  const checkboxDisabled = !selectable || bulkBusy || (selectionAtLimit && !checked);
                   return (
                   <tr key={c.review_case_id} className={styles.tr}>
+                    <td className={styles.td} style={{ width: 36 }}>
+                      <input
+                        type="checkbox"
+                        checked={checked}
+                        disabled={checkboxDisabled}
+                        onChange={(event) => toggleRowSelection(c.review_case_id, event.target.checked)}
+                        aria-label={`Select review case ${c.review_case_id}`}
+                        style={checkboxStyle(checkboxDisabled)}
+                      />
+                    </td>
                     <td className={styles.td}>
                       <Link href={`/review/${c.review_case_id}`} className={styles.caseCellLink}>
                         <span className={styles.caseAvatar} style={{ background: subjectAvatarColor(subjectTitle) }}>

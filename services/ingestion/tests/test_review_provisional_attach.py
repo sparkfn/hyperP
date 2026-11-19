@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from collections.abc import Iterator
 
-from _txmock import _RecordingTx
+from _txmock import _RecordingTx, summary_counter_result
 from src.graph import queries
 from src.models import (
     NormalizedAddress,
@@ -43,6 +43,9 @@ class _Tx(_RecordingTx):
         return [q for q, _ in self.calls]
 
     def run(self, query: str, **params: object) -> _Result:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self._record(query, params)
         return _Result()
 

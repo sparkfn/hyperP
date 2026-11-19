@@ -8,25 +8,34 @@ from __future__ import annotations
 
 import json
 import logging
+from collections import Counter
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
+from typing import cast
 
 from neo4j import ManagedTransaction
 
+from src.config import get_settings
 from src.graph import queries
 from src.graph.crm_deal_count import recompute_person_crm_deal_counts
 from src.identifier_scopes import (
     identifier_scope,
     source_instance_for_identifier,
 )
+from src.identity_assertions import write_assertions
 from src.identity_link_revisions import identity_link_key
+from src.identity_registry import identifier_policy
+from src.matching.thresholds import V2_POLICY_VERSION
 from src.models import (
     CandidateResult,
     ChatDifficulty,
     ChatOutcome,
     ChatPurpose,
     ChatTone,
+    EngineType,
+    IdentityCandidate,
     JsonValue,
+    MatchAction,
     MatchDecision,
     MatchResult,
     NormalizedAttribute,
@@ -38,7 +47,11 @@ from src.models import (
 from src.models import (
     NormalizedAddress as NormalizedAddressModel,
 )
+from src.normalizers.nric import encrypt_nric
 from src.pipeline_normalization import fanout_cap_for, is_usable
+from src.raw_payload import scrub_nric_strings, serialize_raw_payload
+from src.record_lifecycle import SourceLifecycleConflict
+from src.review_taxonomy import ReviewReason, case_key, exception_reason
 from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID, effective_source_instance_id
 from src.source_version_keys import encode_source_version_key
 
@@ -51,8 +64,143 @@ _CHAT_CLASSIFICATION_TYPES: dict[str, type[StrEnum]] = {
     "difficulty": ChatDifficulty,
 }
 
+WEAK_SIGNAL_REASON_CODES: frozenset[str] = frozenset(
+    {"unverified_phone", "unverified_email", "phone_near_match", "email_near_match"}
+)
+REVIEW_CASES_CREATED_COUNTER: Counter[tuple[str, str, str, str]] = Counter()
+REVIEW_DECISIONS_SUPPRESSED_COUNTER: Counter[tuple[str, str, str]] = Counter()
+_MAX_REVIEW_COUNTER_KEYS = 512
+
+
+def _weak_reason_code(reason: str) -> str | None:
+    """Map only the approved weak phone/email reason formats to their codes."""
+    if reason == "unverified_phone" or reason.startswith("Phone match (unverified:"):
+        return "unverified_phone"
+    if reason == "unverified_email" or reason.startswith("Email match (unverified:"):
+        return "unverified_email"
+    if reason == "phone_near_match" or reason.startswith("Phone near-match ("):
+        return "phone_near_match"
+    if reason == "email_near_match" or reason.startswith("Email near-match ("):
+        return "email_near_match"
+    return None
+
+
+def weak_signal_suppressed_reason(match_result: MatchResult) -> str | None:
+    """Return a suppression code only for heuristic weak-only REVIEW decisions."""
+    if (
+        match_result.decision != MatchDecision.REVIEW
+        or match_result.engine_type != EngineType.HEURISTIC
+        or not match_result.reasons
+        or match_result.review_candidate_person_ids
+    ):
+        return None
+    codes = [_weak_reason_code(reason) for reason in match_result.reasons]
+    if any(code is None for code in codes):
+        return None
+    weak_codes = [code for code in codes if code is not None]
+    if any(code not in WEAK_SIGNAL_REASON_CODES for code in weak_codes):
+        return None
+    unique_codes = sorted(set(weak_codes))
+    if len(unique_codes) == 1:
+        return unique_codes[0]
+    return "weak_signal_combination"
+
+
+def classify_created_case_reason(match_result: MatchResult) -> str:
+    """Classify a created ReviewCase reason using a fixed telemetry priority."""
+    reasons = match_result.reasons
+    if match_result.review_candidate_person_ids or any(
+        "crm" in reason.lower() for reason in reasons
+    ):
+        return "crm_ambiguity"
+    if any(
+        any(
+            token in reason.lower()
+            for token in ("prior_owners", "prior person", "continuity", "owner_change")
+        )
+        for reason in reasons
+    ):
+        return "continuity_reassignment"
+    if any(reason.startswith("DOB conflict:") for reason in reasons):
+        return "dob_conflict"
+    if any(reason.startswith("Strong name mismatch") for reason in reasons):
+        return "name_mismatch"
+    if any(
+        reason.startswith(("High name similarity", "Medium name similarity")) for reason in reasons
+    ):
+        return "name_similarity"
+    if any(reason.startswith("DOB exact match") for reason in reasons):
+        return "dob_match"
+    if reasons and all(_weak_reason_code(reason) is not None for reason in reasons):
+        return "weak_signal"
+    return "other"
+
+
+def _prune_counter[CounterKey: tuple[str, ...]](
+    counter: Counter[CounterKey], max_keys: int = _MAX_REVIEW_COUNTER_KEYS
+) -> None:
+    """Keep process-local telemetry bounded, evicting the oldest UTC day first."""
+    while len(counter) > max_keys:
+        oldest_day = min(key[-1] for key in counter)
+        oldest_key = next(key for key in counter if key[-1] == oldest_day)
+        del counter[oldest_key]
+
+
+def record_review_case_created(
+    *,
+    review_case_id: str,
+    match_decision_id: str | None,
+    engine_type: str,
+    reason_code: str,
+    source_system: str,
+) -> None:
+    """Record best-effort, bounded telemetry after a ReviewCase write succeeds."""
+    day_utc = datetime.now(UTC).date().isoformat()
+    REVIEW_CASES_CREATED_COUNTER[(engine_type, reason_code, source_system, day_utc)] += 1
+    _prune_counter(REVIEW_CASES_CREATED_COUNTER)
+    logger.info(
+        "review_case_created event=review_case_created review_case_id=%s "
+        "match_decision_id=%s engine_type=%s reason_code=%s source_system=%s day_utc=%s",
+        review_case_id,
+        match_decision_id,
+        engine_type,
+        reason_code,
+        source_system,
+        day_utc,
+        extra={
+            "event": "review_case_created",
+            "review_case_id": review_case_id,
+            "match_decision_id": match_decision_id,
+            "engine_type": engine_type,
+            "reason_code": reason_code,
+            "source_system": source_system,
+            "day_utc": day_utc,
+        },
+    )
+
+
+def reset_review_counters() -> None:
+    """Clear process-local review telemetry counters."""
+    REVIEW_CASES_CREATED_COUNTER.clear()
+    REVIEW_DECISIONS_SUPPRESSED_COUNTER.clear()
+
 
 # --- Step 3: ensure shared nodes exist ------------------------------------
+
+
+def _nric_identifier_fields(ident: NormalizedIdentifier, hmac_key: str) -> dict[str, object]:
+    """Derive NRIC-specific fields for Identifier upsert."""
+    return {
+        "hashed_value": ident.normalized_value,
+        "nric_masked": ident.nric_masked,
+        "checksum_valid": ident.checksum_valid,
+        "nric_key_version": ident.nric_key_version,
+        "nric_encrypted": (
+            encrypt_nric(ident.nric_plaintext, hmac_key)
+            if ident.nric_plaintext and hmac_key
+            else None
+        ),
+    }
 
 
 def upsert_nodes(
@@ -61,8 +209,10 @@ def upsert_nodes(
     addresses: list[NormalizedAddressModel],
 ) -> None:
     """Step 3: ensure Identifier and Address nodes exist."""
-    identifier_rows = [
-        {
+    settings = get_settings()
+    identifier_rows: list[dict[str, object]] = []
+    for ident in identifiers:
+        row: dict[str, object] = {
             "identifier_type": ident.identifier_type,
             "identifier_scope": identifier_scope(ident.identifier_type, ident.source_instance_id),
             "source_instance_id": source_instance_for_identifier(
@@ -70,8 +220,9 @@ def upsert_nodes(
             ),
             "normalized_value": ident.normalized_value,
         }
-        for ident in identifiers
-    ]
+        if ident.identifier_type == "nric":
+            row.update(_nric_identifier_fields(ident, settings.nric_hmac_key))
+        identifier_rows.append(row)
     if identifier_rows:
         tx.run(
             queries.UPSERT_IDENTIFIERS_BATCH,
@@ -119,15 +270,35 @@ def find_candidates(
         candidates.append(CandidateResult(person_id=person_id, source=source))
 
     usable_identifiers = [ident for ident in identifiers if is_usable(ident.quality_flag)]
-    identifier_rows = [
-        {
-            "input_index": index,
-            "identifier_type": ident.identifier_type,
-            "identifier_scope": identifier_scope(ident.identifier_type, ident.source_instance_id),
-            "normalized_value": ident.normalized_value,
-        }
-        for index, ident in enumerate(usable_identifiers)
-    ]
+    identifier_rows: list[dict[str, object]] = []
+    for index, ident in enumerate(usable_identifiers):
+        identifier_rows.append(
+            {
+                "input_index": index,
+                "identifier_type": ident.identifier_type,
+                "identifier_scope": identifier_scope(
+                    ident.identifier_type, ident.source_instance_id
+                ),
+                "normalized_value": ident.normalized_value,
+            }
+        )
+        # Transition candidate generation: find legacy plaintext holders using plaintext carrier.
+        # Removed after L2 rehash backfill.
+        # Note (A3 follow-up): same carrier dependency as
+        # matching.deterministic._check_government_id;
+        # the A3 follow-up must restore carrier-equivalence for rows rebuilt without
+        # ``nric_plaintext`` so they still reach legacy-plaintext candidates.
+        if ident.identifier_type == "nric" and ident.nric_plaintext:
+            identifier_rows.append(
+                {
+                    "input_index": index,
+                    "identifier_type": ident.identifier_type,
+                    "identifier_scope": identifier_scope(
+                        ident.identifier_type, ident.source_instance_id
+                    ),
+                    "normalized_value": ident.nric_plaintext,
+                }
+            )
     if identifier_rows:
         rows = tx.run(
             queries.FIND_CANDIDATES_BY_IDENTIFIERS_BATCH,
@@ -197,11 +368,80 @@ def exceeds_fanout_cap(
     return True
 
 
+def find_identity_candidates(
+    tx: ManagedTransaction,
+    identifiers: list[NormalizedIdentifier],
+    source_record_pk: str,
+) -> tuple[list[CandidateResult], list[IdentityCandidate]]:
+    """Step 4 (v2): discover Person, Profile, and parked-record participants.
+
+    Returns Person candidates for the existing scorer plus the Profile/unlinked
+    participants that feed Profile materialization. Fanout caps, hub
+    corroboration, depth bounds, and the 100/200 limits are enforced in Cypher.
+    """
+    rows = [
+        {
+            "input_index": index,
+            "identifier_type": ident.identifier_type,
+            "identifier_scope": identifier_scope(ident.identifier_type, ident.source_instance_id),
+            "normalized_value": ident.normalized_value,
+            "fanout_cap": fanout_cap_for(ident.identifier_type),
+        }
+        for index, ident in enumerate(identifiers)
+        if is_usable(ident.quality_flag)
+        and identifier_policy(ident.identifier_type).candidate_eligible
+    ]
+    people: list[CandidateResult] = []
+    others: list[IdentityCandidate] = []
+    if not rows:
+        return people, others
+    for record in tx.run(
+        queries.FIND_PARTICIPANT_CANDIDATES,
+        identifiers=rows,
+        source_record_pk=source_record_pk,
+    ):
+        participant_kind = str(record["participant_kind"])
+        participant_id = str(record["participant_id"])
+        if participant_kind == "person":
+            people.append(CandidateResult(person_id=participant_id, source="identifier"))
+        else:
+            others.append(
+                IdentityCandidate(
+                    participant_kind=participant_kind,
+                    participant_id=participant_id,
+                    shared_key_count=int(record["shared_key_count"]),
+                )
+            )
+    return people, others
+
+
+def find_person_candidates(
+    tx: ManagedTransaction,
+    identifiers: list[NormalizedIdentifier],
+    *,
+    candidate_mode: str,
+) -> list[CandidateResult]:
+    """Return only Person participants for ownership decisions.
+
+    CRM ownership must never resolve to a Profile or a parked SourceRecord, so
+    v2 filters the participant query to Person rows and legacy keeps its
+    IDENTIFIED_BY candidate generation.
+    """
+    if candidate_mode == "v2":
+        people, _others = find_identity_candidates(tx, identifiers, "")
+        return people
+    return find_candidates(tx, identifiers, [])
+
+
 # --- Step 6: person creation ----------------------------------------------
 
 
-def create_person(tx: ManagedTransaction) -> str:
-    """Create a Person + person_created MergeEvent. Returns the new ``person_id``."""
+def create_person_legacy(tx: ManagedTransaction) -> str:
+    """Create a Person + person_created MergeEvent (v1/v2_shadow legacy only).
+
+    Unreachable from the v2 identity model, where only a gate-approved NRIC
+    ``MERGE`` constructs a Person.
+    """
     create_result = tx.run(queries.CREATE_PERSON)
     record = create_result.single()
     assert record is not None, "CREATE_PERSON must return a row"
@@ -246,6 +486,46 @@ def retire_address_projection(tx: ManagedTransaction, source_record_pk: str) -> 
 # --- Step 7: persist source record + match decision + review case ---------
 
 
+def link_status_for(match_result: MatchResult, *, person_created: bool = False) -> str:
+    """Return 'linked' for merge decisions or actual Person creation, else 'pending_review'."""
+    return (
+        "linked"
+        if match_result.decision == MatchDecision.MERGE or person_created
+        else "pending_review"
+    )
+
+
+def settle_staged_source_record(
+    tx: ManagedTransaction,
+    source_record_pk: str,
+    *,
+    link_status: str,
+    expected_active_source_record_pk: str | None,
+    ingest_run_id: str | None,
+    control_instance_id: str,
+) -> str:
+    """Transition a staged parked SourceRecord to pending_review before linking.
+
+    A parked row reused from an earlier run is also attached to this run (idempotent), so run
+    lineage matches a record created by this run. Raises SourceLifecycleConflict if the record
+    is not found or not in parked state.
+    """
+    result = tx.run(
+        queries.PROMOTE_STAGED_SOURCE_RECORD,
+        source_record_pk=source_record_pk,
+        link_status=link_status,
+        expected_active_source_record_pk=expected_active_source_record_pk,
+        ingest_run_id=ingest_run_id,
+        control_instance_id=control_instance_id,
+    )
+    record = result.single()
+    if record is None:
+        raise SourceLifecycleConflict(
+            f"staged source record {source_record_pk} is not in parked state or does not exist"
+        )
+    return str(record["source_record_pk"])
+
+
 def persist_source_record(
     tx: ManagedTransaction,
     *,
@@ -253,16 +533,24 @@ def persist_source_record(
     identifiers: list[NormalizedIdentifier],
     addresses: list[NormalizedAddressModel],
     attributes: list[NormalizedAttribute],
-    match_result: MatchResult,
-    is_new_person: bool,
+    match_result: MatchResult | None = None,
+    person_created: bool = False,
     ingest_run_id: str | None,
     lifecycle_status: SourceRecordLifecycleStatus,
     expected_active_source_record_pk: str | None,
     activation_blueprint: dict[str, JsonValue] | None = None,
     link_status: str | None = None,
     control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    attribution_status: str | None = None,
+    reeval_pending: bool | None = None,
+    shadow_assertions: bool | None = None,
 ) -> str:
-    """Step 7 + 7b: persist SourceRecord and link to IngestRun."""
+    """Step 7 + 7b: persist SourceRecord and link to IngestRun.
+
+    ``attribution_status``/``reeval_pending`` are only written when supplied, so
+    legacy linked rows keep their exact property set. ``shadow_assertions``
+    additionally writes the v2 shadow identity assertions for this record.
+    """
     normalized = build_normalized_source_payload(
         envelope=envelope,
         identifiers=identifiers,
@@ -273,9 +561,9 @@ def persist_source_record(
     resolved_link_status = (
         link_status
         if link_status is not None
-        else "linked"
-        if match_result.decision == MatchDecision.MERGE or is_new_person
-        else "pending_review"
+        else link_status_for(match_result, person_created=person_created)
+        if match_result is not None
+        else "unlinked"
     )
     conv_ref = (
         json.dumps(envelope.conversation_ref, default=str)
@@ -323,7 +611,7 @@ def persist_source_record(
         link_status=resolved_link_status,
         observed_at=envelope.observed_at,
         record_hash=envelope.record_hash,
-        raw_payload=json.dumps(envelope.raw_payload, default=str),
+        raw_payload=serialize_raw_payload(envelope),
         normalized_payload=json.dumps(normalized, default=str),
         crm_deal_stage_id=_crm_deal_stage_id(envelope),
         source_entity_type=envelope.source_entity_type,
@@ -353,6 +641,20 @@ def persist_source_record(
             ingest_run_id=ingest_run_id,
             control_instance_id=control_instance_id,
         )
+    if attribution_status is not None or reeval_pending is not None:
+        tx.run(
+            queries.SET_SOURCE_RECORD_ATTRIBUTION,
+            source_record_pk=pk,
+            attribution_status=attribution_status,
+            reeval_pending=reeval_pending,
+        )
+    should_assert = (
+        get_settings().identity_model == "v2_shadow"
+        if shadow_assertions is None
+        else shadow_assertions
+    )
+    if should_assert:
+        write_assertions(tx, pk, normalized)
     return pk
 
 
@@ -387,7 +689,7 @@ def persist_match_decision(
         blocking_conflicts=[],
         review_candidate_person_ids=match_result.review_candidate_person_ids,
         feature_snapshot=json.dumps(match_result.feature_snapshot, default=str),
-        policy_version="v0.1.0",
+        policy_version=match_result.policy_version,
     )
     md_record = md_result.single()
     assert md_record is not None, "CREATE_MATCH_DECISION must return a row"
@@ -408,14 +710,83 @@ def persist_match_decision(
     return match_decision_id
 
 
+def _case_person_ids(match_result: MatchResult) -> list[str]:
+    """Return the person ids feeding a keyed case, deterministically ordered."""
+    ids = list(match_result.review_candidate_person_ids)
+    for person_id in (match_result.matched_person_id, match_result.proposed_person_id):
+        if person_id is not None and person_id not in ids:
+            ids.append(person_id)
+    return ids
+
+
+def persist_nric_contradiction_review(
+    tx: ManagedTransaction,
+    *,
+    source_record_pk: str,
+    profile_id: str,
+    holder_person_id: str,
+    source_system: str = "unknown",
+) -> str | None:
+    """Persist a REVIEW MatchDecision for a durable NRIC contradiction.
+
+    ABOUT_LEFT is the incoming record, ABOUT_RIGHT the NRIC holder Person;
+    the case opens through the same exception-only gate as engine REVIEWs.
+    """
+    result = MatchResult(
+        decision=MatchDecision.REVIEW,
+        confidence=0.0,
+        reasons=["nric_contradiction"],
+        engine_type=EngineType.DETERMINISTIC,
+        matched_person_id=holder_person_id,
+        review_candidate_person_ids=[profile_id, holder_person_id],
+        review_reason="nric_contradiction",
+        action=MatchAction.REVIEW,
+        policy_version=V2_POLICY_VERSION,
+    )
+    match_decision_id = persist_match_decision(tx, result, source_record_pk)
+    return create_review_case_if_needed(
+        tx,
+        result,
+        match_decision_id,
+        source_system=source_system,
+        exception_only=True,
+    )
+
+
 def create_review_case_if_needed(
     tx: ManagedTransaction,
     match_result: MatchResult,
     match_decision_id: str,
+    *,
+    source_system: str = "unknown",
+    exception_only: bool = False,
+    record_identity: str | None = None,
 ) -> str | None:
-    """Step 7d: create a ReviewCase when the engine returns REVIEW."""
+    """Step 7d: create a ReviewCase when the engine returns REVIEW.
+
+    With ``exception_only`` (v2), only taxonomy reasons open a keyed case via
+    ``CREATE_REVIEW_CASE_BY_KEY``; anything else suppresses as ``not_exception``.
+    """
     if match_result.decision != MatchDecision.REVIEW:
         return None
+    if exception_only:
+        reason = exception_reason(match_result)
+        if reason is None:
+            _suppress_review(tx, match_decision_id, "not_exception", source_system=source_system)
+            return None
+        return _create_keyed_review_case(
+            tx,
+            match_result,
+            match_decision_id,
+            reason=reason,
+            record_identity=record_identity,
+            source_system=source_system,
+        )
+    if get_settings().review_policy == "v2_weak_signal_park":
+        suppressed_reason = weak_signal_suppressed_reason(match_result)
+        if suppressed_reason is not None:
+            _suppress_review(tx, match_decision_id, suppressed_reason, source_system=source_system)
+            return None
     sla_due_at = (datetime.now(UTC) + timedelta(days=7)).isoformat()
     rc_result = tx.run(
         queries.CREATE_REVIEW_CASE,
@@ -431,7 +802,109 @@ def create_review_case_if_needed(
         review_case_id,
         match_decision_id,
     )
+    record_review_case_created(
+        review_case_id=review_case_id,
+        match_decision_id=match_decision_id,
+        engine_type=match_result.engine_type.value,
+        reason_code=classify_created_case_reason(match_result),
+        source_system=source_system,
+    )
     return review_case_id
+
+
+def _suppress_review(
+    tx: ManagedTransaction,
+    match_decision_id: str,
+    suppressed_reason: str,
+    *,
+    source_system: str,
+) -> None:
+    """Mark a MatchDecision review-suppressed with telemetry (shared path)."""
+    suppressed_record = tx.run(
+        queries.SUPPRESS_MATCH_DECISION_REVIEW,
+        match_decision_id=match_decision_id,
+        suppressed_reason=suppressed_reason,
+    ).single()
+    if suppressed_record is None:
+        raise RuntimeError(
+            f"SUPPRESS_MATCH_DECISION_REVIEW matched no MatchDecision for {match_decision_id}"
+        )
+    day_utc = datetime.now(UTC).date().isoformat()
+    REVIEW_DECISIONS_SUPPRESSED_COUNTER[(suppressed_reason, source_system, day_utc)] += 1
+    _prune_counter(REVIEW_DECISIONS_SUPPRESSED_COUNTER)
+    logger.info(
+        "review_decision_suppressed event=review_decision_suppressed "
+        "match_decision_id=%s suppressed_reason=%s source_system=%s day_utc=%s",
+        match_decision_id,
+        suppressed_reason,
+        source_system,
+        day_utc,
+        extra={
+            "event": "review_decision_suppressed",
+            "match_decision_id": match_decision_id,
+            "suppressed_reason": suppressed_reason,
+            "source_system": source_system,
+            "day_utc": day_utc,
+        },
+    )
+
+
+def _create_keyed_review_case(
+    tx: ManagedTransaction,
+    match_result: MatchResult,
+    match_decision_id: str,
+    *,
+    reason: ReviewReason,
+    record_identity: str | None,
+    source_system: str,
+) -> str:
+    """Open (or re-find) the exception-only ReviewCase for one ``case_key``."""
+    key = case_key(reason, record_identity, _case_person_ids(match_result))
+    sla_due_at = (datetime.now(UTC) + timedelta(days=7)).isoformat()
+    rc_result = tx.run(
+        queries.CREATE_REVIEW_CASE_BY_KEY,
+        case_key=key,
+        reason_code=reason,
+        priority=100,
+        sla_due_at=sla_due_at,
+        match_decision_id=match_decision_id,
+    )
+    rc_record = rc_result.single()
+    assert rc_record is not None, "CREATE_REVIEW_CASE_BY_KEY must return a row"
+    review_case_id: str = rc_record["review_case_id"]
+    logger.info(
+        "Created ReviewCase %s for MatchDecision %s",
+        review_case_id,
+        match_decision_id,
+    )
+    record_review_case_created(
+        review_case_id=review_case_id,
+        match_decision_id=match_decision_id,
+        engine_type=match_result.engine_type.value,
+        reason_code=reason,
+        source_system=source_system,
+    )
+    return review_case_id
+
+
+def _identifier_payload(ident: NormalizedIdentifier) -> dict[str, JsonValue]:
+    """Serialize a NormalizedIdentifier for normalized_payload.
+
+    NRIC identifiers keep their mask/checksum/version metadata (nric_plaintext is excluded
+    by Field config). Non-NRIC identifiers exclude NRIC metadata to stay byte-identical.
+    """
+    if ident.identifier_type == "nric":
+        return cast(dict[str, JsonValue], ident.model_dump())
+    return cast(
+        dict[str, JsonValue],
+        ident.model_dump(
+            exclude={
+                "nric_masked",
+                "checksum_valid",
+                "nric_key_version",
+            }
+        ),
+    )
 
 
 def build_normalized_source_payload(
@@ -444,7 +917,7 @@ def build_normalized_source_payload(
 ) -> dict[str, JsonValue]:
     """Build the canonical normalized payload stored on a SourceRecord."""
     normalized: dict[str, JsonValue] = {
-        "identifiers": [i.model_dump() for i in identifiers],
+        "identifiers": [_identifier_payload(i) for i in identifiers],
         "address": addresses[0].model_dump() if addresses else None,
         "addresses": [address.model_dump() for address in addresses],
         "attributes": [a.model_dump() for a in attributes],
@@ -457,7 +930,9 @@ def build_normalized_source_payload(
         and isinstance(summary, str)
         and summary.strip()
     ):
-        normalized["summary"] = summary.strip()
+        scrubbed_summary = scrub_nric_strings(summary.strip())
+        if isinstance(scrubbed_summary, str):
+            normalized["summary"] = scrubbed_summary
     if envelope.record_type.value == "conversation":
         for key, enum_type in _CHAT_CLASSIFICATION_TYPES.items():
             value = envelope.raw_payload.get(key)
@@ -470,7 +945,7 @@ def build_normalized_source_payload(
         for key in ("customer_sentiment", "chat_members", "inquiries"):
             value = envelope.raw_payload.get(key)
             if value is not None:
-                normalized[key] = value
+                normalized[key] = scrub_nric_strings(value)
     return normalized
 
 
@@ -589,6 +1064,44 @@ def _link_address(
     )
 
 
+def attach_person_evidence(
+    tx: ManagedTransaction,
+    *,
+    person_id: str,
+    source_record_pk: str,
+    source_system_key: str,
+    observed_at: str | None,
+    addresses: list[NormalizedAddressModel],
+    attributes: list[NormalizedAttribute],
+    source_trust_tier: str | None = "tier_3",
+    confidence: float | None = 1.0,
+) -> None:
+    """Steps 10–11: attach addresses and facts to an existing Person link.
+
+    Shared by normal linking and Profile promotion so a promoted member writes
+    the same ``LIVES_AT``/``DESCRIBES_ADDRESS``/``HAS_FACT`` evidence as a
+    directly linked record, including each attribute's own ``quality_flag``.
+    Promotion passes ``None`` for the C1-provisional trust/confidence values so
+    those properties stay unset instead of inventing provenance.
+    """
+    for address in addresses:
+        if is_usable(address.quality_flag):
+            _link_address(tx, address, person_id, source_system_key, source_record_pk)
+
+    for attr in attributes:
+        tx.run(
+            queries.CREATE_ATTRIBUTE_FACT,
+            person_id=person_id,
+            source_record_pk=source_record_pk,
+            attribute_name=attr.attribute_name,
+            attribute_value=attr.attribute_value,
+            source_trust_tier=source_trust_tier,
+            confidence=confidence,
+            quality_flag=attr.quality_flag.value,
+            observed_at=observed_at,
+        )
+
+
 def link_record_to_graph(
     tx: ManagedTransaction,
     *,
@@ -599,6 +1112,7 @@ def link_record_to_graph(
     person_id: str,
     source_record_pk: str,
     attach_evidence: bool = True,
+    write_identified_by: bool = True,
 ) -> None:
     """Steps 8–11: wire the source record into the Person subgraph.
 
@@ -617,23 +1131,17 @@ def link_record_to_graph(
         recompute_person_crm_deal_counts(tx, [person_id])
     if not attach_evidence:
         return
-    _link_identifiers(tx, identifiers, person_id, envelope.source_system, source_record_pk)
-    for address in addresses:
-        if is_usable(address.quality_flag):
-            _link_address(tx, address, person_id, envelope.source_system, source_record_pk)
-
-    for attr in attributes:
-        tx.run(
-            queries.CREATE_ATTRIBUTE_FACT,
-            person_id=person_id,
-            source_record_pk=source_record_pk,
-            attribute_name=attr.attribute_name,
-            attribute_value=attr.attribute_value,
-            source_trust_tier="tier_3",
-            confidence=1.0,
-            quality_flag=attr.quality_flag.value,
-            observed_at=envelope.observed_at,
-        )
+    if write_identified_by:
+        _link_identifiers(tx, identifiers, person_id, envelope.source_system, source_record_pk)
+    attach_person_evidence(
+        tx,
+        person_id=person_id,
+        source_record_pk=source_record_pk,
+        source_system_key=envelope.source_system,
+        observed_at=envelope.observed_at,
+        addresses=addresses,
+        attributes=attributes,
+    )
 
 
 # --- Step 13: auto-merge bookkeeping --------------------------------------

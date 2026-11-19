@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import cast
 
-from _txmock import _RecordingTx
+from _txmock import _RecordingTx, summary_counter_result
 from neo4j import ManagedTransaction
 from src.graph import queries
 from src.models import SourceRecordEnvelope
@@ -14,6 +14,9 @@ class _Tx(_RecordingTx):
         super().__init__()
 
     def run(self, query: str, **kwargs: object) -> object:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self._record(query, kwargs)
         return object()
 

@@ -103,3 +103,13 @@ FOREACH (_ IN CASE WHEN missing_count = 0 THEN [1] ELSE [] END |
 )
 RETURN missing_count, migration.completed_at IS NOT NULL AS completed
 """
+
+SHOW_PERSON_NAME_SEARCH_FULLTEXT_INDEX = """
+SHOW FULLTEXT INDEXES YIELD name, properties
+WHERE name = 'person_name_search'
+RETURN properties
+"""
+
+DROP_PERSON_NAME_SEARCH_FULLTEXT_INDEX = """
+DROP INDEX person_name_search IF EXISTS
+"""

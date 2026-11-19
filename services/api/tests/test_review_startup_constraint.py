@@ -31,6 +31,7 @@ async def test_identity_lock_constraint_precedes_review_capable_startup() -> Non
     with (
         patch.object(app, "validate_oauth_runtime_config"),
         patch.object(app, "_ensure_source_record_identity_lock", new=recorder("lock")),
+        patch.object(app, "_ensure_person_list_summary_counter", new=recorder("summary")),
         patch.object(app, "_ensure_user_constraint", new=recorder("user")),
         patch.object(app, "_ensure_oauth_client_constraints", new=recorder("oauth")),
         patch.object(app, "_ensure_person_indexes", new=recorder("indexes")),
@@ -42,4 +43,4 @@ async def test_identity_lock_constraint_precedes_review_capable_startup() -> Non
         async with app._lifespan(FastAPI()):
             calls.append("traffic")
 
-    assert calls == ["lock", "user", "oauth", "indexes", "traffic"]
+    assert calls == ["lock", "summary", "user", "oauth", "indexes", "traffic"]

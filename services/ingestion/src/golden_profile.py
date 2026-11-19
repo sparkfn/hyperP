@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import Mapping
 from typing import Protocol, TypedDict, runtime_checkable
 
 from neo4j import ManagedTransaction, Record
@@ -12,7 +13,9 @@ from src.golden_profile_authority_models import (
     GoldenProfileFields,
     GoldenProfileRecomputeResult,
 )
+from src.golden_top3 import materialize_golden_top3
 from src.graph import queries
+from src.normalizers.nric import masked_for
 
 recompute_golden_profile_from_active_authority = (
     _active_authority.recompute_golden_profile_from_active_authority
@@ -52,6 +55,7 @@ class _LegacyIdentifier(TypedDict):
     normalized_value: str
     is_verified: bool
     last_confirmed_at: str | None
+    nric_masked: str | None
 
 
 class _LegacyAddress(TypedDict):
@@ -64,10 +68,24 @@ class _LegacyGoldenProfile(GoldenProfileFields):
     person_id: str
 
 
-def compute_golden_profile(tx: ManagedTransaction, person_id: str) -> _LegacyGoldenProfile:
-    """Compute and persist the legacy profile using its established survivorship rules."""
-    facts, identifiers, addresses = _fetch_person_evidence(tx, person_id)
-    fields = _apply_survivorship(facts, identifiers, addresses)
+def compute_golden_profile(
+    tx: ManagedTransaction,
+    person_id: str,
+    *,
+    v2_evidence: bool = False,
+) -> _LegacyGoldenProfile:
+    """Compute and persist the golden profile using its survivorship rules.
+
+    ``v2_evidence`` selects the HAS-first identifier read used by the v2
+    identity mode; every other mode keeps the exact legacy projection. In v2
+    the top-3 golden stage runs first and its rank-1 picks become
+    ``preferred_phone``/``preferred_email``/``preferred_nric`` by construction.
+    """
+    facts, identifiers, addresses = _fetch_person_evidence(tx, person_id, v2_evidence)
+    picks: Mapping[str, str | None] | None = None
+    if v2_evidence:
+        picks = materialize_golden_top3(tx, person_id).picks
+    fields = _apply_survivorship(facts, identifiers, addresses, identifier_picks=picks)
     profile: _LegacyGoldenProfile = {"person_id": person_id, **fields}
     tx.run(
         queries.UPDATE_GOLDEN_PROFILE,
@@ -91,14 +109,14 @@ def compute_golden_profile(tx: ManagedTransaction, person_id: str) -> _LegacyGol
 
 
 def _fetch_person_evidence(
-    tx: ManagedTransaction, person_id: str
+    tx: ManagedTransaction, person_id: str, v2_evidence: bool
 ) -> tuple[list[_LegacyFact], list[_LegacyIdentifier], list[_LegacyAddress]]:
+    identifiers_query = (
+        queries.FETCH_PERSON_IDENTIFIERS_V2 if v2_evidence else queries.FETCH_PERSON_IDENTIFIERS
+    )
     return (
         [_legacy_fact(row) for row in tx.run(queries.FETCH_PERSON_FACTS, person_id=person_id)],
-        [
-            _legacy_identifier(row)
-            for row in tx.run(queries.FETCH_PERSON_IDENTIFIERS, person_id=person_id)
-        ],
+        [_legacy_identifier(row) for row in tx.run(identifiers_query, person_id=person_id)],
         [
             _legacy_address(row)
             for row in tx.run(queries.FETCH_PERSON_ADDRESSES, person_id=person_id)
@@ -122,6 +140,7 @@ def _legacy_identifier(row: Record) -> _LegacyIdentifier:
         "normalized_value": _row_string(row, "normalized_value"),
         "is_verified": _row_bool(row, "is_verified"),
         "last_confirmed_at": _row_optional_string(row, "last_confirmed_at"),
+        "nric_masked": _row_optional_string(row, "nric_masked"),
     }
 
 
@@ -137,6 +156,8 @@ def _apply_survivorship(
     facts: list[_LegacyFact],
     identifiers: list[_LegacyIdentifier],
     addresses: list[_LegacyAddress],
+    *,
+    identifier_picks: Mapping[str, str | None] | None = None,
 ) -> GoldenProfileFields:
     preferred_full_name = _pick_best_fact(facts, "full_name")
     if preferred_full_name is None:
@@ -144,8 +165,14 @@ def _apply_survivorship(
             facts, "legal_name"
         )
     dob = _pick_best_fact(facts, "dob")
-    phone = _pick_best_identifier(identifiers, "phone")
-    email = _pick_best_identifier(identifiers, "email")
+    if identifier_picks is None:
+        phone = _pick_best_identifier(identifiers, "phone")
+        email = _pick_best_identifier(identifiers, "email")
+        nric = _pick_best_identifier(identifiers, "nric")
+    else:
+        phone = identifier_picks.get("phone")
+        email = identifier_picks.get("email")
+        nric = identifier_picks.get("nric")
     address_id = _pick_best_address(addresses)
     return {
         "preferred_full_name": preferred_full_name,
@@ -153,7 +180,7 @@ def _apply_survivorship(
         "preferred_phone": phone,
         "preferred_email": email,
         "preferred_address_id": address_id,
-        "preferred_nric": _pick_best_identifier(identifiers, "nric"),
+        "preferred_nric": nric,
         "preferred_race_ethnicity": _pick_best_fact(facts, "race_ethnicity"),
         "profile_completeness_score": round(
             sum(value is not None for value in (preferred_full_name, dob, phone, email, address_id))
@@ -182,10 +209,13 @@ def _pick_best_identifier(identifiers: list[_LegacyIdentifier], identifier_type:
     matching = [item for item in identifiers if item["identifier_type"] == identifier_type]
     if not matching:
         return None
-    return max(
+    best = max(
         matching,
         key=lambda item: (item["is_verified"], item["last_confirmed_at"] or ""),
-    )["normalized_value"]
+    )
+    if identifier_type == "nric":
+        return masked_for(best["normalized_value"], best["nric_masked"])
+    return best["normalized_value"]
 
 
 def _pick_best_address(addresses: list[_LegacyAddress]) -> str | None:

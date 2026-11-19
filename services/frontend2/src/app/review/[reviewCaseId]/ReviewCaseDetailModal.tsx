@@ -21,6 +21,10 @@ function queueStateColor(state: string): string {
     case "assigned": return "#3b82f6";
     case "deferred": return "#f59e0b";
     case "cancelled": return "#94a3b8";
+    // Terminal dispositions: the case is closed and accepts no further action.
+    case "expired": return "#94a3b8";
+    case "dismissed": return "#94a3b8";
+    case "superseded_by_policy": return "#94a3b8";
     default: return "#ef4444";
   }
 }
@@ -310,6 +314,7 @@ export function ReviewCaseDetailContent({
       rightPersonStatus={detail.comparison_right?.status ?? null}
       leftLabel={compact ? "Current profile" : undefined}
       rightLabel={compact ? "Candidate evidence" : undefined}
+      engineType={detail.match_decision.engine_type}
       onChanged={onChanged}
       onActionBusy={onActionBusy}
       onActionDone={onActionDone}

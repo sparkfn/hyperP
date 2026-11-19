@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import cast
 
 import pytest
+from _txmock import summary_counter_result
 from src.graph import migrations
 from src.graph.client import Neo4jClient
 
@@ -60,6 +61,9 @@ class _Tx:
         self._state = state
 
     def run(self, query: str, **params: object) -> _Result:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         state = self._state
         state.calls.append(_Call(query=query, params=dict(params)))
         if query == migrations.ACQUIRE_SOURCE_RECORD_LIFECYCLE_MIGRATION:
@@ -155,12 +159,10 @@ def test_empty_graph_completes_all_bounded_phases() -> None:
         for call in state.calls
     )
     assert any(
-        call.query == migrations.CLAIM_SOURCE_RECORD_LIFECYCLE_IDENTITY
-        for call in state.calls
+        call.query == migrations.CLAIM_SOURCE_RECORD_LIFECYCLE_IDENTITY for call in state.calls
     )
     assert not any(
-        call.query == migrations.MIGRATE_SOURCE_RECORD_LIFECYCLE_BATCH
-        for call in state.calls
+        call.query == migrations.MIGRATE_SOURCE_RECORD_LIFECYCLE_BATCH for call in state.calls
     )
 
 

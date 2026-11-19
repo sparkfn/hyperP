@@ -44,6 +44,9 @@ CREATE CONSTRAINT match_decision_id_unique IF NOT EXISTS
 CREATE CONSTRAINT review_case_id_unique IF NOT EXISTS
   FOR (rc:ReviewCase) REQUIRE rc.review_case_id IS UNIQUE;
 
+CREATE CONSTRAINT review_case_case_key_unique IF NOT EXISTS
+  FOR (rc:ReviewCase) REQUIRE rc.case_key IS UNIQUE;
+
 CREATE CONSTRAINT merge_event_id_unique IF NOT EXISTS
   FOR (me:MergeEvent) REQUIRE me.merge_event_id IS UNIQUE;
 
@@ -125,6 +128,43 @@ CREATE INDEX idx_source_record_type IF NOT EXISTS
 
 CREATE INDEX idx_source_record_link_state IF NOT EXISTS
   FOR (sr:SourceRecord) ON (sr.record_type, sr.link_status);
+
+// Identity assertion and attribution indexes.
+CREATE CONSTRAINT source_record_assertion_id_unique IF NOT EXISTS
+  FOR ()-[assertion:ASSERTS]-() REQUIRE assertion.assertion_id IS UNIQUE;
+
+CREATE CONSTRAINT ingest_skip_id_unique IF NOT EXISTS
+  FOR (skip:IngestSkip) REQUIRE skip.skip_id IS UNIQUE;
+
+CREATE CONSTRAINT ingest_run_attempt_key_unique IF NOT EXISTS
+  FOR (attempt:IngestRunAttempt)
+  REQUIRE (attempt.ingest_run_id, attempt.attempt_key) IS UNIQUE;
+
+CREATE INDEX ingest_skip_run IF NOT EXISTS
+  FOR (skip:IngestSkip) ON (skip.ingest_run_id);
+
+CREATE CONSTRAINT profile_fact_key_unique IF NOT EXISTS
+  FOR (fact:ProfileFact)
+  REQUIRE (fact.attribute_name, fact.attribute_value) IS UNIQUE;
+
+CREATE INDEX source_record_attribution_status IF NOT EXISTS
+  FOR (sr:SourceRecord) ON (sr.attribution_status);
+
+CREATE INDEX source_record_reeval_pending IF NOT EXISTS
+  FOR (sr:SourceRecord) ON (sr.reeval_pending);
+
+// C3 identity links and unverified Profiles (#499). Additive and idempotent.
+CREATE CONSTRAINT profile_id_unique IF NOT EXISTS
+  FOR (profile:Profile) REQUIRE profile.profile_id IS UNIQUE;
+
+CREATE CONSTRAINT person_nric_key_unique IF NOT EXISTS
+  FOR (person:Person) REQUIRE person.nric_key IS UNIQUE;
+
+CREATE CONSTRAINT has_identifier_link_id_unique IF NOT EXISTS
+  FOR ()-[link:HAS_IDENTIFIER]-() REQUIRE link.link_id IS UNIQUE;
+
+CREATE INDEX profile_status_materialized_at IF NOT EXISTS
+  FOR (profile:Profile) ON (profile.status, profile.materialized_at);
 
 // Stage-history replay, review, reconciliation, and outbox claim paths.
 CREATE INDEX stage_history_unit_run_sequence IF NOT EXISTS
@@ -248,9 +288,9 @@ CREATE INDEX idx_bankruptcy_case_number IF NOT EXISTS
 CREATE INDEX idx_bankruptcy_event_date IF NOT EXISTS
   FOR (bc:BankruptcyCase) ON (bc.event_date);
 
-// Full-text search — name, NRIC, email, phone
+// Full-text search — name, email, phone
 CREATE FULLTEXT INDEX person_name_search IF NOT EXISTS
-  FOR (p:Person) ON EACH [p.preferred_full_name, p.preferred_nric, p.preferred_email, p.preferred_phone];
+  FOR (p:Person) ON EACH [p.preferred_full_name, p.preferred_email, p.preferred_phone];
 
 CREATE FULLTEXT INDEX address_full_search IF NOT EXISTS
   FOR (addr:Address) ON EACH [addr.normalized_full];

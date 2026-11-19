@@ -8,14 +8,23 @@ from contextlib import asynccontextmanager
 import pytest
 from fastapi import FastAPI
 from httpx import ASGITransport, AsyncClient
-from src.auth.deps import require_human_user
+from src.auth.deps import get_current_user_or_oauth_client, require_human_user
 from src.auth.models import AuthUser
+from src.auth.oauth_client_models import OAuthClientUser
+from src.error_handlers import register_error_handlers
 from src.graph.queries.review import (
+    GET_PERSONS_FOR_REVIEW_MERGE,
     REVIEW_SORT_KEYS,
+    build_claimed_review_action_cypher,
     build_count_review_cases_query,
     build_list_review_cases_query,
+    build_review_action_cypher,
 )
-from src.repositories.protocols.review import ReviewListFilters
+from src.repositories.protocols.review import (
+    ActionResult,
+    BulkActionOutcome,
+    ReviewListFilters,
+)
 from src.routes.review import router
 from src.types import MatchDecisionSummary, ReviewCaseSummary
 
@@ -171,7 +180,8 @@ def test_resolved_filter_is_emitted_without_person_joins() -> None:
         has_person=False,
         active_filters=frozenset({"resolved"}),
     )
-    assert "(rc.queue_state IN ['resolved', 'cancelled']) = $resolved" in query
+    closed_states = "['resolved', 'cancelled', 'expired', 'dismissed', 'superseded_by_policy']"
+    assert f"(rc.queue_state IN {closed_states}) = $resolved" in query
     # No-search path skips the search-only person joins (left:Person/right:Person);
     # display OPTIONAL MATCHes are always present.
     assert "OPTIONAL MATCH (md)-[:ABOUT_LEFT]->(left:Person)" not in query
@@ -189,6 +199,84 @@ def test_inactive_filters_are_not_emitted() -> None:
     assert "$queue_state" in query
     assert "$assigned_to" not in query
     assert "$overdue_sla" not in query
+
+
+def test_pending_source_bypass_is_scoped_to_terminal_disposition_states() -> None:
+    # Only expired/dismissed/superseded_by_policy cases skip the
+    # pending-source requirement, so they stay retrievable after an involved
+    # SourceRecord changes lifecycle_status.
+    terminal_bypass = (
+        "(rc.queue_state IN ['expired', 'dismissed', 'superseded_by_policy'] OR NOT EXISTS {"
+    )
+    for query in (
+        build_list_review_cases_query(None, None, has_q=False),
+        build_count_review_cases_query(has_q=False),
+    ):
+        assert terminal_bypass in query
+        # The pending-source requirement itself is unchanged.
+        assert "involved:SourceRecord" in query
+        assert "involved.lifecycle_status <> 'pending_review'" in query
+
+
+def test_persons_for_review_merge_projects_engine_type_and_source_record_absence() -> None:
+    assert "OPTIONAL MATCH (md)-[:ABOUT_LEFT]->(left:Person)" in GET_PERSONS_FOR_REVIEW_MERGE
+    assert "OPTIONAL MATCH (md)-[:ABOUT_RIGHT]->(right:Person)" in GET_PERSONS_FOR_REVIEW_MERGE
+    assert "md.engine_type AS engine_type" in GET_PERSONS_FOR_REVIEW_MERGE
+    assert "NOT EXISTS { MATCH (md)-[:ABOUT_LEFT|ABOUT_RIGHT]->(:SourceRecord) }" in (
+        GET_PERSONS_FOR_REVIEW_MERGE
+    )
+    assert "AS has_no_source_record" in GET_PERSONS_FOR_REVIEW_MERGE
+    # A missing person side must not break the completion projection.
+    assert "CASE WHEN left IS NULL THEN 0" in GET_PERSONS_FOR_REVIEW_MERGE
+    assert "CASE WHEN right IS NULL THEN 0" in GET_PERSONS_FOR_REVIEW_MERGE
+
+
+def test_review_action_cypher_defaults_preserve_legacy_set_clauses() -> None:
+    query = build_review_action_cypher("merge", None)
+
+    assert "rc.queue_state = $new_state" in query
+    assert "rc.resolution = $resolution" in query
+    assert "rc.resolved_at = datetime()" in query
+    assert "rc.resolved_by" not in query
+    assert "rc.resolution_reason_code" not in query
+    assert "RETURN rc {.review_case_id, .queue_state, .resolution, .created_at}" in query
+
+
+def test_review_action_cypher_adds_audit_fields_only_when_enabled() -> None:
+    query = build_review_action_cypher(
+        "merge",
+        None,
+        include_audit_fields=True,
+        has_reason_code=True,
+    )
+
+    assert "rc.resolved_by = $actor_id" in query
+    assert "rc.resolution_reason_code = $reason_code" in query
+
+
+def test_review_action_cypher_omits_audit_fields_without_resolution() -> None:
+    query = build_review_action_cypher(
+        None,
+        None,
+        include_audit_fields=True,
+        has_reason_code=True,
+    )
+
+    assert "rc.resolved_by" not in query
+    assert "rc.resolution_reason_code" not in query
+
+
+def test_claimed_review_action_cypher_forwards_audit_field_options() -> None:
+    query = build_claimed_review_action_cypher(
+        "merge",
+        None,
+        include_audit_fields=True,
+        has_reason_code=True,
+    )
+
+    assert "rc.resolved_by = $actor_id" in query
+    assert "rc.resolution_reason_code = $reason_code" in query
+    assert "rc.lifecycle_claim_token = $claim_token" in query
 
 
 # ── Route-level tests ───────────────────────────────────────────────────────
@@ -335,3 +423,328 @@ def _cursor_for(offset: int) -> str:
     import base64
 
     return base64.b64encode(str(offset).encode("ascii")).decode("ascii")
+
+
+# ── Review action + bulk action route tests ─────────────────────────────────
+
+
+class FakeActionRepo:
+    """Repository stub that records single-case and bulk action submissions."""
+
+    def __init__(self) -> None:
+        self.action_calls: list[str] = []
+        self.bulk_calls: list[list[str]] = []
+        self.bulk_arguments: list[tuple[str, str, str | None, str | None]] = []
+        self.action_result: ActionResult | None = None
+        self.bulk_outcome: BulkActionOutcome = {"items": []}
+
+    async def submit_action(
+        self,
+        review_case_id: str,
+        action_type: str,
+        new_state: str,
+        resolution: str | None,
+        notes: str | None,
+        follow_up_at: str | None,
+        actor_id: str,
+        survivor_person_id: str | None,
+        golden_profile_selections: list[object],
+        *,
+        reason_code: str | None = None,
+    ) -> ActionResult | None:
+        self.action_calls.append(review_case_id)
+        return self.action_result
+
+    async def submit_bulk_action(
+        self,
+        review_case_ids: list[str],
+        action_type: str,
+        new_state: str,
+        resolution: str | None,
+        notes: str | None,
+        follow_up_at: str | None,
+        actor_id: str,
+        reason_code: str,
+    ) -> BulkActionOutcome:
+        self.bulk_calls.append(list(review_case_ids))
+        self.bulk_arguments.append((action_type, new_state, resolution, reason_code))
+        return self.bulk_outcome
+
+
+async def _admin_user() -> AuthUser:
+    return AuthUser(
+        email="admin@example.com",
+        google_sub="admin-sub",
+        role="admin",
+        entity_key=None,
+        display_name="Admin",
+    )
+
+
+async def _employee_user() -> AuthUser:
+    return AuthUser(
+        email="employee@example.com",
+        google_sub="employee-sub",
+        role="employee",
+        entity_key="fundbox",
+        display_name="Employee",
+    )
+
+
+async def _oauth_user() -> OAuthClientUser:
+    return OAuthClientUser(
+        email="oauth:client-1",
+        google_sub="client-1",
+        role="employee",
+        entity_key=None,
+        display_name="client-1",
+        client_id="client-1",
+        key_scopes=["persons:read"],
+    )
+
+
+def _make_action_app(repo: FakeActionRepo, principal: AuthUser | OAuthClientUser) -> FastAPI:
+    from src.repositories.deps import get_review_repo
+
+    app = FastAPI()
+    app.include_router(router)
+    # The production mounts register the shared error handlers, which render
+    # every rejected request in the standard error envelope.
+    register_error_handlers(app)
+    app.dependency_overrides[get_review_repo] = lambda: repo
+    app.dependency_overrides[get_current_user_or_oauth_client] = lambda: principal
+    return app
+
+
+def _bulk_body(review_case_ids: list[str]) -> dict[str, object]:
+    return {
+        "review_case_ids": review_case_ids,
+        "action_type": "resolve",
+        "reason_code": "confirmed_match",
+    }
+
+
+@pytest.mark.anyio
+async def test_bulk_actions_apply_to_every_requested_case() -> None:
+    repo = FakeActionRepo()
+    repo.bulk_outcome = {
+        "items": [
+            {
+                "review_case_id": "rc-1",
+                "status": "updated",
+                "queue_state": "resolved",
+                "resolution": "resolve",
+                "error_code": None,
+            },
+            {
+                "review_case_id": "rc-2",
+                "status": "error",
+                "queue_state": None,
+                "resolution": None,
+                "error_code": "resolve_not_applicable",
+            },
+        ]
+    }
+    app = _make_action_app(repo, await _admin_user())
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/v1/review-cases/bulk-actions", json=_bulk_body(["rc-1", "rc-2"])
+        )
+
+    assert response.status_code == 200
+    body = response.json()
+    assert body["data"]["items"][0]["status"] == "updated"
+    assert body["data"]["items"][0]["queue_state"] == "resolved"
+    assert body["data"]["items"][1]["status"] == "error"
+    assert body["data"]["items"][1]["error_code"] == "resolve_not_applicable"
+    assert repo.bulk_calls == [["rc-1", "rc-2"]]
+    assert repo.bulk_arguments == [("resolve", "resolved", "resolve", "confirmed_match")]
+
+
+@pytest.mark.anyio
+async def test_bulk_actions_authorize_an_admin_without_querying_the_review_case(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = FakeActionRepo()
+    repo.bulk_outcome = {"items": []}
+    app = _make_action_app(repo, await _admin_user())
+
+    async def fail_entity_lookup(_review_case_id: str) -> list[str]:
+        raise AssertionError("an administrator must not trigger an entity lookup")
+
+    monkeypatch.setattr("src.auth.deps.get_entities_for_review_case", fail_entity_lookup)
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/v1/review-cases/bulk-actions", json=_bulk_body(["rc-1"])
+        )
+
+    assert response.status_code == 200
+    assert repo.bulk_calls == [["rc-1"]]
+
+
+@pytest.mark.anyio
+async def test_bulk_actions_authorize_an_employee_for_every_requested_case(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = FakeActionRepo()
+    app = _make_action_app(repo, await _employee_user())
+    looked_up: list[str] = []
+
+    async def entity_lookup(review_case_id: str) -> list[str]:
+        looked_up.append(review_case_id)
+        return ["fundbox"]
+
+    monkeypatch.setattr("src.auth.deps.get_entities_for_review_case", entity_lookup)
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/v1/review-cases/bulk-actions", json=_bulk_body(["rc-1", "rc-2"])
+        )
+
+    assert response.status_code == 200
+    assert looked_up == ["rc-1", "rc-2"]
+    assert repo.bulk_calls == [["rc-1", "rc-2"]]
+
+
+@pytest.mark.anyio
+async def test_bulk_actions_reject_a_mixed_entity_batch_before_any_write(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    repo = FakeActionRepo()
+    app = _make_action_app(repo, await _employee_user())
+
+    async def entity_lookup(review_case_id: str) -> list[str]:
+        if review_case_id == "rc-allowed":
+            return ["fundbox"]
+        return ["other-entity"]
+
+    monkeypatch.setattr("src.auth.deps.get_entities_for_review_case", entity_lookup)
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/v1/review-cases/bulk-actions", json=_bulk_body(["rc-allowed", "rc-foreign"])
+        )
+
+    assert response.status_code == 403
+    assert response.json()["error"]["code"] == "forbidden_entity_scope"
+    # The whole batch is rejected before a single case is written.
+    assert repo.bulk_calls == []
+
+
+@pytest.mark.anyio
+async def test_bulk_actions_reject_machine_oauth_clients() -> None:
+    repo = FakeActionRepo()
+    app = _make_action_app(repo, await _oauth_user())
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/v1/review-cases/bulk-actions", json=_bulk_body(["rc-1"])
+        )
+
+    assert response.status_code == 403
+    assert repo.bulk_calls == []
+
+
+@pytest.mark.anyio
+async def test_bulk_actions_reject_an_empty_batch() -> None:
+    repo = FakeActionRepo()
+    app = _make_action_app(repo, await _admin_user())
+
+    async with _client(app) as client:
+        response = await client.post("/v1/review-cases/bulk-actions", json=_bulk_body([]))
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
+    assert repo.bulk_calls == []
+
+
+@pytest.mark.anyio
+async def test_bulk_actions_reject_a_batch_above_the_size_limit() -> None:
+    repo = FakeActionRepo()
+    app = _make_action_app(repo, await _admin_user())
+    case_ids = [f"rc-{index}" for index in range(101)]
+
+    async with _client(app) as client:
+        response = await client.post("/v1/review-cases/bulk-actions", json=_bulk_body(case_ids))
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
+    assert repo.bulk_calls == []
+
+
+@pytest.mark.anyio
+async def test_bulk_actions_accept_the_maximum_batch_size() -> None:
+    repo = FakeActionRepo()
+    app = _make_action_app(repo, await _admin_user())
+    case_ids = [f"rc-{index}" for index in range(100)]
+
+    async with _client(app) as client:
+        response = await client.post("/v1/review-cases/bulk-actions", json=_bulk_body(case_ids))
+
+    assert response.status_code == 200
+    assert repo.bulk_calls == [case_ids]
+
+
+@pytest.mark.anyio
+async def test_bulk_actions_reject_an_unknown_action_type() -> None:
+    repo = FakeActionRepo()
+    app = _make_action_app(repo, await _admin_user())
+    body = _bulk_body(["rc-1"])
+    body["action_type"] = "merge"
+
+    async with _client(app) as client:
+        response = await client.post("/v1/review-cases/bulk-actions", json=body)
+
+    # The shared error handler normalises a body validation failure to 400.
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
+    assert repo.bulk_calls == []
+
+
+@pytest.mark.anyio
+async def test_bulk_actions_require_a_reason_code() -> None:
+    repo = FakeActionRepo()
+    app = _make_action_app(repo, await _admin_user())
+    body = _bulk_body(["rc-1"])
+    del body["reason_code"]
+
+    async with _client(app) as client:
+        response = await client.post("/v1/review-cases/bulk-actions", json=body)
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "invalid_request"
+    assert repo.bulk_calls == []
+
+
+@pytest.mark.anyio
+async def test_review_action_rejects_a_pair_audit_merge() -> None:
+    repo = FakeActionRepo()
+    repo.action_result = ActionResult(pair_audit_merge_disabled=True)
+    app = _make_action_app(repo, await _admin_user())
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/v1/review-cases/rc-1/actions", json={"action_type": "merge"}
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "pair_audit_merge_disabled"
+    assert repo.action_calls == ["rc-1"]
+
+
+@pytest.mark.anyio
+async def test_review_action_rejects_a_resolve_that_is_not_applicable() -> None:
+    repo = FakeActionRepo()
+    repo.action_result = ActionResult(resolve_not_applicable=True)
+    app = _make_action_app(repo, await _admin_user())
+
+    async with _client(app) as client:
+        response = await client.post(
+            "/v1/review-cases/rc-1/actions", json={"action_type": "resolve"}
+        )
+
+    assert response.status_code == 422
+    assert response.json()["error"]["code"] == "resolve_not_applicable"
+    assert repo.action_calls == ["rc-1"]

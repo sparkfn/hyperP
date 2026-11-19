@@ -15,9 +15,11 @@ from src.routes import (
     ingest,
     merge,
     person_crm,
+    person_nric,
     person_profile_analysis,
     person_sales,
     persons,
+    profiles,
     reports,
     review,
     survivorship,
@@ -37,6 +39,8 @@ FRONTEND_ROUTERS: tuple[APIRouter, ...] = (
     entities.router,
     reports.router,
     persons.router,
+    profiles.router,
+    person_nric.router,
     person_profile_analysis.router,
     person_sales.router,
     person_crm.router,
@@ -87,4 +91,13 @@ MCP_OPERATION_EXCLUSIONS: tuple[McpOperationExclusion, ...] = (
             "cursor and checkpoint semantics; intentionally unavailable as an MCP tool."
         ),
     ),
+    McpOperationExclusion(
+        operation_id="reveal_person_nric",
+        surface="frontend",
+        reason="PII reveal must not be exposed as an LLM tool",
+    ),
+)
+
+MCP_FRONTEND_EXCLUDED_OPERATION_IDS: frozenset[str] = frozenset(
+    item.operation_id for item in MCP_OPERATION_EXCLUSIONS if item.surface == "frontend"
 )

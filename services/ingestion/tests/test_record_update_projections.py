@@ -4,10 +4,15 @@ from contextlib import ExitStack
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+from _txmock import (
+    SUMMARY_APPLY_QUERY,
+    SUMMARY_CAPTURE_QUERIES,
+    summary_counter_result,
+)
 from neo4j import ManagedTransaction
 from src.graph import queries
 from src.models import MatchDecision, MatchResult, RecordType, SourceRecordEnvelope
-from src.pipeline import IngestPipeline
+from src.pipeline import IngestPipeline, _Staged
 from src.record_lifecycle import PlannedVersion
 
 
@@ -41,10 +46,11 @@ def _run_conversation(
     events: list[str] = []
     tx_mock = MagicMock()
 
-    def record_query(query: str, **_params: object) -> MagicMock:
+    def record_query(query: str, **_params: object) -> object:
         if query == queries.RETIRE_KNOWS_PROJECTION:
             events.append("retire_knows")
-        return MagicMock()
+        counter = summary_counter_result(query)
+        return MagicMock() if counter is None else counter
 
     tx_mock.run.side_effect = record_query
     tx = cast(ManagedTransaction, tx_mock)
@@ -54,7 +60,16 @@ def _run_conversation(
         stack.enter_context(patch("src.pipeline.find_candidates", return_value=[]))
         stack.enter_context(patch("src.pipeline.upsert_nodes"))
         stack.enter_context(
+            patch(
+                "src.pipeline.IngestPipeline._stage_source_record",
+                return_value=_Staged("new-conversation", True),
+            )
+        )
+        stack.enter_context(
             patch("src.pipeline.persist_source_record", return_value="new-conversation")
+        )
+        stack.enter_context(
+            patch("src.pipeline.settle_staged_source_record", return_value="new-conversation")
         )
         stack.enter_context(patch("src.pipeline.persist_match_decision", return_value="decision-1"))
         stack.enter_context(patch("src.pipeline.create_review_case_if_needed", return_value=None))
@@ -63,7 +78,6 @@ def _run_conversation(
         stack.enter_context(patch("src.pipeline.activate_staged_version"))
         stack.enter_context(patch("src.pipeline.materialize_bankruptcy_case"))
         stack.enter_context(patch("src.pipeline.compute_golden_profile"))
-        stack.enter_context(patch("src.pipeline.audit_person_pairs"))
         stack.enter_context(patch("src.pipeline.record_auto_merge_event"))
         knows = stack.enter_context(
             patch("src.pipeline.activate_knows_projection", return_value=knows_materializable)
@@ -93,7 +107,11 @@ def test_accepted_conversation_retires_old_vehicle_mentions_before_writing_new()
 
 def test_pending_conversation_does_not_retire_or_create_vehicle_mentions() -> None:
     tx, writer, knows = _run_conversation(MatchDecision.REVIEW)
-    tx.run.assert_not_called()
+    assert [
+        call.args[0]
+        for call in tx.run.call_args_list
+        if call.args[0] not in SUMMARY_CAPTURE_QUERIES and call.args[0] != SUMMARY_APPLY_QUERY
+    ] == []
     writer.assert_not_called()
     knows.assert_not_called()
 

@@ -3,12 +3,19 @@
 from __future__ import annotations
 
 from collections.abc import Iterator
+from typing import Literal, cast
 
 import pytest
-from _txmock import _RecordingTx
+from _txmock import _RecordingTx, is_summary_capture_query
 from src.graph import queries
+from src.graph.person_list_summary_deltas import PersonListSummaryDeltaCollector
+from src.graph.queries.person_list_summary import (
+    CAPTURE_DEAL_SUMMARY_CONTRIBUTIONS,
+    CAPTURE_PERSON_SUMMARY_CONTRIBUTIONS,
+)
 from src.matching.heuristic import CONFIDENCE_AUTO_MERGE, CONFIDENCE_REVIEW
 from src.matching.pair_score import PERSON_PAIR_AUTO_MERGE, PERSON_PAIR_REVIEW
+from src.nric_anchor import LinkDecision
 from src.pipeline_person_merge import PairPersonAttrs, merge_person_pair, select_survivor
 
 
@@ -57,7 +64,14 @@ class _MergeResult:
 
 
 class _MergeTx(_RecordingTx):
+    def __init__(self) -> None:
+        super().__init__()
+        self.summary_calls: list[str] = []
+
     def run(self, query: str, **params: object) -> _MergeResult:
+        if is_summary_capture_query(query):
+            self.summary_calls.append(query)
+            return _MergeResult([])
         self._record(query, params)
         if query is queries.GET_AFFECTED_SOURCE_RECORDS:
             return _MergeResult(
@@ -79,18 +93,29 @@ def test_merge_person_pair_runs_rewires_and_recomputes_profile(
     recomputed: list[str] = []
     monkeypatch.setattr(
         "src.pipeline_person_merge.compute_golden_profile",
-        lambda tx, person_id: recomputed.append(person_id),
+        lambda tx, person_id, **_kwargs: recomputed.append(person_id),
     )
     tx = _MergeTx()
+    collector = PersonListSummaryDeltaCollector()
     result = merge_person_pair(
         tx,  # type: ignore[arg-type]
         absorbed_id="p-old",
         survivor_id="p-live",
         match_decision_id="md-1",
         reason="threshold met",
+        collector=collector,
+        link_decision=LinkDecision(
+            kind="alias", person_id="p-live", nric_keys=("abc",), reason="test alias"
+        ),
     )
     text = "\n".join(query for query, _ in tx.calls)
     assert result == "me-1"
+    # The merge captures the participants' contributions before its first
+    # rewire and never publishes the delta itself: the caller owns that.
+    assert tx.summary_calls == [
+        CAPTURE_PERSON_SUMMARY_CONTRIBUTIONS,
+        CAPTURE_DEAL_SUMMARY_CONTRIBUTIONS,
+    ]
     assert "TRIGGERED_BY" in text
     assert "LINKED_TO" in text
     assert "IDENTIFIED_BY" in text
@@ -141,6 +166,31 @@ def test_merge_person_pair_runs_rewires_and_recomputes_profile(
         {"absorbed_id": "p-old", "survivor_id": "p-live", "merge_event_id": "me-1"}
     ]
     assert recomputed == ["p-live"]
+
+
+@pytest.mark.parametrize(
+    "kind, person_id",
+    [("split", "p-live"), ("alias", "p-other")],
+)
+def test_merge_person_pair_rejects_non_alias_decisions(kind: str, person_id: str) -> None:
+    tx = _MergeTx()
+    collector = PersonListSummaryDeltaCollector()
+    with pytest.raises(ValueError, match="alias LinkDecision"):
+        merge_person_pair(
+            tx,  # type: ignore[arg-type]
+            absorbed_id="p-old",
+            survivor_id="p-live",
+            match_decision_id="md-1",
+            reason="threshold met",
+            collector=collector,
+            link_decision=LinkDecision(
+                kind=cast(Literal["split", "alias"], kind),
+                person_id=person_id,
+                nric_keys=("abc",),
+                reason="test rejection",
+            ),
+        )
+    assert tx.calls == []
 
 
 def test_auto_merge_rewires_record_event_provenance_for_every_relationship() -> None:

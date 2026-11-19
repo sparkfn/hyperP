@@ -7,12 +7,15 @@ from typing import cast
 from unittest.mock import MagicMock, patch
 
 import pytest
+from _txmock import summary_counter_result
 from neo4j import ManagedTransaction
 from src.graph import queries
 from src.models import MatchDecision, MatchResult, RecordType, SourceRecordEnvelope
 from src.pipeline import IngestPipeline
 from src.pipeline_writes import persist_match_decision, retire_identity_projections
 from src.record_lifecycle import PlannedVersion
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID
+from tests._staging_tx import tx_without_parked_row
 
 
 class _Rows:
@@ -28,6 +31,9 @@ class _Rows:
 
 class _Tx:
     def run(self, query: str, **params: object) -> _Rows:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         assert query == queries.RETIRE_IDENTITY_PROJECTIONS
         assert params == {"source_record_pk": "old-sr"}
         return _Rows()
@@ -39,6 +45,9 @@ def test_retire_identity_projections_returns_sorted_distinct_owners() -> None:
 
 class _ScopedTx:
     def run(self, query: str, **params: object) -> _Rows:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         assert query == queries.RETIRE_IDENTITY_PROJECTIONS_FOR_PERSONS
         assert params == {
             "source_record_pk": "old-sr",
@@ -136,6 +145,9 @@ class _DecisionTx:
         self.calls: list[tuple[str, dict[str, object]]] = []
 
     def run(self, query: str, **params: object) -> _DecisionResult:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self.calls.append((query, params))
         if query == queries.CREATE_MATCH_DECISION:
             return _DecisionResult({"match_decision_id": "decision-1"})
@@ -172,7 +184,7 @@ def _envelope() -> SourceRecordEnvelope:
 
 def test_multi_owner_changed_update_stays_pending_without_active_side_effects() -> None:
     pipeline = IngestPipeline(cast(object, MagicMock()))
-    tx = cast(ManagedTransaction, MagicMock())
+    tx = tx_without_parked_row()
     plan = PlannedVersion(
         version=2,
         active_source_record_pk="old-sr",
@@ -188,6 +200,9 @@ def test_multi_owner_changed_update_stays_pending_without_active_side_effects() 
         persist = stack.enter_context(
             patch("src.pipeline.persist_source_record", return_value="new-sr")
         )
+        settle = stack.enter_context(
+            patch("src.pipeline.settle_staged_source_record", return_value="new-sr")
+        )
         stack.enter_context(patch("src.pipeline.persist_match_decision", return_value="decision-1"))
         review = stack.enter_context(
             patch("src.pipeline.create_review_case_if_needed", return_value="review-1")
@@ -197,7 +212,6 @@ def test_multi_owner_changed_update_stays_pending_without_active_side_effects() 
         activate = stack.enter_context(patch("src.pipeline.activate_staged_version"))
         bankruptcy = stack.enter_context(patch("src.pipeline.materialize_bankruptcy_case"))
         golden = stack.enter_context(patch("src.pipeline.compute_golden_profile"))
-        audit = stack.enter_context(patch("src.pipeline.audit_person_pairs"))
         dirty = stack.enter_context(patch("src.pipeline.mark_profile_analysis_dirty"))
         vehicles = stack.enter_context(patch.object(pipeline, "_write_chat_vehicle_observations"))
         reject = stack.enter_context(patch("src.pipeline.reject_replaced_pending"))
@@ -208,15 +222,23 @@ def test_multi_owner_changed_update_stays_pending_without_active_side_effects() 
     assert result.person_id == "person-a"
     find.assert_called_once()
     match_engine.evaluate.assert_not_called()
-    assert persist.call_args.kwargs["lifecycle_status"].value == "pending_review"
-    assert persist.call_args.kwargs["expected_active_source_record_pk"] == "old-sr"
+    assert persist.call_args.kwargs["lifecycle_status"].value == "parked"
+    assert persist.call_args.kwargs["link_status"] == "unlinked"
+    assert persist.call_args.kwargs["expected_active_source_record_pk"] is None
+    settle.assert_called_once_with(
+        tx,
+        "new-sr",
+        link_status="pending_review",
+        expected_active_source_record_pk="old-sr",
+        ingest_run_id=None,
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    )
     review.assert_called_once()
     assert link.call_args.kwargs["attach_evidence"] is False
     retire.assert_not_called()
     activate.assert_not_called()
     bankruptcy.assert_not_called()
     golden.assert_not_called()
-    audit.assert_not_called()
     dirty.assert_not_called()
     vehicles.assert_not_called()
     reject.assert_called_once_with(tx, "older-pending")
@@ -261,13 +283,16 @@ def test_accepted_update_retires_activates_and_recomputes_complete_affected_set(
             )
         )
     )
-    tx = cast(ManagedTransaction, MagicMock())
+    tx = tx_without_parked_row()
     plan = PlannedVersion(2, old_pk, prior, None)
 
     with ExitStack() as stack:
         stack.enter_context(patch("src.pipeline.find_candidates", return_value=[]))
         stack.enter_context(patch("src.pipeline.upsert_nodes"))
         stack.enter_context(patch("src.pipeline.persist_source_record", return_value="new-sr"))
+        settle = stack.enter_context(
+            patch("src.pipeline.settle_staged_source_record", return_value="new-sr")
+        )
         stack.enter_context(patch("src.pipeline.persist_match_decision", return_value="decision-1"))
         stack.enter_context(patch("src.pipeline.create_review_case_if_needed", return_value=None))
         link = stack.enter_context(patch("src.pipeline.link_record_to_graph"))
@@ -277,7 +302,6 @@ def test_accepted_update_retires_activates_and_recomputes_complete_affected_set(
         activate = stack.enter_context(patch("src.pipeline.activate_staged_version"))
         stack.enter_context(patch("src.pipeline.materialize_bankruptcy_case"))
         golden = stack.enter_context(patch("src.pipeline.compute_golden_profile"))
-        stack.enter_context(patch("src.pipeline.audit_person_pairs"))
         dirty = stack.enter_context(patch("src.pipeline.mark_profile_analysis_dirty"))
         stack.enter_context(patch("src.pipeline.record_auto_merge_event"))
         stack.enter_context(patch.object(pipeline, "_write_chat_vehicle_observations"))
@@ -288,6 +312,14 @@ def test_accepted_update_retires_activates_and_recomputes_complete_affected_set(
         retire.assert_not_called()
     else:
         retire.assert_called_once_with(tx, old_pk)
+    settle.assert_called_once_with(
+        tx,
+        "new-sr",
+        link_status="linked",
+        expected_active_source_record_pk=old_pk,
+        ingest_run_id=None,
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    )
     activate.assert_called_once()
     assert activate.call_args.kwargs["old_source_record_pk"] == old_pk
     assert all(call.kwargs["attach_evidence"] for call in link.call_args_list)
@@ -313,6 +345,9 @@ class _DuplicateTx:
         self.calls: list[str] = []
 
     def run(self, query: str, **_params: object) -> _LifecycleRows:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self.calls.append(query)
         if query != queries.LOCK_AND_GET_SOURCE_STATE:
             raise AssertionError("duplicate ingestion must stop after the lifecycle lock read")
@@ -405,7 +440,7 @@ def _crm_normalized_payload() -> str:
 def test_unchanged_crm_identity_update_reuses_continuity_without_rematching() -> None:
     pipeline = IngestPipeline(cast(object, MagicMock()))
     pipeline._match_engine = MagicMock()
-    tx = cast(ManagedTransaction, MagicMock())
+    tx = tx_without_parked_row()
     envelope = _crm_deal_envelope()
     plan = PlannedVersion(
         version=2,
@@ -422,6 +457,9 @@ def test_unchanged_crm_identity_update_reuses_continuity_without_rematching() ->
         persist = stack.enter_context(
             patch("src.pipeline.persist_source_record", return_value="new-sr")
         )
+        settle = stack.enter_context(
+            patch("src.pipeline.settle_staged_source_record", return_value="new-sr")
+        )
         stack.enter_context(patch("src.pipeline.persist_match_decision", return_value="decision-1"))
         stack.enter_context(patch("src.pipeline.create_review_case_if_needed", return_value=None))
         stack.enter_context(patch("src.pipeline.link_record_to_graph"))
@@ -431,7 +469,6 @@ def test_unchanged_crm_identity_update_reuses_continuity_without_rematching() ->
         activate = stack.enter_context(patch("src.pipeline.activate_staged_version"))
         stack.enter_context(patch("src.pipeline.materialize_bankruptcy_case"))
         golden = stack.enter_context(patch("src.pipeline.compute_golden_profile"))
-        audit = stack.enter_context(patch("src.pipeline.audit_person_pairs"))
         dirty = stack.enter_context(patch("src.pipeline.mark_profile_analysis_dirty"))
         merge_event = stack.enter_context(patch("src.pipeline.record_auto_merge_event"))
         stack.enter_context(patch.object(pipeline, "_write_chat_vehicle_observations"))
@@ -443,11 +480,20 @@ def test_unchanged_crm_identity_update_reuses_continuity_without_rematching() ->
     find.assert_not_called()
     pipeline._match_engine.evaluate.assert_not_called()
     upsert.assert_not_called()
-    assert persist.call_args.kwargs["match_result"].reasons == ["unchanged_crm_identity_continuity"]
+    assert persist.call_args.kwargs["lifecycle_status"].value == "parked"
+    assert persist.call_args.kwargs["link_status"] == "unlinked"
+    assert persist.call_args.kwargs["expected_active_source_record_pk"] is None
+    settle.assert_called_once_with(
+        tx,
+        "new-sr",
+        link_status="linked",
+        expected_active_source_record_pk="old-sr",
+        ingest_run_id=None,
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    )
     retire.assert_called_once_with(tx, "old-sr", person_ids=("person-a",))
     activate.assert_called_once()
     golden.assert_not_called()
-    audit.assert_not_called()
     merge_event.assert_not_called()
     dirty.assert_called_once_with(tx, source_record_pks=(), person_ids={"person-a"})
 
@@ -463,7 +509,7 @@ def test_crm_contact_change_uses_full_matching_and_projection_refresh() -> None:
             )
         )
     )
-    tx = cast(ManagedTransaction, MagicMock())
+    tx = tx_without_parked_row()
     envelope = _crm_deal_envelope(contact_ids=["contact-1"])
     prior_raw = dict(envelope.raw_payload)
     prior_raw["crm_contact_ids"] = ["contact-old"]
@@ -480,6 +526,9 @@ def test_crm_contact_change_uses_full_matching_and_projection_refresh() -> None:
         find = stack.enter_context(patch("src.pipeline.find_candidates", return_value=[]))
         upsert = stack.enter_context(patch("src.pipeline.upsert_nodes"))
         stack.enter_context(patch("src.pipeline.persist_source_record", return_value="new-sr"))
+        settle = stack.enter_context(
+            patch("src.pipeline.settle_staged_source_record", return_value="new-sr")
+        )
         stack.enter_context(patch("src.pipeline.persist_match_decision", return_value="decision-1"))
         stack.enter_context(patch("src.pipeline.create_review_case_if_needed", return_value=None))
         stack.enter_context(patch("src.pipeline.link_record_to_graph"))
@@ -489,7 +538,6 @@ def test_crm_contact_change_uses_full_matching_and_projection_refresh() -> None:
         stack.enter_context(patch("src.pipeline.activate_staged_version"))
         stack.enter_context(patch("src.pipeline.materialize_bankruptcy_case"))
         golden = stack.enter_context(patch("src.pipeline.compute_golden_profile"))
-        audit = stack.enter_context(patch("src.pipeline.audit_person_pairs"))
         stack.enter_context(patch("src.pipeline.mark_profile_analysis_dirty"))
         merge_event = stack.enter_context(patch("src.pipeline.record_auto_merge_event"))
         stack.enter_context(patch.object(pipeline, "_write_chat_vehicle_observations"))
@@ -499,6 +547,13 @@ def test_crm_contact_change_uses_full_matching_and_projection_refresh() -> None:
     find.assert_called_once()
     pipeline._match_engine.evaluate.assert_called_once()
     upsert.assert_called_once()
-    golden.assert_called_once_with(tx, "person-a")
-    audit.assert_called_once()
+    settle.assert_called_once_with(
+        tx,
+        "new-sr",
+        link_status="linked",
+        expected_active_source_record_pk="old-sr",
+        ingest_run_id=None,
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    )
+    golden.assert_called_once_with(tx, "person-a", v2_evidence=False)
     merge_event.assert_called_once()

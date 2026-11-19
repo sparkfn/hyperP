@@ -286,9 +286,16 @@ Manual actions must survive reprocessing.
 Use conservative thresholds until benchmark evidence justifies change.
 
 - deterministic hard rules first
-- heuristic auto-merge threshold: `0.90`
-- heuristic review band: `0.60 - 0.89`
-- heuristic no-match threshold: `< 0.60`
+- legacy v1 bands (identity model v1 and v2_shadow): auto-merge `0.40`,
+  review `0.20`, no-match `< 0.20`; relationship records attach at `0.20`
+  and park at `0.10`
+- v2 bands (identity model v2 only, policy `c4-v1`, uncalibrated): attach
+  `τ_attach = 0.70`, union `τ_union = 0.50`, park below `0.50`, review only
+  for the exception taxonomy (anchored_ambiguity, nric_contradiction,
+  crm_ambiguity, continuity_reassignment)
+- v2 attach additionally requires at least 2 signal families, no veto
+  (dob_conflict, name_mismatch, phone_high_fanout), and a top-1/top-2
+  confidence margin of at least `0.10`
 - LLM can recommend any state, but production system should treat LLM `merge`
   as `review` during MVP
 

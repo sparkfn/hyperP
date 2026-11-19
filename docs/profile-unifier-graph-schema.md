@@ -84,6 +84,8 @@ CREATE (p:Person {
   profile_completeness_score: 0.0,
   golden_profile_computed_at: null,
   golden_profile_version: null,
+  golden_json: null,              // top-3 golden snapshot (phone/email/nric ranks 1..3 + conflicts)
+  golden_conflicts: null,         // JSON array of GoldenTopConflict / pin_unresolved entries
 
   created_at: datetime(),
   updated_at: datetime()
@@ -94,6 +96,48 @@ Why on Person: every person read fetches the golden profile. A separate node
 adds a mandatory hop to every query for zero benefit. When the profile is
 recomputed, update in place — the computation is synchronous within the merge
 transaction anyway.
+
+### PersonListSummaryCounter
+
+A singleton maintained projection for the person-list summary endpoints. Its
+unique `key` is `global`; it stores the six aggregate values, readiness and
+reconciliation metadata. The API trusts the Person counts only while `ready`
+is true and their generation and values are valid. The CRM counts additionally
+require a current month marker. An explicit ingestion backfill publishes the
+initial values; startup and nightly reconciliation never activate an unready
+counter.
+
+```cypher
+MERGE (c:PersonListSummaryCounter {key: 'global'})
+ON CREATE SET c.ready = false,
+              c.generation = 0,
+              c.active_person_count = 0,
+              c.high_risk_count = 0,
+              c.high_value_count = 0,
+              c.no_contact_count = 0,
+              c.deals_this_month_count = 0,
+              c.all_deals_count = 0,
+              c.updated_at = datetime()
+```
+
+| Property | Meaning |
+| --- | --- |
+| `key` | Singleton key; always `global` and uniquely constrained. |
+| `active_person_count` | Persons with a non-null status other than `merged`; exposed as `all_profiles_count`. |
+| `high_risk_count` | Qualifying Persons with `is_high_risk = true`. |
+| `high_value_count` | Qualifying Persons with `is_high_value = true`. |
+| `no_contact_count` | Qualifying Persons whose `preferred_phone` and `preferred_email` are both null. |
+| `deals_this_month_count` | Distinct qualifying CRM deals observed since the current database month boundary. |
+| `all_deals_count` | Distinct qualifying CRM deals, regardless of observation month. |
+| `ready` | Boolean readiness gate; explicit backfill transitions an unready counter to ready. |
+| `generation` | Non-negative integer advanced when the projection is invalidated. |
+| `month` | Database month marker (`YYYY-MM`) for the month-scoped deal count. |
+| `updated_at` | Timestamp of the latest counter maintenance or publication. |
+
+The uniqueness constraint is `person_list_summary_counter_key_unique` on
+`PersonListSummaryCounter.key`. Counts are maintained transactionally by graph
+writers and reconciled from the authoritative aggregates nightly. A deal linked
+to multiple qualifying Persons contributes once to each deal count.
 
 ### Identifier
 
@@ -106,16 +150,30 @@ natural.
 ```cypher
 CREATE (id:Identifier {
   identifier_id: randomUUID(),
-  identifier_type: 'phone',       // phone | email | government_id_hash |
+  identifier_type: 'phone',       // phone | email | nric |
                                    // external_customer_id | membership_id |
                                    // crm_contact_id | loyalty_id | custom
-  normalized_value: '+6591234567',
-  hashed_value: null,              // for sensitive IDs
+  normalized_value: '+6591234567', // for nric: 64-hex HMAC-SHA256 digest
+  hashed_value: null,              // for nric: same 64-hex digest
+  nric_masked: null,               // for nric: masked display string (e.g. S••••567D)
+  checksum_valid: null,            // for nric: boolean checksum validity flag
+  nric_key_version: null,          // for nric: key version slug (e.g. v1)
+  nric_encrypted: null,            // for nric: Fernet ciphertext of canonical NRIC
   created_at: datetime()
 })
 ```
 
-Constraint: at least one of `normalized_value` or `hashed_value` must be set.
+For `nric` identifiers, both `normalized_value` (the graph matching and uniqueness
+property) and `hashed_value` (sensitive identifier convention) store the 64-character
+hexadecimal HMAC-SHA256 digest. Format detection uses `is_nric_digest` (64 hex characters):
+digest-shaped values are keyed writes, while anything else represents legacy plaintext
+retained until Layer-2 rehash backfill.
+
+Key rotation requires an L2 controlled backfill prior to environment cut-over:
+decrypt `nric_encrypted` with the old key, re-hash and re-encrypt with the new key,
+rewrite both fields, merge duplicate Identifier nodes, then switch `NRIC_HMAC_KEY`.
+The secret key must be backed up in the secure secret store; losing it renders keyed
+records unmatchable and unrevealable.
 
 Why a node and not a property: identifiers are shared across persons, and
 querying "who else shares this phone" is a core traversal. Making identifiers
@@ -301,6 +359,112 @@ different matching criteria later. `rental_flat` is a place register and is
   retried at end-of-run. See
   [`profile-unifier-entity-and-sales.md`](profile-unifier-entity-and-sales.md).
 
+### Profile (C3, derived)
+
+A `Profile` is a derived, rebuildable projection of C1 `ASSERTS` evidence: an
+unverified cluster of source records that share eligible identifiers but are not
+anchored by a gate-approved NRIC. It is **not** a Person — no golden-profile
+fields, no `MERGED_INTO` lineage, no review merge, and no match-engine scoring.
+
+```cypher
+CREATE (profile:Profile {
+  profile_id: randomUUID(),      // stable random UUID assigned at creation
+  status: 'open',                // open | promoted | retired; split is reserved
+  evidence_version: 0,           // CAS token; increments only on real evidence change
+  materialized_at: datetime(),   // never rewritten after creation
+  updated_at: datetime(),        // advances only with evidence_version
+  promoted_person_id: null       // set on one-way NRIC promotion
+})
+```
+
+Status values:
+
+- `open` — unverified evidence cluster, eligible for candidate expansion.
+- `promoted` — anchored by a gate-approved NRIC digest; `promoted_person_id`
+  and `PROMOTED_TO` record the Person. Promotion is one-way; no demotion exists.
+- `retired` — duplicate cluster absorbed by the deterministic union.
+- `split` — reserved for future cluster fission; C3 never writes it.
+
+Materialization threshold: a cluster materializes when two attributed records
+share an eligible key, or when one record asserts two independent eligible
+high-entropy keys (distinct usable, candidate-eligible Identifier nodes with
+complete assertion metadata). Below the threshold the record stays
+`lifecycle_status='parked'`, `link_status='unlinked'`, `attribution_status='parked'`,
+`reeval_pending=true` and remains visible through `ASSERTS`.
+
+Attributed members use `(SourceRecord)-[:IN_PROFILE]->(Profile)` with
+`link_status='profile'`, `attribution_status='profile'`, `reeval_pending=false`.
+Bridged open Profiles are unioned deterministically: the lowest `profile_id` is
+kept, members and links move to it, and every loser becomes `retired`.
+
+Every Profile write is CAS-guarded on `status='open' AND evidence_version=$expected`;
+the version increments only on an actual evidence change. The derived-write
+zero-diff invariant holds: an unchanged recompute performs no edge/property
+writes, and `materialized_at`/`first_seen_at` are preserved when evidence changes.
+
+C4 `HAS_IDENTIFIER` values carry real link weights (`policy_version='c4-w1'`):
+per-assertion strength `s(a) = min(1, tier · q · c · (1.15 if verified))` with
+tier weights keyed by tier NAME, noisy-OR link `score` with a dormant `0.24`
+candidate-only cap, `exclusivity = 1 / max(1, participant_count)`, and
+evidence-time-anchored `rank_score` decay (half-lives phone 365 / email 730 /
+`device_id` 180 / `social:*` 365; nric and CRM ids never decay), all rounded to
+6 dp. Ranking (`golden_rank`) is owned by the golden stage, not the link
+recompute: the link MERGE resets `golden_rank` to null when the row changes and
+omits it from the unchanged-check. Pre-C4 links still at `c3-provisional` are
+treated as unweighted (`link_weight` null → 1.0) by matching and never zero it
+out.
+
+`Identifier.participant_count` is derived from direct eligible participants — an
+active Person, an open Profile, or a current parked/unlinked/parked/reeval_pending
+SourceRecord — and recomputed, never incremented.
+
+Identity-model modes:
+
+| Mode | Behaviour |
+| --- | --- |
+| `v1` | Legacy writes and matching only; no C3 projection. |
+| `v2_shadow` | Legacy outcome stays authoritative; C1 assertions and the C3 projection are additionally written without changing legacy counts. |
+| `v2` | C3 projection is authoritative: only a gate-approved NRIC `MERGE` creates a Person, NRIC-less outcomes become Profile/parked, and `IDENTIFIED_BY` is not written. |
+
+v2 NRIC equality is exact HMAC-digest equality across
+`NormalizedIdentifier.normalized_value`, `Identifier.normalized_value`, and
+`Person.nric_key`; there is no plaintext fallback.
+
+### Identity assertions and skips
+
+`ASSERTS` records immutable source attribution from a `SourceRecord` to shared
+`Identifier`, `Address`, or `ProfileFact` evidence. Each relationship has a
+unique `assertion_id`, a `field_path`, and a `role` (`subject` in C1); retries
+merge the same edge and never rewrite or delete it. C1 asserts only usable
+identifiers and addresses, plus `full_name` and `dob` attributes. A `ProfileFact`
+node is keyed by `(attribute_name, attribute_value)`; it is an assertion target,
+not a replacement for Person `HAS_FACT` profile projection.
+
+`IngestSkip` records intentionally unpersisted input with a unique `skip_id`,
+`ingest_run_id`, `source_system`, `stage`, `reason`, and source ID or locator.
+Upstream SQL `WHERE` clauses and API query filters define a source's extraction
+scope rather than rows Python observed, so they are intentionally excluded from
+`IngestSkip`.
+A SourceRecord with `lifecycle_status='parked'` is persisted without a Person
+link and remains eligible for later re-evaluation; it is not active or latest.
+An `IngestRunAttempt` node stores durable counters for one process attempt and links to its
+`IngestRun` for cumulative reconciliation.
+Optional SourceRecord attribution properties are `attribution_status`,
+`attribution_score` (reserved for later work), `attribution_eval_at`, and
+`reeval_pending`. `IDENTITY_MODEL=v1` is the default; `v2_shadow` additionally
+writes C1 assertions and the derived C3 projection while the legacy outcome
+remains authoritative; `v2` makes the C3 projection authoritative. See the
+Profile section above for the mode table.
+
+Every IngestPipeline record is staged as `parked` first and settled to
+`pending_review`/`active` once linked. A parked row reused by a later run is attached to that
+run with `PART_OF_RUN` when it settles, so run lineage matches a record that run created.
+
+Source retirement (`retire_source_evidence`) applies to `active`/`pending_review` rows only.
+No retirement-capable connector (the Fundbox API) can leave a record parked today; a connector
+that emits retirement markers for a record type that can be parked must add `parked` to the
+retirement lifecycle filters, otherwise a retracted parked row keeps `reeval_pending`.
+
 ### IngestRun
 
 Lightweight operational node for observability and replay.
@@ -328,12 +492,17 @@ CREATE (md:MatchDecision {
   engine_type: 'heuristic',       // deterministic | heuristic | llm | manual | pair_audit
   engine_version: 'v1.0.0',
   decision: 'review',             // merge | review | no_match
-  confidence: 0.78,
-  reasons: ['same phone', 'same DOB', 'highly similar name'],
+  confidence: 0.20,
+  reasons: ['Phone match (unverified: +0.20)'],
   blocking_conflicts: [],
   feature_snapshot: {},
   prompt_snapshot: null,
   policy_version: 'policy-2026-03-31',
+  // optional — written only when the review policy parks the decision
+  review_suppressed: true,
+  suppressed_reason: 'unverified_phone',  // unverified_phone | unverified_email |
+                                          // phone_near_match | email_near_match |
+                                          // weak_signal_combination
   created_at: datetime(),
   retention_expires_at: null
 })
@@ -342,18 +511,37 @@ CREATE (md:MatchDecision {
 Note: `reasons` and `blocking_conflicts` are native Neo4j lists.
 `feature_snapshot` is a native map.
 
+`review_suppressed` and `suppressed_reason` are optional properties, set only
+when the ingestion `REVIEW_POLICY=v2_weak_signal_park` policy parks a
+weak-signal `review` decision instead of opening a `ReviewCase`. The example
+above shows such a parked decision. The decision itself is still persisted and
+still carries `decision = 'review'`; only the review case is skipped. The
+source record stays `pending_review` and no evidence is attached to it — the
+decision is parked, not resolved. When the policy is off (the default) neither
+property is written.
+
 ### ReviewCase
 
 ```cypher
 CREATE (rc:ReviewCase {
   review_case_id: randomUUID(),
+  reason_code: null,              // exception-only taxonomy (v2): anchored_ambiguity |
+                                 // nric_contradiction | crm_ambiguity | continuity_reassignment
+  case_key: null,                 // sha1 deduplication key (unique); recurrence bumps
+                                 // occurrence_count/last_seen_at without reopening
+  occurrence_count: 1,
+  last_seen_at: datetime(),
   priority: 100,
-  queue_state: 'open',            // open | assigned | deferred | resolved | cancelled
+  queue_state: 'open',            // open | assigned | deferred | resolved | cancelled |
+                                 // expired | dismissed | superseded_by_policy
   assigned_to: null,
   follow_up_at: null,
   sla_due_at: datetime(),
-  resolution: null,               // merge | reject | manual_no_match | cancelled_superseded
+  resolution: null,               // merge | reject | manual_no_match | resolve |
+                                 // expired | dismissed | cancelled_superseded
   resolved_at: null,
+  resolved_by: null,              // reviewer who closed the case
+  resolution_reason_code: null,   // audit reason code for the close
   // review actions stored as an ordered list of JSON strings — no separate node
   actions: [],
   created_at: datetime(),
@@ -375,9 +563,23 @@ SET rc.actions = rc.actions + [$action_json]
 ```
 
 The `review_action_type` values include both API-submitted actions (`merge`,
-`reject`, `defer`, `escalate`, `manual_no_match`) and system-recorded actions
-(`assign`, `unassign`, `cancel`, `reopen`). The API layer exposes only the
-API-submitted subset.
+`reject`, `defer`, `escalate`, `manual_no_match`, `resolve`, `expire`,
+`dismiss`) and system-recorded actions (`assign`, `unassign`, `cancel`,
+`reopen`). The API layer exposes only the API-submitted subset.
+
+A reason-coded action appends a `reason_code` key to its audit entry. A closing
+action — one that sets a resolution — additionally records the reviewer in
+`resolved_by` and, when a reason code was supplied, the code in
+`resolution_reason_code`. The two node properties are written only for
+reason-coded closes and for the `resolve`, `expire`, and `dismiss` actions; a
+legacy close without a reason code leaves both properties unset.
+
+`expired`, `dismissed`, and `superseded_by_policy` are terminal dispositions.
+The `expire` and `dismiss` actions close the case in place — they do not
+delete the `ReviewCase` node — and the case stays queryable even after an
+involved `SourceRecord` later changes its lifecycle status.
+`superseded_by_policy` is a state only: no API action transitions a case into
+it.
 
 **Merge side-effect provenance (nullable).** When a person merge closes or
 redirects a still-open case as a side effect, the case carries provenance so an
@@ -441,7 +643,11 @@ this as a closed enum.
 | --- | --- | --- | --- | --- |
 | `IDENTIFIED_BY` | Person | Identifier | `is_verified`, `verification_method`, `is_active`, `quality_flag`, `first_seen_at`, `last_seen_at`, `last_confirmed_at`, `source_system_key`, `source_record_pk` | Links a person to an identity signal. Rich properties track verification, aging, and provenance. |
 | `LIVES_AT` | Person | Address | `is_active`, `is_verified`, `source_system_key`, `source_record_pk`, `first_seen_at`, `last_seen_at`, `last_confirmed_at`, `quality_flag` | Links a person to a normalized address. Same aging and verification model as `IDENTIFIED_BY`. |
-| `LINKED_TO` | SourceRecord | Person | `linked_at` | Associates an ingested record with its resolved person. |
+| `LINKED_TO` | SourceRecord | Person | `linked_at`, `is_active` (legacy rows default active) | Associates an ingested record with its resolved person. Re-attribution reactivates an inactive link. |
+| `HAS_IDENTIFIER` | Person / Profile | Identifier | `link_id`, `assertion_count`, `source_count`, `verified_count`, `max_tier`, `first_seen_at`, `last_seen_at`, `last_confirmed_at`, `score`, `exclusivity`, `rank_score`, `golden_rank`, `basis`, `status`, `policy_version`, `computed_at` | Derived C3 evidence link. `link_id` is the deterministic SHA1 of `participant_id|identifier_id`; C4 writes real weights (`policy_version='c4-w1'`, 6-dp `score`/`exclusivity`/`rank_score`, rank owned by the golden stage). |
+| `IN_PROFILE` | SourceRecord | Profile | — | Profile membership, retained as lineage after promotion. |
+| `ANCHORED_BY` | Person | Identifier | — | Person is anchored by a gate-approved NRIC digest (`Person.nric_key`). |
+| `PROMOTED_TO` | Profile | Person | — | One-way result of NRIC promotion. |
 | `FROM_SOURCE` | SourceRecord / IngestRun | SourceSystem | — | Provenance. |
 | `OWNED_BY` | SourceRecord | Entity | — | Record-scoped ownership for a shared multi-entity SourceSystem. |
 | `PART_OF_RUN` | SourceRecord | IngestRun | — | Groups records by ingestion batch. |
@@ -529,6 +735,27 @@ duplicates.
 Why a relationship: a lock exists only between two entities. It is checked
 during candidate evaluation by traversing from one person to the other. A
 standalone node with two pointer relationships is relational thinking.
+
+### Audited NRIC Reveals (`NricRevealEvent`)
+
+Immutable audit node created whenever an administrator reveals plaintext NRICs.
+
+```cypher
+CREATE (re:NricRevealEvent {
+  reveal_id: randomUUID(),
+  person_id: '<uuid>',
+  actor_email: 'admin@example.com',
+  reason: 'Compliance audit for customer review', // scrubbed of any raw NRIC tokens
+  request_id: '<request_id>',
+  revealed_at: datetime(),
+  value_count: 1,
+  unavailable_count: 0,
+  created_at: datetime()
+})-[:REVEALED_FOR]->(p:Person)
+```
+
+Why a dedicated node: regulatory access to plaintext PII requires permanent,
+tamper-evident audit lineage linked directly to the target Person.
 
 ### Survivorship Overrides
 
@@ -672,6 +899,19 @@ CREATE CONSTRAINT person_id_unique IF NOT EXISTS
 CREATE CONSTRAINT identifier_id_unique IF NOT EXISTS
   FOR (id:Identifier) REQUIRE id.identifier_id IS UNIQUE;
 
+// C3 identity links and unverified Profiles (#499)
+CREATE CONSTRAINT profile_id_unique IF NOT EXISTS
+  FOR (profile:Profile) REQUIRE profile.profile_id IS UNIQUE;
+
+CREATE CONSTRAINT person_nric_key_unique IF NOT EXISTS
+  FOR (person:Person) REQUIRE person.nric_key IS UNIQUE;
+
+CREATE CONSTRAINT has_identifier_link_id_unique IF NOT EXISTS
+  FOR ()-[link:HAS_IDENTIFIER]-() REQUIRE link.link_id IS UNIQUE;
+
+CREATE INDEX profile_status_materialized_at IF NOT EXISTS
+  FOR (profile:Profile) ON (profile.status, profile.materialized_at);
+
 CREATE CONSTRAINT source_system_key_unique IF NOT EXISTS
   FOR (ss:SourceSystem) REQUIRE ss.source_key IS UNIQUE;
 
@@ -683,6 +923,9 @@ CREATE CONSTRAINT match_decision_id_unique IF NOT EXISTS
 
 CREATE CONSTRAINT review_case_id_unique IF NOT EXISTS
   FOR (rc:ReviewCase) REQUIRE rc.review_case_id IS UNIQUE;
+
+CREATE CONSTRAINT review_case_case_key_unique IF NOT EXISTS
+  FOR (rc:ReviewCase) REQUIRE rc.case_key IS UNIQUE;
 
 CREATE CONSTRAINT merge_event_id_unique IF NOT EXISTS
   FOR (me:MergeEvent) REQUIRE me.merge_event_id IS UNIQUE;

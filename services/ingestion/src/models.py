@@ -148,6 +148,8 @@ class SourceRecordLifecycleStatus(StrEnum):
     SUPERSEDED = "superseded"
     REJECTED = "rejected"
     LINK_FAILED = "link_failed"
+    # Persisted-first but unlinked: kept for re-evaluation, invisible to version planning.
+    PARKED = "parked"
 
 
 @dataclass(frozen=True)
@@ -482,6 +484,10 @@ class NormalizedIdentifier(BaseModel):
     source_instance_id: str | None = None
     is_verified: bool = False
     quality_flag: QualityFlag = QualityFlag.VALID
+    nric_masked: str | None = None
+    checksum_valid: bool | None = None
+    nric_key_version: str | None = None
+    nric_plaintext: str | None = Field(default=None, exclude=True, repr=False)
 
 
 class NormalizedAddress(BaseModel):
@@ -519,6 +525,28 @@ class CandidateResult(BaseModel):
     source: str = "identifier"  # "identifier" or "address"
 
 
+class IdentityCandidate(BaseModel):
+    """A v2 identity participant discovered through shared identifiers.
+
+    ``participant_kind`` is ``person``, ``profile``, or ``source_record``. Only
+    Person participants reach the existing match engine; Profiles and parked
+    SourceRecords feed the materializer/promoter.
+    """
+
+    participant_kind: str
+    participant_id: str
+    shared_key_count: int = 0
+
+
+class MatchAction(StrEnum):
+    """v2 match disposition label (plan §2.4)."""
+
+    ATTACH = "attach"
+    UNION = "union"
+    PARK = "park"
+    REVIEW = "review"
+
+
 class MatchResult(BaseModel):
     """Output of the match engine chain."""
 
@@ -528,6 +556,9 @@ class MatchResult(BaseModel):
     engine_type: EngineType = EngineType.DETERMINISTIC
     engine_version: str = "v0.1.0"
     matched_person_id: str | None = None
+    action: MatchAction | None = None
+    review_reason: str | None = None
+    policy_version: str = "v0.1.0"
     proposed_person_id: str | None = None
     # When an incoming non-CRM-deal record independently matches (MERGE band) more than one
     # distinct active person, the record and its extracted evidence are linked to
@@ -538,7 +569,6 @@ class MatchResult(BaseModel):
     # CRM ambiguity reviews expose every supported destination through one
     # selectable review case instead of silently choosing one candidate.
     review_candidate_person_ids: list[str] = Field(default_factory=list)
-    is_new_person: bool = False
     feature_snapshot: dict[str, JsonValue] = Field(default_factory=dict)
 
 
@@ -561,5 +591,10 @@ class IngestResult(BaseModel):
     review_case_id: str | None = None
     errors: list[str] = Field(default_factory=list)
     skipped_duplicate: bool = False
-    dropped: bool = False
+    # Persisted as a SourceRecord but not linked to any Person (match-only miss, unresolved CRM
+    # deal contacts). Replaces the former ``dropped`` exit.
+    parked: bool = False
+    # Deliberately not persisted; the caller records an ``IngestSkip`` with ``skip_reason``.
+    excluded: bool = False
+    skip_reason: str | None = None
     retry_pending: bool = False

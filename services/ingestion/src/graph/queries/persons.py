@@ -27,9 +27,19 @@ MERGE (id:Identifier {
 ON CREATE SET
     id.identifier_id = randomUUID(),
     id.source_instance_id = input.source_instance_id,
+    id.hashed_value = input.hashed_value,
+    id.nric_masked = input.nric_masked,
+    id.checksum_valid = input.checksum_valid,
+    id.nric_key_version = input.nric_key_version,
+    id.nric_encrypted = input.nric_encrypted,
     id.created_at = datetime()
 ON MATCH SET
-    id.source_instance_id = input.source_instance_id
+    id.source_instance_id = input.source_instance_id,
+    id.hashed_value = coalesce(input.hashed_value, id.hashed_value),
+    id.nric_masked = coalesce(input.nric_masked, id.nric_masked),
+    id.checksum_valid = coalesce(input.checksum_valid, id.checksum_valid),
+    id.nric_key_version = coalesce(input.nric_key_version, id.nric_key_version),
+    id.nric_encrypted = coalesce(id.nric_encrypted, input.nric_encrypted)
 RETURN count(id) AS upserted_count
 """
 
@@ -240,9 +250,54 @@ WHERE coalesce(rel.is_active, true) = true
 OPTIONAL MATCH (src:SourceRecord {source_record_pk: rel.source_record_pk})
 RETURN id.identifier_type AS identifier_type,
        id.normalized_value AS normalized_value,
+       id.nric_masked AS nric_masked,
        rel.is_verified AS is_verified,
        rel.last_confirmed_at AS last_confirmed_at,
        src.record_type AS source_record_type
+"""
+
+# v2 identity mode has no legacy IDENTIFIED_BY projection, so golden-profile
+# survivorship reads the derived HAS_IDENTIFIER projection first and falls back
+# to legacy rows only for identifiers the projection does not cover. Shadow and
+# v1 keep the exact legacy query above.
+FETCH_PERSON_IDENTIFIERS_V2 = """
+MATCH (p:Person {person_id: $person_id})
+CALL {
+  WITH p
+  MATCH (p)-[has:HAS_IDENTIFIER {status: 'active'}]->(id:Identifier)
+  OPTIONAL MATCH (record:SourceRecord)-[:ASSERTS]->(id)
+  WHERE EXISTS {
+    MATCH (record)-[linked:LINKED_TO]->(p)
+    WHERE coalesce(linked.is_active, true) = true
+      AND coalesce(record.link_status, 'linked') <> 'pending_review'
+      AND coalesce(record.lifecycle_status, 'active') <> 'superseded'
+  }
+  WITH id, has, record
+  ORDER BY coalesce(record.source_record_pk, '')
+  WITH id, has,
+       head([value IN collect(record.record_type) WHERE value IS NOT NULL]) AS source_record_type
+  RETURN id,
+         coalesce(has.verified_count, 0) > 0 AS is_verified,
+         has.last_confirmed_at AS last_confirmed_at,
+         source_record_type
+  UNION
+  WITH p
+  MATCH (p)-[rel:IDENTIFIED_BY]->(id:Identifier)
+  WHERE coalesce(rel.is_active, true) = true
+    AND NOT EXISTS { MATCH (p)-[:HAS_IDENTIFIER {status: 'active'}]->(id) }
+  OPTIONAL MATCH (src:SourceRecord {source_record_pk: rel.source_record_pk})
+  RETURN id,
+         rel.is_verified AS is_verified,
+         rel.last_confirmed_at AS last_confirmed_at,
+         src.record_type AS source_record_type
+}
+RETURN id.identifier_type AS identifier_type,
+       id.normalized_value AS normalized_value,
+       id.nric_masked AS nric_masked,
+       is_verified,
+       last_confirmed_at,
+       source_record_type
+ORDER BY identifier_type, normalized_value
 """
 
 FETCH_PERSON_ADDRESSES = """
@@ -337,6 +392,7 @@ CALL (p) {
       OR (identifier_source.lifecycle_status IS NULL AND identifier_source.is_latest = true))
   RETURN collect(CASE WHEN identifier IS NULL THEN null ELSE {
     identifier_type: identifier_node.identifier_type, normalized_value: identifier_node.normalized_value,
+    nric_masked: identifier_node.nric_masked,
     is_verified: identifier.is_verified, last_confirmed_at: toString(identifier.last_confirmed_at),
     source_record_pk: identifier.source_record_pk
   } END) AS identifiers
@@ -367,4 +423,87 @@ RETURN p.person_id AS person_id
 FETCH_ADDRESS_IDS_BY_NORMALIZED_FULL = """
 MATCH (address:Address {normalized_full: $normalized_full})
 RETURN collect(DISTINCT address.address_id) AS address_ids
+"""
+
+#: Value-preserving write lock for the golden stage, so it stays mutually
+#: exclusive with the API-side recompute of the same Person.
+LOCK_PERSON_FOR_GOLDEN = """
+MATCH (person:Person {person_id: $person_id})
+SET person.person_id = person.person_id
+RETURN person.person_id AS person_id
+"""
+
+#: Key-only read of a Person's link identifier keys for the golden lock batch.
+FETCH_PERSON_LINK_KEYS = """
+MATCH (person:Person {person_id: $person_id})-[link:HAS_IDENTIFIER]->(identifier:Identifier)
+RETURN DISTINCT identifier.identifier_type AS identifier_type,
+       identifier.identifier_scope AS identifier_scope,
+       identifier.normalized_value AS normalized_value
+ORDER BY identifier_type, identifier_scope, normalized_value
+"""
+
+#: Golden-stage link read: every HAS_IDENTIFIER link with its evidence
+#: liveness, plus the Person-level override and stored golden state. The
+#: candidate-only flag mirrors the recompute evidence filters: a link with no
+#: active evidencing record is not rankable.
+FETCH_PERSON_TOP_LINKS = """
+MATCH (person:Person {person_id: $person_id})
+OPTIONAL MATCH (person)-[link:HAS_IDENTIFIER]->(identifier:Identifier)
+OPTIONAL MATCH (record:SourceRecord)-[linked:LINKED_TO]->(person)
+WHERE linked IS NULL OR identifier IS NULL OR (
+    coalesce(linked.is_active, true) = true
+    AND coalesce(record.link_status, 'linked') <> 'pending_review'
+    AND coalesce(record.lifecycle_status, 'active') <> 'superseded'
+    AND (record)-[:ASSERTS]->(identifier)
+)
+WITH person, link, identifier,
+     count(record) AS active_evidence_count,
+     collect(DISTINCT record.source_record_pk) AS evidence_pks
+RETURN person.survivorship_overrides AS survivorship_overrides,
+       person.golden_json AS stored_golden_json,
+       person.golden_conflicts AS stored_golden_conflicts,
+       link.link_id AS link_id,
+       identifier.identifier_type AS identifier_type,
+       identifier.identifier_scope AS identifier_scope,
+       identifier.normalized_value AS normalized_value,
+       identifier.nric_masked AS nric_masked,
+       link.score AS score,
+       link.exclusivity AS exclusivity,
+       link.rank_score AS rank_score,
+       link.verified_count AS verified_count,
+       link.last_confirmed_at AS last_confirmed_at,
+       link.source_count AS source_count,
+       active_evidence_count,
+       evidence_pks
+ORDER BY identifier_type, identifier_scope, normalized_value
+"""
+
+#: Conditional rank write: rows cover every link read, so demoted links are
+#: nulled in the same pass; an unchanged second run writes nothing.
+SET_LINK_GOLDEN_RANKS = """
+UNWIND $rows AS row
+MATCH (person:Person {person_id: $person_id})-[link:HAS_IDENTIFIER {link_id: row.link_id}]->(
+  :Identifier
+)
+WHERE (link.golden_rank IS NULL AND row.golden_rank IS NOT NULL)
+   OR (link.golden_rank IS NOT NULL AND row.golden_rank IS NULL)
+   OR (link.golden_rank <> row.golden_rank)
+SET link.golden_rank = row.golden_rank
+RETURN count(link) AS updated_count
+"""
+
+#: Additive golden-document write; conditional so reruns are zero-diff. A new
+#: query (not an extension of UPDATE_GOLDEN_PROFILE) because the
+#: active-authority path calls that one with **profile.
+UPDATE_GOLDEN_TOP3 = """
+MATCH (person:Person {person_id: $person_id})
+WHERE (person.golden_json IS NULL AND $golden_json IS NOT NULL)
+   OR (person.golden_json IS NOT NULL AND $golden_json IS NULL)
+   OR (person.golden_json <> $golden_json)
+   OR (person.golden_conflicts IS NULL AND $golden_conflicts IS NOT NULL)
+   OR (person.golden_conflicts IS NOT NULL AND $golden_conflicts IS NULL)
+   OR (person.golden_conflicts <> $golden_conflicts)
+SET person.golden_json = $golden_json,
+    person.golden_conflicts = $golden_conflicts
+RETURN person.person_id AS person_id
 """

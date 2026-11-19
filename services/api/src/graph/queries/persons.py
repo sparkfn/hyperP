@@ -3,10 +3,21 @@
 from __future__ import annotations
 
 FIND_PERSON_BY_IDENTIFIER = """
-MATCH (id:Identifier {identifier_type: $identifier_type, normalized_value: $value})
-  <-[lookup_identifier:IDENTIFIED_BY]-(p:Person)
-WHERE coalesce(lookup_identifier.is_active, true) = true
-  AND p.status <> 'merged'
+MATCH (id:Identifier {identifier_type: $identifier_type})
+WHERE id.normalized_value IN $values
+CALL {
+  WITH id
+  MATCH (id)<-[:HAS_IDENTIFIER {status: 'active'}]-(person:Person)
+  WHERE person.status <> 'merged'
+  RETURN person
+  UNION
+  WITH id
+  MATCH (id)<-[lookup_identifier:IDENTIFIED_BY]-(person:Person)
+  WHERE coalesce(lookup_identifier.is_active, true) = true
+    AND person.status <> 'merged'
+  RETURN person
+}
+WITH DISTINCT person AS p
 OPTIONAL MATCH (addr:Address {address_id: p.preferred_address_id})
 OPTIONAL MATCH (sr:SourceRecord)-[link:LINKED_TO]->(p)
 WHERE coalesce(link.is_active, true) = true
@@ -16,12 +27,33 @@ WHERE coalesce(link.is_active, true) = true
 WITH p, addr, count(DISTINCT sr) AS source_record_count
 CALL {
   WITH p
-  OPTIONAL MATCH (p)-[p_identifier:IDENTIFIED_BY]->(:Identifier)
-    <-[ci_identifier:IDENTIFIED_BY]-(ci:Person)
-    WHERE coalesce(p_identifier.is_active, true) = true
-      AND coalesce(ci_identifier.is_active, true) = true
-      AND ci.person_id <> p.person_id AND ci.status <> 'merged'
-  WITH p, collect(DISTINCT ci) AS identifier_conn
+  // Dual-source own identifiers (HAS-first, deduped legacy fallback) and the
+  // Persons that share them, mirroring GET_PERSON_BY_ID's connection subquery
+  // so a HAS-only Person's connection_count is current.
+  OPTIONAL MATCH (p)-[:HAS_IDENTIFIER {status: 'active'}]->(has_own:Identifier)
+  WITH p, [identifier IN collect(DISTINCT has_own) WHERE identifier IS NOT NULL] AS has_ids
+  OPTIONAL MATCH (p)-[own_identifier:IDENTIFIED_BY]->(legacy_own:Identifier)
+  WHERE coalesce(own_identifier.is_active, true) = true
+  WITH p, has_ids,
+       [identifier IN collect(DISTINCT legacy_own)
+        WHERE identifier IS NOT NULL AND NOT identifier IN has_ids] AS legacy_ids
+  WITH p, has_ids + legacy_ids AS own_ids
+  UNWIND (CASE WHEN size(own_ids) = 0 THEN [null] ELSE own_ids END) AS own_id
+  OPTIONAL MATCH (own_id)<-[:HAS_IDENTIFIER {status: 'active'}]-(has_ci:Person)
+  WHERE has_ci.person_id <> p.person_id AND has_ci.status <> 'merged'
+  WITH p, own_id,
+       [other IN collect(DISTINCT has_ci) WHERE other IS NOT NULL] AS has_others
+  OPTIONAL MATCH (own_id)<-[ci_identifier:IDENTIFIED_BY]-(legacy_ci:Person)
+  WHERE coalesce(ci_identifier.is_active, true) = true
+    AND legacy_ci.person_id <> p.person_id AND legacy_ci.status <> 'merged'
+  WITH p, has_others,
+       [other IN collect(DISTINCT legacy_ci)
+        WHERE other IS NOT NULL AND NOT other IN has_others] AS legacy_others
+  WITH p, collect(has_others + legacy_others) AS other_lists
+  WITH p, reduce(acc = [], item_list IN other_lists | acc + item_list) AS flat_others
+  UNWIND (CASE WHEN size(flat_others) = 0 THEN [null] ELSE flat_others END) AS other
+  WITH p, [identifier_conn IN collect(DISTINCT other)
+           WHERE identifier_conn IS NOT NULL] AS identifier_conn
   OPTIONAL MATCH (p)-[p_address:LIVES_AT]->(:Address)
     <-[ca_address:LIVES_AT]-(ca:Person)
     WHERE coalesce(p_address.is_active, true) = true
@@ -66,12 +98,30 @@ WITH person, addr, count {
 } AS source_record_count
 CALL {
   WITH person
-  OPTIONAL MATCH (person)-[person_identifier:IDENTIFIED_BY]->(:Identifier)
-    <-[ci_identifier:IDENTIFIED_BY]-(ci:Person)
-    WHERE coalesce(person_identifier.is_active, true) = true
-      AND coalesce(ci_identifier.is_active, true) = true
-      AND ci.person_id <> person.person_id AND ci.status <> 'merged'
-  WITH person, collect(DISTINCT ci) AS identifier_conn
+  OPTIONAL MATCH (person)-[:HAS_IDENTIFIER {status: 'active'}]->(has_own:Identifier)
+  WITH person, [identifier IN collect(DISTINCT has_own) WHERE identifier IS NOT NULL] AS has_ids
+  OPTIONAL MATCH (person)-[own_identifier:IDENTIFIED_BY]->(legacy_own:Identifier)
+  WHERE coalesce(own_identifier.is_active, true) = true
+  WITH person, has_ids,
+       [identifier IN collect(DISTINCT legacy_own)
+        WHERE identifier IS NOT NULL AND NOT identifier IN has_ids] AS legacy_ids
+  WITH person, has_ids + legacy_ids AS own_ids
+  UNWIND (CASE WHEN size(own_ids) = 0 THEN [null] ELSE own_ids END) AS own_id
+  OPTIONAL MATCH (own_id)<-[:HAS_IDENTIFIER {status: 'active'}]-(has_ci:Person)
+  WHERE has_ci.person_id <> person.person_id AND has_ci.status <> 'merged'
+  WITH person, own_id,
+       [other IN collect(DISTINCT has_ci) WHERE other IS NOT NULL] AS has_others
+  OPTIONAL MATCH (own_id)<-[ci_identifier:IDENTIFIED_BY]-(legacy_ci:Person)
+  WHERE coalesce(ci_identifier.is_active, true) = true
+    AND legacy_ci.person_id <> person.person_id AND legacy_ci.status <> 'merged'
+  WITH person, has_others,
+       [other IN collect(DISTINCT legacy_ci)
+        WHERE other IS NOT NULL AND NOT other IN has_others] AS legacy_others
+  WITH person, collect(has_others + legacy_others) AS other_lists
+  WITH person, reduce(acc = [], item_list IN other_lists | acc + item_list) AS flat_others
+  UNWIND (CASE WHEN size(flat_others) = 0 THEN [null] ELSE flat_others END) AS other
+  WITH person, [identifier_conn IN collect(DISTINCT other)
+                WHERE identifier_conn IS NOT NULL] AS identifier_conn
   OPTIONAL MATCH (person)-[person_address:LIVES_AT]->(:Address)
     <-[ca_address:LIVES_AT]-(ca:Person)
     WHERE coalesce(person_address.is_active, true) = true
@@ -97,6 +147,7 @@ RETURN person {
   .preferred_full_name, .preferred_phone, .preferred_email, .preferred_dob, .preferred_nric,
   .preferred_race_ethnicity,
   .profile_completeness_score, .golden_profile_computed_at, .golden_profile_version,
+  .golden_json, .golden_conflicts,
   .created_at, .updated_at
 } AS person,
 addr {
@@ -266,14 +317,36 @@ bc {
 """
 
 GET_PERSON_CONNECTIONS_IDENTIFIER = """
-MATCH (p:Person {person_id: $person_id})-[p_identifier:IDENTIFIED_BY]->(id:Identifier)
-  <-[other_identifier:IDENTIFIED_BY]-(other:Person)
-WHERE coalesce(p_identifier.is_active, true) = true
-  AND coalesce(other_identifier.is_active, true) = true
-  AND other.person_id <> p.person_id
-  AND other.status <> 'merged'
-  AND ($identifier_type IS NULL OR id.identifier_type = $identifier_type)
-WITH other, collect(DISTINCT {identifier_type: id.identifier_type, normalized_value: id.normalized_value}) AS shared_identifiers
+MATCH (p:Person {person_id: $person_id})
+CALL {
+  WITH p
+  MATCH (p)-[:HAS_IDENTIFIER {status: 'active'}]->(id:Identifier)
+  RETURN id
+  UNION
+  WITH p
+  MATCH (p)-[own_identifier:IDENTIFIED_BY]->(id:Identifier)
+  WHERE coalesce(own_identifier.is_active, true) = true
+  RETURN id
+}
+CALL {
+  WITH p, id
+  MATCH (id)<-[:HAS_IDENTIFIER {status: 'active'}]-(other:Person)
+  WHERE other.person_id <> p.person_id AND other.status <> 'merged'
+  RETURN other, id
+  UNION
+  WITH p, id
+  MATCH (id)<-[other_identifier:IDENTIFIED_BY]-(other:Person)
+  WHERE coalesce(other_identifier.is_active, true) = true
+    AND other.person_id <> p.person_id
+    AND other.status <> 'merged'
+  RETURN other, id
+}
+WHERE $identifier_type IS NULL OR id.identifier_type = $identifier_type
+WITH other, collect(DISTINCT {
+  identifier_type: id.identifier_type,
+  normalized_value: id.normalized_value,
+  nric_masked: id.nric_masked
+}) AS shared_identifiers
 RETURN other.person_id AS person_id,
        other.status AS status,
        other.preferred_full_name AS preferred_full_name,
@@ -507,15 +580,47 @@ ORDER BY e.display_name
 """
 
 GET_PERSON_IDENTIFIERS = """
-MATCH (p:Person {person_id: $person_id})-[rel:IDENTIFIED_BY]->(id:Identifier)
-WITH id, rel
-ORDER BY coalesce(rel.source_record_pk, ''), coalesce(rel.source_system_key, '')
-WITH id,
-     any(r IN collect(rel) WHERE r.is_active = true) AS is_active,
-     any(r IN collect(rel) WHERE r.is_verified = true) AS is_verified,
-     max(rel.last_confirmed_at) AS last_confirmed_at,
-     head([r IN collect(rel) WHERE r.source_system_key IS NOT NULL | r.source_system_key]) AS source_system_key,
-     collect(DISTINCT rel.source_record_pk) AS source_record_pks
+MATCH (p:Person {person_id: $person_id})
+CALL {
+  WITH p
+  MATCH (p)-[has:HAS_IDENTIFIER {status: 'active'}]->(id:Identifier)
+  OPTIONAL MATCH (sr:SourceRecord)-[:ASSERTS]->(id)
+  WHERE EXISTS {
+    MATCH (sr)-[linked:LINKED_TO]->(p)
+    WHERE coalesce(linked.is_active, true) = true
+      AND coalesce(sr.link_status, 'linked') <> 'pending_review'
+  }
+  OPTIONAL MATCH (sr)-[:FROM_SOURCE]->(source:SourceSystem)
+  WITH id, has, sr, source
+  ORDER BY coalesce(sr.source_record_pk, '')
+  WITH id, has,
+       collect(DISTINCT sr.source_record_pk) AS source_record_pks,
+       head([key IN collect(source.source_key) WHERE key IS NOT NULL]) AS source_system_key
+  RETURN id,
+         true AS is_active,
+         coalesce(has.verified_count, 0) > 0 AS is_verified,
+         has.last_confirmed_at AS last_confirmed_at,
+         source_system_key,
+         source_record_pks,
+         has.score AS score,
+         has.golden_rank AS golden_rank
+  UNION
+  WITH p
+  MATCH (p)-[rel:IDENTIFIED_BY]->(id:Identifier)
+  WHERE NOT EXISTS { MATCH (p)-[:HAS_IDENTIFIER {status: 'active'}]->(id) }
+  WITH id, rel
+  ORDER BY coalesce(rel.source_record_pk, ''), coalesce(rel.source_system_key, '')
+  WITH id,
+       any(r IN collect(rel) WHERE r.is_active = true) AS is_active,
+       any(r IN collect(rel) WHERE r.is_verified = true) AS is_verified,
+       max(rel.last_confirmed_at) AS last_confirmed_at,
+       head([r IN collect(rel) WHERE r.source_system_key IS NOT NULL | r.source_system_key]) AS source_system_key,
+       collect(DISTINCT rel.source_record_pk) AS source_record_pks
+  RETURN id, is_active, is_verified, last_confirmed_at, source_system_key, source_record_pks,
+         null AS score, null AS golden_rank
+}
+WITH id, is_active, is_verified, last_confirmed_at, source_system_key, source_record_pks,
+     score, golden_rank
 ORDER BY is_active DESC, is_verified DESC, id.identifier_type, id.normalized_value,
          coalesce(source_system_key, ''), coalesce(last_confirmed_at, datetime('1970-01-01T00:00:00Z')),
          source_record_pks
@@ -526,7 +631,9 @@ WITH collect({
   is_verified: is_verified,
   last_confirmed_at: last_confirmed_at,
   source_system_key: source_system_key,
-  source_record_pks: source_record_pks
+  source_record_pks: source_record_pks,
+  score: score,
+  golden_rank: golden_rank
 }) AS page
 CALL {
   WITH page
@@ -583,6 +690,7 @@ CALL {
 }
 RETURN item.identifier.identifier_type AS identifier_type,
        item.identifier.normalized_value AS normalized_value,
+       item.identifier.nric_masked AS nric_masked,
        item.is_active AS is_active,
        item.is_verified AS is_verified,
        item.last_confirmed_at AS last_confirmed_at,
@@ -590,7 +698,9 @@ RETURN item.identifier.identifier_type AS identifier_type,
        item.source_record_pks AS source_record_pks,
        source_record_ids AS source_record_ids,
        entities AS entities,
-       source_records AS source_records
+       source_records AS source_records,
+       item.score AS score,
+       item.golden_rank AS golden_rank
 ORDER BY item.is_active DESC,
          item.is_verified DESC,
          item.identifier.identifier_type,
@@ -617,7 +727,8 @@ RETURN other.person_id AS person_id,
        other.profile_completeness_score AS profile_completeness_score,
        collect(DISTINCT {
          identifier_type: id.identifier_type,
-         normalized_value: id.normalized_value
+         normalized_value: id.normalized_value,
+         nric_masked: id.nric_masked
        }) AS identifiers
 ORDER BY preferred_full_name, person_id
 SKIP $skip LIMIT $limit
@@ -639,7 +750,17 @@ RETURN count(sr) AS total
 """
 
 COUNT_PERSON_IDENTIFIERS = """
-MATCH (p:Person {person_id: $person_id})-[:IDENTIFIED_BY]->(id:Identifier)
+MATCH (p:Person {person_id: $person_id})
+CALL {
+  WITH p
+  MATCH (p)-[:HAS_IDENTIFIER {status: 'active'}]->(id:Identifier)
+  RETURN id
+  UNION
+  WITH p
+  MATCH (p)-[legacy:IDENTIFIED_BY]->(id:Identifier)
+  WHERE NOT EXISTS { MATCH (p)-[:HAS_IDENTIFIER {status: 'active'}]->(id) }
+  RETURN id
+}
 RETURN count(DISTINCT id) AS total
 """
 
@@ -661,13 +782,31 @@ RETURN count(DISTINCT me) AS total
 """
 
 COUNT_PERSON_CONNECTIONS_IDENTIFIER = """
-MATCH (p:Person {person_id: $person_id})-[p_identifier:IDENTIFIED_BY]->(id:Identifier)
-  <-[other_identifier:IDENTIFIED_BY]-(other:Person)
-WHERE coalesce(p_identifier.is_active, true) = true
-  AND coalesce(other_identifier.is_active, true) = true
-  AND other.person_id <> p.person_id
-  AND other.status <> 'merged'
-  AND ($identifier_type IS NULL OR id.identifier_type = $identifier_type)
+MATCH (p:Person {person_id: $person_id})
+CALL {
+  WITH p
+  MATCH (p)-[:HAS_IDENTIFIER {status: 'active'}]->(id:Identifier)
+  RETURN id
+  UNION
+  WITH p
+  MATCH (p)-[own_identifier:IDENTIFIED_BY]->(id:Identifier)
+  WHERE coalesce(own_identifier.is_active, true) = true
+  RETURN id
+}
+CALL {
+  WITH p, id
+  MATCH (id)<-[:HAS_IDENTIFIER {status: 'active'}]-(other:Person)
+  WHERE other.person_id <> p.person_id AND other.status <> 'merged'
+  RETURN other, id
+  UNION
+  WITH p, id
+  MATCH (id)<-[other_identifier:IDENTIFIED_BY]-(other:Person)
+  WHERE coalesce(other_identifier.is_active, true) = true
+    AND other.person_id <> p.person_id
+    AND other.status <> 'merged'
+  RETURN other, id
+}
+WHERE $identifier_type IS NULL OR id.identifier_type = $identifier_type
 RETURN count(DISTINCT other) AS total
 """
 
@@ -763,6 +902,7 @@ RETURN candidate.person_id AS candidate_person_id,
        candidate.preferred_full_name AS candidate_name,
        id.identifier_type AS identifier_type,
        id.normalized_value AS normalized_value,
+       id.nric_masked AS nric_masked,
        candidate_source_records AS candidate_source_records,
        current_person_source_records AS current_person_source_records
 ORDER BY id.identifier_type, id.normalized_value
@@ -786,7 +926,8 @@ OPTIONAL MATCH (md)-[:ABOUT_RIGHT]->(right)
 OPTIONAL MATCH (rc:ReviewCase)-[:FOR_DECISION]->(md)
 RETURN md {
   .match_decision_id, .engine_type, .engine_version, .policy_version,
-  .decision, .confidence, .reasons, .blocking_conflicts, .created_at
+  .decision, .confidence, .reasons, .blocking_conflicts,
+  .review_suppressed, .suppressed_reason, .created_at
 } AS match_decision,
 left.person_id AS left_person_id,
 right.person_id AS right_person_id,

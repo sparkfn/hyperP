@@ -1,0 +1,17 @@
+{
+  "event_id": "ev-1",
+  "global_revision": 1,
+  "source_system": "bitrix_chat",
+  "source_instance_id": "bitrix-prod",
+  "source_entity_type": "deal",
+  "source_entity_id": "deal-1",
+  "identity_policy_version": "crm_deal_identity_v2",
+  "link_status": "resolved",
+  "hyperp_person_id": "p-0001",
+  "resolution_kind": "baseline",
+  "resolution_revision": 1,
+  "effective_at": "2026-01-05T09:30:00Z",
+  "match_decision_id": "md-1",
+  "review_case_id": null,
+  "supersedes_event_id": null
+}

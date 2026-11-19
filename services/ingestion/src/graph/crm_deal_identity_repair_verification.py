@@ -71,6 +71,7 @@ from src.graph.crm_deal_identity_repair_verification_support import (
     retirement_snapshot_matches,
     strings,
 )
+from src.graph.person_list_summary import invalidate_person_list_summary
 from src.graph.queries import crm_deal_identity_repair_verification as queries
 
 VerificationFailureStage = Literal[
@@ -100,6 +101,16 @@ class CrmDealIdentityRepairVerificationRepository:
     def verify_and_reconcile_unit(
         self, command: RepairVerificationCommand
     ) -> RepairAtomicVerificationResult:
+        """Verify and reconcile one unit, replaying an acknowledged bundle.
+
+        The maintained Person-list summary is invalidated first, in its own
+        committed transaction: the verification rewrites deal and Person state
+        without maintaining the counter, so the counter must not stay ready.
+        The invalidation happens before any replay or failure path and is
+        never followed by an automatic activation; an explicit backfill
+        republishes it.
+        """
+        invalidate_person_list_summary(self._client)
         try:
             return self._client.execute_write(lambda tx: self._verify(tx, command))
         except RepairVerificationReplayRaceError:

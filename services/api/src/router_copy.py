@@ -39,6 +39,7 @@ def copy_router_routes(
     path_filter: Callable[[str], bool] | None = None,
     path_transform: Callable[[str], str] | None = None,
     description_override: str | None = None,
+    excluded_operation_ids: frozenset[str] = frozenset(),
 ) -> None:
     """Copy a router's API routes onto *app*, rewriting each route's path.
 
@@ -48,10 +49,13 @@ def copy_router_routes(
     *dependencies* are prepended to each route's own dependencies.
     *description_override* replaces each copied route's own description when
     supplied; the default preserves the shared handler description.
+    *excluded_operation_ids* skips routes whose operation_id is in the set.
     """
     transform = path_transform if path_transform is not None else strip_v1_prefix
     for route in router.routes:
         if not isinstance(route, APIRoute):
+            continue
+        if route.operation_id and route.operation_id in excluded_operation_ids:
             continue
         if path_filter is not None and not path_filter(route.path):
             continue

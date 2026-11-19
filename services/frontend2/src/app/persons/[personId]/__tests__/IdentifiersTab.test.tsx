@@ -141,10 +141,18 @@ describe("IdentifiersTab contributing systems", () => {
     expect(screen.getByText("sgbankruptcy")).toBeTruthy();
   });
 
-  it("masks NRIC values until revealed", () => {
+  // Masking is server-side: the API returns the masked NRIC and the UI renders it verbatim.
+  it("renders the API-provided NRIC value verbatim", () => {
+    renderTab([identifier({ identifier_type: "nric", normalized_value: "S••••749B" })]);
+
+    expect(screen.getByText("S••••749B")).toBeTruthy();
+    expect(screen.queryByRole("button", { name: /NRIC/ })).toBeNull();
+  });
+
+  it("applies no client-side NRIC transformation (the API is the masking boundary)", () => {
     renderTab([identifier({ identifier_type: "nric", normalized_value: "S9436749B" })]);
 
-    expect(screen.getByText("S*****49B")).toBeTruthy();
-    expect(screen.queryByText("S9436749B")).toBeNull();
+    expect(screen.getByText("S9436749B")).toBeTruthy();
+    expect(screen.queryByText("S*****49B")).toBeNull();
   });
 });

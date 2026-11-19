@@ -252,7 +252,7 @@ def test_identifiers_query_executes_and_preserves_provenance_variants(
         ("phone", phone_value),
         ("email", email_value),
         ("phone", dangling_value),
-        ("nric", legacy_value),
+        ("nric", "•••••••••"),
     ]
     assert [item.is_verified for item in identifiers] == [True, False, False, False]
     assert [(record["identifier_type"], record["normalized_value"]) for record in first_page] == [
@@ -405,7 +405,7 @@ def test_find_person_by_identifier_matches_exact_effective_active_links(
 
         def find_persons(identifier_type: str, value: str) -> list[Person]:
             result = session.run(
-                FIND_PERSON_BY_IDENTIFIER, identifier_type=identifier_type, value=value
+                FIND_PERSON_BY_IDENTIFIER, identifier_type=identifier_type, values=[value]
             )
             return [
                 map_person(record_to_dict(record.keys(), list(record.values())))
@@ -425,3 +425,56 @@ def test_find_person_by_identifier_matches_exact_effective_active_links(
     assert missing_ids == []
     assert wrong_type_ids == [wrong_type_person_id]
     assert wrong_value_ids == [wrong_value_person_id]
+
+
+def test_has_identifier_wins_over_legacy_projection(neo4j_driver: _TestGraph) -> None:
+    run_id = neo4j_driver.run_id
+    person_id = f"person-has-{run_id}"
+    phone_value = f"phone-has-{run_id}"
+    record_pk = f"sr-has-{run_id}"
+    with neo4j_driver.driver.session() as session:
+        session.run(
+            """
+            CREATE (person:Person {
+              person_id: $person_id, _person_identifiers_test_run: $run_id
+            })
+            CREATE (record:SourceRecord {
+              source_record_pk: $record_pk, source_record_id: $record_pk,
+              record_type: 'identity', link_status: 'linked', lifecycle_status: 'active',
+              observed_at: datetime('2026-01-01T00:00:00Z'),
+              ingested_at: datetime('2026-01-01T00:00:00Z'),
+              _person_identifiers_test_run: $run_id
+            })
+            CREATE (record)-[:LINKED_TO {is_active: true}]->(person)
+            CREATE (identifier:Identifier {
+              identifier_type: 'phone', normalized_value: $phone_value,
+              _person_identifiers_test_run: $run_id
+            })
+            CREATE (person)-[:HAS_IDENTIFIER {
+              link_id: 'has-' + $run_id, status: 'active', verified_count: 1,
+              score: 0.25, golden_rank: 3, computed_at: datetime()
+            }]->(identifier)
+            CREATE (person)-[:IDENTIFIED_BY {
+              is_active: true, is_verified: false, source_record_pk: $record_pk
+            }]->(identifier)
+            CREATE (record)-[:ASSERTS {
+              assertion_id: 'assert-has-' + $run_id, quality_flag: 'valid', is_verified: true
+            }]->(identifier)
+            """,
+            person_id=person_id,
+            record_pk=record_pk,
+            phone_value=phone_value,
+            run_id=run_id,
+        ).consume()
+        rows = list(session.run(GET_PERSON_IDENTIFIERS, person_id=person_id, skip=0, limit=20))
+    identifiers = [
+        map_person_identifier(record_to_dict(row.keys(), list(row.values()))) for row in rows
+    ]
+
+    assert len(identifiers) == 1
+    identifier = identifiers[0]
+    assert identifier.normalized_value == phone_value
+    assert identifier.score == 0.25
+    assert identifier.golden_rank == 3
+    assert identifier.is_verified is True
+    assert identifier.source_record_pks == [record_pk]

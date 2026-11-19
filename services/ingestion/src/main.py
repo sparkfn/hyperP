@@ -99,6 +99,7 @@ from src.graph.schema_init import (
 )
 from src.graph.standalone_crm_census_migration import ensure_standalone_crm_census_ready
 from src.graph.standalone_crm_lane_a_migration import ensure_standalone_crm_lane_a_ready
+from src.ingest_skips import SkipLedger, SkipReporter
 from src.ingestion_config import get_ingestion_config
 from src.llm import validate_ingestion_llm_readiness
 from src.models import IngestResult, JsonValue, RecordType, SourceRecordEnvelope
@@ -826,15 +827,19 @@ def _process_record(
     )
 
 
-def _record_is_excluded(envelope: SourceRecordEnvelope, context: ExclusionContext) -> bool:
+def _exclusion_reason(envelope: SourceRecordEnvelope, context: ExclusionContext) -> str | None:
     if is_excluded_source_id(envelope.source_record_id, context):
-        return True
+        return "excluded_source_id"
     for identifier in envelope.identifiers:
         if identifier.type == "phone" and is_excluded_phone(identifier.value, context):
-            return True
+            return "excluded_identity"
         if identifier.type == "email" and is_excluded_email(identifier.value, context):
-            return True
-    return False
+            return "excluded_identity"
+    return None
+
+
+def _record_is_excluded(envelope: SourceRecordEnvelope, context: ExclusionContext) -> bool:
+    return _exclusion_reason(envelope, context) is not None
 
 
 def _load_exclusion_context() -> ExclusionContext:
@@ -855,6 +860,7 @@ def _ingest_all_records(
     exclusion_context: ExclusionContext | None = None,
     execution_context: ExecutionContext | None = None,
     control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    ledger: SkipLedger | None = None,
 ) -> tuple[int, int, int]:
     """Process all connector records; the run owner releases connector resources."""
     return _ingest_all_records_open(
@@ -865,6 +871,7 @@ def _ingest_all_records(
         exclusion_context,
         execution_context,
         control_instance_id,
+        ledger=ledger,
     )
 
 
@@ -876,90 +883,136 @@ def _ingest_all_records_open(
     exclusion_context: ExclusionContext | None = None,
     execution_context: ExecutionContext | None = None,
     control_instance_id: str = LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    ledger: SkipLedger | None = None,
 ) -> tuple[int, int, int]:
     """Process every record from the connector. Returns (success, errors, skipped)."""
     success = errors = skipped = 0
     active_exclusion_context = (
         exclusion_context if exclusion_context is not None else _load_exclusion_context()
     )
-    for raw_record in connector.fetch_records():
-        if execution_context is not None:
-            processed = success + errors + skipped
-            if execution_context.max_rows is not None and processed >= execution_context.max_rows:
-                raise RuntimeError("split Bitrix row ceiling reached before the next write")
+    try:
+        for raw_record in connector.fetch_records():
+            if ledger is not None and isinstance(connector, SkipReporter):
+                ledger.add_connector_skips(connector.drain_skips())
+            # A record counts as emitted only once classified (below): a ceiling stop or an
+            # unexpected failure must not leave an unclassified record in the durable attempt.
+            if ledger is not None:
+                ledger.checkpoint()
+            if execution_context is not None:
+                processed = success + errors + skipped
+                if (
+                    execution_context.max_rows is not None
+                    and processed >= execution_context.max_rows
+                ):
+                    raise RuntimeError("split Bitrix row ceiling reached before the next write")
+                if (
+                    execution_context.deadline_monotonic is not None
+                    and time.monotonic() >= execution_context.deadline_monotonic
+                ):
+                    raise RuntimeError("split Bitrix runtime ceiling reached before the next write")
+            retirement_id = raw_record.get("_retire_source_record_id")
+            retired_at = raw_record.get("_retired_at")
+            reconciliation_snapshot_at = raw_record.get("_reconciliation_snapshot_at")
             if (
-                execution_context.deadline_monotonic is not None
-                and time.monotonic() >= execution_context.deadline_monotonic
+                isinstance(retirement_id, str)
+                and isinstance(retired_at, str)
+                and isinstance(reconciliation_snapshot_at, str)
             ):
-                raise RuntimeError("split Bitrix runtime ceiling reached before the next write")
-        retirement_id = raw_record.get("_retire_source_record_id")
-        retired_at = raw_record.get("_retired_at")
-        reconciliation_snapshot_at = raw_record.get("_reconciliation_snapshot_at")
-        if (
-            isinstance(retirement_id, str)
-            and isinstance(retired_at, str)
-            and isinstance(reconciliation_snapshot_at, str)
-        ):
-            retire_source_evidence(
+                retire_source_evidence(
+                    client,
+                    connector.get_source_key(),
+                    retirement_id,
+                    retired_at,
+                    reconciliation_snapshot_at,
+                    fence_context=(
+                        execution_context.fence_context if execution_context is not None else None
+                    ),
+                )
+                success += 1
+                if ledger is not None:
+                    ledger.persisted += 1
+                    ledger.emitted += 1
+                _report_record_outcome(connector, succeeded=True)
+                if ledger is not None and isinstance(connector, SkipReporter):
+                    ledger.add_connector_skips(connector.drain_skips())
+                continue
+            envelope = SourceRecordEnvelope.model_validate(
+                {"source_system": connector.get_source_key(), **raw_record},
+            )
+            exclusion_reason = _exclusion_reason(envelope, active_exclusion_context)
+            if exclusion_reason is not None:
+                skipped += 1
+                if ledger is not None:
+                    # Emitted first: buffering the skip may flush, and no snapshot may hold the
+                    # skip without its record.
+                    ledger.emitted += 1
+                    ledger.add_pipeline_skip(exclusion_reason, envelope)
+                logger.info("  %s -> excluded", envelope.source_record_id)
+                _report_record_outcome(connector, succeeded=True)
+                if ledger is not None and isinstance(connector, SkipReporter):
+                    ledger.add_connector_skips(connector.drain_skips())
+                continue
+            result = _process_record(
                 client,
-                connector.get_source_key(),
-                retirement_id,
-                retired_at,
-                reconciliation_snapshot_at,
-                fence_context=(
-                    execution_context.fence_context if execution_context is not None else None
-                ),
+                pipeline,
+                envelope,
+                ingest_run_id,
+                active_exclusion_context,
+                execution_context,
+                control_instance_id,
             )
-            success += 1
-            _report_record_outcome(connector, succeeded=True)
-            continue
-        envelope = SourceRecordEnvelope.model_validate(
-            {"source_system": connector.get_source_key(), **raw_record},
-        )
-        if _record_is_excluded(envelope, active_exclusion_context):
-            skipped += 1
-            logger.info("  %s -> excluded", envelope.source_record_id)
-            _report_record_outcome(connector, succeeded=True)
-            continue
-        result = _process_record(
-            client,
-            pipeline,
-            envelope,
-            ingest_run_id,
-            active_exclusion_context,
-            execution_context,
-            control_instance_id,
-        )
-        if result.skipped_duplicate:
-            skipped += 1
-        elif result.errors:
-            errors += 1
-        elif result.dropped:
-            skipped += 1
-        else:
-            success += 1
-        _report_record_outcome(connector, succeeded=not bool(result.errors))
-        if result.dropped:
-            logger.info(
-                "  %s -> dropped (no match — match-only source)",
-                result.source_record_id,
-            )
-        elif result.person_id is None:
-            logger.info(
-                "  %s -> address-only%s",
-                result.source_record_id,
-                " (DUPLICATE)" if result.skipped_duplicate else "",
-            )
-        else:
-            logger.info(
-                "  %s -> person=%s new=%s decision=%s candidates=%d%s",
-                result.source_record_id,
-                result.person_id,
-                result.is_new_person,
-                result.match_decision,
-                result.candidate_count,
-                " (DUPLICATE)" if result.skipped_duplicate else "",
-            )
+            if ledger is not None:
+                # Emitted before its bucket: add_pipeline_skip below may flush mid-classification.
+                ledger.emitted += 1
+            if result.excluded:
+                skipped += 1
+                if ledger is not None:
+                    ledger.add_pipeline_skip(result.skip_reason or "excluded", envelope)
+            elif result.skipped_duplicate:
+                skipped += 1
+                if ledger is not None:
+                    ledger.duplicates += 1
+            elif result.errors:
+                errors += 1
+                if ledger is not None:
+                    ledger.record_errors += 1
+            else:
+                success += 1
+                if ledger is not None:
+                    ledger.persisted += 1
+            _report_record_outcome(connector, succeeded=not bool(result.errors))
+            if ledger is not None and isinstance(connector, SkipReporter):
+                ledger.add_connector_skips(connector.drain_skips())
+            if result.parked:
+                logger.info(
+                    "  %s -> parked (unlinked, awaiting re-evaluation)",
+                    result.source_record_id,
+                )
+            elif result.excluded:
+                logger.info(
+                    "  %s -> excluded (%s)",
+                    result.source_record_id,
+                    result.skip_reason or "unknown",
+                )
+            elif result.person_id is None:
+                logger.info(
+                    "  %s -> address-only%s",
+                    result.source_record_id,
+                    " (DUPLICATE)" if result.skipped_duplicate else "",
+                )
+            else:
+                logger.info(
+                    "  %s -> person=%s new=%s decision=%s candidates=%d%s",
+                    result.source_record_id,
+                    result.person_id,
+                    result.is_new_person,
+                    result.match_decision,
+                    result.candidate_count,
+                    " (DUPLICATE)" if result.skipped_duplicate else "",
+                )
+    finally:
+        if ledger is not None and isinstance(connector, SkipReporter):
+            ledger.add_connector_skips(connector.drain_skips())
     return success, errors, skipped
 
 
@@ -1101,6 +1154,8 @@ def run_ingestion(
             "reused" if existing_ingest_run_id is not None or not worker_run_created else "created",
         )
 
+        ledger = SkipLedger(client, ingest_run_id, source_key, control_instance_id)
+
         if existing_status in {"completed", "completed_with_errors", "failed"}:
             return {
                 "ingest_run_id": ingest_run_id,
@@ -1191,6 +1246,7 @@ def run_ingestion(
                 exclusion_context,
                 execution_context,
                 control_instance_id,
+                ledger=ledger,
             )
             if isinstance(connector, _ConnectorErrorReporter):
                 errors += connector.connector_error_count()
@@ -1204,8 +1260,11 @@ def run_ingestion(
                 proposed = propose_vehicle_matches_for_pending_sales(client)
                 if proposed:
                     logger.info("Proposed %d vehicle matches for pending sales", proposed)
+            if not ledger.reconcile():
+                raise RuntimeError(f"Skip ledger reconciliation failed for run {ingest_run_id}")
             _finalize_connector_progress(connector, error_count=errors)
         except Exception as exc:
+            ledger.flush_quietly()
             checkpoint: dict[str, JsonValue] = {
                 "dump_path": dump_path,
                 "entity_key": entity_key,

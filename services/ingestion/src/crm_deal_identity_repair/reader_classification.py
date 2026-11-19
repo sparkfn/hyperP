@@ -71,6 +71,22 @@ _AUDIT_READERS: Final[frozenset[str]] = frozenset(
         "ingestion/graph/queries/crm_tenant_mapping.py:READ_TOPOLOGY_VIOLATIONS",
         "ingestion/graph/queries/crm_tenant_projection_mapping_guard.py:VALIDATE_MAPPING_PROOF_GUARD",
         "ingestion/graph/queries/merge.py:GET_AFFECTED_SOURCE_RECORDS",
+        # The Rust spike's projection queries are read-only audit copies of the API
+        # list/detail views: they mirror graph state into a disposable Postgres
+        # projection (#491) and never repair or write relationships.
+        "ingestion/graph/queries/projection_sync.py:PROJECTION_CHANGED_PERSON_IDS",
+        "ingestion/graph/queries/projection_sync.py:PROJECTION_NEIGHBOUR_PERSON_IDS",
+        "ingestion/graph/queries/projection_sync.py:PROJECTION_PERSON_ADDRESSES",
+        "ingestion/graph/queries/projection_sync.py:PROJECTION_PERSON_CONNECTIONS",
+        "ingestion/graph/queries/projection_sync.py:PROJECTION_PERSON_DETAIL_ROWS",
+        "ingestion/graph/queries/projection_sync.py:PROJECTION_PERSON_IDENTIFIERS",
+        "ingestion/graph/queries/projection_sync.py:PROJECTION_PERSON_LIST_ROWS",
+        "ingestion/graph/queries/projection_sync.py:PROJECTION_PERSON_SOURCE_RECORDS",
+        "ingestion/graph/queries/projection_sync.py:PROJECTION_SUMMARY_COUNTERS",
+        # Assertion backfill/audit fall back to a record's own IDENTIFIED_BY evidence when its
+        # payload is unreadable; retired projections are still that record's immutable evidence.
+        "ingestion/graph/queries/identity_assertions.py:AUDIT_ASSERTION_PAGE",
+        "ingestion/graph/queries/identity_assertions.py:BACKFILL_ASSERTION_PAGE",
         # Identifier detail intentionally presents retired projections as
         # evidence, including their is_active state and provenance.
         "api/graph/queries/persons.py:GET_PERSON_IDENTIFIERS",
@@ -82,6 +98,7 @@ _AUTHORITATIVE_READERS: Final[frozenset[str]] = frozenset(
     """api/graph/queries/crm.py:GET_PERSON_BITRIX_DEAL_SCOPE
 api/graph/queries/crm.py:GET_PERSON_CRM_DEAL_METRICS
 api/graph/queries/graph.py:_QUERY_BODY
+api/graph/queries/identity_links.py:FETCH_PERSON_ASSERTION_EVIDENCE
 api/graph/queries/crm.py:_daily_buckets
 api/graph/queries/entities.py:LIST_ENTITIES
 api/graph/queries/entities.py:LIST_FILTER_SOURCE_SYSTEMS
@@ -89,6 +106,7 @@ api/graph/queries/entities.py:_CONNECTION_COUNT
 api/graph/queries/entities.py:_ENTITY_PERSONS_HEAD
 api/graph/queries/entities.py:_PHONE_CONFIDENCE
 api/graph/queries/entities.py:_SOURCE_RECORD_COUNT
+api/graph/queries/person_list_summary.py:_FIND_DEAL_ELEMENT_IDS_FOR_PERSONS
 api/graph/queries/persons.py:COUNT_PERSON_CONNECTIONS_ADDRESS
 api/graph/queries/persons.py:COUNT_PERSON_CONNECTIONS_ALL
 api/graph/queries/persons.py:COUNT_PERSON_CONNECTIONS_IDENTIFIER
@@ -124,6 +142,7 @@ api/graph/queries/persons_list.py:_POSSIBLE_MATCH_COUNT
 api/graph/queries/persons_list.py:_head
 api/graph/queries/persons_list_filters.py:build_common_filter_clause
 api/graph/queries/persons_list_filters.py:build_entity_filter_clause
+api/graph/queries/nric.py:GET_PERSON_NRIC_IDENTIFIERS
 api/graph/queries/reports.py:SEED_REPORTS
 api/graph/queries/sales.py:COUNT_PERSON_SALES
 api/graph/queries/sales.py:GET_PERSON_SALES
@@ -145,21 +164,28 @@ ingestion/graph/queries/identity_link_revision_migrations.py:LIST_IDENTITY_LINK_
 ingestion/graph/queries/knows.py:RESOLVE_KNOWS_ENDPOINTS
 ingestion/graph/queries/knows.py:RESOLVE_PERSON_FROM_SOURCE_RECORD_ID
 ingestion/graph/queries/knows.py:RESOLVE_PERSON_FROM_SOURCE_RECORD_PK
+ingestion/graph/queries/identity_links.py:FETCH_CLUSTER_KEY_CLOSURE
+ingestion/graph/queries/identity_links.py:FETCH_CLUSTER_EVIDENCE
+ingestion/graph/queries/identity_links.py:FETCH_PARTICIPANT_EVIDENCE
+ingestion/graph/queries/identity_links.py:SOURCE_RECORD_LINKED_TO_PERSON
 ingestion/graph/queries/knows.py:SCAN_CHAT_RELATIONSHIP_SOURCE_RECORDS
 ingestion/graph/queries/knows.py:SCAN_CONTACT_SOURCE_RECORDS
+ingestion/graph/queries/matching.py:CANDIDATE_SNAPSHOT_BATCH
 ingestion/graph/queries/matching.py:CHECK_IDENTIFIER_FANOUT
 ingestion/graph/queries/matching.py:FIND_CANDIDATES_BY_ADDRESS
 ingestion/graph/queries/matching.py:FIND_CANDIDATES_BY_ADDRESSES_BATCH
 ingestion/graph/queries/matching.py:FIND_CANDIDATES_BY_IDENTIFIER
 ingestion/graph/queries/matching.py:FIND_CANDIDATES_BY_IDENTIFIERS_BATCH
-ingestion/graph/queries/person_pairs.py:FIND_PERSONS_SHARING_IDENTIFIER
-ingestion/graph/queries/person_pairs.py:FIND_PERSONS_SHARING_IDENTIFIERS_BATCH
+ingestion/graph/queries/nric_metrics.py:FETCH_ACTIVE_PERSON_NRIC_ROWS
+ingestion/graph/queries/identity_links.py:FETCH_PERSON_HOLDER_EVIDENCE
 ingestion/graph/queries/persons.py:FETCH_PERSON_ADDRESSES
 ingestion/graph/queries/persons.py:FETCH_PERSON_FACTS
 ingestion/graph/queries/persons.py:FETCH_PERSON_IDENTIFIERS
+ingestion/graph/queries/persons.py:FETCH_PERSON_IDENTIFIERS_V2
 ingestion/graph/queries/persons.py:FETCH_PERSON_MATCH_ADDRESSES
 ingestion/graph/queries/persons.py:FETCH_PERSON_MATCH_FACTS
 ingestion/graph/queries/persons.py:FETCH_PERSON_MATCH_IDENTIFIERS
+ingestion/graph/queries/persons.py:FETCH_PERSON_TOP_LINKS
 ingestion/graph/queries/pair_audit_recalc.py:READ_PAIR_AUDIT_BRIDGE
 ingestion/graph/queries/persons.py:FETCH_ACTIVE_PERSON_AUTHORITY_WITH_OVERRIDES
 ingestion/graph/queries/profile_analysis_dirty.py:FIND_PROFILE_ANALYSIS_MERGE_AFFECTED_PERSON_IDS
@@ -189,6 +215,9 @@ _AUTHORITATIVE_MUTATION_READERS: Final[frozenset[str]] = frozenset(
         "api/graph/queries/review.py:ACTIVATE_PENDING_REVIEW_RECORD",
         "api/graph/queries/review.py:LINK_REVIEW_SALES_PURCHASED_ORDER",
         "ingestion/graph/queries/crm_history.py:LINK_CONVERSATION_TO_CRM_HISTORY",
+        # Profile promotion re-attributes a member record onto its Person: a
+        # current-state LINKED_TO materializer that must reactivate retired links.
+        "ingestion/graph/queries/identity_links.py:REATTRIBUTE_PROFILE_MEMBERS_TO_PERSON",
         "ingestion/graph/queries/crm_history.py:LINK_CRM_HISTORY_TO_EXISTING_CONVERSATIONS",
         "ingestion/graph/queries/persons.py:LINK_PERSON_TO_ADDRESS",
         "ingestion/graph/queries/persons.py:LINK_PERSON_TO_IDENTIFIER",
@@ -197,6 +226,13 @@ _AUTHORITATIVE_MUTATION_READERS: Final[frozenset[str]] = frozenset(
         "ingestion/graph/queries/vehicle.py:LINK_PERSON_BOUGHT_VEHICLE",
         "ingestion/graph/queries/vehicle.py:LINK_PERSON_OWNS_VEHICLE",
         "ingestion/graph/queries/vehicle.py:LINK_SOURCE_RECORD_MENTIONS_VEHICLE",
+        # Summary counter capture/recompute readers are current-state,
+        # active-filtered, and only write a lock or counter.
+        "api/graph/queries/person_list_summary.py:_CAPTURE_DEAL_SUMMARY_CONTRIBUTIONS",
+        "api/graph/queries/person_list_summary.py:_CAPTURE_DEAL_SUMMARY_CONTRIBUTIONS_BY_ELEMENT_ID",
+        "ingestion/graph/queries/person_list_summary.py:_CAPTURE_DEAL_SUMMARY_CONTRIBUTIONS",
+        "ingestion/graph/queries/person_list_summary.py:_CAPTURE_DEAL_SUMMARY_CONTRIBUTIONS_BY_ELEMENT_ID",
+        "ingestion/graph/queries/person_list_summary.py:_RECOMPUTE_PERSON_LIST_SUMMARY",
         "ingestion/graph/queries/knows.py:LINK_PERSON_KNOWS",
     }
 )
@@ -246,6 +282,8 @@ ingestion/graph/migrations.py:DEDUPLICATE_LEGACY_BITRIX_PROJECTIONS
 ingestion/graph/migrations.py:REWRITE_LEGACY_BITRIX_PROJECTION_KEYS
 ingestion/graph/migrations.py:REWRITE_DIRECT_BITRIX_PROJECTION_KEYS
 ingestion/graph/migrations.py:MIGRATE_PROJECTION_RELATIONSHIP_LIFECYCLE
+ingestion/graph/queries/lifecycle_migrations.py:MIGRATE_SOURCE_RECORD_LIFECYCLE_BATCH
+ingestion/graph/migrations.py:RECONCILE_SOURCE_RECORD_LIFECYCLE
 ingestion/graph/migrations.py:RECONCILE_PROJECTION_RELATIONSHIP_LIFECYCLE
 ingestion/graph/queries/crm_deal_identity_repair_mutation.py:READ_LOCKED_REPAIR_AUTHORITY
 ingestion/graph/queries/crm_deal_identity_repair_mutation.py:LOCK_SUPPORT_SOURCE_RECORDS

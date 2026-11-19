@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 from typing import cast
+from unittest.mock import DEFAULT, MagicMock
 
 import pytest
+from _txmock import summary_counter_result
 from src import main
 from src.exclusions import ExclusionContext
 from src.models import IngestResult, MatchResult, SourceRecordEnvelope
@@ -76,7 +78,11 @@ class _Session:
         return None
 
     def execute_write(self, work: object) -> object:
-        return cast(object, work)(object())  # type: ignore[operator]
+        tx_mock = MagicMock()
+        tx_mock.run.side_effect = lambda query, *_args, **_kwargs: (
+            summary_counter_result(query) or DEFAULT
+        )
+        return cast(object, work)(tx_mock)  # type: ignore[operator]
 
 
 class _Client:
@@ -187,7 +193,7 @@ def test_company_reference_persistence_never_creates_or_matches_a_person(
 
     assert result.source_record_pk == "sr-303"
     assert persisted["identifiers"] == []
-    assert persisted["is_new_person"] is False
+    assert persisted.get("person_created", False) is False
     assert persisted["link_status"] == "not_applicable"
     match_result = persisted["match_result"]
     assert isinstance(match_result, MatchResult)

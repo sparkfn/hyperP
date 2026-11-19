@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from typing import Protocol, TypedDict
+from typing import Literal, Protocol, TypedDict
 
 from src.repositories.protocols.merge import GoldenProfileSelection
 from src.types import ReviewCaseDetail, ReviewCaseSummary
@@ -43,7 +43,22 @@ class ActionResult(TypedDict, total=False):
     golden_profile_selections: list[GoldenProfileSelection]
     merge_blocked: bool
     merge_not_applicable: bool
+    pair_audit_merge_disabled: bool
+    resolve_not_applicable: bool
+    created_at: str | None
     redirected_review_case_ids: list[str]
+
+
+class BulkActionItemOutcome(TypedDict):
+    review_case_id: str
+    status: Literal["updated", "error"]
+    queue_state: str | None
+    resolution: str | None
+    error_code: str | None
+
+
+class BulkActionOutcome(TypedDict):
+    items: list[BulkActionItemOutcome]
 
 
 class ReviewRepository(Protocol):
@@ -72,4 +87,18 @@ class ReviewRepository(Protocol):
         actor_id: str,
         survivor_person_id: str | None,
         golden_profile_selections: list[GoldenProfileSelection],
+        *,
+        reason_code: str | None = None,
     ) -> ActionResult | None: ...
+
+    async def submit_bulk_action(
+        self,
+        review_case_ids: list[str],
+        action_type: str,
+        new_state: str,
+        resolution: str | None,
+        notes: str | None,
+        follow_up_at: str | None,
+        actor_id: str,
+        reason_code: str,
+    ) -> BulkActionOutcome: ...

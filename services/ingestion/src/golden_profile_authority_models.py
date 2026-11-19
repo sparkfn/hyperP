@@ -21,6 +21,7 @@ class AuthorityIdentifier(TypedDict):
     is_verified: bool
     last_confirmed_at: str | None
     source_record_pk: str | None
+    nric_masked: str | None
 
 
 class AuthorityAddress(TypedDict):

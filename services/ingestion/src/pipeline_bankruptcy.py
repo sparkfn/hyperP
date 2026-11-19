@@ -2,13 +2,13 @@
 
 from __future__ import annotations
 
-import json
 from datetime import datetime
 
 from neo4j import ManagedTransaction
 
 from src.graph import queries
 from src.models import JsonValue, SourceRecordEnvelope
+from src.raw_payload import serialize_raw_payload
 
 
 def _row(payload: dict[str, JsonValue], key: str) -> dict[str, JsonValue]:
@@ -59,7 +59,7 @@ def bankruptcy_case_blueprint(envelope: SourceRecordEnvelope) -> dict[str, JsonV
         "first_seen_at": _iso_datetime(_str_value(case, "first_seen_at")),
         "last_seen_at": _iso_datetime(_str_value(case, "last_seen_at")),
         "observed_at": envelope.observed_at,
-        "raw_payload": json.dumps(envelope.raw_payload, default=str),
+        "raw_payload": serialize_raw_payload(envelope),
     }
 
 
@@ -108,5 +108,5 @@ def materialize_bankruptcy_case(
         first_seen_at=_iso_datetime(_str_value(case, "first_seen_at")),
         last_seen_at=_iso_datetime(_str_value(case, "last_seen_at")),
         observed_at=envelope.observed_at,
-        raw_payload=json.dumps(envelope.raw_payload, default=str),
+        raw_payload=serialize_raw_payload(envelope),
     )

@@ -30,6 +30,7 @@ celery_app = Celery(
         "src.standalone_crm_schedule_tasks",
         "src.stage_history_tasks",
         "src.crm_deal_identity_repair_tasks",
+        "src.projection_sync",
     ],
 )
 
@@ -50,9 +51,11 @@ celery_app.conf.update(
         "src.crm_tenant_operator_tasks.*": {"queue": INGESTION_QUEUE},
         "src.crm_deal_identity_repair_tasks.*": {"queue": INGESTION_QUEUE},
         "src.tasks.reconcile_lifecycle_task": {"queue": LIFECYCLE_QUEUE},
+        "src.tasks.reconcile_person_list_summary_task": {"queue": LIFECYCLE_QUEUE},
         "src.tasks.materialize_knows_task": {"queue": LIFECYCLE_QUEUE},
         "src.tasks.send_birthday_messages_task": {"queue": MISCELLANEOUS_QUEUE},
         "src.tasks.recalculate_pair_audit_match_task": {"queue": MISCELLANEOUS_QUEUE},
+        "src.projection_sync.projection_sync_task": {"queue": LIFECYCLE_QUEUE},
     },
     broker_transport_options={
         "visibility_timeout": settings.celery_broker_visibility_timeout,
@@ -88,6 +91,12 @@ _beat_schedule: dict[str, dict[str, object]] = {
         "args": ("knows", "chat_relationships"),
         "options": {"queue": INGESTION_QUEUE},
     },
+    "person-list-summary-reconciliation": {
+        "task": "src.tasks.reconcile_person_list_summary_task",
+        "schedule": crontab(minute="0", hour="0"),
+        "args": (),
+        "options": {"queue": LIFECYCLE_QUEUE},
+    },
 }
 
 for group in SCHEDULED_INGESTION_GROUPS:
@@ -108,6 +117,17 @@ if settings.birthday_task_enabled:
         ),
         "args": (),
         "options": {"queue": MISCELLANEOUS_QUEUE},
+    }
+
+if settings.rust_spike_enabled:
+    _beat_schedule["projection-sync"] = {
+        "task": "src.projection_sync.projection_sync_task",
+        "schedule": float(settings.projection_sync_interval_seconds),
+        "args": (),
+        "options": {
+            "queue": LIFECYCLE_QUEUE,
+            "expires": float(settings.projection_sync_interval_seconds),
+        },
     }
 
 celery_app.conf.beat_schedule = _beat_schedule

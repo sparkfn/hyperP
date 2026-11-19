@@ -14,6 +14,13 @@ from src.connectors.whatsadmin_api.credentials import (
     whatsadmin_entity_keys_are_distinct,
 )
 
+#: Identity-model rollout switch for the ingestion write path (#490, #499).
+#: ``v1`` keeps the legacy writes; ``v2_shadow`` additionally writes the C1
+#: assertions and C3 identity projection while the legacy outcome stays
+#: authoritative; ``v2`` makes the C3 projection authoritative and only an
+#: NRIC anchor constructs a Person.
+IdentityModel = Literal["v1", "v2_shadow", "v2"]
+
 
 class Settings(BaseSettings):
     """Environment-driven configuration for the ingestion service."""
@@ -42,6 +49,17 @@ class Settings(BaseSettings):
     # Ingestion tuning --------------------------------------------------------
     dumps_root: str = "/app/dumps"
     batch_size: int = 500
+    review_policy: Literal["off", "v2_weak_signal_park"] = "off"
+
+    # NRIC hashing / encryption -----------------------------------------------
+    nric_hmac_key: str = ""
+    nric_hmac_key_version: str = "v1"
+
+    # Identity model rollout --------------------------------------------------
+    # "v1" keeps the legacy write path; "v2_shadow" additionally writes the
+    # C1 assertions and C3 identity projection (no authoritative change);
+    # "v2" resolves identity through the C3 projection.
+    identity_model: IdentityModel = "v1"
 
     # Celery / queue ----------------------------------------------------------
     celery_broker_url: str = "redis://redis:6379/0"
@@ -223,6 +241,13 @@ class Settings(BaseSettings):
     whatsadmin_api_retry_base_delay_seconds: float = Field(default=1.0, ge=0)
 
     @model_validator(mode="after")
+    def _validate_projection_spike(self) -> Settings:
+        """Require a projection DSN only while the Rust spike is enabled."""
+        if self.rust_spike_enabled and not self.projection_postgres_dsn.get_secret_value().strip():
+            raise ValueError("PROJECTION_POSTGRES_DSN is required when RUST_SPIKE_ENABLED is set")
+        return self
+
+    @model_validator(mode="after")
     def _validate_enabled_whatsadmin_entities(self) -> Settings:
         enabled_keys: tuple[tuple[str, bool, SecretStr], ...] = (
             ("eko", self.whatsadmin_eko_enabled, self.whatsadmin_eko_api_key),
@@ -256,6 +281,14 @@ class Settings(BaseSettings):
     # tuning (timeout/delay/retries) lives in this file's `llm` block; LLM
     # GPT and ProClaude provider credentials are read from the environment.
     ingestion_config_file: str = ""
+
+    # Rust read-projection spike (#491) -------------------------------------
+    # Disabled by default. When enabled, the lifecycle worker mirrors person
+    # and identity-link state into the disposable Postgres projection read by
+    # the Rust spike. The DSN is required only while the spike is enabled.
+    rust_spike_enabled: bool = False
+    projection_sync_interval_seconds: int = Field(default=30, ge=1)
+    projection_postgres_dsn: SecretStr = SecretStr("")
 
     # Birthday greeting task -------------------------------------------------
     # Daily Celery beat job that sends a WhatsApp birthday message to every

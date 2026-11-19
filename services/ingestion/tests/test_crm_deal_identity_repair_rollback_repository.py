@@ -8,6 +8,7 @@ from typing import TypeVar, cast
 from uuid import NAMESPACE_URL, uuid5
 
 import pytest
+from _txmock import summary_counter_result
 from neo4j import ManagedTransaction, Record
 from src.connectors.bitrix_stage_history.artifact_manifest import canonical_json_bytes
 from src.crm_deal_identity_repair.digests import (
@@ -65,6 +66,9 @@ class _Transaction:
         self.calls: list[tuple[str, dict[str, object]]] = []
 
     def run(self, query: str, **params: object) -> _Result:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self.calls.append((query, params))
         values = self.rows.get(query, [None])
         return _Result(values.pop(0) if values else None)
@@ -821,7 +825,8 @@ def test_terminal_status_and_replay_allow_completed_fence_lifecycle(
     assert replay.decision == "replayed"
     assert replay.original_terminal_decision == expected_original
     assert client.read_calls == 1
-    assert client.write_calls == 1
+    # The invalidation is its own committed transaction before the rollback.
+    assert client.write_calls == 2
     assert [query for query, _ in transaction.calls] == [
         queries.READ_ROLLBACK_TERMINAL,
         queries.READ_ROLLBACK_TERMINAL,

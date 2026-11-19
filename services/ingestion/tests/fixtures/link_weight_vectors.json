@@ -1,0 +1,273 @@
+{
+  "version": "c4-w1",
+  "vectors": [
+    {
+      "name": "single_verified_tier1",
+      "identifier_type": "phone",
+      "participant_count": 1,
+      "reference_at": "2026-01-01T00:00:00Z",
+      "assertions": [
+        {
+          "source_record_pk": "sr-1",
+          "trust_tier": "tier_1",
+          "quality_flag": "valid",
+          "is_verified": true,
+          "extraction_confidence": null,
+          "record_type": "identity",
+          "link_status": "linked",
+          "observed_at": "2026-01-01T00:00:00Z"
+        }
+      ],
+      "expected": {"score": 1.0, "exclusivity": 1.0, "rank_score": 1.0}
+    },
+    {
+      "name": "single_unverified_tier3",
+      "identifier_type": "phone",
+      "participant_count": 2,
+      "reference_at": "2026-03-01T00:00:00Z",
+      "assertions": [
+        {
+          "source_record_pk": "sr-1",
+          "trust_tier": "tier_3",
+          "quality_flag": "valid",
+          "is_verified": false,
+          "extraction_confidence": null,
+          "record_type": "identity",
+          "link_status": "linked",
+          "observed_at": "2026-03-01T00:00:00Z"
+        }
+      ],
+      "expected": {"score": 0.6, "exclusivity": 0.5, "rank_score": 0.3}
+    },
+    {
+      "name": "noisy_or_pair",
+      "identifier_type": "phone",
+      "participant_count": 1,
+      "reference_at": "2026-02-01T00:00:00Z",
+      "assertions": [
+        {
+          "source_record_pk": "sr-1",
+          "trust_tier": "tier_2",
+          "quality_flag": "valid",
+          "is_verified": false,
+          "extraction_confidence": null,
+          "record_type": "identity",
+          "link_status": "linked",
+          "observed_at": "2026-01-01T00:00:00Z"
+        },
+        {
+          "source_record_pk": "sr-2",
+          "trust_tier": "tier_2",
+          "quality_flag": "valid",
+          "is_verified": false,
+          "extraction_confidence": null,
+          "record_type": "identity",
+          "link_status": "linked",
+          "observed_at": "2026-02-01T00:00:00Z"
+        }
+      ],
+      "expected": {"score": 0.9775, "exclusivity": 1.0, "rank_score": 0.9775}
+    },
+    {
+      "name": "candidate_cap",
+      "identifier_type": "phone",
+      "participant_count": 1,
+      "reference_at": "2026-02-01T00:00:00Z",
+      "assertions": [
+        {
+          "source_record_pk": "sr-1",
+          "trust_tier": "tier_1",
+          "quality_flag": "valid",
+          "is_verified": true,
+          "extraction_confidence": null,
+          "record_type": "identity",
+          "link_status": "pending_review",
+          "observed_at": "2026-01-01T00:00:00Z"
+        },
+        {
+          "source_record_pk": "sr-2",
+          "trust_tier": "tier_1",
+          "quality_flag": "valid",
+          "is_verified": true,
+          "extraction_confidence": null,
+          "record_type": "identity",
+          "link_status": "pending_review",
+          "observed_at": "2026-02-01T00:00:00Z"
+        }
+      ],
+      "expected": {"score": 0.24, "exclusivity": 1.0, "rank_score": 0.24}
+    },
+    {
+      "name": "mixed_confirmed_candidate",
+      "identifier_type": "phone",
+      "participant_count": 1,
+      "reference_at": "2026-02-01T00:00:00Z",
+      "assertions": [
+        {
+          "source_record_pk": "sr-1",
+          "trust_tier": "tier_3",
+          "quality_flag": "valid",
+          "is_verified": false,
+          "extraction_confidence": null,
+          "record_type": "identity",
+          "link_status": "linked",
+          "observed_at": "2026-01-01T00:00:00Z"
+        },
+        {
+          "source_record_pk": "sr-2",
+          "trust_tier": "tier_1",
+          "quality_flag": "valid",
+          "is_verified": true,
+          "extraction_confidence": null,
+          "record_type": "identity",
+          "link_status": "pending_review",
+          "observed_at": "2026-02-01T00:00:00Z"
+        }
+      ],
+      "expected": {"score": 0.696, "exclusivity": 1.0, "rank_score": 0.696}
+    },
+    {
+      "name": "decay_half_life",
+      "identifier_type": "phone",
+      "participant_count": 1,
+      "reference_at": "2027-01-01T00:00:00Z",
+      "assertions": [
+        {
+          "source_record_pk": "sr-1",
+          "trust_tier": "tier_3",
+          "quality_flag": "valid",
+          "is_verified": false,
+          "extraction_confidence": null,
+          "record_type": "identity",
+          "link_status": "linked",
+          "observed_at": "2026-01-01T00:00:00Z"
+        }
+      ],
+      "expected": {"score": 0.6, "exclusivity": 1.0, "rank_score": 0.3}
+    },
+    {
+      "name": "no_decay_nric",
+      "identifier_type": "nric",
+      "participant_count": 4,
+      "reference_at": "2030-06-01T00:00:00Z",
+      "assertions": [
+        {
+          "source_record_pk": "sr-1",
+          "trust_tier": "tier_4",
+          "quality_flag": "valid",
+          "is_verified": false,
+          "extraction_confidence": null,
+          "record_type": "identity",
+          "link_status": "linked",
+          "observed_at": "2026-01-01T00:00:00Z"
+        }
+      ],
+      "expected": {"score": 0.35, "exclusivity": 0.25, "rank_score": 0.0875}
+    },
+    {
+      "name": "conversation_drop",
+      "identifier_type": "phone",
+      "participant_count": 1,
+      "reference_at": "2026-01-01T00:00:00Z",
+      "assertions": [
+        {
+          "source_record_pk": "sr-1",
+          "trust_tier": "tier_2",
+          "quality_flag": "valid",
+          "is_verified": false,
+          "extraction_confidence": 0.8,
+          "record_type": "conversation",
+          "link_status": "linked",
+          "observed_at": "2026-01-01T00:00:00Z"
+        }
+      ],
+      "expected": {"score": 0.48, "exclusivity": 1.0, "rank_score": 0.48}
+    },
+    {
+      "name": "missing_defaults",
+      "identifier_type": "phone",
+      "participant_count": null,
+      "reference_at": "2026-01-01T00:00:00Z",
+      "assertions": [
+        {
+          "source_record_pk": "sr-1",
+          "trust_tier": null,
+          "quality_flag": null,
+          "is_verified": null,
+          "extraction_confidence": null,
+          "record_type": null,
+          "link_status": null,
+          "observed_at": "2026-01-01T00:00:00Z"
+        }
+      ],
+      "expected": {"score": 0.21, "exclusivity": 1.0, "rank_score": 0.21}
+    },
+    {
+      "name": "verified_boost",
+      "identifier_type": "email",
+      "participant_count": 3,
+      "reference_at": "2026-01-01T00:00:00Z",
+      "assertions": [
+        {
+          "source_record_pk": "sr-1",
+          "trust_tier": "tier_3",
+          "quality_flag": "valid",
+          "is_verified": true,
+          "extraction_confidence": null,
+          "record_type": "identity",
+          "link_status": "linked",
+          "observed_at": "2026-01-01T00:00:00Z"
+        }
+      ],
+      "expected": {"score": 0.69, "exclusivity": 0.333333, "rank_score": 0.23}
+    },
+    {
+      "name": "dedupe_max",
+      "identifier_type": "phone",
+      "participant_count": 1,
+      "reference_at": "2026-01-01T00:00:00Z",
+      "assertions": [
+        {
+          "source_record_pk": "sr-1",
+          "trust_tier": "tier_2",
+          "quality_flag": "valid",
+          "is_verified": false,
+          "extraction_confidence": null,
+          "record_type": "identity",
+          "link_status": "linked",
+          "observed_at": "2026-01-01T00:00:00Z"
+        },
+        {
+          "source_record_pk": "sr-1",
+          "trust_tier": "tier_2",
+          "quality_flag": "partial_parse",
+          "is_verified": false,
+          "extraction_confidence": null,
+          "record_type": "identity",
+          "link_status": "linked",
+          "observed_at": "2026-01-01T00:00:00Z"
+        }
+      ],
+      "expected": {"score": 0.85, "exclusivity": 1.0, "rank_score": 0.85}
+    },
+    {
+      "name": "exclusivity_shared",
+      "identifier_type": "phone",
+      "participant_count": 3,
+      "reference_at": "2026-01-01T00:00:00Z",
+      "assertions": [
+        {
+          "source_record_pk": "sr-1",
+          "trust_tier": "tier_3",
+          "quality_flag": "valid",
+          "is_verified": false,
+          "extraction_confidence": null,
+          "record_type": "identity",
+          "link_status": "linked",
+          "observed_at": "2026-01-01T00:00:00Z"
+        }
+      ],
+      "expected": {"score": 0.6, "exclusivity": 0.333333, "rank_score": 0.2}
+    }
+  ]
+}

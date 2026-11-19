@@ -134,6 +134,7 @@ class WhatsAdminChatApiConnector(SourceConnector):
             yield from process_whatsapp_bundles(
                 [bundle],
                 on_extraction_failure=self._record_extraction_failure,
+                on_skip=self.record_skip,
             )
             extraction_failed = len(self._extraction_failures) != failures_before
             if not extraction_failed and not self._active_retry_downstream_error:
@@ -184,6 +185,7 @@ class WhatsAdminChatApiConnector(SourceConnector):
             yield from process_whatsapp_bundles(
                 bundles,
                 on_extraction_failure=self._record_extraction_failure,
+                on_skip=self.record_skip,
             )
             next_cursor = page.meta.pagination.next_cursor
             if page.meta.pagination.has_more and next_cursor is None:
@@ -329,6 +331,11 @@ class WhatsAdminChatApiConnector(SourceConnector):
                 for message in chat.messages
             ]
             if not messages:
+                self.record_skip(
+                    "empty_content",
+                    source_record_id=None,
+                    locator=f"chats#chat_id={chat.chat_id}",
+                )
                 continue
             participants = [
                 _Participant(item.jid, item.phone, item.name, item.role)

@@ -8,7 +8,16 @@ from src.graph.queries.entities import (
     LIST_FILTER_SOURCE_SYSTEMS,
     get_entity_persons_query,
 )
+from src.graph.queries.person_list_summary import (
+    APPLY_PERSON_LIST_SUMMARY_DELTAS,
+    CAPTURE_DEAL_SUMMARY_CONTRIBUTIONS,
+    CAPTURE_DEAL_SUMMARY_CONTRIBUTIONS_BY_ELEMENT_ID,
+    CAPTURE_PERSON_SUMMARY_CONTRIBUTIONS,
+    GET_PERSON_LIST_SUMMARY_COUNTER,
+)
 from src.graph.queries.persons_list import (
+    GET_PERSON_LIST_CORE_SUMMARY,
+    GET_PERSON_LIST_CRM_SUMMARY,
     GET_PERSON_LIST_SUMMARY,
     build_count_persons_query,
     build_list_persons_query,
@@ -577,6 +586,43 @@ def test_has_any_match_keeps_identifier_branch_anchored_on_person() -> None:
     assert "<-[am_id:IDENTIFIED_BY]-(am:Person)" in query
 
 
+# Every terminal disposition closes a review case. Both copies of the
+# "open review case" predicate — the system_match_count metric and the
+# has_any_match / has_system_match filters — must exclude all of them, so a
+# closed case neither inflates the count nor satisfies the match filters.
+_OPEN_REVIEW_PREDICATE = (
+    "WHERE NOT rc.queue_state IN "
+    "['resolved', 'cancelled', 'expired', 'dismissed', 'superseded_by_policy']"
+)
+_STALE_OPEN_REVIEW_PREDICATE = "WHERE NOT rc.queue_state IN ['resolved', 'cancelled']"
+
+
+def test_open_review_predicates_exclude_terminal_queue_states() -> None:
+    # The metric copy is the only one present without the match filters.
+    metric_query = build_list_persons_query(
+        "system_match_count",
+        "desc",
+        has_q=False,
+    )
+    assert metric_query.count(_OPEN_REVIEW_PREDICATE) == 1
+    assert _STALE_OPEN_REVIEW_PREDICATE not in metric_query
+
+    # The filter copy is emitted by has_system_match and has_any_match.
+    filter_query = build_list_persons_query(
+        "profile_completeness_score",
+        "desc",
+        has_q=False,
+        active_filters=frozenset({"has_any_match", "has_system_match"}),
+    )
+    count_query = build_count_persons_query(
+        has_q=False,
+        active_filters=frozenset({"has_any_match", "has_system_match"}),
+    )
+    for query in (filter_query, count_query):
+        assert _OPEN_REVIEW_PREDICATE in query
+        assert _STALE_OPEN_REVIEW_PREDICATE not in query
+
+
 def test_entity_and_mode_requires_every_key() -> None:
     # AND mode emits ALL(... EXISTS ...) per key (intersection); it must NOT use
     # the OR `entity_key IN $entity_keys` form. Guards the persons-list entity
@@ -904,3 +950,95 @@ def test_identifier_pagination_has_complete_deterministic_provenance_tiebreakers
     assert "coalesce(item.source_system_key, '')" in final_order
     assert "coalesce(item.last_confirmed_at" in final_order
     assert "item.source_record_pks" in final_order
+
+
+def test_retained_core_summary_aggregate_keeps_its_exact_predicates() -> None:
+    assert GET_PERSON_LIST_CORE_SUMMARY.count("MATCH (p:Person)") == 1
+    assert "WHERE p.status <> 'merged'" in GET_PERSON_LIST_CORE_SUMMARY
+    assert "sum(CASE WHEN p.is_high_risk = true THEN 1 ELSE 0 END)" in GET_PERSON_LIST_CORE_SUMMARY
+    assert "sum(CASE WHEN p.is_high_value = true THEN 1 ELSE 0 END)" in GET_PERSON_LIST_CORE_SUMMARY
+    assert (
+        "sum(CASE WHEN p.preferred_phone IS NULL AND p.preferred_email IS NULL THEN 1 ELSE 0 END)"
+        in GET_PERSON_LIST_CORE_SUMMARY
+    )
+
+
+def test_retained_crm_summary_aggregate_keeps_its_exact_predicates() -> None:
+    assert "MATCH (deal:SourceRecord {record_type: 'crm_deal'})" in GET_PERSON_LIST_CRM_SUMMARY
+    assert "coalesce(deal_link.is_active, true) = true" in GET_PERSON_LIST_CRM_SUMMARY
+    assert "deal.lifecycle_status = 'active'" in GET_PERSON_LIST_CRM_SUMMARY
+    assert "deal.is_latest = true" in GET_PERSON_LIST_CRM_SUMMARY
+    assert "count(DISTINCT deal) AS all_deals_count" in GET_PERSON_LIST_CRM_SUMMARY
+    assert "count(DISTINCT CASE" in GET_PERSON_LIST_CRM_SUMMARY
+    # The month-scoped count has no upper bound: future deals count.
+    assert (
+        "deal.observed_at >= datetime.truncate('month', datetime())" in GET_PERSON_LIST_CRM_SUMMARY
+    )
+    assert "deal.observed_at <" not in GET_PERSON_LIST_CRM_SUMMARY
+
+
+def test_counter_person_capture_gates_every_flag_on_the_qualifying_status() -> None:
+    assert CAPTURE_PERSON_SUMMARY_CONTRIBUTIONS.count("MATCH (p:Person") == 1
+    qualifying = "p IS NOT NULL AND p.status IS NOT NULL AND p.status <> 'merged'"
+    assert CAPTURE_PERSON_SUMMARY_CONTRIBUTIONS.count(qualifying) == 4
+    assert "AND coalesce(p.is_high_risk = true, false)" in CAPTURE_PERSON_SUMMARY_CONTRIBUTIONS
+    assert "AND coalesce(p.is_high_value = true, false)" in CAPTURE_PERSON_SUMMARY_CONTRIBUTIONS
+    assert (
+        "AND p.preferred_phone IS NULL AND p.preferred_email IS NULL"
+        in CAPTURE_PERSON_SUMMARY_CONTRIBUTIONS
+    )
+
+
+def test_counter_deal_capture_keeps_its_exact_predicates() -> None:
+    for query in (
+        CAPTURE_DEAL_SUMMARY_CONTRIBUTIONS,
+        CAPTURE_DEAL_SUMMARY_CONTRIBUTIONS_BY_ELEMENT_ID,
+    ):
+        assert "deal.record_type = 'crm_deal'" in query
+        assert "deal.lifecycle_status = 'active'" in query
+        assert "deal.lifecycle_status IS NULL AND deal.is_latest = true" in query
+        assert "coalesce(deal_link.is_active, true) = true" in query
+        assert "linked_person.status IS NOT NULL" in query
+        assert "linked_person.status <> 'merged'" in query
+        assert "CASE WHEN qualifying THEN toString(deal.observed_at) ELSE null END" in query
+        assert "history_family" not in query
+        assert "FROM_SOURCE" not in query
+
+
+def test_counter_apply_guards_readiness_validity_and_the_month_marker() -> None:
+    assert APPLY_PERSON_LIST_SUMMARY_DELTAS.count("SET c.updated_at = datetime()") == 1
+    assert (
+        "datetime.truncate('month', datetime.realtime()) AS scan_month"
+        in APPLY_PERSON_LIST_SUMMARY_DELTAS
+    )
+    assert "datetime(value) >= scan_month" in APPLY_PERSON_LIST_SUMMARY_DELTAS
+    assert "valueType(c.ready) STARTS WITH 'BOOLEAN' AND c.ready = true" in (
+        APPLY_PERSON_LIST_SUMMARY_DELTAS
+    )
+    assert "(c.month IS NOT NULL AND c.month = current_month_key) AS month_current" in (
+        APPLY_PERSON_LIST_SUMMARY_DELTAS
+    )
+    assert "AND final_month = scan_month" in APPLY_PERSON_LIST_SUMMARY_DELTAS
+    # Readiness, generation and the month marker are read but never written.
+    write_clause = APPLY_PERSON_LIST_SUMMARY_DELTAS.split("SET c.active_person_count", 1)[1].split(
+        "RETURN", 1
+    )[0]
+    assert "c.ready =" not in write_clause
+    assert "c.generation =" not in write_clause
+    assert "c.month =" not in write_clause
+
+
+def test_counter_keyed_read_reports_the_current_month_and_strict_validity() -> None:
+    assert (
+        "OPTIONAL MATCH (c:PersonListSummaryCounter {key: $key})" in GET_PERSON_LIST_SUMMARY_COUNTER
+    )
+    assert "current_month AS current_month" in GET_PERSON_LIST_SUMMARY_COUNTER
+    assert "valueType(c.ready) STARTS WITH 'BOOLEAN' AND c.ready = true" in (
+        GET_PERSON_LIST_SUMMARY_COUNTER
+    )
+    assert "valueType(c.generation) STARTS WITH 'INTEGER'" in GET_PERSON_LIST_SUMMARY_COUNTER
+    assert "(c.month IS NOT NULL AND c.month = current_month) AS month_valid" in (
+        GET_PERSON_LIST_SUMMARY_COUNTER
+    )
+    assert "AS core_counts_valid" in GET_PERSON_LIST_SUMMARY_COUNTER
+    assert "AS crm_counts_valid" in GET_PERSON_LIST_SUMMARY_COUNTER

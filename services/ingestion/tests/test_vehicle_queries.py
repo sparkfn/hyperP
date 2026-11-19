@@ -17,6 +17,7 @@ from __future__ import annotations
 
 from typing import cast
 
+from _txmock import summary_counter_result
 from src.exclusions import ExclusionContext
 from src.graph import queries
 from src.graph.client import Neo4jClient
@@ -391,6 +392,9 @@ class _ChatTx:
         self.link_calls: list[dict[str, object]] = []
 
     def run(self, query: str, **kwargs: object) -> _ResolveRow | _NoopRow:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         if query == queries.RESOLVE_EXISTING_VEHICLE_FOR_CHAT:
             self.resolve_calls.append(kwargs)
             return _ResolveRow(next(self._resolve_iter))

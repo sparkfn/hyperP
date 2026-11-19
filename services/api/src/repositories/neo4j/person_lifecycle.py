@@ -5,6 +5,7 @@ from __future__ import annotations
 from neo4j import AsyncManagedTransaction
 
 from src.graph.client import get_session
+from src.graph.person_list_summary_deltas import PersonListSummaryDeltaCollector
 from src.graph.queries.person_lifecycle import RETIRE_PERSON
 from src.identity_link_revisions import append_person_retirement_revisions
 
@@ -21,6 +22,8 @@ async def _retire_person_tx(
     reason: str,
     actor_id: str,
 ) -> bool:
+    collector = PersonListSummaryDeltaCollector()
+    await collector.capture_before(tx, person_ids=[person_id])
     result = await tx.run(
         RETIRE_PERSON,
         person_id=person_id,
@@ -37,4 +40,8 @@ async def _retire_person_tx(
         cause_prefix=f"person-retirement:{event_id}",
         effective_at=str(record["retired_at"]),
     )
+    # A retired Person still qualifies for the maintained summary, so the
+    # delta is zero; the counter is published so the maintained value stays
+    # in step with the graph.
+    await collector.finalize(tx)
     return True

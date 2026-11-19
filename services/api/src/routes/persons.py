@@ -169,7 +169,7 @@ async def list_persons(
         raise http_error(
             400,
             "invalid_request",
-            "Search query q requires at least 3 characters (matches name, NRIC, email, phone).",
+            "Search query q requires at least 3 characters (matches name, email, phone).",
             request,
         )
     if (
@@ -297,7 +297,7 @@ async def search_persons(
         raise http_error(
             400,
             "invalid_request",
-            "Search query q requires at least 3 characters (matches name, NRIC, email, phone).",
+            "Search query q requires at least 3 characters (matches name, email, phone).",
             request,
         )
     persons, has_more = await repo.search_by_query(q, status, skip, page_limit)

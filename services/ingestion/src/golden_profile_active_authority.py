@@ -22,6 +22,7 @@ from src.graph.queries.persons import (
     FETCH_ADDRESS_IDS_BY_NORMALIZED_FULL,
     MARK_PERSON_ANALYSIS_DIRTY_BY_ID,
 )
+from src.normalizers.nric import masked_for
 
 # Trust tier ordering (higher index = higher trust).
 _TRUST_TIER_RANK: dict[str, int] = {
@@ -76,7 +77,7 @@ def derive_golden_profile_from_active_authority(
     identifiers = _authority_identifiers(row["identifiers"])
     addresses = _authority_addresses(row["addresses"])
     desired = _derived_fields(facts, identifiers, addresses)
-    overrides = _overrides(person.get("survivorship_overrides"))
+    overrides = parse_survivorship_overrides(person.get("survivorship_overrides"))
     custom_addresses = _custom_address_ids(tx, overrides)
     conflicts = _apply_canonical_overrides(
         desired, overrides, facts, identifiers, addresses, custom_addresses
@@ -128,6 +129,7 @@ def _authority_identifiers(value: object) -> tuple[AuthorityIdentifier, ...]:
                 "is_verified": verified is True,
                 "last_confirmed_at": _optional_string(item, "last_confirmed_at"),
                 "source_record_pk": _optional_string(item, "source_record_pk"),
+                "nric_masked": _optional_string(item, "nric_masked"),
             }
         )
     return tuple(values)
@@ -235,9 +237,10 @@ def _best_identifier(
     matching = [item for item in identifiers if item["identifier_type"] == identifier_type]
     if not matching:
         return None
-    return max(matching, key=lambda item: (item["is_verified"], item["last_confirmed_at"] or ""))[
-        "normalized_value"
-    ]
+    best = max(matching, key=lambda item: (item["is_verified"], item["last_confirmed_at"] or ""))
+    if identifier_type == "nric":
+        return masked_for(best["normalized_value"], best["nric_masked"])
+    return best["normalized_value"]
 
 
 def _best_address(addresses: tuple[AuthorityAddress, ...]) -> str | None:
@@ -248,7 +251,8 @@ def _best_address(addresses: tuple[AuthorityAddress, ...]) -> str | None:
     ]
 
 
-def _overrides(raw: object) -> tuple[OverrideEntry, ...]:
+def parse_survivorship_overrides(raw: object) -> tuple[OverrideEntry, ...]:
+    """Parse the stored survivorship-overrides JSON into typed entries."""
     if raw is None or raw == "":
         return ()
     value: object = raw
@@ -283,6 +287,10 @@ def _overrides(raw: object) -> tuple[OverrideEntry, ...]:
             )
         )
     return tuple(entries)
+
+
+#: Back-compat alias for the pre-public name.
+_overrides = parse_survivorship_overrides
 
 
 def _custom_address_ids(

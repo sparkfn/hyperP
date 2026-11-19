@@ -24,7 +24,7 @@ SourceRecordTypeLiteral = Literal[
     "call",
 ]
 SourceRecordLifecycleStatus = Literal[
-    "active", "pending_review", "superseded", "rejected", "link_failed"
+    "active", "pending_review", "superseded", "rejected", "link_failed", "parked"
 ]
 
 # --- Enums ---
@@ -77,6 +77,9 @@ class QueueState(StrEnum):
     DEFERRED = "deferred"
     RESOLVED = "resolved"
     CANCELLED = "cancelled"
+    EXPIRED = "expired"
+    DISMISSED = "dismissed"
+    SUPERSEDED_BY_POLICY = "superseded_by_policy"
 
 
 class LinkStatus(StrEnum):
@@ -94,6 +97,47 @@ class ApiReviewActionType(StrEnum):
     DEFER = "defer"
     ESCALATE = "escalate"
     MANUAL_NO_MATCH = "manual_no_match"
+    RESOLVE = "resolve"
+    EXPIRE = "expire"
+    DISMISS = "dismiss"
+
+
+class BulkReviewActionType(StrEnum):
+    RESOLVE = "resolve"
+    REJECT = "reject"
+    DEFER = "defer"
+    EXPIRE = "expire"
+    DISMISS = "dismiss"
+
+
+class ReviewReasonCode(StrEnum):
+    UNVERIFIED_PHONE = "unverified_phone"
+    UNVERIFIED_EMAIL = "unverified_email"
+    PHONE_NEAR_MATCH = "phone_near_match"
+    EMAIL_NEAR_MATCH = "email_near_match"
+    WEAK_SIGNAL_COMBINATION = "weak_signal_combination"
+    ANCHORED_AMBIGUITY = "anchored_ambiguity"
+    NRIC_CONTRADICTION = "nric_contradiction"
+    CRM_AMBIGUITY = "crm_ambiguity"
+    CONTINUITY_REASSIGNMENT = "continuity_reassignment"
+    DOB_CONFLICT = "dob_conflict"
+    NAME_MISMATCH = "name_mismatch"
+    NAME_SIMILARITY = "name_similarity"
+    DOB_MATCH = "dob_match"
+    SHARED_IDENTIFIER_BRIDGE = "shared_identifier_bridge"
+    WEAK_SIGNAL = "weak_signal"
+    OTHER = "other"
+
+
+class ReviewActionReasonCode(StrEnum):
+    CONFIRMED_MATCH = "confirmed_match"
+    CONFIRMED_DISTINCT = "confirmed_distinct"
+    INSUFFICIENT_EVIDENCE = "insufficient_evidence"
+    PARKED_WEAK_SIGNAL = "parked_weak_signal"
+    STALE_EXPIRED = "stale_expired"
+    AWAITING_VERIFICATION = "awaiting_verification"
+    PAIR_AUDIT_RETIRED_IN_V2 = "pair_audit_retired_in_v2"
+    OTHER = "other"
 
 
 class ConnectionType(StrEnum):
@@ -182,6 +226,34 @@ class VehicleSummary(BaseModel):
     observed_at: str | None = None
 
 
+class GoldenTopValue(BaseModel):
+    """One ranked golden identifier value (at most 3 per type in a block)."""
+
+    value: str
+    rank: int = 1
+    score: float = 0.0
+    verified: bool = False
+    last_confirmed_at: str | None = None
+    source_count: int = 0
+
+
+class GoldenTopConflict(BaseModel):
+    """A single-valued type with more than one distinct rankable value."""
+
+    type: str
+    reason: str
+    values: list[str | None] = Field(default_factory=list)
+
+
+class GoldenTopBlock(BaseModel):
+    """Top-3 golden identifier snapshot parsed from golden_json/conflicts."""
+
+    phone: list[GoldenTopValue] = Field(default_factory=list)
+    email: list[GoldenTopValue] = Field(default_factory=list)
+    nric: list[GoldenTopValue] = Field(default_factory=list)
+    conflicts: list[GoldenTopConflict | str] = Field(default_factory=list)
+
+
 class Person(BaseModel):
     person_id: str
     status: PersonStatus
@@ -197,6 +269,7 @@ class Person(BaseModel):
     profile_completeness_score: float = 0.0
     golden_profile_computed_at: str | None = None
     golden_profile_version: str | None = None
+    golden_top: GoldenTopBlock | None = None
     source_record_count: int = 0
     connection_count: int = 0
     lifetime_value: float | None = None
@@ -217,6 +290,10 @@ class PersonIdentifier(BaseModel):
     source_record_ids: list[str] = Field(default_factory=list)
     entities: list[PersonEntitySummary] = Field(default_factory=list)
     source_records: list[SourceRecord] = Field(default_factory=list)
+    # Derived C3 weights. Present only on HAS_IDENTIFIER-backed rows; legacy
+    # IDENTIFIED_BY-only identifiers keep both fields null.
+    score: float | None = None
+    golden_rank: int | None = None
 
 
 class PersonSharedIdentifierCandidate(BaseModel):
@@ -438,6 +515,8 @@ class MatchDecision(BaseModel):
     review_case_id: str | None = None
     review_case_queue_state: str | None = None
     review_case_assigned_to: str | None = None
+    review_suppressed: bool = False
+    suppressed_reason: str | None = None
 
 
 class ReviewCaseSummary(BaseModel):
@@ -455,6 +534,8 @@ class ReviewCaseSummary(BaseModel):
     right_person_id: str | None = None
     right_person_name: str | None = None
     right_person_status: str | None = None
+    resolved_by: str | None = None
+    resolution_reason_code: str | None = None
     match_decision: MatchDecisionSummary
 
 
@@ -520,6 +601,8 @@ class ReviewCaseDetail(BaseModel):
     sla_due_at: str | None = None
     resolution: str | None = None
     resolved_at: str | None = None
+    resolved_by: str | None = None
+    resolution_reason_code: str | None = None
     actions: list[dict[str, str | None]] = Field(default_factory=list)
     match_decision: MatchDecision
     comparison_left: PersonComparisonEntity | None = None
@@ -704,3 +787,40 @@ class ListedPerson(EntityPerson):
     # so the frontend does no date parsing/formatting. See format_display_dob.
     preferred_dob_display: str = "—"
     preferred_dob_invalid: bool = False
+
+
+class NricRevealRequest(BaseModel):
+    reason: str = Field(min_length=1, max_length=500)
+
+
+class NricReveal(BaseModel):
+    person_id: str
+    reveal_id: str
+    revealed_at: str
+    values: list[str] = Field(default_factory=list)
+    unavailable_count: int = Field(ge=0)
+
+
+class Profile(BaseModel):
+    """An unverified evidence cluster derived from C1 assertions."""
+
+    profile_id: str
+    status: str
+    evidence_version: int = 0
+    materialized_at: str | None = None
+    promoted_person_id: str | None = None
+    record_count: int = 0
+    identifier_count: int = 0
+
+
+class ProfileDetail(Profile):
+    """Profile detail: member SourceRecords and derived weighted identifiers."""
+
+    source_records: list[SourceRecord] = Field(default_factory=list)
+    identifiers: list[PersonIdentifier] = Field(default_factory=list)
+
+
+class UnlinkedProfile(Profile):
+    """v2 presentation row for the unlinked worklist, ordered by value_score."""
+
+    value_score: int = 0

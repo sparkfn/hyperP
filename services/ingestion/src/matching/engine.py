@@ -17,10 +17,18 @@ from neo4j import ManagedTransaction
 
 from src.matching.deterministic import evaluate_deterministic, prefetch_no_match_lock_owners
 from src.matching.heuristic import evaluate_heuristic
+from src.matching.snapshot import CandidateSnapshot
+from src.matching.thresholds import (
+    REASSIGNMENT_AUTO_THRESHOLD,
+    REASSIGNMENT_MIN_MARGIN,
+    V2_ATTACH_MARGIN,
+    V2_POLICY_VERSION,
+)
 from src.models import (
     CandidateResult,
     EngineType,
     JsonValue,
+    MatchAction,
     MatchDecision,
     MatchResult,
     NormalizedAddress,
@@ -30,9 +38,6 @@ from src.models import (
 )
 
 logger = logging.getLogger(__name__)
-
-REASSIGNMENT_AUTO_THRESHOLD: float = 0.90
-REASSIGNMENT_MIN_MARGIN: float = 0.10
 
 
 def ambiguous_prior_owners_result(prior_person_ids: tuple[str, ...]) -> MatchResult:
@@ -65,6 +70,10 @@ class MatchEngine:
         record_type: RecordType = RecordType.IDENTITY,
         *,
         continuity_person_id: str | None = None,
+        person_score_limit: int | None = None,
+        snapshots: dict[str, CandidateSnapshot] | None = None,
+        v2_evidence: bool = False,
+        include_plaintext_carrier: bool = True,
     ) -> MatchResult:
         """Run the full match chain and return the final result.
 
@@ -84,6 +93,10 @@ class MatchEngine:
                 continuity_person_id,
                 CandidateResult(person_id=continuity_person_id, source="continuity"),
             )
+        if person_score_limit is not None:
+            unique_candidates = self._limited_candidates(
+                unique_candidates, continuity_person_id, person_score_limit
+            )
         collected: list[MatchResult] = []
         continuity_result: MatchResult | None = None
         phone_fanout_cache: dict[str, int] = {}
@@ -91,6 +104,7 @@ class MatchEngine:
             tx,
             list(unique_candidates),
             identifiers,
+            v2_evidence=v2_evidence,
         )
 
         # Evaluate every candidate (no short-circuit on the first deterministic
@@ -107,6 +121,9 @@ class MatchEngine:
                 record_type,
                 phone_fanout_cache,
                 no_match_lock_owners,
+                snapshots,
+                v2_evidence,
+                include_plaintext_carrier,
             )
             if per_candidate is None:
                 continue
@@ -115,7 +132,10 @@ class MatchEngine:
             if person_id == continuity_person_id:
                 continuity_result = per_candidate
 
-        result = self._pick_best(collected)
+        if v2_evidence:
+            result = self._pick_best_v2(collected)
+        else:
+            result = self._pick_best(collected)
         if continuity_person_id is None:
             return result
         if result.additional_linked_person_ids:
@@ -131,11 +151,28 @@ class MatchEngine:
                 )
             proposed = destinations[0].matched_person_id if len(destinations) == 1 else None
             return self._continuity_review(result, continuity_person_id, proposed, 0.0)
-        if result.matched_person_id is None or result.is_new_person:
+        if result.matched_person_id is None:
             return self._continuity_review(result, continuity_person_id, None, 0.0)
         if result.matched_person_id == continuity_person_id:
             return result
         return self._apply_reassignment_policy(result, continuity_person_id, continuity_result)
+
+    @staticmethod
+    def _limited_candidates(
+        candidates: dict[str, CandidateResult],
+        continuity_person_id: str | None,
+        limit: int,
+    ) -> dict[str, CandidateResult]:
+        """Cap scored Person candidates deterministically, keeping continuity inside.
+
+        The caller inserts ``continuity_person_id`` into ``candidates`` before
+        calling this helper, so the continuity candidate is always present.
+        """
+        ordered = list(candidates)
+        keep = ordered[:limit]
+        if continuity_person_id is not None and continuity_person_id not in keep and limit > 0:
+            keep = ordered[: limit - 1] + [continuity_person_id]
+        return {person_id: candidates[person_id] for person_id in keep}
 
     @staticmethod
     def _apply_reassignment_policy(
@@ -209,6 +246,9 @@ class MatchEngine:
         record_type: RecordType,
         phone_fanout_cache: dict[str, int],
         no_match_lock_owners: dict[str, str],
+        snapshots: dict[str, CandidateSnapshot] | None,
+        v2_evidence: bool,
+        include_plaintext_carrier: bool,
     ) -> MatchResult | None:
         """Run one candidate through deterministic → heuristic → LLM."""
         det = evaluate_deterministic(
@@ -218,6 +258,8 @@ class MatchEngine:
             attributes,
             record_type,
             no_match_lock_owners=no_match_lock_owners,
+            v2_evidence=v2_evidence,
+            include_plaintext_carrier=include_plaintext_carrier,
         )
         if det is not None:
             # Hard NO_MATCH: drop the candidate without falling through.
@@ -233,6 +275,8 @@ class MatchEngine:
             attributes,
             record_type,
             phone_fanout_cache=phone_fanout_cache,
+            snapshot=snapshots.get(candidate_person_id) if snapshots is not None else None,
+            weighted=v2_evidence,
         )
         if heur.decision != MatchDecision.NO_MATCH:
             return heur
@@ -251,7 +295,6 @@ class MatchEngine:
             confidence=0.0,
             reasons=["No matching candidates found"],
             engine_type=EngineType.DETERMINISTIC,
-            is_new_person=True,
         )
 
     @staticmethod
@@ -261,12 +304,8 @@ class MatchEngine:
             return MatchResult(
                 decision=MatchDecision.NO_MATCH,
                 confidence=0.0,
-                reasons=[
-                    "Candidates exist but no engine produced a confident match "
-                    "— creating separate person"
-                ],
+                reasons=["Candidates exist but no engine produced a confident match"],
                 engine_type=EngineType.DETERMINISTIC,
-                is_new_person=True,
             )
 
         merges = [r for r in collected if r.decision == MatchDecision.MERGE]
@@ -281,10 +320,79 @@ class MatchEngine:
         return MatchResult(
             decision=MatchDecision.NO_MATCH,
             confidence=0.0,
-            reasons=["No candidate scored above the review threshold — creating separate person"],
+            reasons=["No candidate scored above the review threshold"],
             engine_type=EngineType.HEURISTIC,
-            is_new_person=True,
         )
+
+    @staticmethod
+    def _pick_best_v2(collected: list[MatchResult]) -> MatchResult:
+        """Margin gate before merge resolution (v2 only).
+
+        Ambiguous top-two heuristic attaches emit no MERGE: anchored ambiguity
+        opens one REVIEW, otherwise the record parks. A deterministic MERGE
+        anywhere in the collected results exempts the gate; otherwise
+        ``_resolve_merges`` runs unchanged (link-to-all preserved).
+        """
+        if not collected:
+            return MatchResult(
+                decision=MatchDecision.NO_MATCH,
+                confidence=0.0,
+                reasons=["Candidates exist but no engine produced a confident match"],
+                engine_type=EngineType.HEURISTIC,
+            )
+        merges = [r for r in collected if r.decision is MatchDecision.MERGE]
+        deterministic_merge = any(r.engine_type is not EngineType.HEURISTIC for r in merges)
+        attaches = sorted(
+            (
+                r
+                for r in merges
+                if r.engine_type is EngineType.HEURISTIC and r.action is MatchAction.ATTACH
+            ),
+            key=lambda r: (-r.confidence, r.matched_person_id or ""),
+        )
+        if (
+            not deterministic_merge
+            and len(attaches) >= 2
+            and attaches[0].confidence - attaches[1].confidence < V2_ATTACH_MARGIN
+        ):
+            within = [
+                r for r in attaches if attaches[0].confidence - r.confidence < V2_ATTACH_MARGIN
+            ]
+            anchored = sorted(
+                r.matched_person_id
+                for r in within
+                if r.feature_snapshot.get("anchored") is True and r.matched_person_id is not None
+            )
+            if len(anchored) >= 2:
+                primary = within[0]
+                return MatchResult(
+                    decision=MatchDecision.REVIEW,
+                    confidence=primary.confidence,
+                    reasons=[
+                        f"Anchored ambiguity among {len(anchored)} persons "
+                        f"within the attach margin: {', '.join(anchored)}"
+                    ],
+                    engine_type=EngineType.HEURISTIC,
+                    matched_person_id=primary.matched_person_id,
+                    review_candidate_person_ids=anchored,
+                    review_reason="anchored_ambiguity",
+                    action=MatchAction.REVIEW,
+                    policy_version=V2_POLICY_VERSION,
+                )
+            return MatchResult(
+                decision=MatchDecision.NO_MATCH,
+                confidence=within[0].confidence,
+                reasons=[
+                    "Top attach candidates within the attach margin "
+                    "without anchored ambiguity; parking"
+                ],
+                engine_type=EngineType.HEURISTIC,
+                action=MatchAction.PARK,
+                policy_version=V2_POLICY_VERSION,
+            )
+        if merges:
+            return MatchEngine._resolve_merges(merges)
+        return max(collected, key=lambda r: (r.confidence, r.matched_person_id or ""))
 
     @staticmethod
     def _resolve_merges(merges: list[MatchResult]) -> MatchResult:

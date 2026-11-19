@@ -10,6 +10,10 @@ from datetime import UTC, datetime
 
 from neo4j import Driver, ManagedTransaction
 from src.connectors.bitrix_openlines.models import CrmContact
+from src.graph.queries.person_list_summary import (
+    ENSURE_PERSON_LIST_SUMMARY_COUNTER,
+    PERSON_LIST_SUMMARY_COUNTER_KEY,
+)
 from src.graph.queries.standalone_crm_source_facts import CLAIM_PAGE, FINALIZE_PAGE
 from src.models import IngestResult
 from src.record_lifecycle import PlannedVersion
@@ -38,9 +42,15 @@ def reset_disposable_data(driver: Driver) -> None:
     Neo4j schema constraints and indexes are database metadata, so this removes
     production-pipeline artifacts without weakening or dropping the Lane A schema.
     The #302 hook is the final Lane A case and each scenario also resets in finally.
+    The wipe also deletes the production counter singleton, so it is re-ensured
+    afterwards the way schema bootstrap creates it.
     """
     with driver.session() as session:
         session.run("MATCH (node) DETACH DELETE node").consume()
+        session.run(
+            ENSURE_PERSON_LIST_SUMMARY_COUNTER,
+            key=PERSON_LIST_SUMMARY_COUNTER_KEY,
+        ).consume()
 
 
 def _parameters() -> dict[str, object]:

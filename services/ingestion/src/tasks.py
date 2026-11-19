@@ -59,12 +59,24 @@ from src.graph import queries
 from src.graph.bitrix_backfill import BitrixBackfillRepository
 from src.graph.bitrix_source_instances import BitrixSourceInstanceRepository
 from src.graph.client import Neo4jClient
-from src.graph.ingestion_control import BitrixStreamControl, LogicalRunControl
+from src.graph.ingestion_control import (
+    BitrixStreamControl,
+    LogicalRunControl,
+    assert_active_bitrix_fence,
+)
 from src.graph.ingestion_control_models import LogicalRunState
 from src.graph.migrations import (
     reconcile_projection_relationship_lifecycle,
     reconcile_source_record_lifecycle,
 )
+from src.graph.person_list_summary import (
+    PERSON_LIST_SUMMARY_MONTH_SCOPED_FIELD,
+    person_list_summary_alarming_fields,
+    person_list_summary_field_drifts,
+    person_list_summary_month_rolled_over,
+    reconcile_person_list_summary,
+)
+from src.graph.queries.ingest_skips import RECONCILE_INGEST_RUN_ACCOUNTING
 from src.ingestion_config import get_ingestion_config
 from src.knows_materialization_queue import (
     KnowsMaterializationTask,
@@ -91,7 +103,6 @@ from src.main import (
 )
 from src.matching.pair_score import score_person_pair
 from src.pipeline_knows import KnowsMaterializationPhase, materialize_knows_batch
-from src.pipeline_person_pairs import _ENGINE_VERSION, _POLICY_VERSION
 from src.resumable import AttemptStatus, CheckpointDescriptor
 from src.source_instances import (
     LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
@@ -362,6 +373,29 @@ def _terminal_checkpoint_counts(state: LogicalRunState) -> tuple[int, int, int, 
         state.retry_count,
         record_count,
     )
+
+
+def _reconcile_split_run_accounting(
+    client: Neo4jClient,
+    *,
+    context: FenceContext,
+    ingest_run_id: str,
+    control_instance_id: str,
+) -> bool:
+    """Recompute one run's durable accounting totals under the active stream fence."""
+
+    def _work(tx: ManagedTransaction) -> bool:
+        # The reconciliation writes the run's durable totals, so a stale attempt must
+        # not be able to mark its own run reconciled.
+        assert_active_bitrix_fence(tx, context)
+        record = tx.run(
+            RECONCILE_INGEST_RUN_ACCOUNTING,
+            ingest_run_id=ingest_run_id,
+            control_instance_id=control_instance_id,
+        ).single()
+        return record is not None and bool(record["reconciled"])
+
+    return client.execute_write(_work)
 
 
 def _logical_control_for_control(
@@ -691,6 +725,15 @@ def _run_split_bitrix_ingestion(
                 and time.monotonic() - started_at > max_runtime_seconds
             ):
                 raise RuntimeError("split Bitrix runtime ceiling was exceeded")
+            if membership is not None and not _reconcile_split_run_accounting(
+                client,
+                context=admission.fence_context,
+                ingest_run_id=admission.fence_context.ingest_run_id,
+                control_instance_id=control_instance_id,
+            ):
+                raise RuntimeError(
+                    "split Bitrix ledger reconciliation failed after the known-owner refresh"
+                )
         except Exception as exc:
             logical.fail_fenced(
                 context=admission.fence_context,
@@ -1820,6 +1863,102 @@ def reconcile_lifecycle_task(
 
 
 @celery_app.task(
+    name="src.tasks.reconcile_person_list_summary_task",
+    max_retries=0,
+)
+def reconcile_person_list_summary_task() -> dict[str, JsonValue]:
+    """Recompute and publish the person-list summary counter.
+
+    The task never activates the counter: only the explicit operator backfill
+    does, so an unready counter is left alone. The publication happens in a
+    single write transaction that holds the counter's lock, so duplicate or
+    overlapping deliveries are safe.
+
+    The absolute drift of every published field against the value stored
+    before the publication is logged. A drift of at least one per mille of the
+    authoritative Person count is an error: it means the maintained counter
+    and the graph disagree. The month-scoped count is excluded from that
+    threshold when the published month rolled over, because its change is then
+    intentional.
+    """
+    settings = get_settings()
+    setup_logging(settings.log_level)
+    client = Neo4jClient(settings)
+    try:
+        publication = reconcile_person_list_summary(client)
+    except Exception as exc:
+        logger.exception("Person-list summary reconciliation failed")
+        return {"status": "error", "error": type(exc).__name__}
+    finally:
+        client.close()
+
+    if publication is None:
+        logger.info("Person-list summary counter is not ready; nothing to reconcile")
+        return {"status": "skipped"}
+
+    drifts = person_list_summary_field_drifts(publication)
+    rolled_over = person_list_summary_month_rolled_over(publication)
+    denominator = publication.new.active_person_count
+    excluded_fields = (
+        frozenset({PERSON_LIST_SUMMARY_MONTH_SCOPED_FIELD}) if rolled_over else frozenset()
+    )
+    alarming = person_list_summary_alarming_fields(
+        drifts,
+        denominator=denominator,
+        excluded_fields=excluded_fields,
+    )
+
+    logger.info(
+        "Person-list summary published: active_person_count=%s, high_risk_count=%s, "
+        "high_value_count=%s, no_contact_count=%s, deals_this_month_count=%s, "
+        "all_deals_count=%s, month=%s",
+        publication.new.active_person_count,
+        publication.new.high_risk_count,
+        publication.new.high_value_count,
+        publication.new.no_contact_count,
+        publication.new.deals_this_month_count,
+        publication.new.all_deals_count,
+        publication.new_month,
+    )
+    if rolled_over:
+        logger.info(
+            "Person-list summary month rolled over: previous_month=%s new_month=%s",
+            publication.previous.month,
+            publication.new_month,
+        )
+    for report in drifts:
+        if not report.valid_previous:
+            logger.warning(
+                "Person-list summary %s has an invalid previous value",
+                report.field,
+            )
+            continue
+        logger.info(
+            "Person-list summary drift %s: previous=%s current=%s drift=%s",
+            report.field,
+            report.previous,
+            report.current,
+            report.drift,
+        )
+    if alarming:
+        logger.error(
+            "Person-list summary drift breached the per-mille threshold (%s): %s",
+            denominator,
+            ", ".join(f"{report.field}={report.drift}" for report in alarming),
+        )
+    return {
+        "status": "drift_alarm" if alarming else "ok",
+        "active_person_count": publication.new.active_person_count,
+        "all_deals_count": publication.new.all_deals_count,
+        "deals_this_month_count": publication.new.deals_this_month_count,
+        "high_risk_count": publication.new.high_risk_count,
+        "high_value_count": publication.new.high_value_count,
+        "month": publication.new_month,
+        "no_contact_count": publication.new.no_contact_count,
+    }
+
+
+@celery_app.task(
     name="src.tasks.send_birthday_messages_task",
     bind=True,
     max_retries=0,
@@ -1860,6 +1999,12 @@ def recalculate_pair_audit_match_task(self: Task, review_case_id: str) -> str:
     finally:
         client.close()
     return review_case_id
+
+
+#: Legacy pair-audit rescoring versions (the pair auditor was removed in #492;
+#: these stay frozen so existing cases keep their recorded provenance).
+_ENGINE_VERSION = "v0.1.0"
+_POLICY_VERSION = "v0.1.0"
 
 
 def _recalculate_pair_audit_match_in_tx(tx: ManagedTransaction, review_case_id: str) -> str:

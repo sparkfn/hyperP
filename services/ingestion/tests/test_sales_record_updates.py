@@ -4,6 +4,7 @@ from copy import deepcopy
 from typing import cast
 
 import pytest
+from _txmock import summary_counter_result
 from neo4j import ManagedTransaction
 from src.exclusions import ExclusionContext
 from src.graph import queries
@@ -54,6 +55,9 @@ class _Tx:
         self.calls: list[tuple[str, dict[str, object]]] = []
 
     def run(self, query: str, **kwargs: object) -> _Result:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         self.calls.append((query, kwargs))
         if query in {
             queries.ACTIVATE_SOURCE_RECORD_VERSION,
@@ -98,6 +102,9 @@ class _GraphTx(_Tx):
         }
 
     def run(self, query: str, **kwargs: object) -> _Result:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         result = super().run(query, **kwargs)
         if query == queries.LOCK_AND_GET_SOURCE_STATE:
             versions = cast(dict[str, str], self.state["versions"])
@@ -448,6 +455,9 @@ class _IdentityLinkTx(_Tx):
         return lifecycle == "active" or (lifecycle is None and identity.get("is_latest") is True)
 
     def run(self, query: str, **kwargs: object) -> _Result:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         super().run(query, **kwargs)
         if query == queries.LINK_SALES_TO_IDENTITY_RECORD:
             candidates = [

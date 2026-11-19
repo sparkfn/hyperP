@@ -35,11 +35,12 @@ _MACHINE_PERSON_SEARCH_DESCRIPTION = (
     "unsupported `identifier_type` is rejected with `invalid_request`. Supported "
     "`identifier_type` values: `phone`, `email`, `nric`, `external_customer_id`, "
     "`membership_id`, `crm_contact_id`, `loyalty_id`, `custom`. Matching compares the "
-    "canonical normalized value stored by ingestion, so callers must send the normalized "
-    "value. Exact identifier search results are unpaginated, ordered by `updated_at` "
-    "descending, and exclude only Persons with status `merged`. A `q`-only request uses "
-    "the existing paginated fuzzy search (`cursor`/`limit`, `meta.next_cursor`), and its "
-    "empty result is not an authoritative identifier negative."
+    "canonical normalized value stored by ingestion; for `nric`, input is canonicalized and "
+    "keyed server-side against both keyed digests and legacy records. Exact identifier search "
+    "results are unpaginated, ordered by `updated_at` descending, and exclude only Persons "
+    "with status `merged`. A `q`-only request uses the existing paginated fuzzy search "
+    "(`cursor`/`limit`, `meta.next_cursor`), and its empty result is not an authoritative "
+    "identifier negative."
 )
 
 

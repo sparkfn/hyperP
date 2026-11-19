@@ -87,3 +87,49 @@ def test_phone_and_email_lists_are_reused_during_one_candidate_score() -> None:
 
     assert snapshot.phones() is snapshot.phones()
     assert snapshot.emails() is snapshot.emails()
+
+
+def test_batch_snapshot_loads_all_candidates_in_one_query() -> None:
+    from src.graph import queries
+    from src.matching.snapshot import fetch_candidate_snapshots
+
+    class _RecordingTx:
+        def __init__(self) -> None:
+            self.calls: list[tuple[str, dict[str, object]]] = []
+
+        def run(self, query: str, **kwargs: object) -> list[dict[str, object]]:
+            self.calls.append((query, kwargs))
+            return [
+                {
+                    "candidate_person_id": "person-1",
+                    "has_identifiers": [
+                        {
+                            "identifier_type": "phone",
+                            "normalized_value": "+6591234567",
+                            "is_verified": True,
+                            "last_confirmed_at": None,
+                            "is_system_sourced": True,
+                        }
+                    ],
+                    "legacy_identifiers": [
+                        {
+                            "identifier_type": "phone",
+                            "normalized_value": "+6591234567",
+                            "is_verified": False,
+                            "last_confirmed_at": None,
+                            "is_system_sourced": True,
+                        }
+                    ],
+                    "facts": [],
+                    "addresses": [],
+                }
+            ]
+
+    tx = _RecordingTx()
+    snapshots = fetch_candidate_snapshots(tx, ["person-1", "person-2"], include_legacy=False)
+
+    assert len(tx.calls) == 1
+    assert tx.calls[0][0] == queries.CANDIDATE_SNAPSHOT_BATCH
+    assert set(snapshots) == {"person-1"}
+    phone = snapshots["person-1"].phones_by_value()["+6591234567"]
+    assert phone["is_verified"] is True

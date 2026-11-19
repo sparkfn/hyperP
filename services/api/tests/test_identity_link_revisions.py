@@ -406,7 +406,9 @@ def test_static_openapi_declares_both_identity_link_machine_operations() -> None
 
 
 def test_machine_operations_are_explicitly_excluded_from_mcp() -> None:
-    exclusions = {item.operation_id: item for item in MCP_OPERATION_EXCLUSIONS}
+    exclusions = {
+        item.operation_id: item for item in MCP_OPERATION_EXCLUSIONS if item.surface == "oauth2"
+    }
     assert set(exclusions) == {
         "list_identity_link_events_machine",
         "list_identity_link_snapshot_machine",

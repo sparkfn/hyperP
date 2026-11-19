@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Literal
+
 from fastapi import APIRouter, Depends, Query, Request
 from pydantic import BaseModel
 
@@ -12,9 +14,16 @@ from src.http_utils import envelope, http_error, next_cursor, page_window
 from src.repositories.deps import get_review_repo
 from src.repositories.protocols.review import ReviewListFilters, ReviewRepository
 from src.types import ApiResponse, ApiReviewActionType, ReviewCaseDetail, ReviewCaseSummary
-from src.types_requests import AssignReviewRequest, ReviewActionRequest
+from src.types_requests import (
+    AssignReviewRequest,
+    BulkReviewActionRequest,
+    ReviewActionRequest,
+)
 
 router = APIRouter(prefix="/v1/review-cases", tags=["Review"])
+
+# Upper bound on the number of review cases one bulk request may touch.
+MAX_BULK_REVIEW_CASE_IDS = 100
 
 
 class AssignResponse(BaseModel):
@@ -29,18 +38,36 @@ class ActionResponse(BaseModel):
     resolution: str | None = None
 
 
-def _resolve_action(action_type: ApiReviewActionType) -> tuple[str, str | None]:
+class BulkActionItemResponse(BaseModel):
+    review_case_id: str
+    status: Literal["updated", "error"]
+    queue_state: str | None = None
+    resolution: str | None = None
+    error_code: str | None = None
+
+
+class BulkActionResponse(BaseModel):
+    items: list[BulkActionItemResponse]
+
+
+def _resolve_action(action_type: str) -> tuple[str, str | None]:
     """Map an API action type to (new_queue_state, resolution)."""
-    if action_type is ApiReviewActionType.MERGE:
+    if action_type == ApiReviewActionType.MERGE.value:
         return "resolved", "merge"
-    if action_type is ApiReviewActionType.REJECT:
+    if action_type == ApiReviewActionType.REJECT.value:
         return "resolved", "reject"
-    if action_type is ApiReviewActionType.MANUAL_NO_MATCH:
+    if action_type == ApiReviewActionType.MANUAL_NO_MATCH.value:
         return "resolved", "manual_no_match"
-    if action_type is ApiReviewActionType.DEFER:
+    if action_type == ApiReviewActionType.RESOLVE.value:
+        return "resolved", "resolve"
+    if action_type == ApiReviewActionType.DEFER.value:
         return "deferred", None
-    if action_type is ApiReviewActionType.ESCALATE:
+    if action_type == ApiReviewActionType.ESCALATE.value:
         return "assigned", None
+    if action_type == ApiReviewActionType.EXPIRE.value:
+        return "expired", "expired"
+    if action_type == ApiReviewActionType.DISMISS.value:
+        return "dismissed", "dismissed"
     return "open", None
 
 
@@ -194,8 +221,8 @@ async def submit_review_action(
     user: AuthUser = Depends(require_human_review_case_mutator),
     repo: ReviewRepository = Depends(get_review_repo),
 ) -> ApiResponse[ActionResponse]:
-    """Submit a review action (merge / reject / defer / escalate / manual_no_match)."""
-    new_state, resolution = _resolve_action(body.action_type)
+    """Submit a review action (merge / reject / defer / escalate / manual_no_match / resolve)."""
+    new_state, resolution = _resolve_action(body.action_type.value)
     result = await repo.submit_action(
         review_case_id,
         body.action_type.value,
@@ -206,6 +233,7 @@ async def submit_review_action(
         user.email,
         body.metadata.survivor_person_id,
         [selection.to_selection() for selection in body.metadata.golden_profile_selections],
+        reason_code=body.reason_code.value if body.reason_code is not None else None,
     )
 
     if result is None:
@@ -216,11 +244,26 @@ async def submit_review_action(
         raise http_error(
             409, "merge_blocked", "A no-match lock exists between these persons.", request
         )
+    if result.get("pair_audit_merge_disabled"):
+        raise http_error(
+            422,
+            "pair_audit_merge_disabled",
+            "Merge is disabled for pair-audit review cases.",
+            request,
+        )
     if result.get("merge_not_applicable"):
         raise http_error(
             422,
             "merge_not_applicable",
             "Review case does not link two active persons; cannot execute merge.",
+            request,
+        )
+    if result.get("resolve_not_applicable"):
+        raise http_error(
+            422,
+            "resolve_not_applicable",
+            "Review case does not link two persons without source-record evidence; "
+            "cannot execute resolve.",
             request,
         )
 
@@ -232,3 +275,52 @@ async def submit_review_action(
         ),
         request,
     )
+
+
+@router.post(
+    "/bulk-actions",
+    response_model=ApiResponse[BulkActionResponse],
+    operation_id="submit_bulk_review_action",
+)
+async def submit_bulk_review_action(
+    body: BulkReviewActionRequest,
+    request: Request,
+    user: AuthUser = Depends(require_human_user),
+    repo: ReviewRepository = Depends(get_review_repo),
+) -> ApiResponse[BulkActionResponse]:
+    """Apply one review action to many review cases, reporting per-item outcomes."""
+    if not 1 <= len(body.review_case_ids) <= MAX_BULK_REVIEW_CASE_IDS:
+        raise http_error(
+            400,
+            "invalid_request",
+            "review_case_ids must contain between 1 and "
+            f"{MAX_BULK_REVIEW_CASE_IDS} review case ids.",
+            request,
+        )
+    # Authorize every requested case before any mutation, so a batch that
+    # crosses an entity boundary is rejected without writing anything.
+    for review_case_id in body.review_case_ids:
+        await require_mutator_for_review_case(review_case_id, request, user)
+
+    new_state, resolution = _resolve_action(body.action_type.value)
+    outcome = await repo.submit_bulk_action(
+        list(body.review_case_ids),
+        body.action_type.value,
+        new_state,
+        resolution,
+        body.notes,
+        body.follow_up_at,
+        user.email,
+        body.reason_code.value,
+    )
+    items = [
+        BulkActionItemResponse(
+            review_case_id=item["review_case_id"],
+            status=item["status"],
+            queue_state=item["queue_state"],
+            resolution=item["resolution"],
+            error_code=item["error_code"],
+        )
+        for item in outcome["items"]
+    ]
+    return envelope(BulkActionResponse(items=items), request)

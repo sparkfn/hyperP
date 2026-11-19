@@ -28,6 +28,8 @@ _LABEL_FILTER = " AND ".join(
 # OPERATED_BY: Entity -> SourceSystem.
 # OWNED_BY: SourceRecord -> Entity fan-out through a shared owner.
 # SOLD_BY: Product -> Entity.
+# ASSERTS: shadow SourceRecord -> evidence attribution (#490) must not alter
+#   Person graph traversal or surface parked/other-person records or ProfileFact nodes.
 _EXCLUDED_REL_TYPES = (
     "FROM_SOURCE",
     "HAS_FACT",
@@ -36,6 +38,7 @@ _EXCLUDED_REL_TYPES = (
     "OPERATED_BY",
     "OWNED_BY",
     "SOLD_BY",
+    "ASSERTS",
 )
 
 _REL_FILTER = " AND ".join(f"type(r) <> '{rt}'" for rt in _EXCLUDED_REL_TYPES)
@@ -86,6 +89,7 @@ UNWIND unique_nodes AS a
 OPTIONAL MATCH (a)-[r]-(b)
 WHERE b IN unique_nodes
   AND elementId(a) < elementId(b)
+  AND type(r) <> 'ASSERTS'
   AND (NOT (type(r) IN {repairable_rel_types}) OR coalesce(r.is_active, true) = true)
 WITH unique_nodes, collect(DISTINCT r) AS unique_rels
 UNWIND unique_nodes AS node

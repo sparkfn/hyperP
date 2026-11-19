@@ -83,13 +83,23 @@ def test_get_person_by_id_still_includes_connection_count_and_lifetime_value() -
 
 
 def test_person_summary_connection_queries_collect_each_path_before_the_next_match() -> None:
-    for query, person_name in ((GET_PERSON_BY_ID, "person"), (FIND_PERSON_BY_IDENTIFIER, "p")):
+    for query, address_binding in (
+        (GET_PERSON_BY_ID, "[person_address:LIVES_AT]"),
+        (FIND_PERSON_BY_IDENTIFIER, "[p_address:LIVES_AT]"),
+    ):
         assert "identifier_conn" in query
         assert "address_conn" in query
         assert "knows_conn" in query
         assert "identifier_conn + address_conn + knows_conn" in query
-        assert f"WITH {person_name}, collect(DISTINCT ci) AS identifier_conn" in query
         assert "collect(DISTINCT ci) + collect(DISTINCT ca) + collect(DISTINCT ck)" not in query
+        # The identifier projection (HAS/legacy collection or the legacy
+        # aggregate) must be fully collapsed into `identifier_conn` before the
+        # address traversal starts, so the two paths cannot form a cartesian
+        # product of collected nodes.
+        identifier_collected = query.index("AS identifier_conn")
+        address_start = query.index(address_binding)
+        assert identifier_collected < address_start
+        assert query.index("collect(DISTINCT ca) AS address_conn") < query.index("AS knows_conn")
 
 
 def test_get_person_by_id_still_resolves_merge_chain() -> None:
@@ -132,13 +142,17 @@ def test_identifiers_query_batches_source_record_lookups() -> None:
 
 
 def test_identifiers_query_paginates_before_call_block() -> None:
-    """GET_PERSON_IDENTIFIERS paginates BEFORE the CALL block so only page
-    identifiers are enriched, not all identifiers."""
-    call_idx = GET_PERSON_IDENTIFIERS.index("CALL {")
+    """GET_PERSON_IDENTIFIERS paginates BEFORE the enrichment CALL block so only
+    page identifiers are enriched, not all identifiers."""
+    # The leading CALL is the HAS/legacy UNION that builds the identifier
+    # universe; pagination must still precede the per-row enrichment CALL.
+    enrichment_idx = GET_PERSON_IDENTIFIERS.index("CALL {\n  WITH page")
     order_idx = GET_PERSON_IDENTIFIERS.index("ORDER BY is_active DESC")
     skip_idx = GET_PERSON_IDENTIFIERS.index("SKIP $skip LIMIT $limit")
-    assert order_idx < call_idx, "ORDER BY should come before CALL block"
-    assert skip_idx < call_idx, "SKIP/LIMIT should come before CALL block"
+    assert order_idx < enrichment_idx, "pagination must precede the enrichment CALL"
+    assert skip_idx < enrichment_idx, "pagination must precede the enrichment CALL"
+    assert order_idx < skip_idx
+    assert GET_PERSON_IDENTIFIERS.index("CALL {\n  WITH p") < order_idx
     return_idx = GET_PERSON_IDENTIFIERS.index("RETURN item.identifier.identifier_type")
     final_order_idx = GET_PERSON_IDENTIFIERS.index("ORDER BY item.is_active DESC", return_idx)
     assert final_order_idx > return_idx
@@ -165,11 +179,18 @@ def test_identifiers_entity_subquery_only_returns_entities() -> None:
 
 
 def test_identifiers_count_query_matches_data_row_grouping() -> None:
-    """The total must count distinct Identifier nodes, not raw provenance edges."""
-    assert "MATCH (p:Person {person_id: $person_id})-[:IDENTIFIED_BY]->(id:Identifier)" in (
-        COUNT_PERSON_IDENTIFIERS
-    )
+    """The total counts distinct Identifier nodes over the same HAS-union-legacy
+    universe as the data query, not raw provenance edges."""
+    compact_count = " ".join(COUNT_PERSON_IDENTIFIERS.split())
+    assert "MATCH (p)-[:HAS_IDENTIFIER {status: 'active'}]->(id:Identifier)" in compact_count
+    assert "MATCH (p)-[legacy:IDENTIFIED_BY]->(id:Identifier)" in compact_count
+    assert "NOT EXISTS { MATCH (p)-[:HAS_IDENTIFIER {status: 'active'}]->(id) }" in compact_count
     assert "RETURN count(DISTINCT id) AS total" in COUNT_PERSON_IDENTIFIERS
+    # The data query must use the identical universe: active HAS rows plus
+    # legacy rows without an active HAS projection.
+    compact_data = " ".join(GET_PERSON_IDENTIFIERS.split())
+    assert "MATCH (p)-[has:HAS_IDENTIFIER {status: 'active'}]->(id:Identifier)" in compact_data
+    assert "NOT EXISTS { MATCH (p)-[:HAS_IDENTIFIER {status: 'active'}]->(id) }" in compact_data
 
 
 def test_identifiers_query_aggregates_multi_edge_provenance_per_identifier() -> None:

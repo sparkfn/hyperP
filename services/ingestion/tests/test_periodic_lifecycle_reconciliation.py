@@ -26,6 +26,97 @@ def _allow_legacy_unbounded_maintenance_in_unit_tests(
     )
 
 
+def test_person_list_summary_reconciliation_is_registered_daily_at_midnight_utc() -> None:
+    from src.celery_app import _beat_schedule, celery_app
+
+    entries = [
+        (name, entry)
+        for name, entry in _beat_schedule.items()
+        if entry["task"] == "src.tasks.reconcile_person_list_summary_task"
+    ]
+
+    assert len(entries) == 1
+    name, entry = entries[0]
+    assert name == "person-list-summary-reconciliation"
+    schedule = entry["schedule"]
+    assert schedule.hour == {0}
+    assert schedule.minute == {0}
+    assert entry["options"] == {"queue": "lifecycle"}
+    assert celery_app.conf.timezone == "UTC"
+    celery_app.loader.import_default_modules()
+    assert "src.tasks.reconcile_person_list_summary_task" in celery_app.tasks
+
+
+class _SummaryClient:
+    closed: bool = False
+
+    def close(self) -> None:
+        self.closed = True
+
+
+def test_person_list_summary_task_logs_drift_without_invalid_values(
+    monkeypatch: MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    from src import tasks
+    from src.graph.person_list_summary import (
+        PersonListSummaryCounts,
+        PersonListSummaryPreviousState,
+        PersonListSummaryPublication,
+    )
+
+    client = _SummaryClient()
+    publication = PersonListSummaryPublication(
+        previous=PersonListSummaryPreviousState(
+            active_person_count=1000,
+            high_risk_count="private-marker@example.test",
+            high_value_count=0,
+            no_contact_count=0,
+            deals_this_month_count=0,
+            all_deals_count=1,
+            month="2026-11",
+            ready=True,
+        ),
+        new=PersonListSummaryCounts(
+            active_person_count=1000,
+            high_risk_count=0,
+            high_value_count=0,
+            no_contact_count=0,
+            deals_this_month_count=0,
+            all_deals_count=2,
+        ),
+        new_month="2026-11",
+        activated=False,
+    )
+    monkeypatch.setattr(tasks, "get_settings", lambda: type("S", (), {"log_level": "INFO"})())
+    monkeypatch.setattr(tasks, "setup_logging", lambda _level: None)
+    monkeypatch.setattr(tasks, "Neo4jClient", lambda _settings: client)
+    monkeypatch.setattr(tasks, "reconcile_person_list_summary", lambda _client: publication)
+
+    with caplog.at_level("INFO", logger=tasks.__name__):
+        result = tasks.reconcile_person_list_summary_task.run()
+
+    assert result["status"] == "drift_alarm"
+    assert "all_deals_count=1" in caplog.text
+    assert "high_risk_count has an invalid previous value" in caplog.text
+    assert "private-marker@example.test" not in caplog.text
+    assert client.closed
+
+
+def test_person_list_summary_task_leaves_unready_counter_alone(
+    monkeypatch: MonkeyPatch,
+) -> None:
+    from src import tasks
+
+    client = _SummaryClient()
+    monkeypatch.setattr(tasks, "get_settings", lambda: type("S", (), {"log_level": "INFO"})())
+    monkeypatch.setattr(tasks, "setup_logging", lambda _level: None)
+    monkeypatch.setattr(tasks, "Neo4jClient", lambda _settings: client)
+    monkeypatch.setattr(tasks, "reconcile_person_list_summary", lambda _client: None)
+
+    assert tasks.reconcile_person_list_summary_task.run() == {"status": "skipped"}
+    assert client.closed
+
+
 def test_periodic_reconciliation_is_registered_once_hourly() -> None:
     from src.celery_app import _beat_schedule, celery_app
     from src.lifecycle_reconciliation_queue import LifecycleReconciliationTask

@@ -8,6 +8,7 @@ from datetime import UTC, datetime
 from typing import cast
 from unittest.mock import MagicMock, patch
 
+from _txmock import summary_counter_result
 from neo4j import ManagedTransaction
 from src.connectors.bitrix_openlines.connector import build_crm_deal_envelope
 from src.connectors.bitrix_openlines.crm_identity_policy import (
@@ -36,6 +37,8 @@ from src.pipeline_crm_identity import (
     resolve_canonical_crm_contact,
 )
 from src.pipeline_normalization import normalize_envelope_identifiers
+from src.source_instances import LEGACY_DEFAULT_CONTROL_INSTANCE_ID
+from tests._staging_tx import tx_without_parked_row
 
 
 class _Rows:
@@ -60,6 +63,9 @@ class _Tx:
         self._blocked_owners = blocked_owners or {}
 
     def run(self, query: str, **_kwargs: object) -> _Rows:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         if "candidate_person_id" in query and "NO_MATCH_LOCK" in query:
             return _Rows(
                 [
@@ -83,6 +89,9 @@ class _Tx:
 
 class _NameMismatchTx:
     def run(self, query: str, **_kwargs: object) -> _Rows:
+        counter = summary_counter_result(query)
+        if counter is not None:
+            return counter
         if "is_locked" in query:
             return _Rows([{"is_locked": False}])
         if "owner_person_id" in query:
@@ -266,13 +275,14 @@ def test_multi_contact_duplicate_owners_create_actionable_review() -> None:
     def candidates(
         _tx: ManagedTransaction,
         identifiers: list[NormalizedIdentifier],
-        _addresses: list[object],
+        *,
+        candidate_mode: str,
     ) -> list[CandidateResult]:
         contact_id = identifiers[0].normalized_value
         assert contact_id in {"contact-1", "contact-2"}
         return [CandidateResult(person_id=person_id) for person_id in ["person-a", "person-b"]]
 
-    with patch("src.pipeline.find_candidates", side_effect=candidates):
+    with patch("src.pipeline.find_person_candidates", side_effect=candidates):
         result = pipeline._resolve_ambiguous_crm_deal_contacts(
             cast(ManagedTransaction, MagicMock()),
             envelope,
@@ -312,13 +322,14 @@ def test_shared_multi_contact_owner_respects_active_no_match_lock() -> None:
     def candidates(
         _tx: ManagedTransaction,
         _identifiers: list[NormalizedIdentifier],
-        _addresses: list[object],
+        *,
+        candidate_mode: str,
     ) -> list[CandidateResult]:
         return [CandidateResult(person_id="person-a")]
 
     tx = cast(ManagedTransaction, MagicMock())
     with (
-        patch("src.pipeline.find_candidates", side_effect=candidates),
+        patch("src.pipeline.find_person_candidates", side_effect=candidates),
         patch(
             "src.pipeline.prefetch_no_match_lock_owners",
             return_value={"person-a": "person-b"},
@@ -359,7 +370,8 @@ def test_disjoint_multi_contact_owners_are_not_selectable() -> None:
     def candidates(
         _tx: ManagedTransaction,
         identifiers: list[NormalizedIdentifier],
-        _addresses: list[object],
+        *,
+        candidate_mode: str,
     ) -> list[CandidateResult]:
         person_ids = (
             ["person-a", "person-b"]
@@ -368,7 +380,7 @@ def test_disjoint_multi_contact_owners_are_not_selectable() -> None:
         )
         return [CandidateResult(person_id=person_id) for person_id in person_ids]
 
-    with patch("src.pipeline.find_candidates", side_effect=candidates):
+    with patch("src.pipeline.find_person_candidates", side_effect=candidates):
         result = pipeline._resolve_ambiguous_crm_deal_contacts(
             cast(ManagedTransaction, MagicMock()),
             envelope,
@@ -643,7 +655,7 @@ def test_blocked_canonical_owner_persists_durable_pending_review() -> None:
             "blocked_canonical_crm_contact_candidate_ids": ["person-a"],
         },
     )
-    tx = cast(ManagedTransaction, MagicMock())
+    tx = tx_without_parked_row()
 
     with ExitStack() as stack:
         stack.enter_context(patch("src.pipeline.find_candidates", return_value=[]))
@@ -653,6 +665,9 @@ def test_blocked_canonical_owner_persists_durable_pending_review() -> None:
         upsert = stack.enter_context(patch("src.pipeline.upsert_nodes"))
         persist = stack.enter_context(
             patch("src.pipeline.persist_source_record", return_value="deal-sr")
+        )
+        settle = stack.enter_context(
+            patch("src.pipeline.settle_staged_source_record", return_value="deal-sr")
         )
         persist_decision = stack.enter_context(
             patch("src.pipeline.persist_match_decision", return_value="decision-1")
@@ -664,7 +679,7 @@ def test_blocked_canonical_owner_persists_durable_pending_review() -> None:
 
         result = pipeline._execute_ingest(tx, envelope, _contact_identifier(), [], [])
 
-    assert result.dropped is False
+    assert result.parked is False
     assert result.source_record_pk == "deal-sr"
     assert result.match_decision_id == "decision-1"
     assert result.review_case_id == "review-1"
@@ -672,9 +687,25 @@ def test_blocked_canonical_owner_persists_durable_pending_review() -> None:
     assert result.candidate_count == 0
     upsert.assert_not_called()
     link.assert_not_called()
-    assert persist.call_args.kwargs["lifecycle_status"].value == "pending_review"
+    assert persist.call_args.kwargs["lifecycle_status"].value == "parked"
+    assert persist.call_args.kwargs["link_status"] == "unlinked"
+    settle.assert_called_once_with(
+        tx,
+        "deal-sr",
+        link_status="blocked",
+        expected_active_source_record_pk=None,
+        ingest_run_id=None,
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    )
     persist_decision.assert_called_once_with(tx, quarantine, "deal-sr")
-    create_review.assert_called_once_with(tx, quarantine, "decision-1")
+    create_review.assert_called_once_with(
+        tx,
+        quarantine,
+        "decision-1",
+        source_system="bitrix_chat",
+        exception_only=False,
+        record_identity="bitrix_chat||bitrix-crm-deal-5",
+    )
 
 
 def test_crm_multi_merge_persists_provisional_link_without_identity_evidence() -> None:
@@ -707,7 +738,7 @@ def test_crm_multi_merge_persists_provisional_link_without_identity_evidence() -
             quality_flag=QualityFlag.VALID,
         ),
     ]
-    tx = cast(ManagedTransaction, MagicMock())
+    tx = tx_without_parked_row()
 
     with ExitStack() as stack:
         find = stack.enter_context(patch("src.pipeline.find_candidates", return_value=[]))
@@ -715,13 +746,15 @@ def test_crm_multi_merge_persists_provisional_link_without_identity_evidence() -
         persist = stack.enter_context(
             patch("src.pipeline.persist_source_record", return_value="deal-sr")
         )
+        settle = stack.enter_context(
+            patch("src.pipeline.settle_staged_source_record", return_value="deal-sr")
+        )
         stack.enter_context(patch("src.pipeline.persist_match_decision", return_value="decision-1"))
         stack.enter_context(
             patch("src.pipeline.create_review_case_if_needed", return_value="review-1")
         )
         link = stack.enter_context(patch("src.pipeline.link_record_to_graph"))
         activate = stack.enter_context(patch("src.pipeline.activate_staged_version"))
-        audit = stack.enter_context(patch("src.pipeline.audit_person_pairs"))
         stack.enter_context(patch("src.pipeline.mark_profile_analysis_dirty"))
         stack.enter_context(patch("src.pipeline.record_auto_merge_event"))
         stack.enter_context(patch("src.pipeline.materialize_bankruptcy_case"))
@@ -734,12 +767,19 @@ def test_crm_multi_merge_persists_provisional_link_without_identity_evidence() -
     find.assert_called_once()
     assert upsert.call_args.args[1] == [identifiers[0]]
     assert persist.call_args.kwargs["identifiers"] == [identifiers[0]]
+    settle.assert_called_once_with(
+        tx,
+        "deal-sr",
+        link_status="pending_review",
+        expected_active_source_record_pk=None,
+        ingest_run_id=None,
+        control_instance_id=LEGACY_DEFAULT_CONTROL_INSTANCE_ID,
+    )
     assert len(link.call_args_list) == 1
     assert link.call_args.kwargs["person_id"] == "person-a"
     assert link.call_args.kwargs["identifiers"] == [identifiers[0]]
     assert link.call_args.kwargs["attach_evidence"] is False
     activate.assert_not_called()
-    audit.assert_not_called()
 
 
 def test_crm_channel_match_with_strong_name_mismatch_never_auto_merges() -> None:
@@ -767,7 +807,8 @@ def test_crm_channel_match_with_strong_name_mismatch_never_auto_merges() -> None
 
     assert result.decision is not MatchDecision.MERGE
     assert result.additional_linked_person_ids == []
-    assert result.is_new_person is True
+    assert result.decision is MatchDecision.NO_MATCH
+    assert result.matched_person_id is None
 
 
 def test_repair_plan_requires_independent_provenance_for_automatic_retention() -> None:

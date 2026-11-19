@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import copy
 import runpy
+import subprocess
 import tomllib
 from pathlib import Path
 from typing import cast
@@ -35,6 +36,18 @@ _NEO4J_SETTINGS = {
     "NEO4J_server_memory_pagecache_size": "128m",
 }
 _PR_PATH_FILTER = [{"path": {"exclude": ["docs/**", "services/frontend2/**"]}}]
+
+
+def _collect_command(service: str) -> str:
+    """Collection writes the manifest; on failure it prints the output minus node ids."""
+    manifest = f".ci-manifests/{service}-default-nodes.txt"
+    return (
+        f"uv run --package profile-unifier-{service} pytest services/{service}/tests "
+        f"--collect-only -q > {manifest} || "
+        f"{{ rc=$?; grep -vE '^services/.*::' {manifest}; exit $rc; }}"
+    )
+
+
 _EXPECTED_PR_PYTHON_COMMANDS = (
     "uv sync --frozen --group dev --package profile-unifier-api "
     "--package profile-unifier-ingestion",
@@ -48,12 +61,10 @@ _EXPECTED_PR_PYTHON_COMMANDS = (
     "uv run --package profile-unifier-ingestion mypy --strict services/ingestion/src "
     "$(python scripts/ci_selection_manifest.py tool-excludes --tool mypy)",
     "mkdir -p .ci-manifests",
-    "uv run --package profile-unifier-api pytest services/api/tests --collect-only -q "
-    "> .ci-manifests/api-default-nodes.txt",
+    _collect_command("api"),
     "python scripts/ci_selection_manifest.py verify-nodes --service api "
     "--path .ci-manifests/api-default-nodes.txt",
-    "uv run --package profile-unifier-ingestion pytest services/ingestion/tests --collect-only -q "
-    "> .ci-manifests/ingestion-default-nodes.txt",
+    _collect_command("ingestion"),
     "python scripts/ci_selection_manifest.py verify-nodes --service ingestion "
     "--path .ci-manifests/ingestion-default-nodes.txt",
     "uv run --package profile-unifier-api pytest services/api/tests",
@@ -108,8 +119,7 @@ _EXPECTED_ACTIVE_NODE_SENTINELS = {
     "api": (
         "services/api/tests/test_active_api_reader_contract.py::"
         "test_api_authoritative_reader_parity_excludes_retired_links",
-        "services/api/tests/test_mcp_app.py::"
-        "test_mcp_tools_match_every_canonical_api_operation",
+        "services/api/tests/test_mcp_app.py::test_mcp_tools_match_every_canonical_api_operation",
         "services/api/tests/test_ci_selection_gate.py::"
         "test_root_plugin_rejects_explicit_historical_targets_before_import",
         "services/api/tests/test_person_crm_metrics_neo4j.py::"
@@ -195,7 +205,24 @@ def test_workflows_keep_active_pr_main_boundaries_and_dependency_semantics() -> 
         document = _workflow(name)
         steps = _steps(document)
         frontend = "frontend-checks" if name == "pr.yaml" else "frontend-build"
-        assert set(steps) == {"python-checks", *_SHARDS, frontend}
+        assert set(steps) == {"python-checks", *_SHARDS, "rust-read-checks", frontend}
+        assert steps["rust-read-checks"]["depends_on"] == []
+        assert steps["rust-read-checks"]["image"] == "rust:1.88.0-bookworm"
+        rust_commands = _commands(steps["rust-read-checks"])
+        assert rust_commands[-3:] == (
+            "psql -v ON_ERROR_STOP=1 -f services/rust-read/postgres/01-schema.sql",
+            "bash services/rust-read/postgres/02-read-only-role.sh",
+            "cargo test --locked --manifest-path services/rust-read/Cargo.toml",
+        )
+        rust_env = _environment(steps["rust-read-checks"])
+        assert rust_env["HYPERP_RUST_READ_TEST_DISPOSABLE"] == "1"
+        assert rust_env["PGHOST"] == "postgres-spike-rust"
+        assert rust_env["RUST_READ_TEST_DATABASE_URL"] == (
+            "postgres://spike_reader:ci-spike-reader@postgres-spike-rust:5432/postgres"
+        )
+        assert rust_env["RUST_READ_TEST_WRITER_URL"] == (
+            "postgres://postgres:ci-spike@postgres-spike-rust:5432/postgres"
+        )
         expected_when = {"event": ["pull_request"]}
         if name == "main.yaml":
             expected_when = {"event": ["push"], "branch": ["main"]}
@@ -274,7 +301,15 @@ def test_neo4j_services_are_isolated_and_each_has_retained_consumers() -> None:
             for service in services
             if isinstance(service, dict)
         }
-        assert set(by_name) == set(expected_services)
+        assert set(by_name) == {*expected_services, "postgres-spike-python", "postgres-spike-rust"}
+        for postgres_name in ("postgres-spike-python", "postgres-spike-rust"):
+            postgres = by_name[postgres_name]
+            assert postgres["image"] == "postgres:16.10-bookworm"
+            assert postgres["environment"] == {
+                "POSTGRES_USER": "postgres",
+                "POSTGRES_PASSWORD": "ci-spike",
+                "POSTGRES_DB": "postgres",
+            }
         for service_name, password in expected_services.items():
             service = by_name[service_name]
             assert service.get("image") == "neo4j:5.26-community"
@@ -344,8 +379,7 @@ def test_historical_restoration_is_gated_and_restores_historical_api_reader() ->
     runner = runpy.run_path(str(_ROOT / "scripts/ci_historical_validation.py"))
     commands = runner["_commands"]("<historical-mypy-config>")
     assert any(
-        command.environment == "ingestion"
-        and command.argv == _EXPECTED_HISTORICAL_TRAINING_SYNC
+        command.environment == "ingestion" and command.argv == _EXPECTED_HISTORICAL_TRAINING_SYNC
         for command in commands
     )
     assert "hyperp-intelligence" in script
@@ -395,6 +429,7 @@ def test_workflows_retain_untrusted_execution_and_failure_suppression_bans() -> 
         for token in prohibited:
             assert token not in rendered
 
+
 _EXPECTED_QUERY_TEST_PATHS = frozenset(
     {
         "services/ingestion/tests/test_active_publication_fencing_neo4j.py",
@@ -408,13 +443,18 @@ _EXPECTED_QUERY_TEST_PATHS = frozenset(
         "services/ingestion/tests/test_crm_tenant_projection_repository_neo4j.py",
         "services/ingestion/tests/test_identifier_scope_migrations_neo4j.py",
         "services/ingestion/tests/test_identifier_scope_schema_neo4j.py",
+        "services/ingestion/tests/test_identity_foundation_neo4j.py",
         "services/ingestion/tests/test_identity_link_revision_baseline_neo4j.py",
+        "services/ingestion/tests/test_identity_links_neo4j.py",
         "services/ingestion/tests/test_ingestion_control_instance_migration_neo4j.py",
         "services/ingestion/tests/test_loyalty_points_migration_neo4j.py",
+        "services/ingestion/tests/test_persist_first_neo4j.py",
         "services/ingestion/tests/test_person_completeness_migration_neo4j.py",
+        "services/ingestion/tests/test_projection_sync_postgres.py",
         "services/ingestion/tests/test_standalone_crm_census_neo4j.py",
         "services/ingestion/tests/test_standalone_crm_lane_a_schema_neo4j.py",
         "services/ingestion/tests/test_standalone_crm_source_child_integration_neo4j.py",
+        "services/ingestion/tests/test_person_list_summary_neo4j.py",
         "services/api/tests/test_identity_link_revisions_neo4j.py",
         "services/api/tests/test_person_crm_metrics_neo4j.py",
         "services/api/tests/test_person_graph_neo4j.py",
@@ -422,6 +462,8 @@ _EXPECTED_QUERY_TEST_PATHS = frozenset(
         "services/api/tests/test_persons_list_neo4j_234.py",
         "services/api/tests/test_persons_list_plan_neo4j.py",
         "services/api/tests/test_persons_list_possible_match_neo4j.py",
+        "services/api/tests/test_person_list_summary_neo4j.py",
+        "services/api/tests/test_profiles_neo4j.py",
     }
 )
 
@@ -455,11 +497,7 @@ def test_frontend_commands_and_complete_query_inventory_remain_exact() -> None:
         steps = _steps(_workflow(name))
         frontend = "frontend-checks" if name == "pr.yaml" else "frontend-build"
         assert _commands(steps[frontend]) == expected_frontend[name]
-        query_commands = tuple(
-            command
-            for shard in _SHARDS
-            for command in _commands(steps[shard])
-        )
+        query_commands = tuple(command for shard in _SHARDS for command in _commands(steps[shard]))
         assert _query_test_paths(query_commands) == _EXPECTED_QUERY_TEST_PATHS
 
 
@@ -495,6 +533,48 @@ def test_collection_and_query_evidence_are_ordered_and_labeled_by_kind() -> None
     assert "default-query=" not in script
 
 
+def test_collection_failure_prints_diagnostics_and_keeps_the_manifest(tmp_path: Path) -> None:
+    (tmp_path / ".ci-manifests").mkdir()
+    for name in _WORKFLOWS:
+        commands = _commands(_steps(_workflow(name))["python-checks"])
+        for service in ("api", "ingestion"):
+            command = next(
+                item
+                for item in commands
+                if f"pytest services/{service}/tests --collect-only" in item
+            )
+            node = f"services/{service}/tests/test_a.py::test_ok"
+            # A shell function named ``uv`` stands in for the real collector.
+            failing = (
+                f"uv() {{ printf '%s\\n' '{node}' 'ERROR collecting x.py' "
+                "'ImportError: cannot import name'; return 2; }; "
+            )
+            failed = subprocess.run(
+                ["sh", "-ec", failing + command],
+                cwd=tmp_path,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert failed.returncode == 2
+            assert "ImportError: cannot import name" in failed.stdout
+            assert node not in failed.stdout
+            manifest = (tmp_path / ".ci-manifests" / f"{service}-default-nodes.txt").read_text(
+                encoding="utf-8"
+            )
+            assert node in manifest and "ImportError" in manifest
+
+            passing = f"uv() {{ printf '%s\\n' '{node}'; }}; "
+            passed = subprocess.run(
+                ["sh", "-ec", passing + command],
+                cwd=tmp_path,
+                capture_output=True,
+                text=True,
+                check=False,
+            )
+            assert (passed.returncode, passed.stdout) == (0, "")
+
+
 def test_query_connections_have_complete_families_and_readiness_precedes_execution() -> None:
     expected_families = {
         "neo4j-projection-checks": {
@@ -508,6 +588,7 @@ def test_query_connections_have_complete_families_and_readiness_precedes_executi
             "HYPERP_NEO4J_PERSON_COMPLETENESS_TEST",
             "HYPERP_NEO4J_LOYALTY_POINTS_TEST",
             "HYPERP_NEO4J_CRM_DEAL_COUNT_TEST",
+            "HYPERP_NEO4J_PERSON_LIST_SUMMARY_TEST",
             "HYPERP_NEO4J_CONTROL_MIGRATION_TEST",
             "HYPERP_NEO4J_STANDALONE_CRM_CENSUS_TEST",
             "HYPERP_NEO4J_STANDALONE_CRM_LANE_A_TEST",
@@ -527,6 +608,8 @@ def test_query_connections_have_complete_families_and_readiness_precedes_executi
             for family in families:
                 for suffix in ("_URI", "_USER", "_PASSWORD", "_SERVICE_HOST"):
                     assert f"{family}{suffix}" in environment
+            if shard == "neo4j-census-migration-api-checks":
+                assert environment["HYPERP_NEO4J_PERSON_LIST_SUMMARY_TEST_REQUIRED"] == "1"
             commands = _commands(steps[shard])
             readiness = min(
                 index for index, command in enumerate(commands) if "wait_for_neo4j.py" in command
@@ -535,9 +618,7 @@ def test_query_connections_have_complete_families_and_readiness_precedes_executi
                 index for index, command in enumerate(commands) if " pytest " in command
             )
             assert readiness < first_pytest
-    publication_path = (
-        _ROOT / "services/ingestion/tests/test_active_publication_fencing_neo4j.py"
-    )
+    publication_path = _ROOT / "services/ingestion/tests/test_active_publication_fencing_neo4j.py"
     publication = publication_path.read_text(encoding="utf-8")
     assert publication.index("_initialize_control_schema(driver)") < publication.index(
         "yield driver"
@@ -551,8 +632,7 @@ def test_historical_runner_isolated_enforces_numpy_and_requires_both_neo4j_famil
     runner = runpy.run_path(str(_ROOT / "scripts/ci_historical_validation.py"))
     commands = runner["_commands"]("<historical-mypy-config>")
     assert any(
-        command.environment == "ingestion"
-        and command.argv == _EXPECTED_HISTORICAL_TRAINING_SYNC
+        command.environment == "ingestion" and command.argv == _EXPECTED_HISTORICAL_TRAINING_SYNC
         for command in commands
     )
     assert any(
@@ -572,9 +652,7 @@ def test_historical_runner_isolated_enforces_numpy_and_requires_both_neo4j_famil
 
 def test_preimport_gate_and_behavioral_coverage_reject_explicit_historical_targets() -> None:
     gate = (_ROOT / "ci_support/pytest_selection_gate.py").read_text(encoding="utf-8")
-    behavior = (_ROOT / "services/api/tests/test_ci_selection_gate.py").read_text(
-        encoding="utf-8"
-    )
+    behavior = (_ROOT / "services/api/tests/test_ci_selection_gate.py").read_text(encoding="utf-8")
     assert "pytest_cmdline_main" in gate
     assert "reject_explicit_historical_targets" in gate
     assert "invocation_dir" in gate
@@ -591,7 +669,7 @@ def _assert_query_service_bindings(document: dict[str, object]) -> None:
     passwords = {
         str(service["name"]): str(service["environment"]["NEO4J_AUTH"]).split("/", 1)[1]
         for service in services
-        if isinstance(service, dict)
+        if isinstance(service, dict) and str(service.get("name", "")).startswith("neo4j-")
     }
     steps = _steps(document)
     expected_services = {
@@ -630,17 +708,13 @@ def test_query_service_bindings_and_pristine_identifier_schema_order_fail_closed
         redirected = copy.deepcopy(document)
         redirected_steps = _steps(redirected)
         redirected_environment = _environment(redirected_steps["neo4j-census-migration-api-checks"])
-        redirected_environment["HYPERP_NEO4J_CRM_METRICS_TEST_URI"] = (
-            "bolt://neo4j-projection:7687"
-        )
+        redirected_environment["HYPERP_NEO4J_CRM_METRICS_TEST_URI"] = "bolt://neo4j-projection:7687"
         try:
             _assert_query_service_bindings(redirected)
         except AssertionError:
             pass
         else:
-            raise AssertionError(
-                f"{workflow_name} accepted cross-service query target redirection"
-            )
+            raise AssertionError(f"{workflow_name} accepted cross-service query target redirection")
 
         reordered = copy.deepcopy(document)
         reordered_steps = _steps(reordered)
@@ -652,6 +726,4 @@ def test_query_service_bindings_and_pristine_identifier_schema_order_fail_closed
         except AssertionError:
             pass
         else:
-            raise AssertionError(
-                f"{workflow_name} accepted identifier-schema command reordering"
-            )
+            raise AssertionError(f"{workflow_name} accepted identifier-schema command reordering")

@@ -37,6 +37,42 @@ sufficient on their own for an auto-merge.
 
 Use for structured probabilistic adjudication when no hard rule applies.
 
+#### Identity model v2 weighted scoring (policies `c4-w1` / `c4-v1`)
+
+Under identity model v2, Layer 2 replaces the additive weights in the Example
+model below with a link-weight-driven score (uncalibrated prototype constants;
+L3 owns recalibration):
+
+- per-assertion strength `s(a) = min(1, tier · q · c · (1.15 if verified))`
+  with tier weights keyed by tier NAME (`tier_1: 1.00`, `tier_2: 0.85`,
+  `tier_3: 0.60`, `tier_4: 0.35`; conversation records drop one tier, missing
+  or incomplete metadata is `tier_4`), quality `q` (`valid: 1.0`, else `0.6`),
+  and extraction confidence `c` (default `1.0`)
+- link weight `w = 1 − (1 − w_conf)(1 − w_cand)` where `w_conf` is the
+  noisy-OR of confirmed assertions and
+  `w_cand = min(0.24, noisy-OR of candidate-only assertions)`; candidate-only
+  evidence (`link_status = 'pending_review'`) is capped at `0.24` and can never
+  reduce confirmed evidence. The cap is dormant in production: the evidence
+  queries still exclude `pending_review` rows
+- exclusivity `excl = 1 / max(1, Identifier.participant_count)`
+- rank `rank_score = w · excl · 0.5^(age_days / half_life)` with age anchored
+  to evidence time (the max `last_confirmed_at` among the participant's links
+  of the same type, never wall-clock); half-lives phone 365 / email 730 /
+  `device_id` 180 / `social:*` 365 (nric and CRM ids never decay). Stored
+  values round to 6 dp
+- identifier contribution `signal × link_weight × IDF` with
+  `IDF(n) = 1 / (1 + ln(max(n, 1)))` on the live participant count; every
+  matching link contributes (not just the top 3), under the existing
+  `IDENTIFIER_EVIDENCE_CAP` of 0.85. The legacy fanout recount and −0.25
+  cliff are not used in v2; `phone_high_fanout` becomes a veto.
+  Uncorroborated conversation evidence is capped at `τ_attach − 0.01 = 0.69`
+- bands: attach `≥ 0.70`, union `0.50–0.69`, park below `0.50`, review only
+  for the exception taxonomy. Attach needs ≥ 2 signal families from
+  `{phone, email, name ≥ 0.50, dob, address}` and no veto
+
+Provisional `c3-provisional` links are treated as unweighted (`link_weight`
+`null` → 1.0) so pre-C4 links never zero out matching.
+
 ### Layer 3: LLM Adjudication
 
 Use only on candidate pairs already narrowed by upstream logic. Best suited for
@@ -176,56 +212,30 @@ conflicting candidate before it can become a merge target. Whether the shared
 evidence means the persons should ultimately be merged is left to human review /
 later analysis, not decided automatically here.
 
-## Person-Pair Auditing (Shared-Identifier Bridges)
+**Margin gate (identity model v2 only, #492).** Before merge resolution, when
+the top two attach-class results are both heuristic (no deterministic MERGE
+among the collected results), the engine compares top-1 minus top-2 confidence:
+a margin below `0.10` emits no MERGE at all — two or more anchored attach-class
+candidates within the margin open one `anchored_ambiguity` review case (the case
+key spans the sorted anchored person ids, so a second ingest returns the same
+case), otherwise the record parks with no case. A margin of `≥ 0.10` keeps
+link-to-all unchanged: the primary attaches and every other attach-clearing
+candidate is still linked via `MatchResult.additional_linked_person_ids`.
 
-The decision *not* to auto-merge persons that share an identifier must not mean
-the possibility goes unexamined. After a record is ingested and linked, the
-engine audits whether any identifier the record carries now connects **two or
-more distinct active persons**, and opens a **person↔person review case** for
-each bridged pair so a human can adjudicate.
+## Person-Pair Auditing (Shared-Identifier Bridges) — Retired in v2 (#492)
 
-This runs synchronously inside the ingest transaction, immediately after linking
-(including the Multi-Match link-to-all step), and only **creates audit cases** —
-it never merges or links persons.
+The synchronous person-pair auditor (`pipeline_person_pairs.py`) was deleted in
+#492: it created `engine_type = 'pair_audit'` cases (and merged pairs at
+confidence ≥ 0.40) that the exception-only review policy no longer admits, and
+its alias-free `merge_person_pair` left no safe production caller. Merge of a
+person pair is now alias-only (a `LinkDecision` of kind `alias` naming a person
+in the pair) and exists only as the building block for L2's NRIC-alias
+remediation.
 
-Rules:
-
-- **Trigger** is identifier-level, not match-band-level: any usable identifier
-  the record carries that is `IDENTIFIED_BY` ≥ 2 active persons. The bridge may
-  pre-date the incoming record.
-- **Pairwise** cases. A set of *n* bridged persons yields the `C(n, 2)` ordered
-  pairs `{(a, b) : a.person_id < b.person_id}`. The `MatchDecision` uses
-  `engine_type = 'pair_audit'`, with `decision = 'merge'` at confidence >= 0.40
-  and `decision = 'review'` from 0.20–0.39, and with both `ABOUT_LEFT`
-  and `ABOUT_RIGHT` pointing at `Person` nodes (lower `person_id` on the left).
-  The bridging identifier is recorded in `feature_snapshot`.
-- **Confidence (triage and auto-merge)** — the audit carries a real `confidence`, not a
-  placeholder. It reuses the **Layer 2 heuristic scorer** unchanged: the left
-  person is treated as the "incoming record" (its golden identifiers, facts, and
-  address) and scored against the right person's candidate snapshot. The
-  resulting score, the band it would fall in (`heuristic_band`), and the
-  heuristic signals/reasons are merged into the case's `feature_snapshot` so a
-  reviewer can tell a same-name/same-phone duplicate from two distinct people who
-  merely share a phone. At confidence **>= 0.40**, the auditor records a merge
-  decision and merges the pair; confidence **0.20–0.39** opens a review case.
-  Conversation-promotion does **not**
-  apply to pair audits (the scorer is called with the default `record_type`).
-  *Limitation*: the heuristic layer weights only phone/email as identifier
-  evidence — **govt-ID (NRIC) bridges are scored on name/DOB/address corroboration
-  only**, since exact govt-ID matching belongs to the deterministic layer. The
-  bridge type is still recorded in `feature_snapshot` and the reason string, so a
-  govt-ID bridge is never *hidden* by a low corroboration score.
-- **Fanout cap** — the same per-identifier-type cardinality cap used for
-  candidate generation applies. A non-discriminating identifier (e.g. a shared
-  household/business phone above its cap) produces no pairs.
-- **Deduplication / suppression** — a pair is skipped when an unresolved
-  (`open` / `assigned` / `deferred`) person↔person case already exists for it,
-  when an active `NO_MATCH_LOCK` exists for it (a reviewer already said "not the
-  same person"), or when either person is no longer active.
-
-Resolution of a person-pair case (merge / reject / manual_no_match) follows the
-normal reviewer workflow, including the merge and unmerge review-case
-side-effects defined there.
+Legacy `pair_audit` cases already in the tree are **re-scored only** (the
+recalc task, `pair_audit_recalc.py`, and the CRM-repair verifier stay); no new
+pair-audit cases are created. Resolution of an existing person-pair case
+(merge / reject / manual_no_match) still follows the normal reviewer workflow.
 
 ## Heuristic Feature Catalog
 
@@ -355,7 +365,10 @@ on log wording, so reason text can change without altering decisions.
 ## Example Heuristic Scoring Model
 
 Illustrative only. Tune on labeled data. The weights below are simple additive
-examples for readability. The production implementation should use conditional
+examples for readability — they describe the legacy v1 scorer. Under identity
+model v2 the production scorer uses the weighted model in Layer 2 above
+(`signal × link_weight × IDF`, bands attach `0.70` / union `0.50`, margin
+`0.10`, ≥ 2 signal families). The production implementation should use conditional
 weighting (unverified identifiers worth less than verified), capping (multiple
 identifier matches should not stack linearly to exceed auto-merge threshold),
 or a proper probabilistic framework such as Fellegi-Sunter. Simple addition of
@@ -384,9 +397,20 @@ weak signals must not produce auto-merge confidence.
 
 ### Decision Thresholds
 
+Legacy v1 bands (also used in relationship records at `0.20` / `0.10`):
+
 - `>= 0.40`: auto-merge
 - `0.20 - 0.39`: review
 - `< 0.20`: no-match
+
+Identity model v2 bands (policy `c4-v1`):
+
+- `>= 0.70` with ≥ 2 signal families and no veto: attach (MERGE)
+- `0.50 - 0.69`: union (NO_MATCH labelled `union`, Profile materialised once)
+- `< 0.50`: park (NO_MATCH, no case)
+- review only for the exception taxonomy, via the margin gate or explicit
+  `review_reason` (`anchored_ambiguity`, `nric_contradiction`,
+  `crm_ambiguity`, `continuity_reassignment`)
 
 ### Name Similarity Bands (Jaro–Winkler)
 
@@ -503,6 +527,21 @@ Cases should be routed to review when:
 - sensitive conflicts exist but do not trigger a hard block
 - the LLM and heuristic outputs disagree materially
 - the profile is linked to a high-value customer or downstream workflow
+
+**Exception-only review (identity model v2, #492).** Under v2 the review band
+above admits nothing on its own: heuristic scoring never emits REVIEW, and a
+REVIEW without a taxonomy reason is suppressed (`suppressed_reason =
+'not_exception'`). The only review reasons are the exception taxonomy —
+`anchored_ambiguity` (margin gate), `nric_contradiction` (trusted-ID
+contradiction on promotion), `crm_ambiguity` (duplicate canonical CRM owners),
+`continuity_reassignment` (re-evaluation moves). Cases are keyed by
+`case_key` (sha1 over a per-reason field set: sorted person ids for
+`anchored_ambiguity`, profile id plus holder person id for
+`nric_contradiction`, record identity plus ids otherwise), created with
+`CREATE_REVIEW_CASE_BY_KEY` (MERGE on `case_key`; a repeat occurrence bumps
+`occurrence_count` and `last_seen_at` even on a resolved case, never reopens
+it, and adds no second `FOR_DECISION` edge), and guarded by a unique
+constraint on `ReviewCase.case_key`.
 
 ## Manual Override Policy
 

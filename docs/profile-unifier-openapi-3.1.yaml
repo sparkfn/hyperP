@@ -29,6 +29,7 @@ security:
 tags:
   - name: Ingestion
   - name: Persons
+  - name: Profiles
   - name: Entities
   - name: Review
   - name: Merge
@@ -221,6 +222,128 @@ paths:
           $ref: '#/components/responses/NotFound'
         '409':
           $ref: '#/components/responses/Conflict'
+  /v1/profiles:
+    get:
+      tags: [Profiles]
+      summary: List derived unverified profiles
+      operationId: list_profiles
+      description: |
+        Paginated list of derived C3 Profiles: unverified evidence clusters built
+        from immutable identity assertions. A Profile is not a Person and never
+        participates in Person matching or golden-profile selection. `q` is
+        case-insensitive over the profile id, member source-record ids, asserted
+        full-name facts, and non-government identifier values; NRIC values are
+        never searched. `status` defaults to `open` when omitted; pass `all` to
+        return every status.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: q
+          in: query
+          description: Free-text search (min 2 chars); NRIC values are never searched.
+          schema:
+            type: string
+            minLength: 2
+        - name: status
+          in: query
+          description: Defaults to `open`; `all` returns every status.
+          schema:
+            type: string
+            enum: [open, promoted, retired, all]
+            default: open
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        '200':
+          description: Profile page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileListResponseEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/profiles/unlinked:
+    get:
+      tags: [Profiles]
+      summary: List open profiles without an NRIC anchor
+      operationId: list_unlinked_profiles
+      description: |
+        Read-only worklist of open Profiles ordered by `value_score` (the
+        number of member SourceRecords of type `crm_deal`) DESC,
+        `record_count` DESC, `profile_id`. Paginated with the standard
+        cursor/limit convention; `meta.total_count` carries the exact open
+        total. Requires `persons:read`; absent from the OAuth2 machine mount.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: cursor
+          in: query
+          schema:
+            type: string
+        - name: limit
+          in: query
+          schema:
+            type: integer
+            minimum: 1
+            maximum: 200
+      responses:
+        '200':
+          description: Unlinked profile page
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/UnlinkedProfileListResponseEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+  /v1/profiles/{profile_id}:
+    get:
+      tags: [Profiles]
+      summary: Get one derived profile
+      operationId: get_profile
+      description: |
+        Read-only detail for one Profile: member source records, derived weighted
+        identifiers (C4 link weights; null for legacy-only projections),
+        and the promoted Person id when the cluster has been anchored.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+        - name: profile_id
+          in: path
+          required: true
+          schema:
+            type: string
+      responses:
+        '200':
+          description: Profile detail
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/ProfileDetailResponseEnvelope'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/NotFound'
   /v1/persons:
     get:
       tags: [Persons]
@@ -373,7 +496,7 @@ paths:
           in: query
           description: |
             Free-text search (min 3 chars) across `preferred_full_name`,
-            `preferred_nric`, `preferred_email`, and `preferred_phone`.
+            `preferred_email`, and `preferred_phone`.
           schema:
             type: string
           example: "Tan Wei Ming"
@@ -532,7 +655,8 @@ paths:
       description: >-
         Returns the all-profile, high-risk, high-value, and no-contact counts
         shown above the authenticated person listing. Counts exclude merged
-        persons and are calculated in one aggregate graph read.
+        persons and are served from the maintained counter when ready, with the
+        authoritative aggregate query as fallback.
       security:
         - bearerAuth: []
       parameters:
@@ -614,6 +738,45 @@ paths:
           $ref: '#/components/responses/Unauthorized'
         '404':
           $ref: '#/components/responses/PersonNotFound'
+  /v1/persons/{person_id}/nric/reveal:
+    post:
+      tags: [Persons]
+      summary: Perform audited reveal of active NRIC identifiers
+      operationId: reveal_person_nric
+      description: |
+        Decrypt and return active plaintext NRIC identifiers for an active person.
+        Restricted to human administrators (requires role `admin`); rejected for
+        non-admin human users and all OAuth2 machine clients with `403 forbidden`.
+        Every successful reveal writes an immutable audit event (`NricRevealEvent`)
+        recording the actor, request timestamp, scrubbed reason, and value counts.
+      security:
+        - bearerAuth: []
+      parameters:
+        - $ref: '#/components/parameters/PersonId'
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/NricRevealRequest'
+      responses:
+        '200':
+          description: Audited NRIC reveal result.
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/NricRevealResponseEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
+        '404':
+          $ref: '#/components/responses/PersonNotFound'
+        '503':
+          $ref: '#/components/responses/ServiceUnavailable'
   /v1/persons/{person_id}/source-records:
     get:
       tags: [Persons]
@@ -1075,6 +1238,10 @@ paths:
       tags: [Persons]
       summary: Get recent match decisions related to a person
       operationId: getPersonMatches
+      description: >
+        Includes the `review_suppressed` and `suppressed_reason` fields, so a
+        decision that the review policy parked instead of raising a review
+        case is still visible here.
       parameters:
         - $ref: '#/components/parameters/PersonId'
         - $ref: '#/components/parameters/RequestId'
@@ -1331,7 +1498,7 @@ paths:
           in: query
           description: |
             Free-text search (min 3 chars) across `preferred_full_name`,
-            `preferred_nric`, `preferred_email`, and `preferred_phone`.
+            `preferred_email`, and `preferred_phone`.
           schema:
             type: string
           example: "Tan Wei Ming"
@@ -1519,7 +1686,8 @@ paths:
         `identifier_type` values: `phone`, `email`, `nric`,
         `external_customer_id`, `membership_id`, `crm_contact_id`, `loyalty_id`,
         and `custom`. Matching compares the canonical normalized value stored by
-        ingestion, so callers must send the normalized value.
+        ingestion; for `nric`, input is canonicalized and keyed server-side against
+        both keyed digests and legacy records.
 
         For exact identifier searches, a successful request returns every
         non-merged Person linked to the matching Identifier through an
@@ -1550,8 +1718,10 @@ paths:
         - name: value
           in: query
           description: >-
-            Canonical normalized identifier value stored by ingestion. Must be
-            nonblank and supplied together with `identifier_type`.
+            Canonical normalized identifier value stored by ingestion; for
+            `nric`, plaintext or canonical values are canonicalized and keyed
+            server-side. Must be nonblank and supplied together with
+            `identifier_type`.
           schema:
             type: string
         - name: q
@@ -1842,6 +2012,11 @@ paths:
       tags: [Review]
       summary: List review cases
       operationId: listReviewCases
+      description: >
+        A case that involves source-record evidence is listed only while that
+        evidence is still pending. The terminal disposition states `expired`,
+        `dismissed` and `superseded_by_policy` stay listed even after an
+        involved source record later changes its lifecycle status.
       parameters:
         - $ref: '#/components/parameters/RequestId'
         - name: queue_state
@@ -1915,14 +2090,17 @@ paths:
             format: date-time
         - name: overdue_sla
           in: query
-          description: When true, only cases past their SLA and not yet resolved/cancelled.
+          description: >-
+            When true, only cases past their SLA and not yet in a closed state
+            (resolved, cancelled, expired, dismissed, superseded_by_policy).
           schema:
             type: boolean
         - name: resolved
           in: query
           description: >-
-            True for closed cases (queue_state resolved or cancelled); false
-            for unresolved cases (open, assigned, deferred).
+            True for closed cases (queue_state resolved, cancelled, expired,
+            dismissed, or superseded_by_policy); false for unresolved cases
+            (open, assigned, deferred).
           schema:
             type: boolean
         - name: sort_by
@@ -2009,6 +2187,13 @@ paths:
       tags: [Review]
       summary: Submit a review action
       operationId: createReviewAction
+      description: >
+        `merge` is refused with `422 pair_audit_merge_disabled` when the case's
+        match decision came from the `pair_audit` engine; refusing the merge
+        does not by itself dispose of the case, which stays in its current
+        queue state. `resolve` is refused with `422 resolve_not_applicable`
+        unless the case links two persons and carries no source-record
+        evidence. `expire` and `dismiss` close the case without deleting it.
       parameters:
         - $ref: '#/components/parameters/ReviewCaseId'
         - $ref: '#/components/parameters/IdempotencyKey'
@@ -2030,6 +2215,54 @@ paths:
           $ref: '#/components/responses/ReviewCaseNotFound'
         '409':
           $ref: '#/components/responses/MergeBlocked'
+        '422':
+          $ref: '#/components/responses/UnprocessableEntity'
+  /v1/review-cases/bulk-actions:
+    post:
+      tags: [Review]
+      summary: Apply one review action to many review cases
+      operationId: submit_bulk_review_action
+      description: >
+        Applies a single action to a batch of review cases and reports one
+        outcome per case, in the order the ids were submitted.
+
+        Every id is authorized before the first write: an admin may act on any
+        case, and an employee must own at least one of the entities behind
+        each listed case. A batch that includes a case outside the caller's
+        entity scope is rejected without writing anything. Human principals
+        only — machine OAuth clients cannot call this endpoint.
+
+        Each case is actioned in its own transaction, so one failing case does
+        not abort the batch. A case that cannot be actioned is reported as an
+        error item. `outcome_unknown` means the commit state of that one case
+        was indeterminate: refresh the queue before retrying it.
+
+        This endpoint accepts no idempotency key and does not enforce
+        request-level idempotency. A retried request re-applies the action and
+        can append duplicate audit entries, so clients must not assume a repeat
+        is a no-op. After an indeterminate outcome, refresh the queue to learn
+        which cases actually changed before retrying anything.
+      parameters:
+        - $ref: '#/components/parameters/RequestId'
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/BulkReviewActionRequest'
+      responses:
+        '200':
+          description: Per-item outcomes
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/BulkReviewActionResponseEnvelope'
+        '400':
+          $ref: '#/components/responses/BadRequest'
+        '401':
+          $ref: '#/components/responses/Unauthorized'
+        '403':
+          $ref: '#/components/responses/Forbidden'
   /v1/persons/manual-merge:
     post:
       tags: [Merge]
@@ -2506,13 +2739,76 @@ components:
       enum: [active, merged, suppressed, retired]
     ReviewQueueState:
       type: string
-      enum: [open, assigned, deferred, resolved, cancelled]
+      enum: [open, assigned, deferred, resolved, cancelled, expired, dismissed, superseded_by_policy]
     ReviewResolution:
       type: string
-      enum: [merge, reject, manual_no_match, cancelled_superseded]
+      enum: [merge, reject, manual_no_match, resolve, expired, dismissed, cancelled_superseded]
     ReviewActionType:
       type: string
-      enum: [merge, reject, defer, escalate, manual_no_match]
+      enum: [merge, reject, defer, escalate, manual_no_match, resolve, expire, dismiss]
+    BulkReviewActionType:
+      type: string
+      description: >
+        Actions accepted by the bulk review endpoint. `merge` is deliberately
+        excluded — a bulk batch never merges people.
+      enum: [resolve, reject, defer, expire, dismiss]
+    ReviewReasonCode:
+      type: string
+      description: >
+        Taxonomy for why a review case was raised. `unverified_phone`,
+        `unverified_email`, `phone_near_match`, `email_near_match` and
+        `weak_signal_combination` are the weak-signal codes that the
+        `v2_weak_signal_park` review policy can suppress; `weak_signal` is the
+        telemetry roll-up for a case whose reasons were all weak-signal.
+      enum:
+        - unverified_phone
+        - unverified_email
+        - phone_near_match
+        - email_near_match
+        - weak_signal_combination
+        - anchored_ambiguity
+        - nric_contradiction
+        - crm_ambiguity
+        - continuity_reassignment
+        - dob_conflict
+        - name_mismatch
+        - name_similarity
+        - dob_match
+        - shared_identifier_bridge
+        - weak_signal
+        - other
+    ReviewActionReasonCode:
+      type: string
+      description: >
+        Taxonomy for why a reviewer closed or deferred a review case. Required
+        on bulk review actions; optional on single-case review actions.
+      enum:
+        - confirmed_match
+        - confirmed_distinct
+        - insufficient_evidence
+        - parked_weak_signal
+        - stale_expired
+        - awaiting_verification
+        - pair_audit_retired_in_v2
+        - other
+    BulkReviewActionErrorCode:
+      type: string
+      description: >
+        Per-item failure code of a bulk review action.
+        `duplicate_review_case_id` — the id was already present earlier in the
+        same request and was not actioned twice. `outcome_unknown` — the commit
+        state was indeterminate, so refresh the queue before retrying that id.
+        `review_case_not_found` — no such review case, or the case is no longer
+        actionable (for example, it was already closed). `resolve_not_applicable`
+        — the case does not link two persons without source-record evidence.
+        `action_not_applicable` — the action could not be applied to this case
+        (for example, the case could no longer be claimed).
+      enum:
+        - duplicate_review_case_id
+        - outcome_unknown
+        - review_case_not_found
+        - resolve_not_applicable
+        - action_not_applicable
     PersonSummary:
       type: object
       properties:
@@ -2968,7 +3264,7 @@ components:
             Accepted-version lifecycle authority. link_status independently
             describes domain-link progress. Legacy effective-active records are
             normalized to active in API responses during migration.
-          enum: [active, pending_review, superseded, rejected, link_failed]
+          enum: [active, pending_review, superseded, rejected, link_failed, parked]
         extraction_confidence:
           type:
             - number
@@ -3074,7 +3370,7 @@ components:
           enum: [identity, bankruptcy, rental_flat, relationship, conversation, sales, crm_deal, crm_history, call]
         lifecycle_status:
           type: string
-          enum: [active, pending_review, superseded, rejected, link_failed]
+          enum: [active, pending_review, superseded, rejected, link_failed, parked]
         extraction_confidence:
           type: [number, 'null']
           minimum: 0
@@ -3181,6 +3477,21 @@ components:
           type: array
           items:
             type: string
+        review_suppressed:
+          type: boolean
+          default: false
+          description: >
+            True when the review policy parked this decision instead of opening
+            a review case. The decision itself is still persisted and still
+            `review`.
+        suppressed_reason:
+          type:
+            - string
+            - 'null'
+          description: >
+            Weak-signal reason code recorded when `review_suppressed` is true
+            (`unverified_phone`, `unverified_email`, `phone_near_match`,
+            `email_near_match`, or `weak_signal_combination`).
       required:
         - match_decision_id
         - engine_type
@@ -3219,6 +3530,20 @@ components:
           oneOf:
             - $ref: '#/components/schemas/ReviewResolution'
             - type: 'null'
+        resolved_by:
+          type:
+            - string
+            - 'null'
+          description: >
+            Actor recorded when the case was closed by a reason-coded or
+            `resolve`/`expire`/`dismiss` action.
+        resolution_reason_code:
+          type:
+            - string
+            - 'null'
+          description: >
+            `ReviewActionReasonCode` recorded when the case was closed with a
+            reason code.
         match_decision:
           $ref: '#/components/schemas/MatchDecision'
       required:
@@ -3640,10 +3965,48 @@ components:
           type:
             - string
             - 'null'
+        reason_code:
+          oneOf:
+            - $ref: '#/components/schemas/ReviewActionReasonCode'
+            - type: 'null'
+          description: >
+            Optional audit reason code. When supplied together with a closing
+            action, the case records `resolved_by` and
+            `resolution_reason_code`. Omitting it keeps the legacy write
+            shape unchanged.
         metadata:
           type: object
           additionalProperties: true
       required: [action_type]
+      additionalProperties: false
+    BulkReviewActionRequest:
+      type: object
+      properties:
+        review_case_ids:
+          type: array
+          minItems: 1
+          maxItems: 100
+          items:
+            type: string
+            format: uuid
+          description: >
+            Review cases to action, in the order the outcomes are reported. A
+            repeated id is reported as `duplicate_review_case_id` and is
+            actioned only once.
+        action_type:
+          $ref: '#/components/schemas/BulkReviewActionType'
+        reason_code:
+          $ref: '#/components/schemas/ReviewActionReasonCode'
+        notes:
+          type:
+            - string
+            - 'null'
+        follow_up_at:
+          type:
+            - string
+            - 'null'
+          format: date-time
+      required: [review_case_ids, action_type, reason_code]
       additionalProperties: false
     ManualMergeRequest:
       type: object
@@ -3929,11 +4292,25 @@ components:
           oneOf:
             - $ref: '#/components/schemas/AddressSummary'
             - type: 'null'
-        preferred_nric: {type: [string, 'null']}
+        preferred_nric:
+          type: [string, 'null']
+          description: >-
+            Masked national identification number (e.g. S••••567D). Plaintext
+            is never exposed on read surfaces; human administrators may perform
+            an audited reveal via POST /v1/persons/{person_id}/nric/reveal.
         preferred_race_ethnicity: {type: [string, 'null']}
         profile_completeness_score: {type: number, default: 0}
         golden_profile_computed_at: {type: [string, 'null']}
         golden_profile_version: {type: [string, 'null']}
+        golden_top:
+          oneOf:
+            - $ref: '#/components/schemas/GoldenTopBlock'
+            - type: 'null'
+          description: >-
+            Top-3 golden identifier snapshot (phone/email/nric rank 1 equals
+            the person's preferred_*; NRIC values stay masked). Null when the
+            person has no golden state or the stored JSON is malformed; never
+            present on the public share-link surface.
         source_record_count: {type: integer, default: 0}
         connection_count: {type: integer, default: 0}
         lifetime_value: {type: [number, 'null']}
@@ -4065,6 +4442,175 @@ components:
             $ref: '#/components/schemas/PopoverDisplayItem'
       required: [data, meta]
       additionalProperties: false
+    PersonIdentifier:
+      type: object
+      properties:
+        identifier_type:
+          type: string
+        normalized_value:
+          type: string
+        is_active:
+          type: boolean
+        is_verified:
+          type: boolean
+        last_confirmed_at:
+          type: [string, 'null']
+        source_system_key:
+          type: [string, 'null']
+        source_record_pks:
+          type: array
+          items:
+            type: string
+        source_record_ids:
+          type: array
+          items:
+            type: string
+        entities:
+          type: array
+          items:
+            type: object
+            additionalProperties: true
+        source_records:
+          type: array
+          items:
+            $ref: '#/components/schemas/SourceRecord'
+        score:
+          type: [number, 'null']
+          description: >-
+            C4 link weight (noisy-OR of assertion strengths with the dormant
+            0.24 candidate-only cap). Not confidence; null for legacy-only
+            identifier projections.
+        golden_rank:
+          type: [integer, 'null']
+      required: [identifier_type, normalized_value]
+      additionalProperties: false
+    Profile:
+      type: object
+      properties:
+        profile_id:
+          type: string
+        status:
+          type: string
+          enum: [open, promoted, retired, split]
+          description: >-
+            `split` is reserved for future cluster fission and is never written
+            by C3. `retired` marks a duplicate cluster absorbed by a deterministic
+            union.
+        evidence_version:
+          type: integer
+          minimum: 0
+        materialized_at:
+          type: [string, 'null']
+        promoted_person_id:
+          type: [string, 'null']
+        record_count:
+          type: integer
+          minimum: 0
+        identifier_count:
+          type: integer
+          minimum: 0
+      required: [profile_id, status, evidence_version, record_count, identifier_count]
+      # Open base: ProfileDetail composes it with allOf, and a closed base would
+      # reject the detail-only source_records/identifiers members.
+    ProfileDetail:
+      allOf:
+        - $ref: '#/components/schemas/Profile'
+        - type: object
+          properties:
+            source_records:
+              type: array
+              items:
+                $ref: '#/components/schemas/SourceRecord'
+            identifiers:
+              type: array
+              items:
+                $ref: '#/components/schemas/PersonIdentifier'
+          required: [source_records, identifiers]
+    ProfileListResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/Profile'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    ProfileDetailResponseEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/ProfileDetail'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    GoldenTopValue:
+      type: object
+      properties:
+        value: {type: string}
+        rank: {type: integer, minimum: 1, default: 1}
+        score: {type: number, default: 0}
+        verified: {type: boolean, default: false}
+        last_confirmed_at: {type: [string, 'null']}
+        source_count: {type: integer, minimum: 0, default: 0}
+      required: [value]
+      additionalProperties: false
+    GoldenTopConflict:
+      type: object
+      properties:
+        type: {type: string}
+        reason: {type: string}
+        values:
+          type: array
+          items: {type: [string, 'null']}
+          default: []
+      required: [type, reason]
+      additionalProperties: false
+    GoldenTopBlock:
+      type: object
+      properties:
+        phone:
+          type: array
+          items: {$ref: '#/components/schemas/GoldenTopValue'}
+        email:
+          type: array
+          items: {$ref: '#/components/schemas/GoldenTopValue'}
+        nric:
+          type: array
+          items: {$ref: '#/components/schemas/GoldenTopValue'}
+        conflicts:
+          type: array
+          items:
+            oneOf:
+              - $ref: '#/components/schemas/GoldenTopConflict'
+              - type: string
+      additionalProperties: false
+    UnlinkedProfile:
+      allOf:
+        - $ref: '#/components/schemas/Profile'
+        - type: object
+          properties:
+            value_score:
+              type: integer
+              minimum: 0
+              default: 0
+              description: >-
+                Number of member SourceRecords of type `crm_deal`; the
+                read-only worklist orders by value_score DESC, record_count
+                DESC, profile_id.
+    UnlinkedProfileListResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: array
+          items:
+            $ref: '#/components/schemas/UnlinkedProfile'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
     PersonDetail:
       allOf:
         - $ref: '#/components/schemas/PersonSummary'
@@ -4095,6 +4641,43 @@ components:
       properties:
         data:
           $ref: '#/components/schemas/PersonDetail'
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    NricRevealRequest:
+      type: object
+      properties:
+        reason:
+          type: string
+          minLength: 1
+          maxLength: 500
+          description: Justification for accessing sensitive plaintext NRIC data.
+      required: [reason]
+      additionalProperties: false
+    NricReveal:
+      type: object
+      properties:
+        person_id:
+          type: string
+        reveal_id:
+          type: string
+        revealed_at:
+          type: string
+        values:
+          type: array
+          items:
+            type: string
+        unavailable_count:
+          type: integer
+          minimum: 0
+      required: [person_id, reveal_id, revealed_at, values, unavailable_count]
+      additionalProperties: false
+    NricRevealResponseEnvelope:
+      type: object
+      properties:
+        data:
+          $ref: '#/components/schemas/NricReveal'
         meta:
           $ref: '#/components/schemas/Meta'
       required: [data, meta]
@@ -4665,6 +5248,47 @@ components:
                 - $ref: '#/components/schemas/ReviewResolution'
                 - type: 'null'
           required: [review_case_id, queue_state, resolution]
+          additionalProperties: false
+        meta:
+          $ref: '#/components/schemas/Meta'
+      required: [data, meta]
+      additionalProperties: false
+    BulkReviewActionItemResult:
+      type: object
+      properties:
+        review_case_id:
+          type: string
+          format: uuid
+        status:
+          type: string
+          enum: [updated, error]
+        queue_state:
+          oneOf:
+            - $ref: '#/components/schemas/ReviewQueueState'
+            - type: 'null'
+        resolution:
+          oneOf:
+            - $ref: '#/components/schemas/ReviewResolution'
+            - type: 'null'
+        error_code:
+          oneOf:
+            - $ref: '#/components/schemas/BulkReviewActionErrorCode'
+            - type: 'null'
+      required: [review_case_id, status, queue_state, resolution, error_code]
+      additionalProperties: false
+    BulkReviewActionResponseEnvelope:
+      type: object
+      properties:
+        data:
+          type: object
+          properties:
+            items:
+              type: array
+              description: >
+                One outcome per submitted id, in submission order.
+              items:
+                $ref: '#/components/schemas/BulkReviewActionItemResult'
+          required: [items]
           additionalProperties: false
         meta:
           $ref: '#/components/schemas/Meta'
