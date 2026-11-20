@@ -7,15 +7,25 @@ from copy import deepcopy
 from typing import TypeVar, cast
 
 from neo4j import ManagedTransaction, Record
-from src.graph import queries
-from src.graph.queries import (
+from src.graph.queries import nric_rehash_consolidate as consolidate_queries
+from src.graph.queries.nric_rehash import (
     NRIC_IDENTIFIER_CENSUS,
     NRIC_IDENTIFIER_PAGE,
+    NRIC_REHASH_ACQUIRE_LEASE,
+    NRIC_REHASH_ADVANCE_BATCH,
+    NRIC_REHASH_COMPLETE_AND_RELEASE,
+    NRIC_REHASH_DATABASE_NAME,
+    NRIC_REHASH_FENCE_BATCH,
+    NRIC_REHASH_FIND_DIGEST_TARGET,
+    NRIC_REHASH_PAGE_AND_LOCK_IDENTIFIERS,
+    NRIC_REHASH_READ_REVISION,
+    NRIC_REHASH_READ_STATE,
+    NRIC_REHASH_RELEASE_LEASE,
+    NRIC_REHASH_UPDATE_IDENTIFIER,
     NRIC_VERIFY_DUPLICATE_PERSON_KEYS,
     NRIC_VERIFY_DUPLICATE_SCOPED_TARGETS,
     NRIC_VERIFY_IDENTIFIERS,
 )
-from src.graph.queries import nric_rehash_consolidate as consolidate_queries
 from src.normalizers.nric import is_nric_digest
 
 _T = TypeVar("_T")
@@ -46,11 +56,11 @@ class _FakeTx:
             return _result(self._census())
         if query == NRIC_IDENTIFIER_PAGE:
             return self._page(parameters.get("after_id"), parameters.get("batch_size"))
-        if query == queries.NRIC_REHASH_DATABASE_NAME:
+        if query == NRIC_REHASH_DATABASE_NAME:
             return _result({"name": self.client.database_name})
-        if query == queries.NRIC_REHASH_READ_STATE:
+        if query == NRIC_REHASH_READ_STATE:
             return self._read_state()
-        if query == queries.NRIC_REHASH_READ_REVISION:
+        if query == NRIC_REHASH_READ_REVISION:
             return _result({"current_revision": self.client.revision})
         if query == NRIC_VERIFY_IDENTIFIERS:
             return _result(self._verify_identifiers(parameters.get("key_version")))
@@ -82,21 +92,21 @@ class _FakeTx:
             consolidate_queries.NRIC_REHASH_MOVE_MOVED_RELATIONSHIP,
         }:
             return _result({"moved": 0})
-        if query == queries.NRIC_REHASH_ACQUIRE_LEASE:
+        if query == NRIC_REHASH_ACQUIRE_LEASE:
             return self._acquire(parameters)
-        if query == queries.NRIC_REHASH_FENCE_BATCH:
+        if query == NRIC_REHASH_FENCE_BATCH:
             return self._fence(parameters)
-        if query == queries.NRIC_REHASH_PAGE_AND_LOCK_IDENTIFIERS:
+        if query == NRIC_REHASH_PAGE_AND_LOCK_IDENTIFIERS:
             return self._page(parameters.get("cursor"), parameters.get("batch_size"))
-        if query == queries.NRIC_REHASH_FIND_DIGEST_TARGET:
+        if query == NRIC_REHASH_FIND_DIGEST_TARGET:
             return self._find_digest(parameters.get("digest"))
-        if query == queries.NRIC_REHASH_UPDATE_IDENTIFIER:
+        if query == NRIC_REHASH_UPDATE_IDENTIFIER:
             return self._update_identifier(parameters)
-        if query == queries.NRIC_REHASH_ADVANCE_BATCH:
+        if query == NRIC_REHASH_ADVANCE_BATCH:
             return self._advance(parameters)
-        if query == queries.NRIC_REHASH_COMPLETE_AND_RELEASE:
+        if query == NRIC_REHASH_COMPLETE_AND_RELEASE:
             return self._complete(parameters)
-        if query == queries.NRIC_REHASH_RELEASE_LEASE:
+        if query == NRIC_REHASH_RELEASE_LEASE:
             if self.client.release_error is not None:
                 raise self.client.release_error
             return self._release(parameters)

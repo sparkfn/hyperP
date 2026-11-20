@@ -7,12 +7,12 @@ import json
 
 import pytest
 from neo4j import Driver
-from src.graph import queries
 from src.graph.queries import nric_rehash_consolidate as consolidate_queries
 from src.graph.queries.identity_link_revisions import (
     LIST_IDENTITY_LINK_EVENTS,
     LIST_IDENTITY_LINK_SNAPSHOT,
 )
+from src.graph.queries.nric_rehash import NRIC_REHASH_READ_REVISION
 from src.identity_links import ParticipantKind
 
 
@@ -230,7 +230,7 @@ def _identity_revision_snapshot(
 ) -> tuple[int, tuple[str, ...], tuple[str, ...], int]:
     with driver.session() as session:
         counter_record = session.run(
-            queries.NRIC_REHASH_READ_REVISION,
+            NRIC_REHASH_READ_REVISION,
             stream_key="identity_link_revision_stream_v1",
         ).single(strict=True)
         raw_counter: object = counter_record.get("current_revision")

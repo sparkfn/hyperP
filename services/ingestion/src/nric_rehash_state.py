@@ -8,9 +8,17 @@ from typing import TypedDict
 from neo4j import ManagedTransaction, Record
 from neo4j.exceptions import DriverError, Neo4jError
 
-from src.graph import queries
 from src.graph.client import Neo4jClient
 from src.graph.queries import nric_rehash_consolidate as consolidate_queries
+from src.graph.queries.nric_rehash import (
+    NRIC_REHASH_ACQUIRE_LEASE,
+    NRIC_REHASH_ADVANCE_BATCH,
+    NRIC_REHASH_COMPLETE_AND_RELEASE,
+    NRIC_REHASH_FENCE_BATCH,
+    NRIC_REHASH_READ_REVISION,
+    NRIC_REHASH_READ_STATE,
+    NRIC_REHASH_RELEASE_LEASE,
+)
 from src.normalizers.nric import nric_digest
 from src.nric_rehash_plan import NricRehashError, read_census, record_count
 
@@ -62,7 +70,7 @@ def read_migration_state(client: Neo4jClient) -> MigrationState | None:
 
 
 def _read_migration_state(tx: ManagedTransaction) -> MigrationState | None:
-    record = tx.run(queries.NRIC_REHASH_READ_STATE, migration_key=MIGRATION_KEY).single()
+    record = tx.run(NRIC_REHASH_READ_STATE, migration_key=MIGRATION_KEY).single()
     if record is None:
         raise NricRehashError("neo4j_error")
     exists: object = record.get("exists")
@@ -142,7 +150,7 @@ def read_current_revision(client: Neo4jClient) -> int | None:
 
 def _read_current_revision(tx: ManagedTransaction) -> int | None:
     record = tx.run(
-        queries.NRIC_REHASH_READ_REVISION,
+        NRIC_REHASH_READ_REVISION,
         stream_key=REVISION_STREAM_KEY,
     ).single()
     if record is None:
@@ -167,7 +175,7 @@ def acquire_lease(
         baseline_revision = _read_current_revision(tx)
         check = key_check_for(key)
         record = tx.run(
-            queries.NRIC_REHASH_ACQUIRE_LEASE,
+            NRIC_REHASH_ACQUIRE_LEASE,
             migration_key=MIGRATION_KEY,
             key_version=key_version,
             key_check=check,
@@ -206,7 +214,7 @@ def _assert_census_values(census: dict[str, int]) -> None:
 def fence_batch(tx: ManagedTransaction, owner: str) -> None:
     """Lock first, then verify and extend the active owner lease in this transaction."""
     record = tx.run(
-        queries.NRIC_REHASH_FENCE_BATCH,
+        NRIC_REHASH_FENCE_BATCH,
         migration_key=MIGRATION_KEY,
         owner=owner,
         lease_seconds=LEASE_SECONDS,
@@ -225,7 +233,7 @@ def advance_batch(
 ) -> tuple[int, int, int, int]:
     """Persist a page cursor and counters under the same transaction fence."""
     record = tx.run(
-        queries.NRIC_REHASH_ADVANCE_BATCH,
+        NRIC_REHASH_ADVANCE_BATCH,
         migration_key=MIGRATION_KEY,
         owner=owner,
         cursor=cursor,
@@ -249,7 +257,7 @@ def complete_and_release(client: Neo4jClient, owner: str) -> None:
 
     def work(tx: ManagedTransaction) -> None:
         record = tx.run(
-            queries.NRIC_REHASH_COMPLETE_AND_RELEASE,
+            NRIC_REHASH_COMPLETE_AND_RELEASE,
             migration_key=MIGRATION_KEY,
             owner=owner,
         ).single()
@@ -264,7 +272,7 @@ def release_lease(client: Neo4jClient, owner: str) -> None:
 
     def work(tx: ManagedTransaction) -> None:
         record = tx.run(
-            queries.NRIC_REHASH_RELEASE_LEASE,
+            NRIC_REHASH_RELEASE_LEASE,
             migration_key=MIGRATION_KEY,
             owner=owner,
         ).single()

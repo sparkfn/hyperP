@@ -18,8 +18,8 @@ from _nric_rehash_apply_builders import (
 from _nric_rehash_apply_fakes import _FakeClient
 from neo4j.exceptions import DriverError
 from src import nric_rehash, nric_rehash_apply
-from src.graph import queries
 from src.graph.client import Neo4jClient
+from src.graph.queries.nric_rehash import NRIC_REHASH_UPDATE_IDENTIFIER
 from src.normalizers.nric import mask_nric, nric_digest
 from src.nric_rehash_plan import NricRehashError
 
@@ -169,7 +169,7 @@ def test_apply_progress_and_final_json_never_leak_sensitive_values(
     }
     if encrypted_values != [canonical]:
         pytest.fail("encryptor received an unexpected number of rows")
-    update_query = queries.NRIC_REHASH_UPDATE_IDENTIFIER
+    update_query = NRIC_REHASH_UPDATE_IDENTIFIER
     if "elementId(i) = $element_id" not in update_query or "$identifier_id" in update_query:
         pytest.fail("update query did not use an internal element id lookup")
     update_parameters = [

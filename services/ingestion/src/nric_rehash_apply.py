@@ -9,8 +9,13 @@ from dataclasses import dataclass, field, replace
 
 from neo4j import ManagedTransaction, Record
 
-from src.graph import queries
 from src.graph.client import Neo4jClient
+from src.graph.queries.nric_rehash import (
+    NRIC_REHASH_DATABASE_NAME,
+    NRIC_REHASH_FIND_DIGEST_TARGET,
+    NRIC_REHASH_PAGE_AND_LOCK_IDENTIFIERS,
+    NRIC_REHASH_UPDATE_IDENTIFIER,
+)
 from src.normalizers.nric import encrypt_nric
 from src.nric_rehash_classify import (
     NricIdentifierRow,
@@ -159,7 +164,7 @@ def _assert_census_preconditions(plan: PlanReport) -> None:
 
 
 def _read_database_name(tx: ManagedTransaction) -> str:
-    record = tx.run(queries.NRIC_REHASH_DATABASE_NAME).single()
+    record = tx.run(NRIC_REHASH_DATABASE_NAME).single()
     if record is None:
         raise NricRehashError("neo4j_error")
     name: object = record.get("name")
@@ -218,7 +223,7 @@ def _process_batch(
         rows = tuple(
             _locked_identifier_from_record(record)
             for record in tx.run(
-                queries.NRIC_REHASH_PAGE_AND_LOCK_IDENTIFIERS,
+                NRIC_REHASH_PAGE_AND_LOCK_IDENTIFIERS,
                 cursor=state.cursor,
                 batch_size=batch_size,
             )
@@ -308,7 +313,7 @@ def _convert_rows(
             or plaintext_value is None
         ):
             raise NricRehashError("drift_detected")
-        target = tx.run(queries.NRIC_REHASH_FIND_DIGEST_TARGET, digest=digest).single()
+        target = tx.run(NRIC_REHASH_FIND_DIGEST_TARGET, digest=digest).single()
         if target is None:
             _convert_in_place(
                 tx, locked, canonical, digest, key, key_version, masked, checksum_valid
@@ -371,7 +376,7 @@ def _convert_in_place(
     checksum_valid: bool,
 ) -> None:
     result = tx.run(
-        queries.NRIC_REHASH_UPDATE_IDENTIFIER,
+        NRIC_REHASH_UPDATE_IDENTIFIER,
         element_id=locked.element_id,
         digest=digest,
         hashed_value=digest,
