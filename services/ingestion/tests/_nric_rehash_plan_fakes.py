@@ -16,6 +16,7 @@ from src.graph.queries.nric_rehash import (
     NRIC_VERIFY_DUPLICATE_PERSON_KEYS,
     NRIC_VERIFY_DUPLICATE_SCOPED_TARGETS,
     NRIC_VERIFY_IDENTIFIERS,
+    NRIC_VERIFY_READINESS,
 )
 from src.normalizers.nric import nric_checksum_valid
 from src.nric_rehash_classify import NricIdentifierRow
@@ -166,6 +167,9 @@ def _verification_client(
     duplicate_key_groups: int = 0,
     duplicate_extra_owners: int = 0,
     duplicate_scoped_targets: int = 0,
+    anchored_persons: int = 0,
+    identifiers_without_assertion: int = 0,
+    identifiers_without_projection: int = 0,
 ) -> FakeClient:
     return FakeClient(
         {
@@ -190,6 +194,15 @@ def _verification_client(
             ],
             NRIC_VERIFY_DUPLICATE_SCOPED_TARGETS: [
                 [{"duplicate_scoped_targets": duplicate_scoped_targets}]
+            ],
+            NRIC_VERIFY_READINESS: [
+                [
+                    {
+                        "anchored_persons": anchored_persons,
+                        "identifiers_without_assertion": identifiers_without_assertion,
+                        "identifiers_without_projection": identifiers_without_projection,
+                    }
+                ]
             ],
         }
     )

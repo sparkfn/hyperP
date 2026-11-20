@@ -14,6 +14,7 @@ from src.graph.queries.nric_rehash import (
     NRIC_VERIFY_DUPLICATE_PERSON_KEYS,
     NRIC_VERIFY_DUPLICATE_SCOPED_TARGETS,
     NRIC_VERIFY_IDENTIFIERS,
+    NRIC_VERIFY_READINESS,
 )
 from src.nric_rehash_classify import (
     NricClassification,
@@ -62,6 +63,9 @@ class VerifyReport(TypedDict):
     duplicate_key_groups: int
     duplicate_extra_owners: int
     duplicate_scoped_targets: int
+    anchored_persons: int
+    identifiers_without_assertion: int
+    identifiers_without_projection: int
     ok: bool
 
 
@@ -220,7 +224,13 @@ def _verify_reader(key_version: str) -> Callable[[ManagedTransaction], VerifyRep
         ).single()
         duplicate_keys = tx.run(NRIC_VERIFY_DUPLICATE_PERSON_KEYS).single()
         duplicate_targets = tx.run(NRIC_VERIFY_DUPLICATE_SCOPED_TARGETS).single()
-        if identifiers is None or duplicate_keys is None or duplicate_targets is None:
+        readiness = tx.run(NRIC_VERIFY_READINESS).single()
+        if (
+            identifiers is None
+            or duplicate_keys is None
+            or duplicate_targets is None
+            or readiness is None
+        ):
             raise NricRehashError("neo4j_error")
         counts: tuple[int, int, int, int, int, int, int, int] = (
             record_count(identifiers, "identifier_count"),
@@ -241,6 +251,11 @@ def _verify_reader(key_version: str) -> Callable[[ManagedTransaction], VerifyRep
             duplicate_key_groups=counts[5],
             duplicate_extra_owners=counts[6],
             duplicate_scoped_targets=counts[7],
+            anchored_persons=record_count(readiness, "anchored_persons"),
+            identifiers_without_assertion=record_count(readiness, "identifiers_without_assertion"),
+            identifiers_without_projection=record_count(
+                readiness, "identifiers_without_projection"
+            ),
             ok=not any(counts[1:]),
         )
 

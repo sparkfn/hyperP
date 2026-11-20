@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import TypedDict
+from typing import Literal, TypedDict
 
 from neo4j import ManagedTransaction, Record
 from neo4j.exceptions import DriverError, Neo4jError
@@ -12,6 +12,7 @@ from src.graph.client import Neo4jClient
 from src.graph.queries import nric_rehash_consolidate as consolidate_queries
 from src.graph.queries.nric_rehash import (
     NRIC_REHASH_ACQUIRE_LEASE,
+    NRIC_REHASH_ADVANCE_ANCHOR_BATCH,
     NRIC_REHASH_ADVANCE_BATCH,
     NRIC_REHASH_COMPLETE_AND_RELEASE,
     NRIC_REHASH_FENCE_BATCH,
@@ -41,6 +42,8 @@ class EvidenceCounts(TypedDict):
 class MigrationState:
     phase: str
     cursor: str | None = field(repr=False)
+    anchor_cursor: str | None = field(repr=False)
+    anchored: int
     key_version: str | None
     key_check: str | None = field(repr=False)
     baseline_total: int
@@ -86,6 +89,8 @@ def _state_from_record(record: Record) -> MigrationState:
     return MigrationState(
         phase=phase,
         cursor=_optional_string(record, "cursor"),
+        anchor_cursor=_optional_string(record, "anchor_cursor"),
+        anchored=record_count(record, "anchored"),
         key_version=_optional_string(record, "key_version"),
         key_check=_optional_string(record, "key_check"),
         baseline_total=record_count(record, "baseline_total"),
@@ -165,6 +170,7 @@ def acquire_lease(
     key_version: str,
     *,
     restart_completed: bool,
+    target_phase: Literal["convert", "anchor"] = "convert",
 ) -> MigrationState:
     """Create the baseline once and acquire or resume the fenced migration."""
 
@@ -192,6 +198,7 @@ def acquire_lease(
             owner=owner,
             lease_seconds=LEASE_SECONDS,
             restart_completed=restart_completed,
+            target_phase=target_phase,
         ).single()
         if record is None:
             raise NricRehashError("lease_unavailable")
@@ -252,14 +259,40 @@ def advance_batch(
     )
 
 
-def complete_and_release(client: Neo4jClient, owner: str) -> None:
-    """Persist the completed phase and release only the current lease owner."""
+def advance_anchor_batch(
+    tx: ManagedTransaction,
+    owner: str,
+    cursor: str,
+    anchored: int,
+) -> int:
+    """Persist anchor progress under the active lease in the same transaction."""
+    record = tx.run(
+        NRIC_REHASH_ADVANCE_ANCHOR_BATCH,
+        migration_key=MIGRATION_KEY,
+        owner=owner,
+        cursor=cursor,
+        anchored=anchored,
+        lease_seconds=LEASE_SECONDS,
+    ).single()
+    if record is None:
+        raise NricRehashError("lease_lost")
+    return record_count(record, "anchored")
+
+
+def complete_and_release(
+    client: Neo4jClient,
+    owner: str,
+    *,
+    phase: Literal["convert_complete", "anchor_complete"] = "convert_complete",
+) -> None:
+    """Persist a completed phase and release only the current lease owner."""
 
     def work(tx: ManagedTransaction) -> None:
         record = tx.run(
             NRIC_REHASH_COMPLETE_AND_RELEASE,
             migration_key=MIGRATION_KEY,
             owner=owner,
+            phase=phase,
         ).single()
         if record is None:
             raise NricRehashError("lease_lost")

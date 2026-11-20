@@ -6,6 +6,7 @@ from dataclasses import dataclass
 from typing import Literal, TypedDict
 
 from src.graph.client import Neo4jClient
+from src.nric_rehash_handoff import HandoffSummary
 from src.nric_rehash_plan import (
     PlanReport,
     VerifyReport,
@@ -28,6 +29,9 @@ class CountSummary(TypedDict):
 class FinalCountSummary(TypedDict):
     identifier_count: int
     non_digest_count: int
+    anchored_persons: int
+    identifiers_without_assertion: int
+    identifiers_without_projection: int
 
 
 class ApplyReport(TypedDict):
@@ -39,6 +43,10 @@ class ApplyReport(TypedDict):
     converted_in_place: int
     converted_consolidated: int
     removed_nodes: int
+    anchored: int
+    already_anchored: int
+    anchorable_remaining: int
+    handoff: HandoffSummary
     already_digest: int
     unprocessable: dict[str, int]
     digest_metadata_gap: int
@@ -69,6 +77,10 @@ def build_final_report(
     key_version: str,
     *,
     changes: int,
+    anchored: int,
+    already_anchored: int,
+    anchorable_remaining: int,
+    handoff: HandoffSummary,
 ) -> tuple[ApplyReport, int]:
     verification = build_verify_report(client, key_version)
     evidence = client.execute_read(read_evidence_counts)
@@ -77,8 +89,20 @@ def build_final_report(
         verification,
         evidence,
         read_current_revision(client),
+        anchored,
     )
-    return _build_apply_report(state, plan, verification, evidence, changes, reconciliation)
+    return _build_apply_report(
+        state,
+        plan,
+        verification,
+        evidence,
+        changes,
+        reconciliation,
+        anchored,
+        already_anchored,
+        anchorable_remaining,
+        handoff,
+    )
 
 
 def _reconcile(
@@ -86,6 +110,7 @@ def _reconcile(
     verification: VerifyReport,
     evidence: EvidenceCounts,
     current_revision: int | None,
+    anchored: int,
 ) -> _Reconciliation:
     return _Reconciliation(
         count_equation_ok=(
@@ -100,11 +125,42 @@ def _reconcile(
         evidence_equation_ok=(
             evidence["asserts"] == state.baseline_asserts
             and evidence["identified_by"] == state.baseline_identified_by
-            and evidence["anchored_by"] == state.baseline_anchored_by
+            and state.baseline_anchored_by
+            <= evidence["anchored_by"]
+            <= state.baseline_anchored_by + anchored
             and evidence["moved"] == state.baseline_moved
         ),
         attribution_unchanged=evidence["active_links"] == state.baseline_active_links,
         revision_unchanged=current_revision == state.baseline_revision,
+    )
+
+
+def _baseline_counts(state: MigrationState) -> CountSummary:
+    return {
+        "total": state.baseline_total,
+        "non_digest": state.baseline_non_digest,
+        "digest_shaped": state.baseline_digest_shaped,
+    }
+
+
+def _final_counts(verification: VerifyReport) -> FinalCountSummary:
+    return {
+        "identifier_count": verification["identifier_count"],
+        "non_digest_count": verification["non_digest_count"],
+        "anchored_persons": verification["anchored_persons"],
+        "identifiers_without_assertion": verification["identifiers_without_assertion"],
+        "identifiers_without_projection": verification["identifiers_without_projection"],
+    }
+
+
+def _baseline_evidence(state: MigrationState) -> EvidenceCounts:
+    return EvidenceCounts(
+        asserts=state.baseline_asserts,
+        identified_by=state.baseline_identified_by,
+        anchored_by=state.baseline_anchored_by,
+        moved=state.baseline_moved,
+        has_identifier=state.baseline_has_identifier,
+        active_links=state.baseline_active_links,
     )
 
 
@@ -115,8 +171,12 @@ def _build_apply_report(
     evidence: EvidenceCounts,
     changes: int,
     reconciliation: _Reconciliation,
+    anchored: int,
+    already_anchored: int,
+    anchorable_remaining: int,
+    handoff: HandoffSummary,
 ) -> tuple[ApplyReport, int]:
-    blocked = _verification_is_blocked(plan, verification, reconciliation)
+    blocked = _verification_is_blocked(plan, verification, reconciliation, anchorable_remaining)
     report = ApplyReport(
         command="apply",
         status="blocked" if blocked else "ok",
@@ -126,26 +186,16 @@ def _build_apply_report(
         converted_in_place=state.converted_in_place,
         converted_consolidated=state.converted_consolidated,
         removed_nodes=state.removed_nodes,
+        anchored=anchored,
+        already_anchored=already_anchored,
+        anchorable_remaining=anchorable_remaining,
+        handoff=handoff,
         already_digest=plan["already_digest"],
         unprocessable=dict(plan["unprocessable"]),
         digest_metadata_gap=plan["digest_metadata_gap"],
-        baseline={
-            "total": state.baseline_total,
-            "non_digest": state.baseline_non_digest,
-            "digest_shaped": state.baseline_digest_shaped,
-        },
-        final={
-            "identifier_count": verification["identifier_count"],
-            "non_digest_count": verification["non_digest_count"],
-        },
-        evidence_baseline=EvidenceCounts(
-            asserts=state.baseline_asserts,
-            identified_by=state.baseline_identified_by,
-            anchored_by=state.baseline_anchored_by,
-            moved=state.baseline_moved,
-            has_identifier=state.baseline_has_identifier,
-            active_links=state.baseline_active_links,
-        ),
+        baseline=_baseline_counts(state),
+        final=_final_counts(verification),
+        evidence_baseline=_baseline_evidence(state),
         evidence_final=evidence,
         count_equation_ok=reconciliation.count_equation_ok,
         conversion_equation_ok=reconciliation.conversion_equation_ok,
@@ -160,10 +210,12 @@ def _verification_is_blocked(
     plan: PlanReport,
     verification: VerifyReport,
     reconciliation: _Reconciliation,
+    anchorable_remaining: int,
 ) -> bool:
     return (
         plan["convertible"] > 0
         or sum(plan["unprocessable"].values()) > 0
+        or anchorable_remaining > 0
         or not verification["ok"]
         or not reconciliation.count_equation_ok
         or not reconciliation.conversion_equation_ok

@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import secrets
 import uuid
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -30,7 +31,9 @@ def _assert_not_leaked(output: str, sensitive: str, label: str) -> None:
 
 
 def test_unsupported_edge_has_exit_one_and_sanitized_output(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
     key = secrets.token_hex(32)
     canonical = _canonical()
@@ -61,7 +64,19 @@ def test_unsupported_edge_has_exit_one_and_sanitized_output(
     monkeypatch.setattr(nric_rehash, "get_settings", lambda: _settings(key))
     monkeypatch.setattr(nric_rehash, "Neo4jClient", lambda _settings: client)
 
-    assert nric_rehash.main(["apply", "--acknowledge-offline", "--expect-database", "neo4j"]) == 1
+    assert (
+        nric_rehash.main(
+            [
+                "apply",
+                "--acknowledge-offline",
+                "--expect-database",
+                "neo4j",
+                "--handoff-dir",
+                str(tmp_path),
+            ]
+        )
+        == 1
+    )
     captured = capsys.readouterr()
     assert _report(captured.out) == {"code": "unsupported_edge", "status": "error"}
     assert client.closed
@@ -76,7 +91,7 @@ def test_unsupported_edge_has_exit_one_and_sanitized_output(
         _assert_not_leaked(captured.out + captured.err, sensitive, label)
 
 
-def test_release_driver_error_does_not_replace_original_apply_error() -> None:
+def test_release_driver_error_does_not_replace_original_apply_error(tmp_path: Path) -> None:
     key = secrets.token_hex(32)
     canonical = _canonical()
     digest = nric_digest(canonical, key)
@@ -110,12 +125,15 @@ def test_release_driver_error_does_not_replace_original_apply_error() -> None:
             key_version=_KEY_VERSION,
             expected_database="neo4j",
             acknowledge_offline=True,
+            handoff_dir=tmp_path,
         )
     assert error.value.code == "unsupported_edge"
 
 
 def test_apply_progress_and_final_json_never_leak_sensitive_values(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
     key = secrets.token_hex(32)
     canonical = _canonical()
@@ -140,7 +158,16 @@ def test_apply_progress_and_final_json_never_leak_sensitive_values(
 
     assert (
         nric_rehash.main(
-            ["apply", "--batch-size", "1", "--acknowledge-offline", "--expect-database", "neo4j"]
+            [
+                "apply",
+                "--batch-size",
+                "1",
+                "--acknowledge-offline",
+                "--expect-database",
+                "neo4j",
+                "--handoff-dir",
+                str(tmp_path),
+            ]
         )
         == 0
     )

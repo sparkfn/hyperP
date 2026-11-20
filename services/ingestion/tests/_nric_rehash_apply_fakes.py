@@ -6,6 +6,11 @@ from collections.abc import Callable, Iterator, Mapping, Sequence
 from copy import deepcopy
 from typing import TypeVar, cast
 
+from _nric_rehash_anchor_fakes import (
+    anchor_query_response,
+    anchor_state_fields,
+    apply_anchor_acquire_state,
+)
 from neo4j import ManagedTransaction, Record
 from src.graph.queries import nric_rehash_consolidate as consolidate_queries
 from src.graph.queries.nric_rehash import (
@@ -52,6 +57,9 @@ class _FakeTx:
 
     def run(self, query: str, **parameters: object) -> _Result:
         self.client.query_parameters.append((query, parameters))
+        anchor_rows = anchor_query_response(query, parameters, self.client.state)
+        if anchor_rows is not None:
+            return _result(*anchor_rows)
         if query == NRIC_IDENTIFIER_CENSUS:
             return _result(self._census())
         if query == NRIC_IDENTIFIER_PAGE:
@@ -151,7 +159,7 @@ class _FakeTx:
         state = self.client.state
         if state is None:
             return _result({"exists": False})
-        return _result({"exists": True, **state})
+        return _result({"exists": True, **anchor_state_fields(state), **state})
 
     def _verify_identifiers(self, key_version: object) -> dict[str, object]:
         rows = self.client.identifiers
@@ -231,9 +239,7 @@ class _FakeTx:
                     **state,
                 }
             )
-        if parameters.get("restart_completed") is True and state.get("phase") == "convert_complete":
-            state["phase"] = "convert"
-            state["cursor"] = None
+        apply_anchor_acquire_state(state, parameters)
         state["lease_owner"] = owner
         state["offline_acknowledged_at"] = state.get("offline_acknowledged_at", "ack")
         return _result({"acquired": True, "key_matches": True, **state})
@@ -324,8 +330,14 @@ class _FakeTx:
         state = self.client.state
         if state is None or state.get("lease_owner") != parameters.get("owner"):
             return _result()
-        state["phase"] = "convert_complete"
-        state["cursor"] = None
+        phase = parameters.get("phase")
+        if phase not in {"convert_complete", "anchor_complete"}:
+            return _result()
+        state["phase"] = phase
+        if phase == "convert_complete":
+            state["cursor"] = None
+        else:
+            state["anchor_cursor"] = None
         state.pop("lease_owner", None)
         return _result({"completed": True})
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import secrets
+from pathlib import Path
 from typing import cast
 
 import pytest
@@ -41,6 +42,7 @@ def _complete_state(
 
 def test_completed_marker_has_zero_writes_and_no_encryption(
     monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
 ) -> None:
     key = secrets.token_hex(32)
     client = _FakeClient(state=_complete_state(key, 29))
@@ -56,6 +58,7 @@ def test_completed_marker_has_zero_writes_and_no_encryption(
         key_version=_KEY_VERSION,
         expected_database="neo4j",
         acknowledge_offline=True,
+        handoff_dir=tmp_path,
     )
     assert exit_code == 0
     assert report["changes"] == 0
@@ -63,7 +66,7 @@ def test_completed_marker_has_zero_writes_and_no_encryption(
     assert client.write_calls == 0
 
 
-def test_a2a_marker_without_evidence_baseline_fails_closed() -> None:
+def test_a2a_marker_without_evidence_baseline_fails_closed(tmp_path: Path) -> None:
     key = secrets.token_hex(32)
     state = _complete_state(key, 29)
     del state["baseline_asserts"]
@@ -76,12 +79,13 @@ def test_a2a_marker_without_evidence_baseline_fails_closed() -> None:
             key_version=_KEY_VERSION,
             expected_database="neo4j",
             acknowledge_offline=True,
+            handoff_dir=tmp_path,
         )
     assert error.value.code == "drift_detected"
     assert client.write_calls == 0
 
 
-def test_preconditions_and_changed_key_fail_before_any_write() -> None:
+def test_preconditions_and_changed_key_fail_before_any_write(tmp_path: Path) -> None:
     key = secrets.token_hex(32)
     cases = (
         (_row(None, _canonical()), "missing_id"),
@@ -98,6 +102,7 @@ def test_preconditions_and_changed_key_fail_before_any_write() -> None:
                 key_version=_KEY_VERSION,
                 expected_database="neo4j",
                 acknowledge_offline=True,
+                handoff_dir=tmp_path,
             )
         assert error.value.code == expected_code
         assert client.write_calls == 0
@@ -111,13 +116,16 @@ def test_preconditions_and_changed_key_fail_before_any_write() -> None:
             key_version=_KEY_VERSION,
             expected_database="neo4j",
             acknowledge_offline=True,
+            handoff_dir=tmp_path,
         )
     assert error.value.code == "key_changed"
     assert changed.write_calls == 0
 
 
 def test_missing_hmac_key_is_sanitized_before_client_construction(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
     monkeypatch.setattr(nric_rehash, "get_settings", lambda: _settings(""))
     monkeypatch.setattr(
@@ -125,12 +133,26 @@ def test_missing_hmac_key_is_sanitized_before_client_construction(
         "Neo4jClient",
         lambda _settings: pytest.fail("missing key must not construct a client"),
     )
-    assert nric_rehash.main(["apply", "--acknowledge-offline", "--expect-database", "neo4j"]) == 2
+    assert (
+        nric_rehash.main(
+            [
+                "apply",
+                "--acknowledge-offline",
+                "--expect-database",
+                "neo4j",
+                "--handoff-dir",
+                str(tmp_path),
+            ]
+        )
+        == 2
+    )
     assert _report(capsys.readouterr().out) == {"code": "nric_key_missing", "status": "error"}
 
 
 def test_database_and_acknowledgement_preconditions_have_exit_two(
-    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+    tmp_path: Path,
 ) -> None:
     key = secrets.token_hex(32)
     monkeypatch.setattr(nric_rehash, "get_settings", lambda: _settings(key))
@@ -139,7 +161,10 @@ def test_database_and_acknowledgement_preconditions_have_exit_two(
         "Neo4jClient",
         lambda _settings: pytest.fail("missing acknowledgement must not connect"),
     )
-    assert nric_rehash.main(["apply", "--expect-database", "neo4j"]) == 2
+    assert (
+        nric_rehash.main(["apply", "--expect-database", "neo4j", "--handoff-dir", str(tmp_path)])
+        == 2
+    )
     assert _report(capsys.readouterr().out) == {
         "code": "offline_ack_required",
         "status": "error",
@@ -147,7 +172,19 @@ def test_database_and_acknowledgement_preconditions_have_exit_two(
 
     client = _FakeClient(database_name="different-db")
     monkeypatch.setattr(nric_rehash, "Neo4jClient", lambda _settings: client)
-    assert nric_rehash.main(["apply", "--acknowledge-offline", "--expect-database", "neo4j"]) == 2
+    assert (
+        nric_rehash.main(
+            [
+                "apply",
+                "--acknowledge-offline",
+                "--expect-database",
+                "neo4j",
+                "--handoff-dir",
+                str(tmp_path),
+            ]
+        )
+        == 2
+    )
     assert _report(capsys.readouterr().out) == {
         "code": "database_mismatch",
         "status": "error",
@@ -156,7 +193,7 @@ def test_database_and_acknowledgement_preconditions_have_exit_two(
     assert client.closed
 
 
-def test_apply_requires_expected_database_argument() -> None:
+def test_apply_requires_expected_database_argument(tmp_path: Path) -> None:
     with pytest.raises(SystemExit) as error:
-        nric_rehash.main(["apply", "--acknowledge-offline"])
+        nric_rehash.main(["apply", "--acknowledge-offline", "--handoff-dir", str(tmp_path)])
     assert error.value.code == 2
