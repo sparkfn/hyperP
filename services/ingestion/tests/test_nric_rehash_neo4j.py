@@ -150,7 +150,7 @@ def test_crash_resume_matches_uninterrupted_conversion(
             ciphertext_cache[canonical] = original_encrypt(canonical, secret)
         return ciphertext_cache[canonical]
 
-    monkeypatch.setattr("src.nric_rehash_apply.encrypt_nric", controlled_encrypt)
+    monkeypatch.setattr("src.nric_rehash_passes.encrypt_nric", controlled_encrypt)
     with pytest.raises(RuntimeError):
         _apply(neo4j_driver, dataset, batch_size=2)
 

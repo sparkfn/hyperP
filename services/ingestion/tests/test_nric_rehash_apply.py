@@ -8,7 +8,7 @@ from typing import cast
 import pytest
 from _nric_rehash_apply_builders import _KEY_VERSION, _canonical, _report, _row, _settings
 from _nric_rehash_apply_fakes import _FakeClient
-from src import nric_rehash, nric_rehash_apply
+from src import nric_rehash, nric_rehash_apply, nric_rehash_passes
 from src.graph.client import Neo4jClient
 from src.nric_rehash_plan import NricRehashError
 from src.nric_rehash_state import key_check_for
@@ -45,7 +45,7 @@ def test_completed_marker_has_zero_writes_and_no_encryption(
     key = secrets.token_hex(32)
     client = _FakeClient(state=_complete_state(key, 29))
     monkeypatch.setattr(
-        nric_rehash_apply,
+        nric_rehash_passes,
         "encrypt_nric",
         lambda _canonical, _key: pytest.fail("completed rerun must not encrypt"),
     )

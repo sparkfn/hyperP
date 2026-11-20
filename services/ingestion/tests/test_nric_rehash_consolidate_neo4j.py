@@ -37,7 +37,7 @@ from _nric_rehash_neo4j_seed_legacy import (
     seed_unsupported_relationship,
 )
 from neo4j import Driver, ManagedTransaction
-from src import nric_rehash, nric_rehash_apply, nric_rehash_consolidate
+from src import nric_rehash, nric_rehash_apply, nric_rehash_consolidate, nric_rehash_passes
 from src.identity_links import ParticipantKind, link_id
 from src.normalizers.nric import (
     _fernet_cipher,
@@ -202,7 +202,7 @@ def test_unsupported_edges_roll_back_the_fenced_batch(
         )
         before = _graph_fingerprint(neo4j_driver)
         with pytest.raises(NricRehashError) as error:
-            nric_rehash_apply._process_batch(
+            nric_rehash_passes._process_batch(
                 client,
                 state,
                 owner,
@@ -227,14 +227,14 @@ def test_crash_after_edge_moves_rolls_back_and_resumes_like_uninterrupted(
     world = seed_legacy_world(neo4j_driver, key)
     seed_migration_baseline(neo4j_driver, world)
     encryption_cache: dict[str, str] = {}
-    original_encrypt = nric_rehash_apply.encrypt_nric
+    original_encrypt = nric_rehash_passes.encrypt_nric
 
     def cached_encrypt(canonical: str, secret: str) -> str:
         if canonical not in encryption_cache:
             encryption_cache[canonical] = original_encrypt(canonical, secret)
         return encryption_cache[canonical]
 
-    monkeypatch.setattr(nric_rehash_apply, "encrypt_nric", cached_encrypt)
+    monkeypatch.setattr(nric_rehash_passes, "encrypt_nric", cached_encrypt)
     monkeypatch.setattr(nric_rehash_consolidate, "encrypt_nric", cached_encrypt)
     original_recompute = nric_rehash_consolidate.recompute_participant_links
     failed = False

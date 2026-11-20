@@ -17,7 +17,7 @@ from _nric_rehash_apply_builders import (
 )
 from _nric_rehash_apply_fakes import _FakeClient
 from neo4j.exceptions import DriverError
-from src import nric_rehash, nric_rehash_apply
+from src import nric_rehash, nric_rehash_apply, nric_rehash_passes
 from src.graph.client import Neo4jClient
 from src.graph.queries.nric_rehash import NRIC_REHASH_UPDATE_IDENTIFIER
 from src.normalizers.nric import mask_nric, nric_digest
@@ -135,7 +135,7 @@ def test_apply_progress_and_final_json_never_leak_sensitive_values(
 
     monkeypatch.setattr(nric_rehash, "get_settings", lambda: _settings(key))
     monkeypatch.setattr(nric_rehash, "Neo4jClient", lambda _settings: client)
-    monkeypatch.setattr(nric_rehash_apply, "encrypt_nric", encrypt)
+    monkeypatch.setattr(nric_rehash_passes, "encrypt_nric", encrypt)
     monkeypatch.setattr(nric_rehash_apply.uuid, "uuid4", lambda: uuid.UUID(hex=owner))
 
     assert (
