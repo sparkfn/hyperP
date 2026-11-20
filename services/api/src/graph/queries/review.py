@@ -1088,7 +1088,8 @@ CALL (pending, approved, source) {
   UNWIND $identifiers AS ident
   MERGE (id:Identifier {identifier_type: ident.identifier_type,
                         normalized_value: ident.normalized_value})
-  ON CREATE SET id.identifier_id = randomUUID(), id.created_at = datetime()
+  ON CREATE SET id.identifier_id = randomUUID(), id.created_at = datetime(),
+               id.identifier_scope = ident.identifier_scope
   MERGE (approved)-[rel:IDENTIFIED_BY {
     source_system_key: source.source_key, source_record_pk: pending.source_record_pk, is_active: true
   }]->(id)
