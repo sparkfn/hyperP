@@ -47,6 +47,11 @@ def is_nric_digest(value: str) -> bool:
     return bool(_DIGEST_PATTERN.fullmatch(value))
 
 
+def is_nric_shape(canonical: str) -> bool:
+    """Return whether ``canonical`` matches the NRIC/FIN shape."""
+    return bool(_NRIC_PATTERN.fullmatch(canonical))
+
+
 def nric_checksum_valid(canonical: str) -> bool:
     """Validate Singapore NRIC/FIN checksum according to the official modulo-11 algorithm.
 
