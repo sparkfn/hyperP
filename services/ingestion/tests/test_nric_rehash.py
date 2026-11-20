@@ -20,7 +20,7 @@ from _nric_rehash_plan_fakes import (
 from neo4j.exceptions import DriverError, Neo4jError
 from src import nric_rehash
 from src.config import Settings
-from src.graph.queries import NRIC_IDENTIFIER_PAGE, NRIC_VERIFY_IDENTIFIERS
+from src.graph.queries.nric_rehash import NRIC_IDENTIFIER_PAGE, NRIC_VERIFY_IDENTIFIERS
 from src.normalizers.nric import nric_digest
 from src.nric_rehash_plan import NricRehashError, build_plan_report, build_verify_report
 

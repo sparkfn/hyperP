@@ -8,7 +8,13 @@ from typing import Literal, Protocol, TypedDict, TypeVar
 
 from neo4j import ManagedTransaction, Record
 
-from src.graph import queries
+from src.graph.queries.nric_rehash import (
+    NRIC_IDENTIFIER_CENSUS,
+    NRIC_IDENTIFIER_PAGE,
+    NRIC_VERIFY_DUPLICATE_PERSON_KEYS,
+    NRIC_VERIFY_DUPLICATE_SCOPED_TARGETS,
+    NRIC_VERIFY_IDENTIFIERS,
+)
 from src.nric_rehash_classify import (
     NricClassification,
     NricIdentifierRow,
@@ -171,7 +177,7 @@ def read_identifier_page(
     return tuple(
         identifier_row_from_record(record)
         for record in tx.run(
-            queries.NRIC_IDENTIFIER_PAGE,
+            NRIC_IDENTIFIER_PAGE,
             after_id=after_id,
             batch_size=batch_size,
         )
@@ -180,7 +186,7 @@ def read_identifier_page(
 
 def read_census(tx: ManagedTransaction) -> dict[str, int]:
     """Read aggregate NRIC counts without modifying graph state."""
-    record = tx.run(queries.NRIC_IDENTIFIER_CENSUS).single()
+    record = tx.run(NRIC_IDENTIFIER_CENSUS).single()
     if record is None:
         raise NricRehashError("neo4j_error")
     return {
@@ -209,11 +215,11 @@ def build_verify_report(client: ReadClient, key_version: str) -> VerifyReport:
 def _verify_reader(key_version: str) -> Callable[[ManagedTransaction], VerifyReport]:
     def read_verification(tx: ManagedTransaction) -> VerifyReport:
         identifiers = tx.run(
-            queries.NRIC_VERIFY_IDENTIFIERS,
+            NRIC_VERIFY_IDENTIFIERS,
             key_version=key_version,
         ).single()
-        duplicate_keys = tx.run(queries.NRIC_VERIFY_DUPLICATE_PERSON_KEYS).single()
-        duplicate_targets = tx.run(queries.NRIC_VERIFY_DUPLICATE_SCOPED_TARGETS).single()
+        duplicate_keys = tx.run(NRIC_VERIFY_DUPLICATE_PERSON_KEYS).single()
+        duplicate_targets = tx.run(NRIC_VERIFY_DUPLICATE_SCOPED_TARGETS).single()
         if identifiers is None or duplicate_keys is None or duplicate_targets is None:
             raise NricRehashError("neo4j_error")
         counts: tuple[int, int, int, int, int, int, int, int] = (

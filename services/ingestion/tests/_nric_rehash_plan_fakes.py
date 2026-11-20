@@ -10,7 +10,7 @@ from typing import TypeVar, cast
 
 from neo4j import ManagedTransaction, Record
 from src.config import Settings
-from src.graph.queries import (
+from src.graph.queries.nric_rehash import (
     NRIC_IDENTIFIER_CENSUS,
     NRIC_IDENTIFIER_PAGE,
     NRIC_VERIFY_DUPLICATE_PERSON_KEYS,
