@@ -169,6 +169,8 @@ class _FakeTx:
             "identifier_count": len(rows),
             "non_digest_count": non_digest,
             "missing_metadata_count": metadata_gaps,
+            "missing_id_count": sum(row.get("identifier_id") is None for row in rows),
+            "unexpected_scope_count": sum(row.get("identifier_scope") != "global" for row in rows),
         }
 
     def _duplicate_targets(self) -> int:
