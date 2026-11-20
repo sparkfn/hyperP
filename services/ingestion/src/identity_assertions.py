@@ -25,6 +25,7 @@ from src.graph.queries.identity_assertions import (
     MERGE_PROFILE_FACTS_BATCH,
 )
 from src.identifier_scopes import identifier_scope, source_instance_for_identifier
+from src.identity_assertion_nric import LegacyNricReplayError, keyed_identifier_rows
 from src.identity_registry import FACT_ASSERTION_ATTRIBUTES
 from src.models import JsonValue, QualityFlag
 from src.pipeline_normalization import is_usable
@@ -241,14 +242,15 @@ def write_assertions(
 ) -> None:
     """Upsert assertion targets and immutably MERGE edges from one SourceRecord."""
     rows = assertion_rows(source_record_pk, normalized_payload)
-    if rows.identifiers:
-        tx.run(MERGE_ASSERTION_IDENTIFIERS_BATCH, identifiers=rows.identifiers)
+    identifiers = keyed_identifier_rows(rows.identifiers)
+    if identifiers:
+        tx.run(MERGE_ASSERTION_IDENTIFIERS_BATCH, identifiers=identifiers)
     if rows.addresses:
         tx.run(MERGE_ASSERTION_ADDRESSES_BATCH, addresses=rows.addresses)
     if rows.facts:
         tx.run(MERGE_PROFILE_FACTS_BATCH, facts=rows.facts)
-    if rows.identifiers:
-        tx.run(ASSERT_IDENTIFIERS, assertions=rows.identifiers)
+    if identifiers:
+        tx.run(ASSERT_IDENTIFIERS, assertions=identifiers)
     if rows.addresses:
         tx.run(ASSERT_ADDRESSES, assertions=rows.addresses)
     if rows.facts:
@@ -453,7 +455,12 @@ def main() -> int:
     client = Neo4jClient(settings)
     try:
         if args.command == "backfill":
-            print(f"Processed {backfill_assertions(client)} SourceRecords")
+            try:
+                processed = backfill_assertions(client)
+            except LegacyNricReplayError:
+                print("NRIC assertion replay refused", file=sys.stderr)
+                return 2
+            print(f"Processed {processed} SourceRecords")
         else:
             mismatches = audit_assertions(client)
             for mismatch in mismatches:
