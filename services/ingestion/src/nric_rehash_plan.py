@@ -51,6 +51,8 @@ class VerifyReport(TypedDict):
     identifier_count: int
     non_digest_count: int
     missing_metadata_count: int
+    missing_id_count: int
+    unexpected_scope_count: int
     duplicate_key_groups: int
     duplicate_extra_owners: int
     duplicate_scoped_targets: int
@@ -214,10 +216,12 @@ def _verify_reader(key_version: str) -> Callable[[ManagedTransaction], VerifyRep
         duplicate_targets = tx.run(queries.NRIC_VERIFY_DUPLICATE_SCOPED_TARGETS).single()
         if identifiers is None or duplicate_keys is None or duplicate_targets is None:
             raise NricRehashError("neo4j_error")
-        counts: tuple[int, int, int, int, int, int] = (
+        counts: tuple[int, int, int, int, int, int, int, int] = (
             record_count(identifiers, "identifier_count"),
             record_count(identifiers, "non_digest_count"),
             record_count(identifiers, "missing_metadata_count"),
+            record_count(identifiers, "missing_id_count"),
+            record_count(identifiers, "unexpected_scope_count"),
             record_count(duplicate_keys, "duplicate_key_groups"),
             record_count(duplicate_keys, "duplicate_extra_owners"),
             record_count(duplicate_targets, "duplicate_scoped_targets"),
@@ -226,9 +230,11 @@ def _verify_reader(key_version: str) -> Callable[[ManagedTransaction], VerifyRep
             identifier_count=counts[0],
             non_digest_count=counts[1],
             missing_metadata_count=counts[2],
-            duplicate_key_groups=counts[3],
-            duplicate_extra_owners=counts[4],
-            duplicate_scoped_targets=counts[5],
+            missing_id_count=counts[3],
+            unexpected_scope_count=counts[4],
+            duplicate_key_groups=counts[5],
+            duplicate_extra_owners=counts[6],
+            duplicate_scoped_targets=counts[7],
             ok=not any(counts[1:]),
         )
 

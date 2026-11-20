@@ -46,8 +46,15 @@ RETURN count(i) AS identifier_count,
          WHEN i.nric_masked IS NULL OR i.checksum_valid IS NULL
            OR i.nric_key_version IS NULL OR i.nric_encrypted IS NULL
            OR i.nric_key_version <> $key_version
+           OR NOT coalesce(i.hashed_value = i.normalized_value, false)
          THEN 1 ELSE 0
-       END), 0) AS missing_metadata_count
+       END), 0) AS missing_metadata_count,
+       coalesce(sum(CASE WHEN i.identifier_id IS NULL THEN 1 ELSE 0 END), 0)
+         AS missing_id_count,
+       // Counts NULL scope and any scope other than 'global'.
+       coalesce(sum(CASE
+         WHEN coalesce(i.identifier_scope = 'global', false) THEN 0 ELSE 1
+       END), 0) AS unexpected_scope_count
 """
 
 NRIC_VERIFY_DUPLICATE_PERSON_KEYS = """

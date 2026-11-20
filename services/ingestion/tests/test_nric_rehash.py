@@ -20,7 +20,7 @@ from _nric_rehash_plan_fakes import (
 from neo4j.exceptions import DriverError, Neo4jError
 from src import nric_rehash
 from src.config import Settings
-from src.graph.queries import NRIC_IDENTIFIER_PAGE
+from src.graph.queries import NRIC_IDENTIFIER_PAGE, NRIC_VERIFY_IDENTIFIERS
 from src.normalizers.nric import nric_digest
 from src.nric_rehash_plan import NricRehashError, build_plan_report, build_verify_report
 
@@ -110,6 +110,31 @@ def test_verify_report_checks_all_defect_counters() -> None:
     )
     assert clean["ok"] is True
     assert defective["ok"] is False
+
+
+def test_verify_report_rejects_each_defect_counter_individually() -> None:
+    cases = (
+        ("non_digest_count", _verification_client(non_digest_count=1)),
+        ("missing_metadata_count", _verification_client(missing_metadata_count=1)),
+        ("missing_id_count", _verification_client(missing_id_count=1)),
+        ("unexpected_scope_count", _verification_client(unexpected_scope_count=1)),
+        ("duplicate_key_groups", _verification_client(duplicate_key_groups=1)),
+        ("duplicate_extra_owners", _verification_client(duplicate_extra_owners=1)),
+        ("duplicate_scoped_targets", _verification_client(duplicate_scoped_targets=1)),
+    )
+    for counter_name, client in cases:
+        report = build_verify_report(client, KEY_VERSION)
+        assert report[counter_name] == 1
+        assert report["ok"] is False
+
+
+def test_verify_query_covers_null_safe_hash_id_and_scope_conditions() -> None:
+    assert "hashed_value" in NRIC_VERIFY_IDENTIFIERS
+    assert "AS missing_id_count" in NRIC_VERIFY_IDENTIFIERS
+    assert "AS unexpected_scope_count" in NRIC_VERIFY_IDENTIFIERS
+    assert "NOT coalesce(i.hashed_value = i.normalized_value, false)" in NRIC_VERIFY_IDENTIFIERS
+    assert "coalesce(i.identifier_scope = 'global', false)" in NRIC_VERIFY_IDENTIFIERS
+    # Real Cypher semantics are checked in the later apply PR's disposable-Neo4j shard.
 
 
 def test_main_rejects_empty_key_or_version_without_constructing_client(
@@ -214,6 +239,8 @@ def test_main_plan_and_verify_output_do_not_leak_sensitive_values(
         "identifier_count",
         "non_digest_count",
         "missing_metadata_count",
+        "missing_id_count",
+        "unexpected_scope_count",
         "duplicate_key_groups",
         "duplicate_extra_owners",
         "duplicate_scoped_targets",

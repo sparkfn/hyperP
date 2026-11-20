@@ -161,6 +161,8 @@ def _verification_client(
     identifier_count: int = 0,
     non_digest_count: int = 0,
     missing_metadata_count: int = 0,
+    missing_id_count: int = 0,
+    unexpected_scope_count: int = 0,
     duplicate_key_groups: int = 0,
     duplicate_extra_owners: int = 0,
     duplicate_scoped_targets: int = 0,
@@ -173,6 +175,8 @@ def _verification_client(
                         "identifier_count": identifier_count,
                         "non_digest_count": non_digest_count,
                         "missing_metadata_count": missing_metadata_count,
+                        "missing_id_count": missing_id_count,
+                        "unexpected_scope_count": unexpected_scope_count,
                     }
                 ]
             ],
