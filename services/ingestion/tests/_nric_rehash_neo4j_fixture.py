@@ -9,7 +9,7 @@ from typing import TypeVar, cast
 from urllib.parse import urlparse
 
 import pytest
-from _nric_rehash_neo4j_seed import _Dataset
+from _nric_rehash_neo4j_seed import _KeyedWorld
 from neo4j import Driver, GraphDatabase, ManagedTransaction, Record
 from src.graph.client import Neo4jClient
 from src.graph.schema_init import apply_deferred_identifier_scope_constraints, apply_schema
@@ -168,7 +168,7 @@ def _clear_owned_graph(driver: Driver) -> None:
 
 def _apply(
     driver: Driver,
-    dataset: _Dataset,
+    dataset: _KeyedWorld,
     *,
     batch_size: int = 2,
     expected_database: str | None = None,

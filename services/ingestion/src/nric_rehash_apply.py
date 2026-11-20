@@ -6,7 +6,6 @@ import json
 import sys
 import uuid
 from dataclasses import dataclass, field, replace
-from typing import Literal, TypedDict
 
 from neo4j import ManagedTransaction, Record
 
@@ -18,14 +17,14 @@ from src.nric_rehash_classify import (
     classify_nric_identifier,
     identifier_row_from_record,
 )
+from src.nric_rehash_consolidate import consolidate_identifier
 from src.nric_rehash_plan import (
     NricRehashError,
     PlanReport,
-    VerifyReport,
     build_plan_report,
-    build_verify_report,
     record_count,
 )
+from src.nric_rehash_report import ApplyReport, build_final_report
 from src.nric_rehash_state import (
     MigrationState,
     acquire_lease,
@@ -33,40 +32,9 @@ from src.nric_rehash_state import (
     complete_and_release,
     fence_batch,
     key_check_for,
-    read_current_revision,
     read_migration_state,
     release_lease,
 )
-
-
-class CountSummary(TypedDict):
-    total: int
-    non_digest: int
-    digest_shaped: int
-
-
-class FinalCountSummary(TypedDict):
-    identifier_count: int
-    non_digest_count: int
-
-
-class ApplyReport(TypedDict):
-    command: Literal["apply"]
-    status: Literal["ok", "blocked"]
-    phase: str
-    changes: int
-    batches: int
-    converted_in_place: int
-    converted_consolidated: int
-    removed_nodes: int
-    already_digest: int
-    unprocessable: dict[str, int]
-    digest_metadata_gap: int
-    baseline: CountSummary
-    final: FinalCountSummary
-    count_equation_ok: bool
-    conversion_equation_ok: bool
-    revision_unchanged: bool
 
 
 @dataclass(frozen=True)
@@ -75,6 +43,15 @@ class BatchOutcome:
     row_count: int
     batches: int
     converted_in_place: int
+    converted_consolidated: int
+    removed_nodes: int
+
+
+@dataclass(frozen=True)
+class ConversionOutcome:
+    converted_in_place: int
+    converted_consolidated: int
+    removed_nodes: int
 
 
 @dataclass(frozen=True)
@@ -103,7 +80,7 @@ def run_nric_rehash_apply(
     plan = build_plan_report(client, batch_size, key, key_version)
     _assert_census_preconditions(plan)
     if state is not None and state.phase == "convert_complete" and plan["convertible"] == 0:
-        return _final_report(client, state, plan, key_version, changes=0)
+        return build_final_report(client, state, plan, key_version, changes=0)
     if state is not None and state.phase not in {"convert", "convert_complete"}:
         raise NricRehashError("drift_detected")
 
@@ -126,7 +103,7 @@ def _run_acquired_passes(
     key: str,
     key_version: str,
 ) -> tuple[ApplyReport, int]:
-    initial_converted = state.converted_in_place
+    initial_converted = state.converted_in_place + state.converted_consolidated
     lease_active = True
     try:
         for pass_number in range(2):
@@ -137,12 +114,14 @@ def _run_acquired_passes(
             plan = build_plan_report(client, batch_size, key, key_version)
             _assert_census_preconditions(plan)
             if plan["convertible"] == 0:
-                return _final_report(
+                return build_final_report(
                     client,
                     state,
                     plan,
                     key_version,
-                    changes=state.converted_in_place - initial_converted,
+                    changes=(
+                        state.converted_in_place + state.converted_consolidated - initial_converted
+                    ),
                 )
             if pass_number == 1:
                 raise NricRehashError("residual_plaintext")
@@ -206,6 +185,8 @@ def _run_keyset_pass(
             cursor=outcome.cursor,
             batches=outcome.batches,
             converted_in_place=outcome.converted_in_place,
+            converted_consolidated=outcome.converted_consolidated,
+            removed_nodes=outcome.removed_nodes,
         )
         print(
             json.dumps(
@@ -213,6 +194,8 @@ def _run_keyset_pass(
                     "event": "batch",
                     "batches": state.batches,
                     "converted_in_place": state.converted_in_place,
+                    "converted_consolidated": state.converted_consolidated,
+                    "removed_nodes": state.removed_nodes,
                 },
                 sort_keys=True,
             ),
@@ -242,18 +225,34 @@ def _process_batch(
         )
         _validate_locked_page(rows, state.cursor)
         if not rows:
-            return BatchOutcome(state.cursor, 0, state.batches, state.converted_in_place)
+            return BatchOutcome(
+                state.cursor,
+                0,
+                state.batches,
+                state.converted_in_place,
+                state.converted_consolidated,
+                state.removed_nodes,
+            )
         converted = _convert_rows(tx, rows, key, key_version)
         last_identifier_id = rows[-1].row.identifier_id
         if last_identifier_id is None:
             raise NricRehashError("missing_id")
-        batches, total_converted = advance_batch(
+        batches, total_in_place, total_consolidated, total_removed = advance_batch(
             tx,
             owner,
             last_identifier_id,
-            converted,
+            converted.converted_in_place,
+            converted.converted_consolidated,
+            converted.removed_nodes,
         )
-        return BatchOutcome(last_identifier_id, len(rows), batches, total_converted)
+        return BatchOutcome(
+            last_identifier_id,
+            len(rows),
+            batches,
+            total_in_place,
+            total_consolidated,
+            total_removed,
+        )
 
     return client.execute_write(work)
 
@@ -286,107 +285,100 @@ def _convert_rows(
     rows: tuple[LockedIdentifier, ...],
     key: str,
     key_version: str,
-) -> int:
-    converted = 0
+) -> ConversionOutcome:
+    converted_in_place = 0
+    converted_consolidated = 0
     for locked in rows:
         row = locked.row
         classification = classify_nric_identifier(row, key, key_version)
-        if classification.blocker == "missing_id":
-            raise NricRehashError("missing_id")
-        if classification.blocker == "unexpected_scope":
-            raise NricRehashError("unexpected_scope")
+        if classification.blocker in ("missing_id", "unexpected_scope"):
+            raise NricRehashError(classification.blocker)
         if classification.category != "convertible":
             continue
         canonical = classification.canonical
         digest = classification.digest
         masked = classification.masked
         checksum_valid = classification.checksum_valid
-        if canonical is None or digest is None or masked is None or checksum_valid is None:
+        plaintext_value = row.normalized_value
+        if (
+            canonical is None
+            or digest is None
+            or masked is None
+            or checksum_valid is None
+            or plaintext_value is None
+        ):
             raise NricRehashError("drift_detected")
-        collision = tx.run(queries.NRIC_REHASH_FIND_DIGEST_TARGET, digest=digest).single()
-        if collision is not None:
-            raise NricRehashError("collision_unsupported")
-        result = tx.run(
-            queries.NRIC_REHASH_UPDATE_IDENTIFIER,
-            element_id=locked.element_id,
-            digest=digest,
-            hashed_value=digest,
-            key_version=key_version,
-            masked=masked,
-            checksum_valid=checksum_valid,
-            ciphertext=encrypt_nric(canonical, key),
-        ).single()
-        if result is None or record_count(result, "updated") != 1:
-            raise NricRehashError("drift_detected")
-        converted += 1
-    return converted
+        target = tx.run(queries.NRIC_REHASH_FIND_DIGEST_TARGET, digest=digest).single()
+        if target is None:
+            _convert_in_place(
+                tx, locked, canonical, digest, key, key_version, masked, checksum_valid
+            )
+            converted_in_place += 1
+            continue
+        _consolidate_row(
+            tx,
+            locked,
+            target,
+            plaintext_value,
+            canonical,
+            digest,
+            key,
+            key_version,
+            masked,
+            checksum_valid,
+        )
+        converted_consolidated += 1
+    return ConversionOutcome(converted_in_place, converted_consolidated, converted_consolidated)
 
 
-def _final_report(
-    client: Neo4jClient,
-    state: MigrationState,
-    plan: PlanReport,
+def _consolidate_row(
+    tx: ManagedTransaction,
+    locked: LockedIdentifier,
+    target: Record,
+    plaintext_value: str,
+    canonical: str,
+    digest: str,
+    key: str,
     key_version: str,
-    *,
-    changes: int,
-) -> tuple[ApplyReport, int]:
-    verification: VerifyReport = build_verify_report(client, key_version)
-    current_revision = read_current_revision(client)
-    revision_unchanged = current_revision == state.baseline_revision
-    count_equation_ok = (
-        verification["identifier_count"] == state.baseline_total - state.removed_nodes
+    masked: str,
+    checksum_valid: bool,
+) -> None:
+    survivor_element_id: object = target.get("element_id")
+    if not isinstance(survivor_element_id, str) or not survivor_element_id:
+        raise NricRehashError("drift_detected")
+    consolidate_identifier(
+        tx,
+        loser_element_id=locked.element_id,
+        survivor_element_id=survivor_element_id,
+        plaintext_value=plaintext_value,
+        canonical=canonical,
+        digest=digest,
+        key=key,
+        key_version=key_version,
+        masked=masked,
+        checksum_valid=checksum_valid,
     )
-    conversion_equation_ok = state.baseline_non_digest == (
-        state.converted_in_place + state.converted_consolidated + verification["non_digest_count"]
-    )
-    unprocessable = plan["unprocessable"]
-    blocked = _verification_is_blocked(
-        plan,
-        verification,
-        count_equation_ok,
-        conversion_equation_ok,
-        revision_unchanged,
-    )
-    report = ApplyReport(
-        command="apply",
-        status="blocked" if blocked else "ok",
-        phase=state.phase,
-        changes=changes,
-        batches=state.batches,
-        converted_in_place=state.converted_in_place,
-        converted_consolidated=state.converted_consolidated,
-        removed_nodes=state.removed_nodes,
-        already_digest=plan["already_digest"],
-        unprocessable=dict(unprocessable),
-        digest_metadata_gap=plan["digest_metadata_gap"],
-        baseline={
-            "total": state.baseline_total,
-            "non_digest": state.baseline_non_digest,
-            "digest_shaped": state.baseline_digest_shaped,
-        },
-        final={
-            "identifier_count": verification["identifier_count"],
-            "non_digest_count": verification["non_digest_count"],
-        },
-        count_equation_ok=count_equation_ok,
-        conversion_equation_ok=conversion_equation_ok,
-        revision_unchanged=revision_unchanged,
-    )
-    return report, 1 if blocked else 0
 
 
-def _verification_is_blocked(
-    plan: PlanReport,
-    verification: VerifyReport,
-    count_equation_ok: bool,
-    conversion_equation_ok: bool,
-    revision_unchanged: bool,
-) -> bool:
-    return (
-        plan["convertible"] > 0
-        or sum(plan["unprocessable"].values()) > 0
-        or not verification["ok"]
-        or not count_equation_ok
-        or not conversion_equation_ok
-        or not revision_unchanged
-    )
+def _convert_in_place(
+    tx: ManagedTransaction,
+    locked: LockedIdentifier,
+    canonical: str,
+    digest: str,
+    key: str,
+    key_version: str,
+    masked: str,
+    checksum_valid: bool,
+) -> None:
+    result = tx.run(
+        queries.NRIC_REHASH_UPDATE_IDENTIFIER,
+        element_id=locked.element_id,
+        digest=digest,
+        hashed_value=digest,
+        key_version=key_version,
+        masked=masked,
+        checksum_valid=checksum_valid,
+        ciphertext=encrypt_nric(canonical, key),
+    ).single()
+    if result is None or record_count(result, "updated") != 1:
+        raise NricRehashError("drift_detected")

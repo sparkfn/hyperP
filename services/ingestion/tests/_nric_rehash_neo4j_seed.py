@@ -6,12 +6,21 @@ import secrets
 import string
 import uuid
 from dataclasses import dataclass, field
+from typing import Protocol
 
 from neo4j import Driver
 from src.normalizers.nric import encrypt_nric, mask_nric, nric_checksum_valid, nric_digest
 from src.nric_rehash_state import key_check_for
 
 _VERSION = "integration-key-version"
+
+
+class _KeyedWorld(Protocol):
+    @property
+    def key(self) -> str: ...
+
+    @property
+    def key_version(self) -> str: ...
 
 
 @dataclass(frozen=True)
@@ -156,7 +165,7 @@ def _seed_revision_counter(driver: Driver, value: int) -> None:
 
 def _seed_migration(
     driver: Driver,
-    dataset: _Dataset,
+    dataset: _KeyedWorld,
     *,
     owner: str,
     lease_seconds: int,
@@ -164,6 +173,12 @@ def _seed_migration(
     baseline_non_digest: int,
     baseline_digest_shaped: int,
     baseline_revision: int | None,
+    baseline_asserts: int = 0,
+    baseline_identified_by: int = 0,
+    baseline_anchored_by: int = 0,
+    baseline_moved: int = 0,
+    baseline_has_identifier: int = 0,
+    baseline_active_links: int = 0,
 ) -> None:
     with driver.session() as session:
         session.run(
@@ -171,6 +186,12 @@ def _seed_migration(
             "key_version: $key_version, key_check: $key_check, cursor: null, "
             "baseline_total: $baseline_total, baseline_non_digest: $baseline_non_digest, "
             "baseline_digest_shaped: $baseline_digest_shaped, "
+            "baseline_asserts: $baseline_asserts, "
+            "baseline_identified_by: $baseline_identified_by, "
+            "baseline_anchored_by: $baseline_anchored_by, "
+            "baseline_moved: $baseline_moved, "
+            "baseline_has_identifier: $baseline_has_identifier, "
+            "baseline_active_links: $baseline_active_links, "
             "baseline_revision: $baseline_revision, "
             "batches: 0, converted_in_place: 0, converted_consolidated: 0, removed_nodes: 0, "
             "lease_owner: $owner, lease_until: datetime() + duration({seconds: $lease_seconds}), "
@@ -181,6 +202,12 @@ def _seed_migration(
             baseline_total=baseline_total,
             baseline_non_digest=baseline_non_digest,
             baseline_digest_shaped=baseline_digest_shaped,
+            baseline_asserts=baseline_asserts,
+            baseline_identified_by=baseline_identified_by,
+            baseline_anchored_by=baseline_anchored_by,
+            baseline_moved=baseline_moved,
+            baseline_has_identifier=baseline_has_identifier,
+            baseline_active_links=baseline_active_links,
             baseline_revision=baseline_revision,
             owner=owner,
             lease_seconds=lease_seconds,

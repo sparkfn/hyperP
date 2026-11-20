@@ -16,7 +16,6 @@ from _nric_rehash_neo4j_fingerprint import (
 from _nric_rehash_neo4j_fixture import (
     _apply,
     _clear_owned_graph,
-    _Client,
     _counter,
     _counter_record,
     _database_name,
@@ -24,13 +23,11 @@ from _nric_rehash_neo4j_fixture import (
     neo4j_driver,
 )
 from _nric_rehash_neo4j_seed import (
-    _VERSION,
     _dataset,
     _seed_dataset,
     _seed_identifier_only,
     _seed_migration,
     _seed_revision_counter,
-    _valid_canonical,
 )
 from cryptography.fernet import InvalidToken
 from neo4j import Driver
@@ -274,45 +271,6 @@ def test_lease_collision_database_and_null_scope_fail_closed(
         _apply(neo4j_driver, _dataset(secrets.token_hex(32), include_skipped=False))
     assert changed_key.value.code == "key_changed"
     _safe_equal(_graph_fingerprint(neo4j_driver), changed_key_fingerprint, "key change no-write")
-
-    _clear_owned_graph(neo4j_driver)
-    collision_key = secrets.token_hex(32)
-    canonical = _valid_canonical(set())
-    digest = nric_digest(canonical, collision_key)
-    plain_id = f"a-{uuid.uuid4().hex}"
-    digest_id = f"b-{uuid.uuid4().hex}"
-    _seed_identifier_only(neo4j_driver, plain_id, canonical)
-    _seed_identifier_only(
-        neo4j_driver,
-        digest_id,
-        digest,
-        hashed_value=digest,
-        nric_masked=mask_nric(canonical),
-        checksum_valid=nric_checksum_valid(canonical),
-        key_version=_VERSION,
-        encrypted=encrypt_nric(canonical, collision_key),
-    )
-    plain_before = _identifier_properties(neo4j_driver, plain_id)
-    digest_before = _identifier_properties(neo4j_driver, digest_id)
-    with pytest.raises(NricRehashError) as collision:
-        run_nric_rehash_apply(
-            _Client(neo4j_driver),
-            batch_size=10,
-            key=collision_key,
-            key_version=_VERSION,
-            expected_database=_database_name(neo4j_driver),
-            acknowledge_offline=True,
-        )
-    assert collision.value.code == "collision_unsupported"
-    _safe_equal(
-        _identifier_properties(neo4j_driver, plain_id), plain_before, "collision plaintext row"
-    )
-    _safe_equal(
-        _identifier_properties(neo4j_driver, digest_id), digest_before, "collision target row"
-    )
-    migration = _counter_record(neo4j_driver)
-    _safe_equal(migration.get("cursor"), None, "collision cursor unchanged")
-    assert migration["batches"] == 0
 
     _clear_owned_graph(neo4j_driver)
     scope_data = _dataset(secrets.token_hex(32), include_skipped=False)

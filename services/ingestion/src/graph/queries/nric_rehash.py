@@ -91,6 +91,12 @@ RETURN migration.migration_key IS NOT NULL AS exists,
        migration.baseline_total AS baseline_total,
        migration.baseline_non_digest AS baseline_non_digest,
        migration.baseline_digest_shaped AS baseline_digest_shaped,
+       migration.baseline_asserts AS baseline_asserts,
+       migration.baseline_identified_by AS baseline_identified_by,
+       migration.baseline_anchored_by AS baseline_anchored_by,
+       migration.baseline_moved AS baseline_moved,
+       migration.baseline_has_identifier AS baseline_has_identifier,
+       migration.baseline_active_links AS baseline_active_links,
        migration.baseline_revision AS baseline_revision,
        coalesce(migration.batches, 0) AS batches,
        coalesce(migration.converted_in_place, 0) AS converted_in_place,
@@ -113,6 +119,12 @@ ON CREATE SET migration.phase = 'convert',
               migration.baseline_total = $baseline_total,
               migration.baseline_non_digest = $baseline_non_digest,
               migration.baseline_digest_shaped = $baseline_digest_shaped,
+              migration.baseline_asserts = $baseline_asserts,
+              migration.baseline_identified_by = $baseline_identified_by,
+              migration.baseline_anchored_by = $baseline_anchored_by,
+              migration.baseline_moved = $baseline_moved,
+              migration.baseline_has_identifier = $baseline_has_identifier,
+              migration.baseline_active_links = $baseline_active_links,
               migration.baseline_revision = $baseline_revision,
               migration.batches = 0,
               migration.converted_in_place = 0,
@@ -143,6 +155,12 @@ RETURN true AS acquired,
        migration.baseline_total AS baseline_total,
        migration.baseline_non_digest AS baseline_non_digest,
        migration.baseline_digest_shaped AS baseline_digest_shaped,
+       migration.baseline_asserts AS baseline_asserts,
+       migration.baseline_identified_by AS baseline_identified_by,
+       migration.baseline_anchored_by AS baseline_anchored_by,
+       migration.baseline_moved AS baseline_moved,
+       migration.baseline_has_identifier AS baseline_has_identifier,
+       migration.baseline_active_links AS baseline_active_links,
        migration.baseline_revision AS baseline_revision,
        coalesce(migration.batches, 0) AS batches,
        coalesce(migration.converted_in_place, 0) AS converted_in_place,
@@ -188,7 +206,7 @@ MATCH (target:Identifier {
   identifier_scope: 'global',
   normalized_value: $digest
 })
-RETURN target.identifier_id AS identifier_id
+RETURN elementId(target) AS element_id
 LIMIT 1
 """
 
@@ -226,10 +244,15 @@ SET migration.cursor = $cursor,
     migration.batches = coalesce(migration.batches, 0) + 1,
     migration.converted_in_place = coalesce(migration.converted_in_place, 0)
       + $converted_in_place,
+    migration.converted_consolidated = coalesce(migration.converted_consolidated, 0)
+      + $converted_consolidated,
+    migration.removed_nodes = coalesce(migration.removed_nodes, 0) + $removed_nodes,
     migration.updated_at = now,
     migration.lease_until = now + duration({seconds: $lease_seconds})
 RETURN migration.batches AS batches,
-       migration.converted_in_place AS converted_in_place
+       migration.converted_in_place AS converted_in_place,
+       migration.converted_consolidated AS converted_consolidated,
+       migration.removed_nodes AS removed_nodes
 """
 
 # Mark conversion complete and release the owned lease in one fenced write.

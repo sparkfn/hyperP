@@ -12,7 +12,7 @@ from pydantic import ValidationError
 
 from src.config import get_settings
 from src.graph.client import Neo4jClient
-from src.nric_rehash_apply import ApplyReport, run_nric_rehash_apply
+from src.nric_rehash_apply import run_nric_rehash_apply
 from src.nric_rehash_plan import (
     NricRehashError,
     PlanReport,
@@ -20,11 +20,13 @@ from src.nric_rehash_plan import (
     build_plan_report,
     build_verify_report,
 )
+from src.nric_rehash_report import ApplyReport
 
 _APPLY_EXIT_ONE_CODES = frozenset(
     {
-        "collision_unsupported",
         "null_scope_present",
+        "unsupported_edge",
+        "residual_edges",
         "missing_id",
         "unexpected_scope",
         "residual_plaintext",
