@@ -416,3 +416,286 @@ re-enabling counter reads.
 For a memory rollback, update both root and tracked staging Compose files
 synchronously: set `NEO4J_server_memory_heap_max__size` to `1g`,
 `NEO4J_server_memory_pagecache_size` to `512m`, and Neo4j `mem_limit` to `3G`.
+
+## NRIC plaintext-to-digest rehash backfill (#510)
+
+### What it changes — and what it never does
+The conversion pass keys each convertible plaintext `nric` Identifier, writing the HMAC-SHA256
+digest to both `normalized_value` and `hashed_value` with `nric_masked`, `checksum_valid`,
+`nric_key_version`, and Fernet `nric_encrypted`. If a global digest target exists, supported
+evidence edges move with properties preserved; affected `HAS_IDENTIFIER` projections are
+recomputed and the plaintext node is deleted.
+The second pass anchors only eligible active Persons: it sets `Person.nric_key` and
+`ANCHORED_BY` after the existing gate. The rehash never creates or merges a Person, rewrites
+immutable `SourceRecord.normalized_payload`, or emits identity-link revisions; the final report
+requires the revision counter unchanged.
+
+Digest-shaped values are skipped, so this is not key rotation. Masked, empty, and
+unknown-format values stay `unprocessable`; a recoverable invalid-checksum value is converted
+with `checksum_valid = false`.
+
+### Preconditions and approvals
+Before the window, name the operator and change owner, record the approval, and rehearse on a
+disposable copy. Configure non-empty `NRIC_HMAC_KEY` and `NRIC_HMAC_KEY_VERSION` through the
+container environment (`v1` is the version default); never put key values in arguments, reports,
+shell history, or logs. Confirm the exact database name for `--expect-database`. After draining
+writers, take a protected, restorable backup before `apply`; it contains plaintext NRIC values and
+must be protected like live data.
+
+### Maintenance window and writer drain
+Online operation is unsupported. Stop and drain identity writers before `apply`; keep them down
+through `verify` and assertion audit:
+
+- Pause `ingestion-worker`, `beat`, and `lifecycle-worker` with the existing
+  [Staging worker pause, resume, and deployment policy](#staging-worker-pause-resume-and-deployment-policy).
+  That control does not stop the API.
+- Stop the `api` service. Do not run CRM repair tooling, or assertion backfill before
+  `anchor_complete`.
+
+The rehash page-locks only matched Identifiers, so an absent digest target is unprotected; v1 does
+not take the C3 lock path. `--acknowledge-offline` records an acknowledgement, not proof of drain.
+Verify all writers stopped independently.
+
+### Running the CLI
+The image runs as non-root `appuser` (uid 1000) in `/app/services/ingestion`. `plan` and `verify`
+are read-only; optional `--batch-size N` defaults to 500. `apply` requires
+`--acknowledge-offline`, `--expect-database <database-name>`, and `--handoff-dir <directory>`;
+each conversion or anchor batch is one bounded write transaction.
+
+Template only: adapt and rehearse it, never treat it as live authorization. Use the target-local
+Docker daemon and an owner-only, resolved, non-symlink host directory writable by uid 1000. Export
+the key through the environment, not as an argument:
+
+```bash
+docker compose -p "${STAGING_COMPOSE_PROJECT:-hyperp-ada-asia}" \
+  -f .docker/staging/docker-compose.yml \
+  run --rm --no-deps \
+  -e NRIC_HMAC_KEY -e NRIC_HMAC_KEY_VERSION \
+  -v /path/to/handoff:/path/to/handoff:rw \
+  ingestion-worker \
+  python -m src.nric_rehash apply --acknowledge-offline \
+    --expect-database "<exact-database-name>" \
+    --handoff-dir /path/to/handoff
+```
+
+Run it from the staging repository checkout with the canonical project and tracked Compose file, as
+the worker-control script does; never rely on Compose's directory-derived default project (see the
+worker pause section above). Compose is unchanged; use `plan` or `verify` instead of `apply` for
+read-only reports.
+
+Success prints one JSON report on stdout. `apply` writes one stderr JSON line per batch with only
+`event`, `batches`, `converted_in_place`, `converted_consolidated`, and `removed_nodes`. Sanitized
+failures print `{"code": ..., "status": "error"}` without exception text; an unexpected crash can
+still print a Python traceback, so do not forward that output to shared logs. The driver may log
+parameters at DEBUG; see “Never run with DEBUG logging.”
+
+| Result | Exit | Meaning |
+|---|---:|---|
+| `plan.status: ok` or `verify.ok: true` | 0 | Read-only command passed its report checks. |
+| `plan` blocked or `verify.ok: false` | 1 | Review blockers or failed invariants. |
+| `apply.status: ok` | 0 | Final report passed blocking checks. |
+| `apply.status: blocked` | 1 | Stop; do not resume writers. |
+| `apply` code | 1 | `null_scope_present`, `unsupported_edge`, `residual_edges`, `missing_id`, `unexpected_scope`, `residual_plaintext`, `handoff_write_failed`. |
+| Other CLI error or argparse | 2 | `offline_ack_required`, `nric_key_missing`, `invalid_configuration`, `database_mismatch`, `key_changed`, `lease_unavailable`, `lease_lost`, `drift_detected`, `paging_violation`, `handoff_dir_unsafe`, `neo4j_error`; config/Neo4j errors may occur in any command. |
+
+### Procedure
+1. Approve the window, name the operator/change owner, and rehearse on a disposable copy.
+2. Drain and independently verify all listed writers.
+3. Take a protected, restorable backup containing the pre-run plaintext.
+4. Run `plan`; review counts, blockers, database, and decisions. `convertible > 0` is expected
+   work and can coexist with `status: ok`; a blocked result (including any masked, empty, or
+   unknown-format value) needs a recorded owner decision.
+5. Run `apply` once with the exact database, offline acknowledgement, and safe handoff directory;
+   keep writers stopped.
+6. Read the full apply report and reconcile every counter/equation. Any blocked report stops work.
+7. Run read-only `verify`; continue only with `ok: true` and readiness fields reviewed.
+8. Have L2 consume protected handoff files; securely delete only after verify is accepted.
+9. Only where assertions are written or were backfilled (`IDENTITY_MODEL=v2_shadow`; the default
+   is `v1`), run assertion replay and the read-only audit at `anchor_complete`; require zero
+   mismatches. Otherwise skip this step.
+10. Configure the API with the same key and resume it first; then resume workers in approved order.
+
+Any non-`ok`/blocked result needs a recorded owner decision; failed equations remain stop conditions.
+
+### Reading the reports
+`plan` reports `status`, `blockers`, `census`, `pages`, `convertible`, `already_digest`,
+`checksum_invalid_convertible`, `digest_metadata_gap`, and `unprocessable` (`masked`, `empty`,
+`unknown_format`) counts. Blockers are the census conditions `missing_id`, `unexpected_scope`,
+and `null_scope`, plus any per-value `masked`, `empty`, or `unknown_format`, so `plan` is `blocked`
+(exit 1) while such values exist. `convertible`, `checksum_invalid_convertible`, and
+`digest_metadata_gap` are counts, not blockers; review them even when status is `ok`.
+`verify.ok` is false if any gating count is non-zero:
+
+| Gating field | Meaning |
+|---|---|
+| `non_digest_count` | NRIC Identifiers remain outside digest shape. |
+| `missing_metadata_count` | Metadata is absent, key version differs, or `hashed_value` mismatches. |
+| `missing_id_count` | An NRIC Identifier lacks `identifier_id`. |
+| `unexpected_scope_count` | Scope is null or not `global`. |
+| `duplicate_key_groups` / `duplicate_extra_owners` | Multiple Persons hold an NRIC key. |
+| `duplicate_scoped_targets` | Multiple NRIC Identifiers share a scoped target. |
+
+`identifier_count` and `anchored_persons` are context, not standalone gates.
+`identifiers_without_assertion` and `identifiers_without_projection` are informational v2
+readiness signals: non-zero means candidate discovery lacks `ASSERTS`/`HAS_IDENTIFIER` coverage,
+not a failed rehash. This release added gating `missing_id_count` / `unexpected_scope_count` and
+three readiness fields.
+
+The final report contains `status`, `phase`, `changes`, `batches`, conversion/removal counters,
+cumulative `anchored`, `already_anchored`, `anchorable_remaining`, `handoff` (`total`, `by_reason`,
+`file`), baseline/final counts and evidence, plus five equations. `changes` is this-run conversions
+plus anchors (zero on a zero-write rerun); `anchored` is cumulative. `already_anchored` includes
+Persons carrying key and anchor edge at the final scan, including new anchors. `anchorable_remaining`
+must be zero; unresolved handoff entries alone do not block `status: ok`.
+
+Each equation must be true:
+
+- `count_equation_ok`: final Identifier count = baseline − removed nodes.
+- `conversion_equation_ok`: baseline non-digest = converted in-place + consolidated + final non-digest.
+- `evidence_equation_ok`: `ASSERTS`, `IDENTIFIED_BY`, and moved counts are unchanged; `ANCHORED_BY` grows by at most Persons anchored.
+- `attribution_unchanged`: active Source Record-to-Person links are unchanged.
+- `revision_unchanged`: identity-link revision counter is unchanged.
+
+If any equation is false, stop, keep writers drained, do not resume, and escalate to the #510
+owner. Restore the backup if damage is suspected. `apply.status: blocked` (exit 1) means
+convertibles or unprocessable values remain, `anchorable_remaining` is non-zero, `verify.ok` is
+false, or an equation failed. Masked, empty, and unknown-format values intentionally keep the run
+blocked until triaged out of band.
+
+### Phases, resume and failure handling
+The durable `DataMigration` state is keyed by `nric_hmac_rehash_v1`; it stores phase, cursors,
+counters, key check, baseline, and lease. Phases are `convert`, `convert_complete`, `anchor`, and
+`anchor_complete`. Each batch persists its cursor/counters in the same write transaction as its
+graph changes, so rollback rolls back that batch and checkpoint together.
+
+The lease is 300 seconds and extends per batch. After a crash, wait for expiry and rerun `apply`
+with the same key, key version, and database. A live lease returns `lease_unavailable`; a lost
+lease returns `lease_lost`. Never run two applies concurrently. A stored non-reversible key check
+and the key version are compared on every run; a different key or version returns `key_changed`
+before writes.
+
+Completed reruns report zero graph changes but may create a new handoff file. Stop and escalate on
+`drift_detected`, `paging_violation`, `residual_edges`, or `unsupported_edge`; do not retry with
+altered inputs. `residual_plaintext` is also a stop. `handoff_dir_unsafe` is checked before
+database access; `handoff_write_failed` may occur after graph changes commit. Fix the directory
+and rerun: the completed migration makes no graph writes and regenerates the handoff file.
+
+### Person anchoring and the L2 handoff file
+The anchor pass examines active Persons and distinct NRIC Identifiers found through active
+`IDENTIFIED_BY`, active `HAS_IDENTIFIER`, and attributed source-record `ASSERTS` evidence. It anchors
+only when all conditions hold:
+
+- Exactly one distinct NRIC Identifier is present; it is digest-shaped and checksum-valid.
+- The Person has no conflicting `nric_key`; no other Person holds the key or has active evidence
+  for that Identifier.
+- Evidence is not truncated. The pass reads at most 201 attributed records; over 200 sets
+  `evidence_truncated` and prevents anchoring.
+- At least one attributed Source Record passes the NRIC anchor gate. Attribution is an active
+  `LINKED_TO` edge or an active `IDENTIFIED_BY` edge naming that record.
+- The source promotes Persons, meets its NRIC trust-tier floor, is not conversation-type, and
+  does not contradict holder name/DOB. Member and durable-holder contradictions also prevent
+  anchoring.
+
+Other cases are L2 handoffs, never guesses; exact unresolved reasons:
+
+| Reason | Meaning |
+|---|---|
+| `multi_nric` | More than one distinct NRIC Identifier. |
+| `unrecoverable_identifier` | No usable NRIC digest Identifier. |
+| `person_key_conflict` | Person already carries a different NRIC key. |
+| `checksum_invalid` | Digest Identifier is not checksum-valid. |
+| `shared_owner` | Another Person holds the key or has active Identifier evidence. |
+| `evidence_truncated` | More than 200 attributed records were found. |
+| `missing_source_context` | No attributed record supplies usable gate context. |
+| `nric_contradiction` | Member or durable-holder evidence contradicts the anchor. |
+| `source_not_promoting` | Source policy does not promote a Person. |
+| `below_tier_floor` | Source NRIC trust is below the promotion floor. |
+| `conversation_record` | Source record is a conversation. |
+
+Write a handoff file only when unresolved Persons exist, including on zero-write reruns; files can
+accumulate. Names use `nric-rehash-handoff-<UTC timestamp>-<8 hex>.jsonl`; files are exclusive,
+mode `0600`, sorted by `person_id`, and contain only `person_id`, `reason`, `identifier_ids`, and
+up to 50 `source_record_pks`. They contain no NRIC, digest, ciphertext, name, or DOB, but linkage
+IDs remain sensitive. Keep files host-local; never copy them to tickets, chat, or CI artifacts.
+Terminal output shows only counts by reason and the basename.
+
+`--handoff-dir` must exist and have no group/other permission bits. Every path component is opened
+without following symlinks; any symlink is refused. Pass a fully resolved path and make the bind
+mount writable by uid 1000; directory ownership is not checked. `handoff_dir_unsafe` is returned
+before database access. Retain a file only until L2 consumes it and `verify` is accepted, then
+securely delete it.
+
+### Assertion replay and the API after the rehash
+The rehash never rewrites immutable `SourceRecord.normalized_payload`. Replay and audit apply only
+where assertions are written or were backfilled (`IDENTITY_MODEL=v2_shadow`; the default is `v1`);
+otherwise skip them, and the keyed protections below still apply if either runs later. Replay
+legacy payloads only after `anchor_complete`: the assertion writer maps plaintext NRIC to the same
+digest and preserves historical assertion IDs. Replaying first can hit the unique `assertion_id`
+constraint. Backfill refuses to run unless `IDENTITY_MODEL=v2_shadow` and needs the same
+`NRIC_HMAC_KEY`. Without the key, the first record holding a convertible legacy NRIC stops the
+whole backfill: it prints the fixed line `NRIC assertion replay refused`, exits 2, and writes
+nothing for that record, while earlier records stay written. Fix the key and rerun.
+
+```bash
+python -m src.identity_assertions backfill   # needs IDENTITY_MODEL=v2_shadow and NRIC_HMAC_KEY
+python -m src.identity_assertions audit      # read-only, key-free
+```
+
+Run both through the one-off container template above with the command replaced and
+`IDENTITY_MODEL` set in the container environment.
+
+Then run the read-only, key-free audit. Go only on `Found 0 assertion count mismatches` (exit 0).
+A mismatch is no-go: keep writers drained and escalate; never delete immutable `ASSERTS` by hand.
+One accepted fallback can add a parallel `ASSERTS` edge: if a payload lacks an `identifiers` value,
+replay falls back to graph-derived IDs, now digests. If that record was asserted before rehash,
+replay can add a second edge with a different assertion ID. Audit reports the count mismatch; no
+automatic deduplication occurs.
+
+Configure the API with the same key before reviewers resume merges. Without it, a pending record
+with a convertible legacy NRIC returns generic `merge_not_applicable` (HTTP 422), with no key
+detail. Digest-shaped, masked, and unrecognizable NRIC values need no key. Activation sets global
+scope on created NRIC Identifiers; other identifier types remain scope-less in that statement.
+
+An API-created digest Identifier may lack NRIC metadata if no digest node existed. `verify`
+reports `missing_metadata_count`; an isolated already-digest node is not repaired, so escalate. A
+plaintext collision can complete survivor metadata during consolidation, but rehash is not a
+general metadata-repair operation.
+
+### Never run with DEBUG logging
+The Neo4j driver logs queries and parameters at DEBUG; parameters may include digests, ciphertext,
+lease owners, and internal element IDs. The CLI does not configure logging. Avoid DEBUG wrappers,
+`sitecustomize`, `dictConfig`, or `basicConfig`, and never ship DEBUG output to a log service. Keep
+`LOG_LEVEL` at INFO or higher; ingestion `setup_logging` consumes it, but rehash does not, so it is
+not a safeguard. Without external configuration, the root logger defaults to WARNING; other
+ingestion NRIC writes have the same exposure.
+
+### Rollback and key rotation
+There is no automated rollback. Conversion rewrites Identifier values, consolidation deletes the
+plaintext node, and anchoring adds `Person.nric_key` and `ANCHORED_BY`. Restore the protected
+pre-run backup to roll back; it restores migration state and the revision counter consistently. A
+crash or stop mid-run is not by itself a reason to restore: rerun after lease expiry.
+
+No identity-link revision events were emitted, so downstream cursors/snapshots need no reset. A
+consumer that cached a consolidated plaintext Identifier ID will not find it; the digest survivor
+keeps its own ID. Restoring backup reintroduces plaintext nodes, so replay ordering applies again.
+
+Key rotation is separate and controlled, not part of this rehash. Follow the Graph Schema
+procedure: decrypt with the old key, verify and re-hash, re-encrypt with the new key, reconcile
+collisions and Person anchors, then switch `NRIC_HMAC_KEY` in a maintenance window. The API reveal
+path uses one key, so mixed-key reads require a maintenance window. Losing the key makes keyed
+records unmatchable and unrevealable; protect it in the approved secret store.
+
+### Known residuals
+- Pre-rehash assertion fallback can create a parallel `ASSERTS` edge; audit detects the mismatch.
+- Pending-review activation still creates non-NRIC Identifiers without scope; outside #510.
+- Digest metadata gaps are reported, not generally repaired, and keep `apply` blocked (`verify`
+  fails).
+- Masked, empty, and unknown-format values remain unconverted and keep `apply` blocked until
+  triaged out of band.
+- The handoff no-symlink rule can reject unresolved host paths.
+- v2 readiness signals are reported, not enforced by the rehash.
+- The tool cannot prove writers are stopped; acknowledgement is not operational evidence.
+- Neo4j behavior not run manually is exercised by the disposable-Neo4j PR shard; operators must
+  still rehearse on a disposable copy.
+
+This document does not authorize live execution.

@@ -166,14 +166,17 @@ CREATE (id:Identifier {
 For `nric` identifiers, both `normalized_value` (the graph matching and uniqueness
 property) and `hashed_value` (sensitive identifier convention) store the 64-character
 hexadecimal HMAC-SHA256 digest. Format detection uses `is_nric_digest` (64 hex characters):
-digest-shaped values are keyed writes, while anything else represents legacy plaintext
-retained until Layer-2 rehash backfill.
+digest-shaped values are keyed writes; legacy plaintext is converted by the NRIC
+rehash backfill described in
+[Ingestion Operations](./profile-unifier-ingestion-operations.md#nric-plaintext-to-digest-rehash-backfill-510).
 
 Key rotation requires an L2 controlled backfill prior to environment cut-over:
 decrypt `nric_encrypted` with the old key, re-hash and re-encrypt with the new key,
 rewrite both fields, merge duplicate Identifier nodes, then switch `NRIC_HMAC_KEY`.
 The secret key must be backed up in the secure secret store; losing it renders keyed
-records unmatchable and unrevealable.
+records unmatchable and unrevealable. The #510 rehash skips digest-shaped values and is
+not a rotation tool; a started rehash refuses to resume under a different key or key
+version.
 
 Why a node and not a property: identifiers are shared across persons, and
 querying "who else shares this phone" is a core traversal. Making identifiers
