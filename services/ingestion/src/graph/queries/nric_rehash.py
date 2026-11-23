@@ -74,6 +74,25 @@ WHERE identifiers > 1
 RETURN count(*) AS duplicate_scoped_targets
 """
 
+NRIC_VERIFY_READINESS = """
+CALL {
+    MATCH (person:Person)
+    WHERE person.nric_key IS NOT NULL
+    RETURN count(person) AS anchored_persons
+}
+CALL {
+    MATCH (identifier:Identifier {identifier_type: 'nric'})
+    WHERE NOT EXISTS { MATCH (:SourceRecord)-[:ASSERTS]->(identifier) }
+    RETURN count(identifier) AS identifiers_without_assertion
+}
+CALL {
+    MATCH (identifier:Identifier {identifier_type: 'nric'})
+    WHERE NOT EXISTS { MATCH ()-[:HAS_IDENTIFIER]->(identifier) }
+    RETURN count(identifier) AS identifiers_without_projection
+}
+RETURN anchored_persons, identifiers_without_assertion, identifiers_without_projection
+"""
+
 # Read the active database name without creating or modifying graph state.
 NRIC_REHASH_DATABASE_NAME = """
 CALL db.info() YIELD name
@@ -86,6 +105,8 @@ OPTIONAL MATCH (migration:DataMigration {migration_key: $migration_key})
 RETURN migration.migration_key IS NOT NULL AS exists,
        migration.phase AS phase,
        migration.cursor AS cursor,
+       migration.anchor_cursor AS anchor_cursor,
+       coalesce(migration.anchored, 0) AS anchored,
        migration.key_version AS key_version,
        migration.key_check AS key_check,
        migration.baseline_total AS baseline_total,
@@ -113,7 +134,7 @@ RETURN counter.current_revision AS current_revision
 # Create the one-time baseline and acquire the lease after first locking the state node.
 NRIC_REHASH_ACQUIRE_LEASE = """
 MERGE (migration:DataMigration {migration_key: $migration_key})
-ON CREATE SET migration.phase = 'convert',
+ON CREATE SET migration.phase = $target_phase,
               migration.key_version = $key_version,
               migration.key_check = $key_check,
               migration.baseline_total = $baseline_total,
@@ -130,6 +151,8 @@ ON CREATE SET migration.phase = 'convert',
               migration.converted_in_place = 0,
               migration.converted_consolidated = 0,
               migration.removed_nodes = 0,
+              migration.anchor_cursor = null,
+              migration.anchored = 0,
               migration.created_at = datetime(),
               migration.updated_at = datetime(),
               migration.lock_version = 0
@@ -138,18 +161,30 @@ WITH migration, datetime() AS now
 WHERE migration.lease_owner IS NULL OR migration.lease_owner = $owner
    OR migration.lease_until IS NULL OR migration.lease_until < now
 WITH migration, now,
-     $restart_completed AND migration.phase = 'convert_complete' AS restart_completed
+     $restart_completed AS restart_completed,
+     $target_phase AS target_phase,
+     migration.phase IN ['convert_complete', 'anchor_complete'] AS phase_complete
 SET migration.lease_owner = $owner,
     migration.lease_until = now + duration({seconds: $lease_seconds}),
     migration.offline_acknowledged_at = coalesce(migration.offline_acknowledged_at, now),
-    migration.phase = CASE WHEN restart_completed THEN 'convert' ELSE migration.phase END,
+    migration.phase = CASE
+      WHEN restart_completed THEN target_phase
+      WHEN target_phase = 'anchor' THEN 'anchor'
+      ELSE migration.phase
+    END,
     migration.cursor = CASE WHEN restart_completed THEN null ELSE migration.cursor END,
+    migration.anchor_cursor = CASE
+      WHEN restart_completed OR (target_phase = 'anchor' AND phase_complete) THEN null
+      ELSE migration.anchor_cursor
+    END,
     migration.updated_at = now
 RETURN true AS acquired,
        migration.key_version = $key_version AND migration.key_check = $key_check
          AS key_matches,
        migration.phase AS phase,
        migration.cursor AS cursor,
+       migration.anchor_cursor AS anchor_cursor,
+       coalesce(migration.anchored, 0) AS anchored,
        migration.key_version AS key_version,
        migration.key_check AS key_check,
        migration.baseline_total AS baseline_total,
@@ -255,14 +290,31 @@ RETURN migration.batches AS batches,
        migration.removed_nodes AS removed_nodes
 """
 
-# Mark conversion complete and release the owned lease in one fenced write.
+NRIC_REHASH_ADVANCE_ANCHOR_BATCH = """
+MATCH (migration:DataMigration {migration_key: $migration_key})
+SET migration.lock_version = coalesce(migration.lock_version, 0) + 1
+WITH migration, datetime() AS now
+WHERE migration.lease_owner = $owner
+  AND migration.lease_until >= now
+  AND migration.phase = 'anchor'
+SET migration.anchor_cursor = $cursor,
+    migration.anchored = coalesce(migration.anchored, 0) + $anchored,
+    migration.updated_at = now,
+    migration.lease_until = now + duration({seconds: $lease_seconds})
+RETURN migration.anchored AS anchored
+"""
+
+# Mark the requested phase complete and release the owned lease in one fenced write.
 NRIC_REHASH_COMPLETE_AND_RELEASE = """
 MATCH (migration:DataMigration {migration_key: $migration_key})
 SET migration.lock_version = coalesce(migration.lock_version, 0) + 1
 WITH migration, datetime() AS now
-WHERE migration.lease_owner = $owner AND migration.lease_until >= now
-SET migration.phase = 'convert_complete',
-    migration.cursor = null,
+WHERE migration.lease_owner = $owner
+  AND migration.lease_until >= now
+  AND $phase IN ['convert_complete', 'anchor_complete']
+SET migration.phase = $phase,
+    migration.cursor = CASE WHEN $phase = 'convert_complete' THEN null ELSE migration.cursor END,
+    migration.anchor_cursor = CASE WHEN $phase = 'anchor_complete' THEN null ELSE migration.anchor_cursor END,
     migration.updated_at = now
 REMOVE migration.lease_owner, migration.lease_until
 RETURN true AS completed

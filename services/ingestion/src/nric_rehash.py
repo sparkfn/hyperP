@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import json
 from collections.abc import Sequence
+from pathlib import Path
 from typing import Literal
 
 from neo4j.exceptions import DriverError, Neo4jError
@@ -13,6 +14,7 @@ from pydantic import ValidationError
 from src.config import get_settings
 from src.graph.client import Neo4jClient
 from src.nric_rehash_apply import run_nric_rehash_apply
+from src.nric_rehash_handoff import validate_handoff_dir
 from src.nric_rehash_plan import (
     NricRehashError,
     PlanReport,
@@ -30,6 +32,7 @@ _APPLY_EXIT_ONE_CODES = frozenset(
         "missing_id",
         "unexpected_scope",
         "residual_plaintext",
+        "handoff_write_failed",
     }
 )
 
@@ -61,6 +64,7 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     apply_parser.add_argument("--expect-database", required=True)
+    apply_parser.add_argument("--handoff-dir", required=True, type=Path)
     return parser
 
 
@@ -73,11 +77,14 @@ def _dispatch(
     key_version: str,
     expected_database: str,
     acknowledge_offline: bool,
+    handoff_dir: Path | None,
 ) -> tuple[PlanReport | ApplyReport | VerifyReport, int]:
     if command == "plan":
         report = build_plan_report(client, batch_size, key, key_version)
         return report, 0 if report["status"] == "ok" else 1
     if command == "apply":
+        if handoff_dir is None:
+            raise NricRehashError("handoff_dir_unsafe")
         return run_nric_rehash_apply(
             client,
             batch_size=batch_size,
@@ -85,9 +92,28 @@ def _dispatch(
             key_version=key_version,
             expected_database=expected_database,
             acknowledge_offline=acknowledge_offline,
+            handoff_dir=handoff_dir,
         )
     report = build_verify_report(client, key_version)
     return report, 0 if report["ok"] else 1
+
+
+def _resolve_apply_options(
+    arguments: argparse.Namespace,
+    command: Literal["plan", "apply", "verify"],
+) -> tuple[str, bool, Path | None] | None:
+    if command != "apply":
+        return "", False, None
+    if not arguments.acknowledge_offline:
+        _print_error("offline_ack_required")
+        return None
+    handoff_dir: Path = arguments.handoff_dir
+    try:
+        validate_handoff_dir(handoff_dir)
+    except NricRehashError as exc:
+        _print_error(exc.code)
+        return None
+    return arguments.expect_database, True, handoff_dir
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -95,11 +121,10 @@ def main(argv: Sequence[str] | None = None) -> int:
     arguments = build_parser().parse_args(argv)
     command: Literal["plan", "apply", "verify"] = arguments.command
     batch_size: int = arguments.batch_size
-    if command == "apply" and not arguments.acknowledge_offline:
-        _print_error("offline_ack_required")
+    apply_options = _resolve_apply_options(arguments, command)
+    if apply_options is None:
         return 2
-    expected_database: str = arguments.expect_database if command == "apply" else ""
-    acknowledge_offline: bool = arguments.acknowledge_offline if command == "apply" else False
+    expected_database, acknowledge_offline, handoff_dir = apply_options
     try:
         settings = get_settings()
     except ValidationError:
@@ -119,12 +144,15 @@ def main(argv: Sequence[str] | None = None) -> int:
                 key_version=settings.nric_hmac_key_version,
                 expected_database=expected_database,
                 acknowledge_offline=acknowledge_offline,
+                handoff_dir=handoff_dir,
             )
         finally:
             client.close()
     except NricRehashError as exc:
         _print_error(exc.code)
-        return 1 if command == "apply" and exc.code in _APPLY_EXIT_ONE_CODES else 2
+        if command == "apply" and exc.code in _APPLY_EXIT_ONE_CODES:
+            return 1
+        return 2
     except (Neo4jError, DriverError):
         _print_error("neo4j_error")
         return 2

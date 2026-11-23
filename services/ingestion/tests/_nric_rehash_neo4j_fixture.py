@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import os
+import tempfile
 from collections.abc import Callable, Iterator
 from dataclasses import dataclass
+from pathlib import Path
 from typing import TypeVar, cast
 from urllib.parse import urlparse
 
@@ -173,13 +175,21 @@ def _apply(
     batch_size: int = 2,
     expected_database: str | None = None,
     client: Neo4jClient | None = None,
+    handoff_dir: Path | None = None,
 ) -> tuple[dict[str, object], int]:
-    report, status = run_nric_rehash_apply(
-        client or _Client(driver),
-        batch_size=batch_size,
-        key=dataset.key,
-        key_version=dataset.key_version,
-        expected_database=expected_database or _database_name(driver),
-        acknowledge_offline=True,
-    )
-    return cast(dict[str, object], report), status
+    def invoke(directory: Path) -> tuple[dict[str, object], int]:
+        report, status = run_nric_rehash_apply(
+            client or _Client(driver),
+            batch_size=batch_size,
+            key=dataset.key,
+            key_version=dataset.key_version,
+            expected_database=expected_database or _database_name(driver),
+            acknowledge_offline=True,
+            handoff_dir=directory,
+        )
+        return cast(dict[str, object], report), status
+
+    if handoff_dir is not None:
+        return invoke(handoff_dir)
+    with tempfile.TemporaryDirectory(prefix="nric-rehash-test-") as temporary_directory:
+        return invoke(Path(temporary_directory))

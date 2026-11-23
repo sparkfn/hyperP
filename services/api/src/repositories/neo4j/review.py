@@ -75,6 +75,7 @@ from src.identity_link_types import (
     IdentityLinkResolutionKind,
     IdentityLinkStatus,
 )
+from src.nric import keyed_pending_identifiers
 from src.repositories.neo4j._merge_side_effects import apply_merge_review_side_effects
 from src.repositories.neo4j.merge import (
     _apply_golden_profile_selections_tx,
@@ -743,6 +744,7 @@ def _pending_projection_params(
         for item in identifiers
         if item["quality_flag"] not in {"invalid_format", "placeholder_value"}
     ]
+    identifiers = keyed_pending_identifiers(identifiers)
     addresses = _projection_items(
         payload,
         "addresses",

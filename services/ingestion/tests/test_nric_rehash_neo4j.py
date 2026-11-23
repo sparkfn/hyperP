@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import secrets
 import uuid
+from pathlib import Path
 
 import pytest
 from _nric_rehash_neo4j_fingerprint import (
@@ -203,6 +204,7 @@ def test_crash_resume_matches_uninterrupted_conversion(
 
 def test_owner_overwritten_between_batches_rolls_back_the_lost_batch(
     neo4j_driver: Driver,
+    tmp_path: Path,
 ) -> None:
     dataset = _dataset(secrets.token_hex(32), include_skipped=False)
     _seed_dataset(neo4j_driver, dataset, include_skipped=False)
@@ -217,6 +219,7 @@ def test_owner_overwritten_between_batches_rolls_back_the_lost_batch(
             key_version=dataset.key_version,
             expected_database=_database_name(neo4j_driver),
             acknowledge_offline=True,
+            handoff_dir=tmp_path,
         )
     assert error.value.code == "lease_lost"
     migration = _counter_record(neo4j_driver)
@@ -263,7 +266,7 @@ def test_lease_collision_database_and_null_scope_fail_closed(
         ).consume()
     expired, expired_status = _apply(neo4j_driver, dataset)
     assert expired_status == 0
-    assert expired["phase"] == "convert_complete"
+    assert expired["phase"] == "anchor_complete"
     assert _counter_record(neo4j_driver).get("offline_acknowledged_at") is not None
 
     changed_key_fingerprint = _graph_fingerprint(neo4j_driver)

@@ -6,6 +6,7 @@ import base64
 import hashlib
 import hmac
 import re
+from collections.abc import Mapping, Sequence
 
 from cryptography.fernet import Fernet, InvalidToken
 
@@ -13,6 +14,8 @@ from src.config import config
 
 _DIGEST_PATTERN = re.compile(r"[0-9a-f]{64}")
 _NRIC_PATTERN = re.compile(r"(?i)[STFG]\d{7}[A-Z]")
+# Mirrors the ingestion rehash classifier's case-sensitive shape check.
+_CANONICAL_NRIC_PATTERN = re.compile(r"[STFG]\d{7}[A-Z]")
 _ENCRYPTION_DOMAIN = b"hyperp-nric-encryption:v1\x00"
 
 NRIC_PLACEHOLDER = "•••••••••"
@@ -116,3 +119,40 @@ def decrypt_nric(ciphertext: str, key: str | None = None) -> str:
         return decrypted.decode("utf-8")
     except (InvalidToken, UnicodeError) as exc:
         raise NricKeyUnavailableError("Failed to decrypt NRIC ciphertext.") from exc
+
+
+class LegacyNricActivationError(ValueError):
+    """Raised when a legacy NRIC cannot be keyed for pending activation."""
+
+    def __init__(self) -> None:
+        super().__init__("legacy NRIC activation refused")
+
+
+def keyed_pending_identifiers(
+    items: Sequence[Mapping[str, object]], key: str | None = None
+) -> list[dict[str, object]]:
+    """Copy pending identifiers and key recoverable NRIC values for activation."""
+    keyed_items: list[dict[str, object]] = []
+    for item in items:
+        copied = dict(item)
+        if item.get("identifier_type") != "nric":
+            keyed_items.append(copied)
+            continue
+
+        value: object = item.get("normalized_value")
+        if not isinstance(value, str):
+            raise LegacyNricActivationError
+        if is_nric_digest(value) or "•" in value:
+            copied["identifier_scope"] = "global"
+        else:
+            canonical: str = canonical_nric(value)
+            if not canonical or not _CANONICAL_NRIC_PATTERN.fullmatch(canonical):
+                copied["identifier_scope"] = "global"
+            else:
+                digest: str | None = nric_digest(canonical, key)
+                if digest is None:
+                    raise LegacyNricActivationError
+                copied["normalized_value"] = digest
+                copied["identifier_scope"] = "global"
+        keyed_items.append(copied)
+    return keyed_items

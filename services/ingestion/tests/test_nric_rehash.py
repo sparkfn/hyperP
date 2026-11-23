@@ -110,6 +110,15 @@ def test_verify_report_checks_all_defect_counters() -> None:
     )
     assert clean["ok"] is True
     assert defective["ok"] is False
+    readiness_only = build_verify_report(
+        _verification_client(
+            anchored_persons=3,
+            identifiers_without_assertion=2,
+            identifiers_without_projection=1,
+        ),
+        KEY_VERSION,
+    )
+    assert readiness_only["ok"] is True
 
 
 def test_verify_report_rejects_each_defect_counter_individually() -> None:
@@ -244,6 +253,9 @@ def test_main_plan_and_verify_output_do_not_leak_sensitive_values(
         "duplicate_key_groups",
         "duplicate_extra_owners",
         "duplicate_scoped_targets",
+        "anchored_persons",
+        "identifiers_without_assertion",
+        "identifiers_without_projection",
         "ok",
     }
     assert verify_client.closed
